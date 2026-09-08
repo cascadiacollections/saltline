@@ -62,6 +62,8 @@ impl Replay {
             state
                 .fire(Shot::new(entry.angle_ticks, entry.power_ticks), false)
                 .ok_or(ReplayError::ShotRefused { at: i })?;
+            // Headless callers do not wait for a collapse animation.
+            state.resolve_clear();
         }
         Ok(state)
     }
@@ -156,8 +158,9 @@ pub fn state_hash(s: &RunState) -> u64 {
     h.write_u32(s.one_shot_streak);
     h.write_u8(match s.phase {
         Phase::Firing => 0,
-        Phase::Drafting => 1,
-        Phase::Over(_) => 2,
+        Phase::Cleared => 1,
+        Phase::Drafting => 2,
+        Phase::Over(_) => 3,
     });
     for m in crate::modifiers::Modifier::all() {
         h.write_u8(s.loadout.stacks(m));
@@ -229,6 +232,9 @@ mod tests {
                     if state.fire(shot(angle, power), false).is_none() {
                         break;
                     }
+                }
+                Phase::Cleared => {
+                    state.resolve_clear();
                 }
                 Phase::Drafting => {
                     let n = state.offers.len();

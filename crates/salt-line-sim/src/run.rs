@@ -234,9 +234,13 @@ pub struct Screen {
     pub supply: bool,
 }
 
-/// Height of the barrel pivot above the seated surface. The chassis is 11px
-/// tall with the pivot near its top (DESIGN §5.3).
-pub const MUZZLE_HEIGHT: f64 = 9.0;
+/// Height of the barrel pivot above the seated surface.
+///
+/// Measured off the art rather than picked: `gen_sprites.py::tank` puts the
+/// pivot at sprite row 3 of a 12-row chassis whose lowest drawn row is 11, and
+/// the reference scene seats that chassis two rows into the ground. Pivot to
+/// ground is therefore six pixels.
+pub const MUZZLE_HEIGHT: f64 = 6.0;
 /// Chassis width used to seat the emplacement.
 pub const CHASSIS_WIDTH: usize = 26;
 
@@ -766,6 +770,14 @@ pub enum RunOver {
 pub enum Phase {
     /// Waiting for a shot on the current screen.
     Firing,
+    /// The last shot cleared the screen. The refund has not been paid and the
+    /// run has not moved on yet — `RunState::resolve_clear` does both.
+    ///
+    /// This exists for the presentation layer: a collapse animates, and the
+    /// screen it animates on must still be the screen that was cleared. The
+    /// sim does not wait on anything, so headless callers (replay, tests, the
+    /// batch harness) simply call `resolve_clear` straight away.
+    Cleared,
     /// A draft is open; `RunState::take_offer` must be called.
     Drafting,
     Over(RunOver),
@@ -926,7 +938,7 @@ impl RunState {
         }
 
         if report.cleared {
-            self.clear_screen();
+            self.phase = Phase::Cleared;
         } else if self.shells <= 0 {
             self.phase = Phase::Over(RunOver::OutOfShells);
         }
@@ -935,6 +947,16 @@ impl RunState {
 
     fn grant(&mut self, n: i32) {
         self.shells = (self.shells + n).min(self.loadout.cap());
+    }
+
+    /// Pay for the cleared screen and move on. Idempotent: returns false if
+    /// the run is not sitting on a cleared screen.
+    pub fn resolve_clear(&mut self) -> bool {
+        if self.phase != Phase::Cleared {
+            return false;
+        }
+        self.clear_screen();
+        true
     }
 
     fn clear_screen(&mut self) {
@@ -1412,6 +1434,9 @@ mod tests {
                 Phase::Firing => {
                     state.fire(shot(20, 30), false);
                 }
+                Phase::Cleared => {
+                    state.resolve_clear();
+                }
                 Phase::Drafting => {
                     state.take_offer(0);
                 }
@@ -1455,6 +1480,7 @@ mod tests {
             assert!(!cands.is_empty(), "no candidate for a standing target");
             state.fuse = state.screen.default_fuse(target).unwrap_or(0.0);
             state.fire(cands[0].shot, false);
+            state.resolve_clear();
             if state.phase != Phase::Firing {
                 break;
             }
@@ -1468,6 +1494,9 @@ mod tests {
         let before = state.shells;
         let cands = solver::solve_target(&state.screen, &lo, 0);
         state.fire(cands[0].shot, false);
+        assert_eq!(state.phase, Phase::Cleared, "the clear is not paid yet");
+        assert_eq!(state.screens_cleared, 0);
+        state.resolve_clear();
         assert_eq!(state.screens_cleared, 1);
         // -1 for the shell fired, +3 for the one-shot clear.
         assert_eq!(state.shells, before - 1 + 3);
@@ -1482,6 +1511,7 @@ mod tests {
         let cands = solver::solve_target(&state.screen, &lo, 0);
         let before = state.shells;
         state.fire(cands[0].shot, false);
+        state.resolve_clear();
         // -1 shell, +3 refund, +1 for the first streak step.
         assert_eq!(state.shells, before - 1 + 3 + 1);
         assert_eq!(state.one_shot_streak, 1);
@@ -1497,6 +1527,7 @@ mod tests {
             .unwrap();
         let c = solver::solve_target(&state.screen, &lo, target);
         state.fire(c[0].shot, false);
+        state.resolve_clear();
         assert_eq!(
             state.one_shot_streak, 0,
             "two shots is not a one-shot clear"

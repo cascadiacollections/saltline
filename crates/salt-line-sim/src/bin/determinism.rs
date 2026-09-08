@@ -37,6 +37,9 @@ fn play(run_seed: u64) -> RunState {
                     break;
                 }
             }
+            Phase::Cleared => {
+                state.resolve_clear();
+            }
             Phase::Drafting => {
                 let n = state.offers.len();
                 if n == 0 {

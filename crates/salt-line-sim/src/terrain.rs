@@ -234,21 +234,24 @@ pub fn shape(heights: &mut [f64], template: Template, p: &ShapeParams) {
         let u = clamp((x - p.muzzle_x) / span, 0.0, 1.0);
 
         // Templates keep a fraction of the noise relief and add their own
-        // structure. Damping the relief is what keeps the shape readable.
+        // structure. Damping the relief is what keeps the added shape
+        // readable — but `Flat` keeps all of it, because "gentle roll" still
+        // has to read as rolling ground, and that is the terrain the reference
+        // scene in `art/` was rendered from.
         let (relief_keep, mut add) = match template {
-            Template::Flat => (0.45, 0.0),
+            Template::Flat => (1.0, 0.0),
             Template::Ridge => {
                 let xm = p.muzzle_x + span * 0.55;
-                (0.5, 40.0 * dmath::bump(x - xm, 26.0))
+                (0.75, 40.0 * dmath::bump(x - xm, 26.0))
             }
             Template::Chasm => {
                 let xg = p.target_x - 26.0;
                 (
-                    0.45,
+                    0.7,
                     -44.0 * plateau(x - xg, 6.0, 16.0) + 13.0 * dmath::bump(x - p.target_x, 14.0),
                 )
             }
-            Template::Mesa => (0.4, 32.0 * plateau(x - p.target_x, 22.0, 9.0)),
+            Template::Mesa => (0.6, 32.0 * plateau(x - p.target_x, 22.0, 9.0)),
             Template::Spires => {
                 let mut a = 0.0;
                 let fracs: [f64; 3] = [0.40, 0.62, 0.82];
@@ -256,7 +259,7 @@ pub fn shape(heights: &mut [f64], template: Template, p: &ShapeParams) {
                     let c = p.muzzle_x + span * frac;
                     a += 56.0 * plateau(x - c, 2.0, 5.0);
                 }
-                (0.35, a)
+                (0.55, a)
             }
             Template::Overhang => {
                 // A thin wall immediately in front of a narrow pocket. No
@@ -264,7 +267,7 @@ pub fn shape(heights: &mut [f64], template: Template, p: &ShapeParams) {
                 // same job: nothing on a direct arc gets in.
                 let wall = p.target_x - 15.0;
                 (
-                    0.35,
+                    0.5,
                     66.0 * plateau(x - wall, 2.5, 3.0) - 20.0 * plateau(x - p.target_x, 9.0, 4.0),
                 )
             }

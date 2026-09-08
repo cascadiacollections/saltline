@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://bs4lt1n3m41n0"]
+
+; One node. Everything the game draws is composited into a single
+; native-resolution image buffer by `SaltLine`, which is a Rust class from
+; salt-line-godot. There is no scene tree to keep in sync with the sim.
+
+[node name="Main" type="SaltLine"]

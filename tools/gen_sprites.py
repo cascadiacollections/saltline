@@ -8,7 +8,9 @@ runtime; every sprite is rasterised directly into the pixel grid.
 import math, os, struct
 from PIL import Image
 
-OUT = "/mnt/user-data/outputs"
+# Writes into the repo's art/ directory by default; override with SALT_LINE_ART.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.environ.get("SALT_LINE_ART", os.path.join(ROOT, "art"))
 SPR = os.path.join(OUT, "sprites")
 os.makedirs(SPR, exist_ok=True)
 
@@ -493,11 +495,18 @@ if __name__ == "__main__":
     silo().image().save(f"{SPR}/silo.png")
     pylon().image().save(f"{SPR}/pylon.png")
 
-    # 19-frame barrel strip, 5° increments, packed horizontally
-    frames = [barrel(a)[0] for a in range(0, 95, 5)]
-    strip = Buf(28 * len(frames), 28)
-    for i, f in enumerate(frames):
-        strip.blit(f, i * 28, 0)
-    strip.image().save(f"{SPR}/barrel_strip_5deg.png")
+    # 19-frame barrel strips, 5° increments, packed horizontally — one per
+    # build silhouette (§5.3). Sliced at 28px by the Godot layer.
+    for variant, name in (
+        ("base", "barrel_strip_5deg"),
+        ("sabot", "barrel_strip_sabot"),
+        ("cluster", "barrel_strip_cluster"),
+        ("auger", "barrel_strip_auger"),
+    ):
+        frames = [barrel(a, variant)[0] for a in range(0, 95, 5)]
+        strip = Buf(28 * len(frames), 28)
+        for i, f in enumerate(frames):
+            strip.blit(f, i * 28, 0)
+        strip.image().save(f"{SPR}/{name}.png")
 
     print("ok")

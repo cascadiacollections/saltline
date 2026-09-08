@@ -4,8 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+# `rlib` alongside `cdylib` so the rasteriser, the fonts and the camera maths
+# can be unit-tested with `cargo test`. Those parts touch no engine API.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+godot = "0.5"
 salt-line-sim = { path = "../salt-line-sim" }
-# godot = "0.2"   # uncomment and pin at M5

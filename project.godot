@@ -1,0 +1,44 @@
+; Salt Line — Godot 4 project.
+;
+; The project root is the repository root so that `res://art/...` is the same
+; path the sprite generator writes to. There is no asset copy step.
+;
+; Every setting under [display] and [rendering] here is load-bearing for
+; DESIGN §5.1. Changing one of them breaks the low-resolution presentation:
+;
+;   stretch/mode = "viewport"   render at the internal size, scale the result
+;   stretch/aspect = "expand"   let the width float, keep the height fixed
+;   default_texture_filter = 0  nearest, project-wide — one missed material is
+;                               the whole illusion
+;
+; The internal buffer is 320x180 here and re-sized at runtime to
+; `clamp(round(180 * device_aspect), 320, 400) x 180` (216 tall under Long
+; Lens), which is what "fix the height, let the width float" means in practice.
+
+config_version=5
+
+[application]
+
+config/name="Salt Line"
+config/description="Single-player artillery roguelike. Endless procedural horizon, persistent terrain damage."
+run/main_scene="res://godot/main.tscn"
+config/features=PackedStringArray("4.4", "Forward Plus")
+
+[display]
+
+window/size/viewport_width=320
+window/size/viewport_height=180
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/stretch/mode="viewport"
+window/stretch/aspect="expand"
+window/vsync/vsync_mode=1
+
+[rendering]
+
+textures/canvas_textures/default_texture_filter=0
+anti_aliasing/quality/msaa_2d=0
+anti_aliasing/quality/screen_space_aa=0
+textures/default_filters/use_nearest_mipmap_filter=true
+textures/default_filters/anisotropic_filtering_level=0
+environment/defaults/default_clear_color=Color(0.141, 0.212, 0.361, 1)

@@ -1,0 +1,18 @@
+[configuration]
+
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.2
+reloadable = true
+
+[libraries]
+
+linux.debug.x86_64 =     "res://target/debug/libsalt_line_godot.so"
+linux.release.x86_64 =   "res://target/release/libsalt_line_godot.so"
+linux.debug.arm64 =      "res://target/debug/libsalt_line_godot.so"
+linux.release.arm64 =    "res://target/release/libsalt_line_godot.so"
+macos.debug =            "res://target/debug/libsalt_line_godot.dylib"
+macos.release =          "res://target/release/libsalt_line_godot.dylib"
+windows.debug.x86_64 =   "res://target/debug/salt_line_godot.dll"
+windows.release.x86_64 = "res://target/release/salt_line_godot.dll"
+windows.debug.arm64 =    "res://target/debug/salt_line_godot.dll"
+windows.release.arm64 =  "res://target/release/salt_line_godot.dll"

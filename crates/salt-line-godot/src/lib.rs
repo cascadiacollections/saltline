@@ -3,3 +3,20 @@
 //! Terrain draws as vertical spans of solid colour, one pixel column each,
 //! straight into an image buffer. No tilemap, no mesh, no sprites.
 //! Camera x is quantised to whole pixels every frame.
+//!
+//! Everything that decides anything is in `salt-line-sim`, which has no idea
+//! this crate exists.
+
+use godot::prelude::*;
+
+pub mod font;
+pub mod game;
+pub mod palette;
+pub mod raster;
+pub mod save;
+pub mod sprites;
+
+struct SaltLineExtension;
+
+#[gdextension]
+unsafe impl ExtensionLibrary for SaltLineExtension {}
