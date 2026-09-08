@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  actions: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -111,3 +115,40 @@ jobs:
             exit 1
           fi
           echo "salt-line-sim has no dependencies"
+
+  playable:
+    name: playable (${{ matrix.os }})
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: Linux
+            output: SaltLine.x86_64
+          - os: macos-latest
+            preset: macOS
+            output: SaltLine.app
+          - os: windows-latest
+            preset: Windows Desktop
+            output: SaltLine.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: chickensoft-games/setup-godot@v1
+        with:
+          version: 4.4.1
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build the release GDExtension
+        run: cargo build --release -p salt-line-godot
+      - name: create output directory
+        run: mkdir -p build
+      - name: export playable binary
+        run: godot --headless --path . --export-release "${{ matrix.preset }}" "build/${{ matrix.output }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: salt-line-${{ matrix.preset }}
+          path: build/${{ matrix.output }}

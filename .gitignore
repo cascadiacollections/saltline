@@ -1,7 +1,6 @@
 /target
 **/*.rs.bk
 .godot/
-export_presets.cfg
 __pycache__/
 *.pyc
 .DS_Store
