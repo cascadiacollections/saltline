@@ -51,7 +51,7 @@ pub const FAR_EDGE_X: f64 = 310.0;
 pub const GRAVITY: f64 = 140.0;
 /// Muzzle velocity at power tick 0 and at full power, before loadout scaling.
 pub const POWER_MIN: f64 = 30.0;
-pub const POWER_MAX: f64 = 240.0;
+pub const POWER_MAX: f64 = 300.0;
 /// Power is an integer tick count so a shot is exactly reproducible.
 pub const POWER_TICKS_MAX: i32 = 1000;
 

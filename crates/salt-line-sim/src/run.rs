@@ -1,1 +1,1671 @@
-//! TODO(M): implement per design/DESIGN.md. See IMPLEMENTATION_PROMPT.md.
+//! Screen assembly, structures, damage, economy and the run state machine.
+//! DESIGN §1, §2.3, §2.7.
+
+use crate::ballistics::{
+    self, blast_radius, crater_radius, fire, Aabb, End, FireOptions, Shot, Trace, World,
+};
+use crate::dmath::{abs, clamp};
+use crate::modifiers::{draft_offers, Loadout, Modifier};
+use crate::rng::{screen_seed, substream, Pcg32};
+use crate::solver;
+use crate::terrain::{self, Heightfield, Material, ShapeParams, Template};
+use crate::{
+    band_of, Vec2, BAND_LEN, EMPLACEMENT_X, MAX_GEN_ATTEMPTS, MIN_SOLUTIONS,
+    MIN_TARGET_SEPARATION, SCREEN_W_REF, START_SHELLS,
+};
+
+// --------------------------------------------------------------- structures
+
+/// Target silhouettes. DESIGN §5.4.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum StructureKind {
+    Derrick = 0,
+    RadioMast = 1,
+    WaterTower = 2,
+    Silo = 3,
+    Pylon = 4,
+}
+
+impl StructureKind {
+    pub const ALL: [StructureKind; 5] = [
+        StructureKind::Derrick,
+        StructureKind::RadioMast,
+        StructureKind::WaterTower,
+        StructureKind::Silo,
+        StructureKind::Pylon,
+    ];
+
+    /// Footprint width in pixel columns. DESIGN §5.4.
+    pub const fn footprint(self) -> usize {
+        match self {
+            StructureKind::Derrick => 7,
+            StructureKind::RadioMast => 5,
+            StructureKind::WaterTower => 9,
+            StructureKind::Silo => 9,
+            StructureKind::Pylon => 11,
+        }
+    }
+
+    /// Sprite height, from `art/sprites/`.
+    pub const fn height(self) -> f64 {
+        match self {
+            StructureKind::Derrick => 42.0,
+            StructureKind::RadioMast => 32.0,
+            StructureKind::WaterTower => 34.0,
+            StructureKind::Silo => 27.0,
+            StructureKind::Pylon => 33.0,
+        }
+    }
+
+    /// How top-heavy the silhouette is. The water tower is a bulb on legs, so
+    /// undermining it reads unmistakably — DESIGN §5.4 wants that legible.
+    pub const fn top_heaviness(self) -> f64 {
+        match self {
+            StructureKind::WaterTower => 1.6,
+            StructureKind::RadioMast => 1.3,
+            StructureKind::Derrick => 1.1,
+            StructureKind::Pylon => 0.9,
+            StructureKind::Silo => 0.8,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            StructureKind::Derrick => "derrick",
+            StructureKind::RadioMast => "radio mast",
+            StructureKind::WaterTower => "water tower",
+            StructureKind::Silo => "silo",
+            StructureKind::Pylon => "pylon",
+        }
+    }
+}
+
+/// DESIGN §2.7. `Leaning` is a real state, not a cosmetic one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum StructState {
+    Intact = 0,
+    Leaning = 1,
+    Collapsed = 2,
+}
+
+/// How far a leaning structure's bounding box shifts, in pixels. Enough to
+/// change the shot you need.
+pub const LEAN_SHIFT: f64 = 4.0;
+/// Material factor on a blast that lands inside the bounding box. Above 1.0
+/// so that a clean direct hit zeroes integrity — DESIGN §1's refund table pays
+/// for one-shot clears, and §2.4 requires every screen to have one.
+pub const STEEL_BLAST_FACTOR: f64 = 1.15;
+/// Thermal Lance: structures collapse rather than chip (DESIGN §4).
+pub const THERMAL_BLAST_FACTOR: f64 = 2.6;
+
+#[derive(Clone, Debug)]
+pub struct Structure {
+    pub kind: StructureKind,
+    /// Leftmost footprint column.
+    pub x0: usize,
+    /// Seated base elevation at spawn.
+    pub base: f64,
+    /// Mean footprint surface elevation at spawn — the denominator for support.
+    pub original_mean: f64,
+    pub integrity: f64,
+    pub support: f64,
+    pub state: StructState,
+    /// -1 leaning left, 0 upright, +1 leaning right.
+    pub lean: i8,
+}
+
+impl Structure {
+    pub fn footprint(&self) -> usize {
+        self.kind.footprint()
+    }
+
+    pub fn centre_x(&self) -> f64 {
+        self.x0 as f64 + self.footprint() as f64 * 0.5
+    }
+
+    /// Bounding box in world space. A lean shifts it by several pixels, which
+    /// is the whole point of the state (DESIGN §2.7).
+    pub fn aabb(&self) -> Aabb {
+        let shift = self.lean as f64 * LEAN_SHIFT;
+        let h = match self.state {
+            StructState::Collapsed => 6.0,
+            // A leaning silhouette is redrawn at ~15 degrees, so it loses a
+            // little height and gains a little width.
+            StructState::Leaning => self.kind.height() * 0.95,
+            StructState::Intact => self.kind.height(),
+        };
+        let extra = if self.state == StructState::Leaning {
+            2.0
+        } else {
+            0.0
+        };
+        Aabb::new(
+            self.x0 as f64 - extra + shift.min(0.0),
+            self.base,
+            self.x0 as f64 + self.footprint() as f64 + extra + shift.max(0.0),
+            self.base + h,
+        )
+    }
+
+    pub fn is_down(&self) -> bool {
+        self.state == StructState::Collapsed
+    }
+
+    /// DESIGN §2.7 threshold table. Collapse is checked first.
+    fn resolve_state(&mut self) {
+        self.state = if self.integrity <= 0.0 || self.support <= 0.3 {
+            StructState::Collapsed
+        } else if self.integrity <= 0.35 || self.support <= 0.6 {
+            StructState::Leaning
+        } else {
+            StructState::Intact
+        };
+    }
+
+    /// Lean toward the weaker side of the footprint.
+    fn lean_direction(&self, field: &Heightfield) -> i8 {
+        let n = self.footprint();
+        let half = n / 2;
+        let mean = |from: usize, to: usize| -> f64 {
+            let mut s = 0.0;
+            let mut c = 0.0;
+            for i in from..to.min(field.len()) {
+                s += field.surface(i);
+                c += 1.0;
+            }
+            if c == 0.0 {
+                0.0
+            } else {
+                s / c
+            }
+        };
+        let left = mean(self.x0, self.x0 + half);
+        let right = mean(self.x0 + n - half, self.x0 + n);
+        if left < right - 0.25 {
+            -1
+        } else if right < left - 0.25 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+// -------------------------------------------------------------------- screen
+
+/// What one shot did. Returned by `Screen::apply_shot` so the run state and the
+/// presentation layer see the same account of it.
+#[derive(Clone, Debug)]
+pub struct ShotReport {
+    /// The shell fired, then any cluster submunitions.
+    pub traces: Vec<Trace>,
+    pub collapsed: Vec<usize>,
+    pub newly_leaning: Vec<usize>,
+    pub cleared: bool,
+    /// A miss that cratered close enough for Salvage to refund it.
+    pub salvage: bool,
+    /// Landing point for Chalk Marks.
+    pub chalk: Option<Vec2>,
+    /// Apex for Plumb Line.
+    pub apex: Vec2,
+}
+
+#[derive(Clone, Debug)]
+pub struct Screen {
+    pub index: u32,
+    pub seed: u64,
+    pub width: usize,
+    pub template: Template,
+    pub field: Heightfield,
+    pub structures: Vec<Structure>,
+    /// Signed wind acceleration, resampled per screen (DESIGN §2.5).
+    pub wind: f64,
+    /// Wind after Storm Front's mid-flight resample, if held.
+    pub wind_late: Option<f64>,
+    pub muzzle_x: f64,
+    /// Surviving-candidate count for the hardest target. The difficulty proxy
+    /// DESIGN §2.4 asks to be logged.
+    pub candidates: usize,
+    pub attempts: u32,
+    pub fell_back: bool,
+    /// Scavenger Rites supply screen: no targets, shells instead.
+    pub supply: bool,
+}
+
+/// Height of the barrel pivot above the seated surface. The chassis is 11px
+/// tall with the pivot near its top (DESIGN §5.3).
+pub const MUZZLE_HEIGHT: f64 = 9.0;
+/// Chassis width used to seat the emplacement.
+pub const CHASSIS_WIDTH: usize = 26;
+
+impl Screen {
+    /// Barrel pivot in world space.
+    pub fn muzzle(&self) -> Vec2 {
+        let x0 = clamp(self.muzzle_x - CHASSIS_WIDTH as f64 * 0.5, 0.0, self.width as f64) as usize;
+        Vec2::new(
+            self.muzzle_x,
+            self.field.seat(x0, CHASSIS_WIDTH) + MUZZLE_HEIGHT,
+        )
+    }
+
+    /// Boxes for every structure still standing, in structure order.
+    pub fn target_boxes(&self) -> Vec<Aabb> {
+        self.structures.iter().map(|s| s.aabb()).collect()
+    }
+
+    pub fn cleared(&self) -> bool {
+        self.supply || self.structures.iter().all(|s| s.is_down())
+    }
+
+    pub fn world<'a>(&'a self, boxes: &'a [Aabb]) -> World<'a> {
+        World {
+            field: &self.field,
+            targets: boxes,
+            width: self.width,
+            wind: self.wind,
+        }
+    }
+
+    /// Horizontal distance to the nearest standing target — what Rangefinder
+    /// displays (DESIGN §4).
+    pub fn range_to_nearest(&self) -> Option<f64> {
+        let m = self.muzzle();
+        self.structures
+            .iter()
+            .filter(|s| !s.is_down())
+            .map(|s| abs(s.centre_x() - m.x))
+            .fold(None, |acc: Option<f64>, d| {
+                Some(match acc {
+                    Some(a) if a <= d => a,
+                    _ => d,
+                })
+            })
+    }
+
+    /// The fuse an airburst wants for a given target: the horizontal distance
+    /// from the muzzle to its centre.
+    pub fn default_fuse(&self, target: usize) -> Option<f64> {
+        self.structures
+            .get(target)
+            .map(|s| abs(s.centre_x() - self.muzzle().x))
+    }
+
+    fn fire_options(&self, lo: &Loadout, fuse: Option<f64>, record_path: bool) -> FireOptions {
+        FireOptions {
+            record_path,
+            fuse: if lo.airburst() { fuse } else { None },
+            wind_after_apex: if lo.storm_front() { self.wind_late } else { None },
+        }
+    }
+
+    /// Fire a shot and apply everything it does: craters, structural damage,
+    /// undermining, collapse and debris.
+    pub fn apply_shot(
+        &mut self,
+        shot: Shot,
+        lo: &Loadout,
+        fuse: Option<f64>,
+        record_path: bool,
+    ) -> ShotReport {
+        let boxes = self.target_boxes();
+        let opts = self.fire_options(lo, fuse, record_path);
+        let muzzle = self.muzzle();
+        let traces = {
+            let world = self.world(&boxes);
+            fire(&world, muzzle, shot, lo, &opts)
+        };
+
+        let mut report = ShotReport {
+            collapsed: Vec::new(),
+            newly_leaning: Vec::new(),
+            cleared: false,
+            salvage: false,
+            chalk: traces[0].detonation(),
+            apex: traces[0].apex,
+            traces,
+        };
+
+        let before: Vec<StructState> = self.structures.iter().map(|s| s.state).collect();
+
+        for i in 0..report.traces.len() {
+            let (end, damage_scale) = (report.traces[i].end, report.traces[i].damage_scale);
+            if !end.detonates() {
+                continue;
+            }
+            self.detonate(end, damage_scale, lo);
+        }
+
+        self.resolve_structures();
+
+        for (i, s) in self.structures.iter().enumerate() {
+            match (before[i], s.state) {
+                (b, StructState::Collapsed) if b != StructState::Collapsed => {
+                    report.collapsed.push(i)
+                }
+                (StructState::Intact, StructState::Leaning) => report.newly_leaning.push(i),
+                _ => {}
+            }
+        }
+
+        // Debris adds a small positive mound where the structure landed, so
+        // terrain gets slightly higher where a structure fell (DESIGN §2.7).
+        for &i in &report.collapsed {
+            let s = self.structures[i].clone();
+            let dir = s.lean as f64;
+            let cx = s.centre_x() + dir * s.kind.height() * 0.35;
+            self.field.mound(
+                cx,
+                s.footprint() as f64 * 0.9 + 3.0,
+                2.0 + s.kind.height() * 0.05,
+            );
+        }
+
+        // Salvage: a miss that still cratered within 30 units of a target.
+        if lo.salvage_radius > 0.0 && report.collapsed.is_empty() {
+            if let Some(det) = report.traces.iter().filter_map(|t| t.detonation()).next() {
+                report.salvage = self
+                    .structures
+                    .iter()
+                    .filter(|s| !s.is_down())
+                    .any(|s| abs(s.centre_x() - det.x) <= lo.salvage_radius);
+            }
+        }
+
+        report.cleared = self.cleared();
+        report
+    }
+
+    /// One detonation: crater the ground, damage what the blast overlaps.
+    fn detonate(&mut self, end: End, damage_scale: f64, lo: &Loadout) {
+        let pos = end.pos();
+        let direct = match end {
+            End::Structure { index, .. } => Some(index),
+            _ => None,
+        };
+        let material = if direct.is_some() {
+            Material::Steel
+        } else {
+            self.field.material_at(pos.x)
+        };
+
+        // Crater, attenuated by height above the surface — an airburst high
+        // over the target barely marks the ground.
+        let r = crater_radius(material, lo, damage_scale);
+        let height_above = pos.y - self.field.surface_at(pos.x);
+        if height_above < r {
+            let effective = r * (1.0 - clamp(height_above / r, 0.0, 1.0));
+            self.field.crater(pos.x, effective);
+        }
+
+        // Direct and splash damage. DESIGN §2.7: blast overlap x material factor.
+        let blast = blast_radius(lo, damage_scale);
+        let factor = if lo.thermal_lance() {
+            THERMAL_BLAST_FACTOR
+        } else {
+            STEEL_BLAST_FACTOR
+        };
+        for (i, s) in self.structures.iter_mut().enumerate() {
+            if s.is_down() {
+                continue;
+            }
+            let overlap = if direct == Some(i) {
+                1.0
+            } else {
+                let d = s.aabb().distance_to(pos);
+                if d >= blast {
+                    continue;
+                }
+                1.0 - d / blast
+            };
+            s.integrity -= overlap * factor * damage_scale;
+        }
+    }
+
+    /// Recompute support from the scar buffer and re-resolve every state.
+    /// DESIGN §2.7: support is recomputed after every detonation.
+    ///
+    /// Public because undermining can happen without a detonation of its own —
+    /// debris landing, or a test excavating a footprint directly.
+    pub fn resolve_structures(&mut self) {
+        for s in self.structures.iter_mut() {
+            let raw = self
+                .field
+                .support_fraction(s.x0, s.kind.footprint(), s.original_mean);
+            // Top-heavy silhouettes lose their footing sooner — that is what
+            // makes undermining the water tower legible.
+            let loss = (1.0 - raw) * s.kind.top_heaviness();
+            s.support = clamp(1.0 - loss, 0.0, 1.0);
+            let was_down = s.state == StructState::Collapsed;
+            s.resolve_state();
+            if !was_down {
+                if s.state == StructState::Collapsed {
+                    if s.lean == 0 {
+                        s.lean = s.lean_direction(&self.field);
+                        if s.lean == 0 {
+                            s.lean = 1;
+                        }
+                    }
+                } else if s.state == StructState::Leaning {
+                    s.lean = s.lean_direction(&self.field);
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------ curve (§2.5)
+
+/// Target distance in world units. `110 + band*6`, capped at 290.
+pub fn target_distance(band: u32) -> f64 {
+    (110.0 + band as f64 * 6.0).min(290.0)
+}
+
+/// Wind magnitude. `band*0.35`, capped at 7.0, resampled per screen.
+pub fn wind_magnitude(band: u32) -> f64 {
+    (band as f64 * 0.35).min(7.0)
+}
+
+/// Terrain amplitude multiplier. `1.0 + band*0.05`, capped at 2.2.
+pub fn terrain_amplitude(band: u32) -> f64 {
+    (1.0 + band as f64 * 0.05).min(2.2)
+}
+
+/// Target count: 1, rising to 2 at band 3 and 3 at band 9.
+pub fn target_count(band: u32) -> u32 {
+    if band >= 9 {
+        3
+    } else if band >= 3 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Elevation delta half-width. `+/-(8 + band*3)`, capped at +/-70.
+pub fn elevation_delta_limit(band: u32) -> f64 {
+    (8.0 + band as f64 * 3.0).min(70.0)
+}
+
+/// Template weights for a band, gated on the loadout. DESIGN §2.3 step 3 and
+/// §2.5: past band 20 stop ramping magnitude and ramp structural difficulty
+/// toward Spires / Overhang / Basin instead.
+pub fn template_weights(band: u32, lo: &Loadout) -> [u32; 7] {
+    let late = band.saturating_sub(20).min(30);
+    let mut w = [0u32; 7];
+    for (i, t) in Template::ALL.iter().enumerate() {
+        if band < t.min_band() {
+            continue;
+        }
+        if t.needs_loadout_unlock() && !lo.unlocks_overhang() {
+            continue;
+        }
+        w[i] = match t {
+            Template::Flat => 30u32.saturating_sub(band.min(20)),
+            Template::Ridge => 26,
+            Template::Chasm => 20,
+            Template::Mesa => 18,
+            Template::Spires => 14 + late * 2,
+            Template::Overhang => 8 + late * 2,
+            Template::Basin => 10 + late * 2,
+        };
+    }
+    if w.iter().all(|x| *x == 0) {
+        w[Template::Flat as usize] = 1;
+    }
+    w
+}
+
+// -------------------------------------------------------- screen assembly
+
+fn kind_weights(band: u32) -> [u32; 5] {
+    // The water tower leads early: DESIGN §5.4 wants undermining to teach
+    // itself, and a bulb on legs is the silhouette that does it.
+    if band < 2 {
+        [10, 6, 40, 10, 4]
+    } else if band < 6 {
+        [16, 14, 26, 20, 14]
+    } else {
+        [20, 20, 20, 20, 20]
+    }
+}
+
+fn place_structures(
+    field: &Heightfield,
+    rng: &mut Pcg32,
+    band: u32,
+    width: usize,
+    muzzle_x: f64,
+    primary_x: f64,
+) -> Vec<Structure> {
+    let count = target_count(band);
+    let mut xs: Vec<f64> = Vec::new();
+    xs.push(primary_x);
+    // Extra targets step back toward the emplacement, never closer than the
+    // 40-unit minimum separation (DESIGN §2.3 step 5).
+    for k in 1..count {
+        let step = rng.range_f64(MIN_TARGET_SEPARATION, MIN_TARGET_SEPARATION + 26.0);
+        let candidate_left = primary_x - step * k as f64;
+        let candidate_right = primary_x + step * k as f64;
+        let x = if candidate_right < width as f64 - 16.0 && rng.next_f64() < 0.35 {
+            candidate_right
+        } else {
+            candidate_left
+        };
+        xs.push(clamp(x, muzzle_x + 60.0, width as f64 - 16.0));
+    }
+
+    let mut out: Vec<Structure> = Vec::new();
+    for x in xs {
+        if out
+            .iter()
+            .any(|s| abs(s.centre_x() - x) < MIN_TARGET_SEPARATION)
+        {
+            continue;
+        }
+        let kind = StructureKind::ALL[rng.weighted(&kind_weights(band))];
+        let fp = kind.footprint();
+        let x0 = clamp(x - fp as f64 * 0.5, 1.0, (width - fp - 1) as f64) as usize;
+        // Seat on the highest footprint column so nothing floats.
+        let base = field.seat(x0, fp);
+        let mut sum = 0.0;
+        for i in x0..x0 + fp {
+            sum += field.surface(i);
+        }
+        let original_mean = sum / fp as f64;
+        out.push(Structure {
+            kind,
+            x0,
+            base,
+            original_mean,
+            integrity: 1.0,
+            support: 1.0,
+            state: StructState::Intact,
+            lean: 0,
+        });
+    }
+    out
+}
+
+/// Share of the loadout's flat-ground maximum that a target may be placed at.
+/// The rest is headroom for wind drift and the elevation delta.
+pub const RANGE_MARGIN: f64 = 0.75;
+
+/// Target distance for a band, clamped to what the loadout can actually reach.
+pub fn reachable_distance(band: u32, lo: &Loadout) -> f64 {
+    target_distance(band).min(ballistics::max_flat_range(lo) * RANGE_MARGIN)
+}
+
+fn assemble(
+    index: u32,
+    seed: u64,
+    width: usize,
+    template: Template,
+    band: u32,
+    lo: &Loadout,
+    force_flat_terrain: bool,
+) -> Screen {
+    let mut r_wind = Pcg32::new(substream(seed, 0x5741_4E44));
+    let mut r_shape = Pcg32::new(substream(seed, 0x5348_4150));
+    let mut r_place = Pcg32::new(substream(seed, 0x504C_4143));
+
+    let wind = r_wind.signed(wind_magnitude(band));
+    // Storm Front's mid-flight resample is drawn now so it is part of the
+    // screen, not of the moment the trigger is pulled.
+    let wind_late = Some(r_wind.signed(wind_magnitude(band)));
+    let elev_delta = r_shape.signed(elevation_delta_limit(band));
+    let spire_count = r_shape.range_u32(2, 3);
+
+    let primary_x = clamp(
+        EMPLACEMENT_X + reachable_distance(band, lo),
+        EMPLACEMENT_X + 60.0,
+        width as f64 - 16.0,
+    );
+
+    let p = ShapeParams {
+        width,
+        amp: terrain_amplitude(band),
+        muzzle_x: EMPLACEMENT_X,
+        target_x: primary_x,
+        elev_delta,
+        spire_count,
+    };
+
+    let field = if force_flat_terrain {
+        // Last-resort fallback: a gentle roll with no template at all. A
+        // boring screen is better than a hang (DESIGN §2.3 step 6).
+        let mut base = terrain::base_ridge(width, seed, 0.35);
+        for h in base.iter_mut() {
+            *h = clamp(*h * 0.5 + terrain::BASE_ELEVATION * 0.5, terrain::WORLD_FLOOR, 70.0);
+        }
+        Heightfield::from_base(base)
+    } else {
+        terrain::generate(seed, template, &p)
+    };
+
+    let structures = place_structures(&field, &mut r_place, band, width, EMPLACEMENT_X, primary_x);
+
+    Screen {
+        index,
+        seed,
+        width,
+        template: if force_flat_terrain {
+            Template::Flat
+        } else {
+            template
+        },
+        field,
+        structures,
+        wind,
+        wind_late,
+        muzzle_x: EMPLACEMENT_X,
+        candidates: 0,
+        attempts: 0,
+        fell_back: force_flat_terrain,
+        supply: false,
+    }
+}
+
+/// Build one screen, validated solvable before it is returned.
+///
+/// DESIGN §2.3 step 6: reject and regenerate with `screen_seed + 1` on
+/// failure, capped at 8 attempts, then fall back to `Flat`. Nothing leaves
+/// this function without passing `solver::validate`.
+pub fn generate_screen(run_seed: u64, index: u32, width: usize, lo: &Loadout) -> Screen {
+    let band = band_of(index);
+    let seed0 = screen_seed(run_seed, index);
+
+    // Scavenger Rites: every 5th screen is a supply screen (DESIGN §4).
+    if lo.scavenger_rites() && index > 0 && index % 5 == 0 {
+        let mut s = assemble(index, seed0, width, Template::Flat, band, lo, false);
+        s.structures.clear();
+        s.supply = true;
+        s.candidates = usize::MAX;
+        return s;
+    }
+
+    let mut r_template = Pcg32::new(substream(seed0, 0x5445_4D50));
+    let weights = template_weights(band, lo);
+
+    for attempt in 0..MAX_GEN_ATTEMPTS {
+        let seed = seed0.wrapping_add(attempt as u64);
+        let template = Template::ALL[r_template.weighted(&weights)];
+        let mut screen = assemble(index, seed, width, template, band, lo, false);
+        screen.attempts = attempt + 1;
+        let report = solver::validate(&screen, lo);
+        if report.solvable() {
+            screen.candidates = report.worst_direct;
+            return screen;
+        }
+    }
+
+    // Flat template, fresh seeds.
+    for attempt in 0..MAX_GEN_ATTEMPTS {
+        let seed = seed0.wrapping_add(0x1000 + attempt as u64);
+        let mut screen = assemble(index, seed, width, Template::Flat, band, lo, false);
+        screen.attempts = MAX_GEN_ATTEMPTS + attempt + 1;
+        screen.fell_back = true;
+        let report = solver::validate(&screen, lo);
+        if report.solvable() {
+            screen.candidates = report.worst_direct;
+            return screen;
+        }
+    }
+
+    // Terrain out of the way entirely, one target. This cannot fail: a target
+    // inside the distance cap on a gentle roll is always reachable.
+    let mut screen = assemble(index, seed0, width, Template::Flat, band, lo, true);
+    screen.structures.truncate(1);
+    screen.attempts = MAX_GEN_ATTEMPTS * 2 + 1;
+    screen.fell_back = true;
+    screen.candidates = solver::validate(&screen, lo).worst_direct;
+    screen
+}
+
+// ------------------------------------------------------------ economy (§1)
+
+/// Refund for clearing a screen in `shots` shots, before modifiers.
+/// DESIGN §1: 1 shot +3, 2 shots +2, 3 shots +1, 4 or more 0.
+pub fn base_refund(shots: u32) -> i32 {
+    match shots {
+        0 | 1 => 3,
+        2 => 2,
+        3 => 1,
+        _ => 0,
+    }
+}
+
+/// Refund after Quartermaster (+1 to every tier, including 4+) and Forced
+/// March (x2). Applied in that order.
+pub fn refund(shots: u32, lo: &Loadout) -> i32 {
+    let base = base_refund(shots) + lo.refund_bonus;
+    (base as f64 * lo.refund_mult) as i32
+}
+
+/// Why a run ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RunOver {
+    OutOfShells,
+}
+
+/// What the run is waiting for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Phase {
+    /// Waiting for a shot on the current screen.
+    Firing,
+    /// A draft is open; `RunState::take_offer` must be called.
+    Drafting,
+    Over(RunOver),
+}
+
+/// One entry in the shot log. DESIGN §3: seed plus this reconstructs a run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LoggedShot {
+    pub screen_index: u32,
+    pub angle_ticks: i32,
+    pub power_ticks: i32,
+}
+
+/// The run state machine. DESIGN §1.
+#[derive(Clone, Debug)]
+pub struct RunState {
+    pub run_seed: u64,
+    pub width: usize,
+    pub shells: i32,
+    pub screen_index: u32,
+    pub screens_cleared: u32,
+    pub total_shots: u32,
+    pub shots_on_screen: u32,
+    pub one_shot_streak: u32,
+    pub loadout: Loadout,
+    pub screen: Screen,
+    pub phase: Phase,
+    /// Offers on the table while `phase == Drafting`.
+    pub offers: Vec<Modifier>,
+    /// Airburst fuse, in units from the muzzle. Player-set.
+    pub fuse: f64,
+    /// Enfilade offset applied to this screen, if any.
+    pub emplacement_offset: f64,
+    pub log: Vec<LoggedShot>,
+    /// Last landing points, for Chalk Marks.
+    pub chalk: Vec<Vec2>,
+    pub last_apex: Option<Vec2>,
+    /// Wind stays hidden until the first shot lands, under Dead Reckoning.
+    pub wind_revealed: bool,
+}
+
+impl RunState {
+    pub fn new(run_seed: u64, width: usize) -> Self {
+        let loadout = Loadout::new();
+        let screen = generate_screen(run_seed, 0, width, &loadout);
+        let fuse = screen.default_fuse(0).unwrap_or(0.0);
+        let mut s = Self {
+            run_seed,
+            width,
+            shells: START_SHELLS,
+            screen_index: 0,
+            screens_cleared: 0,
+            total_shots: 0,
+            shots_on_screen: 0,
+            one_shot_streak: 0,
+            loadout,
+            screen,
+            phase: Phase::Firing,
+            offers: Vec::new(),
+            fuse,
+            emplacement_offset: 0.0,
+            log: Vec::new(),
+            chalk: Vec::new(),
+            last_apex: None,
+            wind_revealed: false,
+        };
+        s.on_screen_entered();
+        s
+    }
+
+    /// Score is screens cleared, tiebreak on shells remaining then total shots
+    /// (DESIGN §1). Never shown during a run.
+    pub fn score(&self) -> (u32, i32, u32) {
+        (self.screens_cleared, self.shells, self.total_shots)
+    }
+
+    pub fn is_over(&self) -> bool {
+        matches!(self.phase, Phase::Over(_))
+    }
+
+    /// Wind as the HUD should show it, or `None` while Dead Reckoning hides it.
+    pub fn displayed_wind(&self) -> Option<f64> {
+        if self.loadout.dead_reckoning() && !self.wind_revealed {
+            None
+        } else if self.loadout.has_flag(crate::modifiers::flags::ANEMOMETER) {
+            Some(self.screen.wind)
+        } else {
+            // Rounded to a whole number without the instrument.
+            Some(crate::dmath::round(self.screen.wind))
+        }
+    }
+
+    fn on_screen_entered(&mut self) {
+        self.shots_on_screen = 0;
+        self.chalk.clear();
+        self.last_apex = None;
+        self.wind_revealed = !self.loadout.dead_reckoning();
+        self.emplacement_offset = 0.0;
+        self.screen.muzzle_x = EMPLACEMENT_X;
+        self.fuse = self.screen.default_fuse(0).unwrap_or(0.0);
+        if self.screen.supply {
+            self.shells = (self.shells + 6).min(self.loadout.cap());
+        }
+    }
+
+    /// Enfilade: reposition the emplacement before the first shot of a screen.
+    /// Refuses once a shot has been taken (DESIGN §4).
+    pub fn reposition(&mut self, offset: f64) -> bool {
+        let limit = self.loadout.enfilade_units;
+        if limit <= 0.0 || self.shots_on_screen > 0 {
+            return false;
+        }
+        let off = clamp(offset, -limit, limit);
+        let x = clamp(EMPLACEMENT_X + off, 14.0, self.width as f64 * 0.5);
+        self.emplacement_offset = x - EMPLACEMENT_X;
+        self.screen.muzzle_x = x;
+        true
+    }
+
+    pub fn set_fuse(&mut self, units: f64) {
+        self.fuse = clamp(units, 0.0, self.width as f64 * 1.5);
+    }
+
+    /// Fire. Consumes a shell, applies the shot, advances the run.
+    pub fn fire(&mut self, shot: Shot, record_path: bool) -> Option<ShotReport> {
+        if self.phase != Phase::Firing || self.shells <= 0 {
+            return None;
+        }
+        let shot = shot.quantized(&self.loadout);
+        self.shells -= 1;
+        self.total_shots += 1;
+        self.shots_on_screen += 1;
+        self.log.push(LoggedShot {
+            screen_index: self.screen_index,
+            angle_ticks: shot.angle_ticks,
+            power_ticks: shot.power_ticks,
+        });
+
+        let fuse = Some(self.fuse);
+        let report = self
+            .screen
+            .apply_shot(shot, &self.loadout, fuse, record_path);
+
+        self.wind_revealed = true;
+        if let Some(c) = report.chalk {
+            if self.loadout.chalk_marks > 0 {
+                self.chalk.push(c);
+                let keep = self.loadout.chalk_marks as usize;
+                while self.chalk.len() > keep {
+                    self.chalk.remove(0);
+                }
+            }
+        }
+        self.last_apex = Some(report.apex);
+
+        if report.salvage {
+            self.grant(1);
+        }
+
+        if report.cleared {
+            self.clear_screen();
+        } else if self.shells <= 0 {
+            self.phase = Phase::Over(RunOver::OutOfShells);
+        }
+        Some(report)
+    }
+
+    fn grant(&mut self, n: i32) {
+        self.shells = (self.shells + n).min(self.loadout.cap());
+    }
+
+    fn clear_screen(&mut self) {
+        let shots = self.shots_on_screen;
+        self.screens_cleared += 1;
+
+        let mut gain = refund(shots, &self.loadout) + self.loadout.shells_per_clear;
+        if shots <= 1 {
+            self.one_shot_streak += 1;
+            if self.loadout.standing_orders() {
+                gain += self.one_shot_streak as i32;
+            }
+        } else {
+            self.one_shot_streak = 0;
+        }
+        self.grant(gain);
+
+        // A draft fires at the end of each band (DESIGN §1).
+        let next = self.screen_index + 1;
+        if next % BAND_LEN == 0 {
+            let offers = draft_offers(screen_seed(self.run_seed, next), &self.loadout);
+            if !offers.is_empty() {
+                self.offers = offers;
+                self.phase = Phase::Drafting;
+                return;
+            }
+        }
+        self.advance();
+    }
+
+    /// Take one of the three offers. The other two are gone.
+    pub fn take_offer(&mut self, which: usize) -> Option<Modifier> {
+        if self.phase != Phase::Drafting {
+            return None;
+        }
+        let m = *self.offers.get(which)?;
+        // Draft picks go in the shot log too, or a replay cannot rebuild the
+        // loadout. See replay::DRAFT_MARK.
+        self.log.push(LoggedShot {
+            screen_index: self.screen_index,
+            angle_ticks: crate::replay::DRAFT_MARK,
+            power_ticks: which as i32,
+        });
+        let instant = self.loadout.take(m);
+        self.offers.clear();
+        if instant > 0 {
+            self.grant(instant);
+        }
+        // A new cap may already have been exceeded (Forced March).
+        self.shells = self.shells.min(self.loadout.cap());
+        self.advance();
+        Some(m)
+    }
+
+    /// Skipping is allowed only when the pool is exhausted.
+    pub fn skip_draft(&mut self) {
+        if self.phase == Phase::Drafting && self.offers.is_empty() {
+            self.advance();
+        }
+    }
+
+    fn advance(&mut self) {
+        self.screen_index += 1;
+        self.screen = generate_screen(self.run_seed, self.screen_index, self.width, &self.loadout);
+        self.on_screen_entered();
+        self.phase = if self.shells <= 0 {
+            Phase::Over(RunOver::OutOfShells)
+        } else {
+            Phase::Firing
+        };
+        // A supply screen has nothing to shoot at; walk straight through it.
+        if self.phase == Phase::Firing && self.screen.supply {
+            self.screens_cleared += 1;
+            self.advance();
+        }
+    }
+}
+
+/// Screens playable before the unlock. DESIGN / brief M6.
+pub const FREE_SCREENS: u32 = 15;
+
+/// A run seed for a calendar day, so every player gets the same daily run.
+/// Takes the day number rather than reading the clock — nothing in the sim
+/// touches system time.
+pub fn daily_seed(days_since_epoch: u64) -> u64 {
+    crate::rng::mix64(0x5341_4C54_4C49_4E45 ^ days_since_epoch)
+}
+
+/// Parse a shared seed. Accepts decimal, `0x` hex, or any other text, which is
+/// hashed so that every string is a valid seed.
+pub fn parse_seed(text: &str) -> u64 {
+    let t = text.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        if let Ok(v) = u64::from_str_radix(hex, 16) {
+            return v;
+        }
+    }
+    if let Ok(v) = t.parse::<u64>() {
+        return v;
+    }
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in t.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    crate::rng::mix64(h)
+}
+
+/// Format a seed for sharing.
+pub fn format_seed(seed: u64) -> String {
+    format!("{seed}")
+}
+
+/// Width clamped into the internal-buffer range. DESIGN §5.1.
+pub fn buffer_width(requested: usize) -> usize {
+    requested.clamp(crate::SCREEN_W_MIN, crate::SCREEN_W_MAX)
+}
+
+/// The reference width the DESIGN §2.5 table is tuned against.
+pub const fn reference_width() -> usize {
+    SCREEN_W_REF
+}
+
+/// Minimum surviving candidates a screen must show. Re-exported for the batch
+/// harness so it reports against the same number the generator enforces.
+pub const fn min_solutions() -> usize {
+    MIN_SOLUTIONS
+}
+
+/// Shorthand used by tests and the batch harness.
+pub fn shot(angle_ticks: i32, power_ticks: i32) -> Shot {
+    ballistics::Shot::new(angle_ticks, power_ticks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::replay::screen_hash;
+    use crate::solver;
+    use crate::terrain::WORLD_FLOOR;
+
+    const SEED: u64 = 0x0B00_1234_5678_9ABC;
+
+    // ------------------------------------------------------- M1 acceptance
+    #[test]
+    fn screen_400_is_generated_without_the_399_screens_before_it() {
+        // DESIGN §2.2: each screen generates from its own seed, no sequential
+        // state carries forward. Brief M1 acceptance.
+        let lo = Loadout::new();
+        let direct = generate_screen(SEED, 400, 320, &lo);
+
+        let mut in_sequence = None;
+        for i in 0..=400u32 {
+            let s = generate_screen(SEED, i, 320, &lo);
+            if i == 400 {
+                in_sequence = Some(s);
+            }
+        }
+        let in_sequence = in_sequence.unwrap();
+        assert_eq!(
+            screen_hash(&direct),
+            screen_hash(&in_sequence),
+            "screen 400 differs when reached in sequence"
+        );
+        assert_eq!(direct.template, in_sequence.template);
+        assert_eq!(direct.wind.to_bits(), in_sequence.wind.to_bits());
+    }
+
+    #[test]
+    fn generation_is_bit_stable_across_calls() {
+        let lo = Loadout::new();
+        for index in [0u32, 3, 17, 64, 199] {
+            let a = generate_screen(SEED, index, 320, &lo);
+            let b = generate_screen(SEED, index, 320, &lo);
+            assert_eq!(screen_hash(&a), screen_hash(&b));
+        }
+    }
+
+    // -------------------------------------------------- placement invariants
+    #[test]
+    fn structures_are_seated_and_separated() {
+        let lo = Loadout::new();
+        for seed in 0..30u64 {
+            for index in [0u32, 4, 12, 36, 80] {
+                let s = generate_screen(seed * 6151 + 7, index, 320, &lo);
+                for st in &s.structures {
+                    // Nothing floats: the base sits on the highest footprint
+                    // column, and nothing hangs off the buffer.
+                    assert!(st.x0 >= 1 && st.x0 + st.footprint() < s.width);
+                    let seat = s.field.seat(st.x0, st.footprint());
+                    assert!((st.base - seat).abs() < 1e-9, "structure not seated");
+                    assert!(st.base >= WORLD_FLOOR);
+                    assert!(
+                        st.base + st.kind.height() <= crate::SCREEN_H as f64,
+                        "{} pokes out of the buffer",
+                        st.kind.name()
+                    );
+                    // Never on top of the emplacement.
+                    assert!(st.centre_x() > s.muzzle_x + 40.0);
+                }
+                for (i, a) in s.structures.iter().enumerate() {
+                    for b in &s.structures[i + 1..] {
+                        assert!(
+                            (a.centre_x() - b.centre_x()).abs() >= MIN_TARGET_SEPARATION,
+                            "targets closer than the 40-unit minimum"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn target_counts_and_curve_match_the_design_table() {
+        // DESIGN §2.5.
+        assert_eq!(target_distance(0), 110.0);
+        assert_eq!(target_distance(10), 170.0);
+        assert_eq!(target_distance(100), 290.0, "distance cap");
+        assert_eq!(wind_magnitude(0), 0.0);
+        assert_eq!(wind_magnitude(4), 1.4);
+        assert_eq!(wind_magnitude(100), 7.0, "wind cap");
+        assert_eq!(terrain_amplitude(0), 1.0);
+        assert_eq!(terrain_amplitude(100), 2.2, "amplitude cap");
+        assert_eq!(target_count(0), 1);
+        assert_eq!(target_count(2), 1);
+        assert_eq!(target_count(3), 2);
+        assert_eq!(target_count(8), 2);
+        assert_eq!(target_count(9), 3);
+        assert_eq!(target_count(200), 3);
+        assert_eq!(elevation_delta_limit(0), 8.0);
+        assert_eq!(elevation_delta_limit(100), 70.0, "elevation cap");
+    }
+
+    #[test]
+    fn wind_stays_inside_the_band_envelope() {
+        let lo = Loadout::new();
+        for index in [0u32, 4, 8, 40, 120, 400] {
+            let band = band_of(index);
+            for seed in 0..20u64 {
+                let s = generate_screen(seed * 977 + 1, index, 320, &lo);
+                assert!(
+                    s.wind.abs() <= wind_magnitude(band) + 1e-9,
+                    "screen {index} wind {} exceeds band envelope",
+                    s.wind
+                );
+            }
+        }
+        // Band 0 is dead calm, so the first screens teach the arc alone.
+        let s = generate_screen(1, 0, 320, &lo);
+        assert_eq!(s.wind, 0.0);
+    }
+
+    #[test]
+    fn late_bands_ramp_structure_not_magnitude() {
+        // DESIGN §2.5: past band 20, stop ramping magnitude and ramp template
+        // weight toward Spires / Overhang / Basin instead.
+        let mut lo = Loadout::new();
+        lo.take(Modifier::Airburst);
+        let early = template_weights(20, &lo);
+        let late = template_weights(60, &lo);
+        for t in [Template::Spires, Template::Overhang, Template::Basin] {
+            assert!(
+                late[t as usize] > early[t as usize],
+                "{} did not gain weight late",
+                t.name()
+            );
+        }
+        assert!(late[Template::Flat as usize] <= early[Template::Flat as usize]);
+        assert_eq!(wind_magnitude(20), wind_magnitude(60), "magnitude still ramping");
+    }
+
+    #[test]
+    fn templates_are_gated_by_band() {
+        let lo = Loadout::new();
+        for band in 0..8u32 {
+            let w = template_weights(band, &lo);
+            for t in Template::ALL {
+                if band < t.min_band() {
+                    assert_eq!(w[t as usize], 0, "{} offered too early", t.name());
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------- M3 acceptance: DEMO
+    #[test]
+    fn undermining_alone_collapses_a_structure_with_no_direct_hit() {
+        // Brief M3 acceptance. Crater only the footprint; never touch the
+        // structure's bounding box. DESIGN §2.7 says this must be a kill path.
+        let lo = Loadout::new();
+        let mut screen = generate_screen(SEED, 0, 320, &lo);
+        assert!(!screen.structures.is_empty());
+        let st = screen.structures[0].clone();
+        let box_ = st.aabb();
+        let integrity_before = st.integrity;
+
+        for _ in 0..12 {
+            for i in st.x0..st.x0 + st.footprint() {
+                screen.field.crater(i as f64, 6.0);
+            }
+            screen.resolve_structures();
+            if screen.structures[0].state == StructState::Collapsed {
+                break;
+            }
+        }
+
+        assert_eq!(
+            screen.structures[0].state,
+            StructState::Collapsed,
+            "support {} never reached the collapse threshold",
+            screen.structures[0].support
+        );
+        assert_eq!(
+            screen.structures[0].integrity, integrity_before,
+            "integrity changed — that would be a direct hit, not undermining"
+        );
+        assert!(box_.y0 >= WORLD_FLOOR);
+    }
+
+    #[test]
+    fn leaning_is_a_real_state_that_moves_the_box() {
+        let lo = Loadout::new();
+        let mut screen = generate_screen(0xBEEF, 0, 320, &lo);
+        let st = screen.structures[0].clone();
+        let upright = st.aabb();
+        // Excavate one side of the footprint only, so it leans rather than falls.
+        for _ in 0..10 {
+            for i in st.x0..st.x0 + st.footprint() / 2 {
+                screen.field.crater(i as f64, 4.0);
+            }
+            screen.resolve_structures();
+            if screen.structures[0].state != StructState::Intact {
+                break;
+            }
+        }
+        let s = &screen.structures[0];
+        assert_eq!(
+            s.state,
+            StructState::Leaning,
+            "one-sided undermining should lean before it fells; support {}",
+            s.support
+        );
+        assert_ne!(s.lean, 0, "a leaning structure must pick a side");
+        assert_eq!(s.lean, -1, "it should tilt toward the undermined side");
+        let leaned = s.aabb();
+        assert!(
+            (leaned.x0 - upright.x0).abs() >= LEAN_SHIFT - 2.0
+                || (leaned.x1 - upright.x1).abs() >= LEAN_SHIFT - 2.0,
+            "the bounding box did not move"
+        );
+        // Leaning grants no refund: the screen is not cleared.
+        assert!(!screen.cleared());
+    }
+
+    #[test]
+    fn a_direct_hit_can_clear_a_screen_in_one_shot() {
+        // DESIGN §1 pays +3 for a one-shot clear, so one shot has to be able
+        // to do it. The solver's candidates are exactly those shots.
+        let lo = Loadout::new();
+        let mut screen = generate_screen(SEED, 0, 320, &lo);
+        let cands = solver::solve_target(&screen, &lo, 0);
+        assert!(cands.len() >= MIN_SOLUTIONS);
+        let report = screen.apply_shot(cands[0].shot, &lo, screen.default_fuse(0), false);
+        assert!(report.cleared, "a solver candidate failed to clear");
+        assert_eq!(report.collapsed, vec![0]);
+    }
+
+    #[test]
+    fn collapse_leaves_debris_behind() {
+        // DESIGN §2.7: terrain gets slightly higher where a structure fell.
+        let lo = Loadout::new();
+        let mut screen = generate_screen(SEED, 0, 320, &lo);
+        let st = screen.structures[0].clone();
+        let cands = solver::solve_target(&screen, &lo, 0);
+        let before: Vec<f64> = (0..screen.width).map(|i| screen.field.surface(i)).collect();
+        screen.apply_shot(cands[0].shot, &lo, screen.default_fuse(0), false);
+        assert!(screen.structures[0].is_down());
+        let lo_col = st.x0.saturating_sub(30);
+        let hi_col = (st.x0 + st.footprint() + 30).min(screen.width);
+        let risen = (lo_col..hi_col).any(|i| screen.field.surface(i) > before[i] + 0.5);
+        assert!(risen, "no debris mound anywhere near the collapse");
+    }
+
+    #[test]
+    fn thermal_lance_collapses_rather_than_chips() {
+        let plain = Loadout::new();
+        let mut lance = Loadout::new();
+        lance.take(Modifier::ThermalLance);
+        // A glancing blast that only leans a structure should fell it outright
+        // once Thermal Lance is held.
+        let mut chipped: u32 = 0;
+        let mut felled: u32 = 0;
+        for seed in 0..12u64 {
+            let base = generate_screen(seed * 31 + 5, 0, 320, &plain);
+            let st = base.structures[0].clone();
+            let near = Vec2::new(st.aabb().x0 - 5.0, st.base + 4.0);
+            for (lo, counter) in [
+                (&plain, &mut chipped as &mut u32),
+                (&lance, &mut felled as &mut u32),
+            ] {
+                let mut s = base.clone();
+                s.detonate(
+                    End::Terrain {
+                        pos: near,
+                        material: Material::Sand,
+                    },
+                    1.0,
+                    lo,
+                );
+                s.resolve_structures();
+                if s.structures[0].is_down() {
+                    *counter += 1;
+                }
+            }
+        }
+        assert!(
+            felled > chipped,
+            "Thermal Lance felled {felled}, plain felled {chipped}"
+        );
+    }
+
+    // ------------------------------------------------------- economy (§1)
+    #[test]
+    fn the_refund_table_matches_the_design() {
+        let lo = Loadout::new();
+        assert_eq!(refund(1, &lo), 3);
+        assert_eq!(refund(2, &lo), 2);
+        assert_eq!(refund(3, &lo), 1);
+        assert_eq!(refund(4, &lo), 0);
+        assert_eq!(refund(9, &lo), 0);
+    }
+
+    #[test]
+    fn quartermaster_lifts_every_tier_including_the_last() {
+        let mut lo = Loadout::new();
+        lo.take(Modifier::Quartermaster);
+        assert_eq!(refund(1, &lo), 4);
+        assert_eq!(refund(4, &lo), 1, "the 4+ tier must move too");
+        let mut both = lo.clone();
+        both.take(Modifier::ForcedMarch);
+        assert_eq!(refund(1, &both), 8);
+        assert_eq!(refund(4, &both), 2);
+    }
+
+    #[test]
+    fn net_drain_is_negative_for_a_perfect_player() {
+        // DESIGN §1: a perfect player still trends slowly downward without
+        // economy modifiers. One shot costs 1 and refunds 3 — but a screen
+        // with three targets costs at least three shots.
+        let lo = Loadout::new();
+        let per_screen = |targets: u32| -> i32 {
+            let shots = targets as i32;
+            refund(targets, &lo) - shots
+        };
+        assert_eq!(per_screen(1), 2, "single-target screens are net positive");
+        assert_eq!(per_screen(2), 0);
+        assert_eq!(per_screen(3), -2, "three-target screens drain");
+    }
+
+    #[test]
+    fn a_run_starts_with_forty_shells_and_ends_when_they_run_out() {
+        let mut state = RunState::new(9, 320);
+        assert_eq!(state.shells, START_SHELLS);
+        assert_eq!(state.screen_index, 0);
+        // Fire deliberately wide until the reserve empties.
+        for _ in 0..600 {
+            if state.is_over() {
+                break;
+            }
+            match state.phase {
+                Phase::Firing => {
+                    state.fire(shot(20, 30), false);
+                }
+                Phase::Drafting => {
+                    state.take_offer(0);
+                }
+                Phase::Over(_) => break,
+            }
+        }
+        assert_eq!(state.phase, Phase::Over(RunOver::OutOfShells));
+        assert!(state.shells <= 0);
+        assert!(state.total_shots >= START_SHELLS as u32);
+    }
+
+    #[test]
+    fn a_draft_fires_at_the_end_of_every_band() {
+        let mut state = RunState::new(0x5EED, 320);
+        let lo = state.loadout.clone();
+        // Clear four screens with solver candidates, then expect a draft.
+        for expected_index in 0..BAND_LEN {
+            assert_eq!(state.screen_index, expected_index);
+            clear_current_screen(&mut state, &lo);
+        }
+        assert_eq!(state.phase, Phase::Drafting);
+        assert_eq!(state.offers.len(), 3, "three offers, take one");
+        let taken = state.take_offer(1).unwrap();
+        assert_eq!(state.loadout.stacks(taken), 1);
+        assert_eq!(state.phase, Phase::Firing);
+        assert_eq!(state.screen_index, BAND_LEN);
+    }
+
+    /// Clear whatever screen the run is on, using solver candidates.
+    fn clear_current_screen(state: &mut RunState, _lo: &Loadout) {
+        let start = state.screen_index;
+        for _ in 0..8 {
+            if state.screen_index != start || state.phase != Phase::Firing {
+                break;
+            }
+            let lo = state.loadout.clone();
+            let Some(target) = state
+                .screen
+                .structures
+                .iter()
+                .position(|s| !s.is_down())
+            else {
+                break;
+            };
+            let cands = solver::solve_target(&state.screen, &lo, target);
+            assert!(!cands.is_empty(), "no candidate for a standing target");
+            state.fuse = state.screen.default_fuse(target).unwrap_or(0.0);
+            state.fire(cands[0].shot, false);
+            if state.phase != Phase::Firing {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn one_shot_clears_pay_the_top_tier() {
+        let mut state = RunState::new(0xC0FFEE, 320);
+        let lo = state.loadout.clone();
+        let before = state.shells;
+        let cands = solver::solve_target(&state.screen, &lo, 0);
+        state.fire(cands[0].shot, false);
+        assert_eq!(state.screens_cleared, 1);
+        // -1 for the shell fired, +3 for the one-shot clear.
+        assert_eq!(state.shells, before - 1 + 3);
+        assert_eq!(state.one_shot_streak, 1);
+    }
+
+    #[test]
+    fn standing_orders_pays_the_streak_and_a_miss_resets_it() {
+        let mut state = RunState::new(0xC0FFEE, 320);
+        state.loadout.take(Modifier::StandingOrders);
+        let lo = state.loadout.clone();
+        let cands = solver::solve_target(&state.screen, &lo, 0);
+        let before = state.shells;
+        state.fire(cands[0].shot, false);
+        // -1 shell, +3 refund, +1 for the first streak step.
+        assert_eq!(state.shells, before - 1 + 3 + 1);
+        assert_eq!(state.one_shot_streak, 1);
+        // A miss on the next screen resets it.
+        state.fire(shot(10, 20), false);
+        assert_eq!(state.one_shot_streak, 1, "still standing until the clear");
+        let lo = state.loadout.clone();
+        let target = state
+            .screen
+            .structures
+            .iter()
+            .position(|s| !s.is_down())
+            .unwrap();
+        let c = solver::solve_target(&state.screen, &lo, target);
+        state.fire(c[0].shot, false);
+        assert_eq!(state.one_shot_streak, 0, "two shots is not a one-shot clear");
+    }
+
+    #[test]
+    fn forced_march_clamps_the_reserve_the_moment_it_is_taken() {
+        let mut state = RunState::new(11, 320);
+        assert_eq!(state.shells, 40);
+        state.phase = Phase::Drafting;
+        state.offers = vec![Modifier::ForcedMarch];
+        state.take_offer(0);
+        assert_eq!(state.shells, 15, "reserve cap applies immediately");
+    }
+
+    #[test]
+    fn depot_grants_its_shells_once_on_take() {
+        let mut state = RunState::new(12, 320);
+        state.shells = 10;
+        state.phase = Phase::Drafting;
+        state.offers = vec![Modifier::Depot];
+        state.take_offer(0);
+        assert_eq!(state.shells, 18);
+    }
+
+    #[test]
+    fn scavenger_rites_inserts_supply_screens() {
+        let mut lo = Loadout::new();
+        lo.take(Modifier::ScavengerRites);
+        let supply = generate_screen(7, 5, 320, &lo);
+        assert!(supply.supply);
+        assert!(supply.structures.is_empty());
+        assert!(supply.cleared(), "a supply screen has nothing to shoot");
+        assert!(solver::validate(&supply, &lo).solvable());
+        let normal = generate_screen(7, 6, 320, &lo);
+        assert!(!normal.supply);
+        // And they do not appear without the modifier.
+        assert!(!generate_screen(7, 5, 320, &Loadout::new()).supply);
+    }
+
+    #[test]
+    fn dead_reckoning_hides_the_wind_until_the_first_shot() {
+        let mut state = RunState::new(0xDEAD_0001, 320);
+        state.loadout.take(Modifier::DeadReckoning);
+        state.wind_revealed = false;
+        assert!(state.displayed_wind().is_none());
+        state.fire(shot(400, 500), false);
+        assert!(state.displayed_wind().is_some(), "wind stays hidden after firing");
+    }
+
+    #[test]
+    fn anemometer_stops_rounding_the_wind() {
+        let mut state = RunState::new(0xA1, 320);
+        state.screen.wind = 2.44;
+        assert_eq!(state.displayed_wind(), Some(2.0));
+        state.loadout.take(Modifier::Anemometer);
+        assert_eq!(state.displayed_wind(), Some(2.44));
+    }
+
+    #[test]
+    fn rangefinder_reads_the_distance_to_the_nearest_target() {
+        let state = RunState::new(0xA2, 320);
+        let r = state.screen.range_to_nearest().unwrap();
+        let nearest = state
+            .screen
+            .structures
+            .iter()
+            .map(|s| (s.centre_x() - state.screen.muzzle().x).abs())
+            .fold(f64::MAX, f64::min);
+        assert!((r - nearest).abs() < 1e-9);
+    }
+
+    #[test]
+    fn enfilade_moves_the_emplacement_only_before_the_first_shot() {
+        let mut state = RunState::new(0xE1, 320);
+        assert!(!state.reposition(10.0), "no Enfilade, no repositioning");
+        state.loadout.take(Modifier::Enfilade);
+        assert!(state.reposition(40.0));
+        // Clamped to the modifier's +/-25 units.
+        assert_eq!(state.emplacement_offset, 25.0);
+        assert_eq!(state.screen.muzzle_x, EMPLACEMENT_X + 25.0);
+        state.fire(shot(400, 500), false);
+        assert!(!state.reposition(-10.0), "repositioning after firing");
+    }
+
+    #[test]
+    fn chalk_marks_keep_only_as_many_marks_as_stacks() {
+        let mut state = RunState::new(0xCA1, 320);
+        state.loadout.take(Modifier::ChalkMarks);
+        for _ in 0..4 {
+            if state.phase != Phase::Firing {
+                break;
+            }
+            state.fire(shot(300, 400), false);
+        }
+        assert_eq!(state.chalk.len(), 1);
+        let mut state = RunState::new(0xCA1, 320);
+        state.loadout.take(Modifier::ChalkMarks);
+        state.loadout.take(Modifier::ChalkMarks);
+        for _ in 0..4 {
+            if state.phase != Phase::Firing {
+                break;
+            }
+            state.fire(shot(300, 400), false);
+        }
+        assert_eq!(state.chalk.len(), 2);
+    }
+
+    #[test]
+    fn seed_entry_accepts_anything_a_player_might_type() {
+        assert_eq!(parse_seed("12345"), 12345);
+        assert_eq!(parse_seed(" 0xFF "), 255);
+        assert_eq!(parse_seed("salt line"), parse_seed("salt line"));
+        assert_ne!(parse_seed("salt line"), parse_seed("salt lines"));
+        assert_eq!(format_seed(4242), "4242");
+        assert_eq!(parse_seed(&format_seed(987654321)), 987654321);
+        // The daily seed depends only on the day number, never on the clock.
+        assert_eq!(daily_seed(20_000), daily_seed(20_000));
+        assert_ne!(daily_seed(20_000), daily_seed(20_001));
+    }
+
+    #[test]
+    fn a_narrowed_power_range_pulls_the_targets_in() {
+        // Two stacks of Ballast cut the power range by 36%, which puts the
+        // late-band distances past what the shell can physically cover. The
+        // generator has to place the target inside the loadout's reach —
+        // reshaping terrain cannot fix an out-of-range target. Found by the
+        // batch harness at band 13+.
+        let mut heavy = Loadout::new();
+        heavy.take(Modifier::Ballast);
+        heavy.take(Modifier::Ballast);
+        let reach = crate::ballistics::max_flat_range(&heavy);
+        assert!(
+            reach < target_distance(40),
+            "this test is only meaningful while Ballast cannot reach the cap"
+        );
+        for index in [52u32, 60, 80, 120, 200] {
+            assert!(reachable_distance(band_of(index), &heavy) <= reach * RANGE_MARGIN + 1e-9);
+            for seed in 0..8u64 {
+                let s = generate_screen(seed * 7 + 3, index, 320, &heavy);
+                let r = solver::validate(&s, &heavy);
+                assert!(
+                    r.solvable(),
+                    "Ballast x2 screen {index} ({}) only {} candidates",
+                    s.template.name(),
+                    r.worst
+                );
+                assert!(!s.fell_back, "should not need the Flat fallback");
+            }
+        }
+        // A plain loadout still gets the full design distance.
+        let plain = Loadout::new();
+        assert_eq!(reachable_distance(40, &plain), target_distance(40));
+    }
+
+    #[test]
+    fn buffer_width_stays_in_range() {
+        assert_eq!(buffer_width(200), 320);
+        assert_eq!(buffer_width(360), 360);
+        assert_eq!(buffer_width(1920), 400);
+    }
+
+    #[test]
+    fn wide_buffers_generate_terrain_all_the_way_across() {
+        // DESIGN §5.1: generate terrain to fill whatever width the device
+        // reports. Difficulty stays in world units, so the extra width is
+        // overscan rather than a harder screen.
+        let lo = Loadout::new();
+        for w in [320usize, 360, 400] {
+            let s = generate_screen(SEED, 12, w, &lo);
+            assert_eq!(s.field.len(), w);
+            assert_eq!(s.width, w);
+            for i in 0..w {
+                assert!(s.field.surface(i) >= WORLD_FLOOR);
+            }
+        }
+        let a = generate_screen(SEED, 12, 320, &lo);
+        let b = generate_screen(SEED, 12, 400, &lo);
+        assert_eq!(
+            a.structures[0].centre_x().round(),
+            b.structures[0].centre_x().round(),
+            "target distance should not depend on device width"
+        );
+    }
+}

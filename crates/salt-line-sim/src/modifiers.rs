@@ -6,7 +6,7 @@
 //! means adding a row, never an `if` in the ballistics core.
 
 use crate::rng::{substream, Pcg32};
-use crate::{ANGLE_QUANTUM_TICKS, START_SHELLS};
+use crate::ANGLE_QUANTUM_TICKS;
 
 /// Build the modifier supports. DESIGN §4.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -698,15 +698,16 @@ impl Loadout {
         self.airburst() || self.auger() || self.ricochet()
     }
 
-    /// Effective reserve cap. `Forced March` drops it to 15.
+    /// Effective reserve cap.
+    ///
+    /// Uncapped unless a modifier imposes one — `Forced March` drops it to 15.
+    /// DESIGN §4 says the cap "drops to 15" without stating a starting cap;
+    /// leaving the default open is the reading that keeps Depot, Storm Front
+    /// and Quartermaster worth drafting, since a 40-shell ceiling would eat
+    /// most of a Depot on the very first draft. Flagged rather than retuned.
     #[inline]
     pub fn cap(&self) -> i32 {
-        if self.reserve_cap == i32::MAX {
-            START_SHELLS.max(START_SHELLS)
-        } else {
-            self.reserve_cap
-        }
-        .max(1)
+        self.reserve_cap.max(1)
     }
 
     /// Quantize an angle in ticks to what the player can actually dial in.
@@ -731,6 +732,7 @@ pub fn draft_offers(screen_seed: u64, loadout: &Loadout) -> Vec<Modifier> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::START_SHELLS;
 
     #[test]
     fn pool_indices_match_discriminants() {
@@ -796,7 +798,7 @@ mod tests {
     #[test]
     fn forced_march_caps_the_reserve() {
         let mut l = Loadout::new();
-        assert_eq!(l.cap(), START_SHELLS);
+        assert!(l.cap() > START_SHELLS, "the reserve is uncapped by default");
         l.take(Modifier::ForcedMarch);
         assert_eq!(l.cap(), 15);
         assert_eq!(l.refund_mult, 2.0);

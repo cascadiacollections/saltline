@@ -91,6 +91,18 @@ pub fn speed_bounds(lo: &Loadout) -> (f64, f64) {
     )
 }
 
+/// Flat-ground range at the best elevation, for the loadout's full power.
+///
+/// Target placement is clamped against this: DESIGN §2.4 requires every screen
+/// to be clearable with the player's *current* loadout, and no amount of
+/// terrain reshaping can fix a target that is simply out of range. Two stacks
+/// of Ballast cut the power range by 36%, which puts the band-20 distance past
+/// what the shell can physically cover.
+pub fn max_flat_range(lo: &Loadout) -> f64 {
+    let (_, v_max) = speed_bounds(lo);
+    v_max * v_max / crate::GRAVITY
+}
+
 /// Nearest power tick to a speed, and whether it is inside the range.
 pub fn power_ticks_for_speed(speed: f64, lo: &Loadout) -> Option<i32> {
     let (lo_s, hi_s) = speed_bounds(lo);
