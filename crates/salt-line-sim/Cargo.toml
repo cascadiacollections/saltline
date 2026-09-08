@@ -1,0 +1,10 @@
+[package]
+name = "salt-line-sim"
+version = "0.1.0"
+edition.workspace = true
+
+# Deliberately dependency-free. Ask before adding anything here — the crate must
+# build and test headless with no engine present.
+[dependencies]
+
+[dev-dependencies]

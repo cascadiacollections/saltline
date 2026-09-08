@@ -1,0 +1,11 @@
+[package]
+name = "salt-line-godot"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+salt-line-sim = { path = "../salt-line-sim" }
+# godot = "0.2"   # uncomment and pin at M5

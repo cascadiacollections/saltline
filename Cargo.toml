@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/salt-line-sim", "crates/salt-line-godot"]
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+
+[profile.release]
+lto = true
+codegen-units = 1
