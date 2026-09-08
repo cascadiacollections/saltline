@@ -110,7 +110,11 @@ pub fn power_ticks_for_speed(speed: f64, lo: &Loadout) -> Option<i32> {
         return None;
     }
     let t = (speed / (lo.power_scale * lo.muzzle_scale) - POWER_MIN) / (POWER_MAX - POWER_MIN);
-    Some(clamp(dmath::round(t * POWER_TICKS_MAX as f64), 0.0, POWER_TICKS_MAX as f64) as i32)
+    Some(clamp(
+        dmath::round(t * POWER_TICKS_MAX as f64),
+        0.0,
+        POWER_TICKS_MAX as f64,
+    ) as i32)
 }
 
 /// Axis-aligned box in world space, y up.
@@ -332,7 +336,11 @@ pub fn simulate_shell(
     let mut v = velocity;
     let mut t = 0.0f64;
     let mut apex = origin;
-    let mut bounces_left = if allow_ricochet { lo.ricochet_bounces } else { 0 };
+    let mut bounces_left = if allow_ricochet {
+        lo.ricochet_bounces
+    } else {
+        0
+    };
     let mut tunnel_left = 0.0f64;
     let mut tunneling = false;
     let mut tunneled = false;
@@ -434,7 +442,8 @@ pub fn simulate_shell(
                         // re-collide on the same sample.
                         p = Vec2::new(
                             contact.x + n.x * (SHELL_RADIUS + 0.25),
-                            world.field.surface_at(contact.x) + n.y * (SHELL_RADIUS + 0.25)
+                            world.field.surface_at(contact.x)
+                                + n.y * (SHELL_RADIUS + 0.25)
                                 + SHELL_RADIUS,
                         );
                         continue;
@@ -690,8 +699,10 @@ mod tests {
         // the initial step would already be displaced. Neither holds.
         let f = flat(4000, 20.0);
         let lo = Loadout::new();
-        let mut opts = FireOptions::default();
-        opts.record_path = true;
+        let opts = FireOptions {
+            record_path: true,
+            ..Default::default()
+        };
         let calm = simulate_shell(
             &world(&f, &[], 0.0),
             Vec2::new(30.0, 25.0),
@@ -770,7 +781,10 @@ mod tests {
                 hits += 1;
             }
         }
-        assert!(hits > 0, "never hit a 5px mast across the whole power sweep");
+        assert!(
+            hits > 0,
+            "never hit a 5px mast across the whole power sweep"
+        );
     }
 
     #[test]
@@ -972,12 +986,20 @@ mod tests {
     #[test]
     fn segment_box_overlap_catches_pass_through() {
         let b = Aabb::new(10.0, 10.0, 12.0, 40.0);
-        assert!(segment_hits_aabb(Vec2::new(8.0, 20.0), Vec2::new(14.0, 20.0), b));
+        assert!(segment_hits_aabb(
+            Vec2::new(8.0, 20.0),
+            Vec2::new(14.0, 20.0),
+            b
+        ));
         assert!(!segment_hits_aabb(
             Vec2::new(8.0, 50.0),
             Vec2::new(14.0, 50.0),
             b
         ));
-        assert!(segment_hits_aabb(Vec2::new(11.0, 20.0), Vec2::new(11.0, 21.0), b));
+        assert!(segment_hits_aabb(
+            Vec2::new(11.0, 20.0),
+            Vec2::new(11.0, 21.0),
+            b
+        ));
     }
 }

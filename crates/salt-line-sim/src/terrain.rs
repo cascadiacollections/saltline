@@ -252,8 +252,8 @@ pub fn shape(heights: &mut [f64], template: Template, p: &ShapeParams) {
             Template::Spires => {
                 let mut a = 0.0;
                 let fracs: [f64; 3] = [0.40, 0.62, 0.82];
-                for k in 0..(p.spire_count.min(3) as usize) {
-                    let c = p.muzzle_x + span * fracs[k];
+                for frac in fracs.iter().take(p.spire_count.min(3) as usize) {
+                    let c = p.muzzle_x + span * frac;
                     a += 56.0 * plateau(x - c, 2.0, 5.0);
                 }
                 (0.35, a)
@@ -272,8 +272,7 @@ pub fn shape(heights: &mut [f64], template: Template, p: &ShapeParams) {
                 let rim = p.target_x - 46.0;
                 (
                     0.4,
-                    -36.0 * plateau(x - p.target_x, 26.0, 18.0)
-                        + 12.0 * dmath::bump(x - rim, 16.0),
+                    -36.0 * plateau(x - p.target_x, 26.0, 18.0) + 12.0 * dmath::bump(x - rim, 16.0),
                 )
             }
         };
@@ -282,7 +281,11 @@ pub fn shape(heights: &mut [f64], template: Template, p: &ShapeParams) {
         // the firing position itself is never yanked around. DESIGN §2.5.
         add += p.elev_delta * smoothstep(u);
 
-        *h = clamp(BASE_ELEVATION + rel * relief_keep + add, WORLD_FLOOR, WORLD_CEIL);
+        *h = clamp(
+            BASE_ELEVATION + rel * relief_keep + add,
+            WORLD_FLOOR,
+            WORLD_CEIL,
+        );
     }
 }
 
@@ -578,7 +581,11 @@ mod tests {
             f.crater(16.0, 20.0);
         }
         for i in 0..f.len() {
-            assert!(f.surface(i) >= WORLD_FLOOR - 1e-9, "col {i} = {}", f.surface(i));
+            assert!(
+                f.surface(i) >= WORLD_FLOOR - 1e-9,
+                "col {i} = {}",
+                f.surface(i)
+            );
         }
     }
 

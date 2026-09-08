@@ -10,8 +10,8 @@ use crate::rng::{screen_seed, substream, Pcg32};
 use crate::solver;
 use crate::terrain::{self, Heightfield, Material, ShapeParams, Template};
 use crate::{
-    band_of, Vec2, BAND_LEN, EMPLACEMENT_X, MAX_GEN_ATTEMPTS, MIN_SOLUTIONS,
-    MIN_TARGET_SEPARATION, SCREEN_W_REF, START_SHELLS,
+    band_of, Vec2, BAND_LEN, EMPLACEMENT_X, MAX_GEN_ATTEMPTS, MIN_SOLUTIONS, MIN_TARGET_SEPARATION,
+    SCREEN_W_REF, START_SHELLS,
 };
 
 // --------------------------------------------------------------- structures
@@ -243,7 +243,11 @@ pub const CHASSIS_WIDTH: usize = 26;
 impl Screen {
     /// Barrel pivot in world space.
     pub fn muzzle(&self) -> Vec2 {
-        let x0 = clamp(self.muzzle_x - CHASSIS_WIDTH as f64 * 0.5, 0.0, self.width as f64) as usize;
+        let x0 = clamp(
+            self.muzzle_x - CHASSIS_WIDTH as f64 * 0.5,
+            0.0,
+            self.width as f64,
+        ) as usize;
         Vec2::new(
             self.muzzle_x,
             self.field.seat(x0, CHASSIS_WIDTH) + MUZZLE_HEIGHT,
@@ -296,7 +300,11 @@ impl Screen {
         FireOptions {
             record_path,
             fuse: if lo.airburst() { fuse } else { None },
-            wind_after_apex: if lo.storm_front() { self.wind_late } else { None },
+            wind_after_apex: if lo.storm_front() {
+                self.wind_late
+            } else {
+                None
+            },
         }
     }
 
@@ -637,7 +645,11 @@ fn assemble(
         // boring screen is better than a hang (DESIGN §2.3 step 6).
         let mut base = terrain::base_ridge(width, seed, 0.35);
         for h in base.iter_mut() {
-            *h = clamp(*h * 0.5 + terrain::BASE_ELEVATION * 0.5, terrain::WORLD_FLOOR, 70.0);
+            *h = clamp(
+                *h * 0.5 + terrain::BASE_ELEVATION * 0.5,
+                terrain::WORLD_FLOOR,
+                70.0,
+            );
         }
         Heightfield::from_base(base)
     } else {
@@ -677,7 +689,7 @@ pub fn generate_screen(run_seed: u64, index: u32, width: usize, lo: &Loadout) ->
     let seed0 = screen_seed(run_seed, index);
 
     // Scavenger Rites: every 5th screen is a supply screen (DESIGN §4).
-    if lo.scavenger_rites() && index > 0 && index % 5 == 0 {
+    if lo.scavenger_rites() && index > 0 && index.is_multiple_of(5) {
         let mut s = assemble(index, seed0, width, Template::Flat, band, lo, false);
         s.structures.clear();
         s.supply = true;
@@ -942,7 +954,7 @@ impl RunState {
 
         // A draft fires at the end of each band (DESIGN §1).
         let next = self.screen_index + 1;
-        if next % BAND_LEN == 0 {
+        if next.is_multiple_of(BAND_LEN) {
             let offers = draft_offers(screen_seed(self.run_seed, next), &self.loadout);
             if !offers.is_empty() {
                 self.offers = offers;
@@ -1191,7 +1203,11 @@ mod tests {
             );
         }
         assert!(late[Template::Flat as usize] <= early[Template::Flat as usize]);
-        assert_eq!(wind_magnitude(20), wind_magnitude(60), "magnitude still ramping");
+        assert_eq!(
+            wind_magnitude(20),
+            wind_magnitude(60),
+            "magnitude still ramping"
+        );
     }
 
     #[test]
@@ -1432,12 +1448,7 @@ mod tests {
                 break;
             }
             let lo = state.loadout.clone();
-            let Some(target) = state
-                .screen
-                .structures
-                .iter()
-                .position(|s| !s.is_down())
-            else {
+            let Some(target) = state.screen.structures.iter().position(|s| !s.is_down()) else {
                 break;
             };
             let cands = solver::solve_target(&state.screen, &lo, target);
@@ -1486,7 +1497,10 @@ mod tests {
             .unwrap();
         let c = solver::solve_target(&state.screen, &lo, target);
         state.fire(c[0].shot, false);
-        assert_eq!(state.one_shot_streak, 0, "two shots is not a one-shot clear");
+        assert_eq!(
+            state.one_shot_streak, 0,
+            "two shots is not a one-shot clear"
+        );
     }
 
     #[test]
@@ -1531,7 +1545,10 @@ mod tests {
         state.wind_revealed = false;
         assert!(state.displayed_wind().is_none());
         state.fire(shot(400, 500), false);
-        assert!(state.displayed_wind().is_some(), "wind stays hidden after firing");
+        assert!(
+            state.displayed_wind().is_some(),
+            "wind stays hidden after firing"
+        );
     }
 
     #[test]

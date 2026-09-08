@@ -7,14 +7,14 @@
 //!     no system time in any state-affecting path.
 //!   * Wind is an acceleration, never a velocity offset.
 
-pub mod dmath; // platform-stable trig, so the sim never calls libm
-pub mod rng; // M1 — SplitMix64, PCG32
-pub mod terrain; // M1 — noise, heightfield, scar buffer, materials
 pub mod ballistics; // M1 — integration, collision
-pub mod solver; // M2 — solvability validation
-pub mod run; // M3 — economy, screen assembly, state machine
+pub mod dmath; // platform-stable trig, so the sim never calls libm
 pub mod modifiers; // M3 — pool, draft, loadout deltas
-pub mod replay; // M4 — seed + shot log -> verified reconstruction
+pub mod replay;
+pub mod rng; // M1 — SplitMix64, PCG32
+pub mod run; // M3 — economy, screen assembly, state machine
+pub mod solver; // M2 — solvability validation
+pub mod terrain; // M1 — noise, heightfield, scar buffer, materials // M4 — seed + shot log -> verified reconstruction
 
 /// Fixed simulation timestep. Never make this variable.
 pub const DT: f64 = 1.0 / 120.0;

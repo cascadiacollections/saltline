@@ -25,8 +25,8 @@ use crate::ballistics::{
     blast_radius, fire, power_ticks_for_speed, speed_bounds, End, FireOptions, Shot,
 };
 use crate::dmath;
-use crate::run::{Screen, StructState};
 use crate::modifiers::Loadout;
+use crate::run::{Screen, StructState};
 use crate::{Vec2, GRAVITY, MIN_SOLUTIONS, SOLVER_TIME_SAMPLES};
 
 /// A shot the player could dial in that would fell a specific target.
@@ -64,7 +64,12 @@ impl SolveReport {
 /// Closed-form candidate shots for a target, in loadout-quantized input space.
 /// Duplicates (distinct flight times collapsing onto the same dialable input)
 /// are dropped — three candidates must mean three distinct shots.
-pub fn analytic_shots(origin: Vec2, target: Vec2, wind_accel: f64, lo: &Loadout) -> Vec<(Shot, f64)> {
+pub fn analytic_shots(
+    origin: Vec2,
+    target: Vec2,
+    wind_accel: f64,
+    lo: &Loadout,
+) -> Vec<(Shot, f64)> {
     let dx = target.x - origin.x;
     let dy = target.y - origin.y;
     let (_, v_max) = speed_bounds(lo);
@@ -157,11 +162,7 @@ pub fn aim_points(screen: &Screen, target: usize) -> Option<[Vec2; 3]> {
     let s = screen.structures.get(target)?;
     let b = s.aabb();
     let c = b.centre();
-    Some([
-        c,
-        Vec2::new(c.x, s.base + 1.0),
-        Vec2::new(c.x, b.y1 - 2.0),
-    ])
+    Some([c, Vec2::new(c.x, s.base + 1.0), Vec2::new(c.x, b.y1 - 2.0)])
 }
 
 /// Candidates from one aim point. `seen` carries the shots already simulated
@@ -341,7 +342,10 @@ mod tests {
         let mut screen = generate_screen(5150, 40, 320, &lo);
         let calm: Vec<Shot> = {
             screen.wind = 0.0;
-            solve_target(&screen, &lo, 0).iter().map(|c| c.shot).collect()
+            solve_target(&screen, &lo, 0)
+                .iter()
+                .map(|c| c.shot)
+                .collect()
         };
         screen.wind = 6.5;
         let windy: Vec<Shot> = solve_target(&screen, &lo, 0)

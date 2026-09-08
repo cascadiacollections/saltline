@@ -15,9 +15,9 @@
 //! before any trig happens, and the authority on whether a shot connects is
 //! always the fixed-step integration, never the closed-form solve.
 
-pub const PI: f64 = 3.141592653589793;
-pub const TWO_PI: f64 = 6.283185307179586;
-pub const HALF_PI: f64 = 1.5707963267948966;
+pub const PI: f64 = core::f64::consts::PI;
+pub const TWO_PI: f64 = core::f64::consts::TAU;
+pub const HALF_PI: f64 = core::f64::consts::FRAC_PI_2;
 
 /// Degrees per angle tick. `Vernier` changes the *input* quantization
 /// (DESIGN §4); the tick grid underneath is always 0.1°.

@@ -74,10 +74,18 @@ impl Replay {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReplayError {
-    UnexpectedShot { at: usize },
-    UnexpectedDraft { at: usize },
-    NoSuchOffer { at: usize },
-    ShotRefused { at: usize },
+    UnexpectedShot {
+        at: usize,
+    },
+    UnexpectedDraft {
+        at: usize,
+    },
+    NoSuchOffer {
+        at: usize,
+    },
+    ShotRefused {
+        at: usize,
+    },
     ScreenMismatch {
         at: usize,
         expected: u32,

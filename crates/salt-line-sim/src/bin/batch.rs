@@ -42,7 +42,7 @@ impl Build {
             "demo" => Build::Demo,
             "precision" => Build::Precision,
             "risk" => Build::Risk,
-        _ => return None,
+            _ => return None,
         })
     }
 
@@ -253,14 +253,14 @@ fn main() {
     println!("gate: worst-target candidates >= {MIN_SOLUTIONS}\n");
 
     let mut by_band: Vec<Bucket> = Vec::new();
-    let mut by_template = [Bucket::default(); 0].to_vec();
-    by_template.resize(Template::ALL.len(), Bucket::default());
+    let mut by_template: Vec<Bucket> = vec![Bucket::default(); Template::ALL.len()];
     let mut failures: Vec<(u64, u32, &'static str, usize)> = Vec::new();
     let mut supply_screens = 0u64;
     let started = std::time::Instant::now();
 
     for s in 0..args.seeds {
-        let run_seed = salt_line_sim::rng::mix64(0x5341_4C54 ^ s.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let run_seed =
+            salt_line_sim::rng::mix64(0x5341_4C54 ^ s.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         for index in 0..args.screens {
             let lo = loadout_for(args.build, run_seed, index);
             let screen = generate_screen(run_seed, index, args.width, &lo);
@@ -304,8 +304,8 @@ fn main() {
     println!("surviving candidates for the hardest target on each screen, by band");
     println!("buckets: {}", BUCKET_LABELS.join(" "));
     println!(
-        "{:>5} {:>7} {:>6} {:>6} {:>5}  {}",
-        "band", "screens", "mean", "min", "fbk", "histogram"
+        "{:>5} {:>7} {:>6} {:>6} {:>5}  histogram",
+        "band", "screens", "mean", "min", "fbk"
     );
     let max_cell = by_band
         .iter()
@@ -343,8 +343,8 @@ fn main() {
     // ---------------------------------------------------- template summary
     println!("\nby template");
     println!(
-        "{:>9} {:>7} {:>6} {:>6} {:>7} {:>6}  {}",
-        "template", "screens", "mean", "share", "attempts", "fbk", ""
+        "{:>9} {:>7} {:>6} {:>6} {:>7} {:>6}",
+        "template", "screens", "mean", "share", "attempts", "fbk"
     );
     let max_screens = by_template.iter().map(|b| b.screens).max().unwrap_or(1);
     for (i, b) in by_template.iter().enumerate() {
@@ -353,14 +353,14 @@ fn main() {
         }
         let share = b.screens as f64 / total.max(1) as f64;
         println!(
-            "{:>9} {:>7} {:>6.2} {:>5.1}% {:>7.2} {:>6}  {}",
+            "{:>9} {:>7} {:>6.2} {:>5.1}% {:>7.2} {:>6}  {bar}",
             Template::ALL[i].name(),
             b.screens,
             b.mean_candidates(),
             share * 100.0,
             b.attempts as f64 / b.screens as f64,
             b.fallbacks,
-            bar(b.screens, max_screens, 24)
+            bar = bar(b.screens, max_screens, 24)
         );
     }
 
