@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -143,6 +144,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: build the release GDExtension
         run: cargo build --release -p salt-line-godot
+      - name: create output directory
+        run: mkdir -p build
       - name: export playable binary
         run: godot --headless --path . --export-release "${{ matrix.preset }}" "build/${{ matrix.output }}"
       - uses: actions/upload-artifact@v4
