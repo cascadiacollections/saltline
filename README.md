@@ -27,6 +27,8 @@ failing loudly.
 | `crates/salt-line-godot` | Rendering, input, UI. Draws what the sim says is true |
 | `art/` | Native-resolution sprites, 16-colour palette, reference scene |
 | `tools/gen_sprites.py` | Regenerates all art; working reference for the terrain math |
+| `site/` | The alpha marketing page, published to GitHub Pages |
+| `tools/build_site.py` | Generates every image on that page out of the art pipeline |
 | `project.godot`, `godot/` | The Godot 4 project. Its root is the repo root, so `res://art/...` is the same path the generator writes |
 | `RELEASING.md` | What the preview is, the release checklist, the playtest matrix, known issues |
 
@@ -114,6 +116,25 @@ Replace all of it with hand-drawn work before any public release, but keep the
 dimensions and the palette fixed — they are the contract. Still open: no barrel
 strip for the Ballast or Forced March chassis, so those builds read from the
 hull alone.
+
+## The marketing page
+
+`site/` is a static page — no framework, no build step for the markup, no
+third-party requests. Its media is not hand-exported: `tools/build_site.py`
+imports `tools/gen_sprites.py` and draws the hero screen, the animated shot and
+the social card with the same palette, rasteriser and native grid the game uses.
+Change a sprite and the page changes with it.
+
+```sh
+python3 tools/build_site.py           # needs Pillow; writes into site/assets/
+python3 -m http.server -d site 8000   # preview at http://localhost:8000
+```
+
+`.github/workflows/pages.yml` regenerates the media on every push to `main` that
+touches `site/`, `art/` or either generator, then publishes `site/` to Pages.
+The live URL is whatever Pages reports for this repository — the workflow logs
+it and stamps it into the page's canonical and Open Graph tags, so nothing has
+to be hardcoded while the repo is internal.
 
 ## The three things that matter
 
