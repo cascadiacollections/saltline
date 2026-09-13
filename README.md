@@ -11,6 +11,12 @@ platforms, the release checklist, and the known-issues list.
 
 Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`) and Godot `4.4.1`.
 
+The `godot` crate is pinned to the matching `api-4-4` feature. If you raise the
+engine version, raise that feature and `compatibility_minimum` in
+`salt_line.gdextension` with it: bindings built against a newer API than the
+running engine do not load, and the game boots to an empty window instead of
+failing loudly.
+
 ## Contents
 
 | Path | What it is |
