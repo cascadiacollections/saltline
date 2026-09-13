@@ -545,11 +545,23 @@ mod tests {
         let mut after = Canvas::new(320, SCREEN_H as i32);
         draw_terrain(&mut after, &v, &f, &pal);
         for x in 0..320 {
-            let touched = (x as f64 - 160.0).abs() < 8.0;
+            let d = (x as f64 - 160.0).abs();
             let changed = column(&before, x) != column(&after, x);
-            assert_eq!(changed, touched && changed, "column {x} changed off-crater");
+            // Outside the radius nothing may move.
+            assert!(
+                d < 8.0 || !changed,
+                "column {x} is outside the crater but changed"
+            );
+            // Inside the core the drop is more than a pixel, so every one of
+            // those columns must move. The rim is left out: there the drop is
+            // a fraction of a pixel and can legitimately round to no change.
+            // Asserting only the first half of that pair is what let this test
+            // pass while drawing nothing at all.
+            assert!(
+                d > 4.0 || changed,
+                "column {x} is inside the crater but did not change"
+            );
         }
-        assert_ne!(column(&before, 160), column(&after, 160));
     }
 
     #[test]

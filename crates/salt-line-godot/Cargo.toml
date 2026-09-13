@@ -1,13 +1,27 @@
 [package]
 name = "salt-line-godot"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 # `rlib` alongside `cdylib` so the rasteriser, the fonts and the camera maths
 # can be unit-tested with `cargo test`. Those parts touch no engine API.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Off by default: the development preview has no paywall and nothing for sale.
+# Turning this on arms the paywall, which then requires a real storefront —
+# see `src/store.rs`.
+default = []
+monetization = []
+
 [dependencies]
-godot = "0.5"
+# `api-4-4` pins the GDExtension API level to the engine version this project
+# targets (see project.godot config/features and RELEASING.md). Without it the
+# bindings build against the newest API the crate knows about, and the
+# resulting extension silently refuses to load on 4.4.1 -- the game boots to an
+# empty scene and hangs. Building down-level still runs on newer engines.
+godot = { version = "0.5", features = ["api-4-4"] }
 salt-line-sim = { path = "../salt-line-sim" }

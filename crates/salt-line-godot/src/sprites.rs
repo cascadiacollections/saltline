@@ -36,9 +36,17 @@ pub struct Sprites {
     pub tower_leaning: Option<Sprite>,
     pub tower_collapsed: Option<Sprite>,
     pub derrick: Option<Sprite>,
+    pub derrick_leaning: Option<Sprite>,
+    pub derrick_collapsed: Option<Sprite>,
     pub radio_mast: Option<Sprite>,
+    pub radio_mast_leaning: Option<Sprite>,
+    pub radio_mast_collapsed: Option<Sprite>,
     pub silo: Option<Sprite>,
+    pub silo_leaning: Option<Sprite>,
+    pub silo_collapsed: Option<Sprite>,
     pub pylon: Option<Sprite>,
+    pub pylon_leaning: Option<Sprite>,
+    pub pylon_collapsed: Option<Sprite>,
     pub missing: Vec<String>,
 }
 
@@ -93,9 +101,17 @@ impl Sprites {
             tower_leaning: load(&p("tower_leaning"), &mut missing),
             tower_collapsed: load(&p("tower_collapsed"), &mut missing),
             derrick: load(&p("derrick"), &mut missing),
+            derrick_leaning: load(&p("derrick_leaning"), &mut missing),
+            derrick_collapsed: load(&p("derrick_collapsed"), &mut missing),
             radio_mast: load(&p("radio_mast"), &mut missing),
+            radio_mast_leaning: load(&p("radio_mast_leaning"), &mut missing),
+            radio_mast_collapsed: load(&p("radio_mast_collapsed"), &mut missing),
             silo: load(&p("silo"), &mut missing),
+            silo_leaning: load(&p("silo_leaning"), &mut missing),
+            silo_collapsed: load(&p("silo_collapsed"), &mut missing),
             pylon: load(&p("pylon"), &mut missing),
+            pylon_leaning: load(&p("pylon_leaning"), &mut missing),
+            pylon_collapsed: load(&p("pylon_collapsed"), &mut missing),
             missing,
         };
         if !s.missing.is_empty() {
@@ -155,34 +171,45 @@ impl Sprites {
 
     /// Structure sprite for a kind and damage state.
     ///
-    /// Only the water tower has all three states drawn — it is the one the
-    /// brief wires up end to end, because a bulb on legs makes undermining
-    /// legible. The others fall back to the shared rubble sprite when they go
-    /// down, and to their intact silhouette while leaning. Those are the
-    /// drawings to add next; dimensions and palette stay fixed.
+    /// Every silhouette now has all three states drawn. The water tower is
+    /// hand-drawn per state; the rest are sheared and wrecked from their
+    /// intact drawing by `tools/gen_sprites.py`. The bool is whether the
+    /// returned sprite is a faithful drawing of that state — the caller falls
+    /// back to a procedural rubble mound when it is not.
     pub fn structure(&self, kind: StructureKind, state: StructState) -> (Option<&Sprite>, bool) {
-        let intact = match kind {
+        let drawn = match (kind, state) {
+            (StructureKind::WaterTower, StructState::Intact) => &self.tower_intact,
+            (StructureKind::WaterTower, StructState::Leaning) => &self.tower_leaning,
+            (StructureKind::WaterTower, StructState::Collapsed) => &self.tower_collapsed,
+            (StructureKind::Derrick, StructState::Intact) => &self.derrick,
+            (StructureKind::Derrick, StructState::Leaning) => &self.derrick_leaning,
+            (StructureKind::Derrick, StructState::Collapsed) => &self.derrick_collapsed,
+            (StructureKind::RadioMast, StructState::Intact) => &self.radio_mast,
+            (StructureKind::RadioMast, StructState::Leaning) => &self.radio_mast_leaning,
+            (StructureKind::RadioMast, StructState::Collapsed) => &self.radio_mast_collapsed,
+            (StructureKind::Silo, StructState::Intact) => &self.silo,
+            (StructureKind::Silo, StructState::Leaning) => &self.silo_leaning,
+            (StructureKind::Silo, StructState::Collapsed) => &self.silo_collapsed,
+            (StructureKind::Pylon, StructState::Intact) => &self.pylon,
+            (StructureKind::Pylon, StructState::Leaning) => &self.pylon_leaning,
+            (StructureKind::Pylon, StructState::Collapsed) => &self.pylon_collapsed,
+        };
+        match drawn.as_ref() {
+            Some(sprite) => (Some(sprite), true),
+            // The drawing for this state failed to load. Fall back to the
+            // intact silhouette so the screen still plays, and tell the caller
+            // it is not faithful so a collapse still reads as wreckage.
+            None => (self.intact(kind), false),
+        }
+    }
+
+    fn intact(&self, kind: StructureKind) -> Option<&Sprite> {
+        match kind {
             StructureKind::WaterTower => self.tower_intact.as_ref(),
             StructureKind::Derrick => self.derrick.as_ref(),
             StructureKind::RadioMast => self.radio_mast.as_ref(),
             StructureKind::Silo => self.silo.as_ref(),
             StructureKind::Pylon => self.pylon.as_ref(),
-        };
-        match state {
-            StructState::Intact => (intact, true),
-            StructState::Leaning => {
-                if kind == StructureKind::WaterTower {
-                    (self.tower_leaning.as_ref(), true)
-                } else {
-                    // No leaning drawing yet: fall back, and let the shifted
-                    // bounding box do the talking.
-                    (intact, false)
-                }
-            }
-            StructState::Collapsed => (
-                self.tower_collapsed.as_ref(),
-                kind == StructureKind::WaterTower,
-            ),
         }
     }
 }

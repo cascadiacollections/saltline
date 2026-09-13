@@ -1,0 +1,287 @@
+//! The on-disk save format, with no engine in it.
+//!
+//! Parsing and serialising live here so both can be tested headless. `save.rs`
+//! is only the file IO around them. The format is still plain text, one record
+//! per line, small enough to read by hand when a player reports a score that
+//! looks wrong.
+//!
+//! ```text
+//! version 1
+//! unlocked 0
+//! run <seed> <screens> <shells> <shots> <daily>
+//! ```
+
+/// Format version written by this build.
+pub const VERSION: u32 = 1;
+/// Leaderboard depth kept on disk.
+pub const KEEP: usize = 20;
+
+/// One finished run. Score is screens cleared, tiebreak shells then shots
+/// (DESIGN §1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Entry {
+    pub seed: u64,
+    pub screens: u32,
+    pub shells: i32,
+    pub shots: u32,
+    pub daily: bool,
+}
+
+impl Entry {
+    /// Sort key: more screens, then more shells left, then fewer shots.
+    fn rank(&self) -> (u32, i32, i64) {
+        (self.screens, self.shells, -(self.shots as i64))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Save {
+    pub unlocked: bool,
+    pub scores: Vec<Entry>,
+    /// The file on disk was written by a newer build than this one. The save
+    /// is treated as empty and, more importantly, is never overwritten — a
+    /// player who downgrades for one session should not lose their board.
+    pub from_the_future: bool,
+}
+
+impl Save {
+    /// Parse a save file. Unparseable lines are skipped rather than fatal:
+    /// a truncated write should cost the last record, not the whole board.
+    pub fn parse(text: &str) -> Save {
+        let mut save = Save::default();
+        for line in text.lines() {
+            let mut it = line.split_whitespace();
+            match it.next() {
+                Some("version") => {
+                    // An unreadable version is a future one by assumption; the
+                    // conservative reading is the one that preserves data.
+                    let v = it.next().and_then(|s| s.parse::<u32>().ok());
+                    if v.map(|v| v > VERSION).unwrap_or(true) {
+                        return Save {
+                            from_the_future: true,
+                            ..Save::default()
+                        };
+                    }
+                }
+                Some("unlocked") => save.unlocked = it.next() == Some("1"),
+                Some("run") => {
+                    let parts: Vec<&str> = it.collect();
+                    if parts.len() >= 5 {
+                        if let (Ok(seed), Ok(screens), Ok(shells), Ok(shots)) = (
+                            parts[0].parse::<u64>(),
+                            parts[1].parse::<u32>(),
+                            parts[2].parse::<i32>(),
+                            parts[3].parse::<u32>(),
+                        ) {
+                            save.scores.push(Entry {
+                                seed,
+                                screens,
+                                shells,
+                                shots,
+                                daily: parts[4] == "1",
+                            });
+                        }
+                    }
+                }
+                // Unknown keys are ignored so a later version can add one
+                // without this build discarding the rest of the file.
+                _ => {}
+            }
+        }
+        save.sort();
+        save
+    }
+
+    pub fn serialize(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("version {VERSION}\n"));
+        out.push_str(&format!("unlocked {}\n", if self.unlocked { 1 } else { 0 }));
+        for e in &self.scores {
+            out.push_str(&format!(
+                "run {} {} {} {} {}\n",
+                e.seed,
+                e.screens,
+                e.shells,
+                e.shots,
+                if e.daily { 1 } else { 0 }
+            ));
+        }
+        out
+    }
+
+    pub(crate) fn sort(&mut self) {
+        self.scores.sort_by_key(|e| std::cmp::Reverse(e.rank()));
+        self.scores.truncate(KEEP);
+    }
+
+    /// Place a finished run on the board. Returns its position, or `None` if
+    /// it did not make the cut. Persisting is the caller's job.
+    pub fn place(&mut self, entry: Entry) -> Option<usize> {
+        self.scores.push(entry);
+        self.sort();
+        self.scores.iter().position(|e| *e == entry)
+    }
+
+    pub fn best(&self) -> Option<&Entry> {
+        self.scores.first()
+    }
+
+    /// Best score on a specific seed — what a shared seed is judged against.
+    pub fn best_on(&self, seed: u64) -> Option<&Entry> {
+        self.scores.iter().find(|e| e.seed == seed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(screens: u32, shells: i32, shots: u32) -> Entry {
+        Entry {
+            seed: 7,
+            screens,
+            shells,
+            shots,
+            daily: false,
+        }
+    }
+
+    #[test]
+    fn a_save_survives_a_round_trip() {
+        let mut s = Save {
+            unlocked: true,
+            ..Save::default()
+        };
+        s.place(entry(9, 3, 40));
+        s.place(Entry {
+            seed: 12,
+            screens: 4,
+            shells: 1,
+            shots: 20,
+            daily: true,
+        });
+        let back = Save::parse(&s.serialize());
+        assert_eq!(back.unlocked, s.unlocked);
+        assert_eq!(back.scores, s.scores);
+    }
+
+    #[test]
+    fn the_board_ranks_by_screens_then_shells_then_shots() {
+        let mut s = Save::default();
+        s.place(entry(5, 0, 10));
+        s.place(entry(5, 4, 30)); // more shells wins the tiebreak
+        s.place(entry(5, 4, 12)); // fewer shots wins the next one
+        s.place(entry(6, 0, 99)); // more screens beats all of it
+        let got: Vec<(u32, i32, u32)> = s
+            .scores
+            .iter()
+            .map(|e| (e.screens, e.shells, e.shots))
+            .collect();
+        assert_eq!(got, vec![(6, 0, 99), (5, 4, 12), (5, 4, 30), (5, 0, 10)]);
+    }
+
+    #[test]
+    fn the_board_is_truncated_to_keep() {
+        let mut s = Save::default();
+        for i in 0..(KEEP as u32 + 15) {
+            s.place(entry(i, 0, 0));
+        }
+        assert_eq!(s.scores.len(), KEEP);
+        // Truncation drops the worst, not the newest.
+        assert_eq!(s.best().unwrap().screens, KEEP as u32 + 14);
+        assert_eq!(s.scores.last().unwrap().screens, 15);
+    }
+
+    #[test]
+    fn a_run_that_missed_the_cut_reports_no_position() {
+        let mut s = Save::default();
+        for i in 0..KEEP as u32 {
+            s.place(entry(100 + i, 0, 0));
+        }
+        assert_eq!(s.place(entry(1, 0, 0)), None);
+        assert_eq!(s.scores.len(), KEEP);
+    }
+
+    #[test]
+    fn malformed_lines_are_skipped_not_fatal() {
+        let text = "version 1\n\
+                    unlocked 1\n\
+                    run 1 2 3 4 0\n\
+                    run not-a-number 2 3 4 0\n\
+                    run 9 9\n\
+                    run\n\
+                    garbage here\n\
+                    \n\
+                    run 5 6 7 8 1\n";
+        let s = Save::parse(text);
+        assert!(s.unlocked);
+        assert_eq!(s.scores.len(), 2);
+        assert_eq!(s.scores[0].screens, 6);
+    }
+
+    #[test]
+    fn a_truncated_final_line_costs_only_that_record() {
+        let mut full = Save::default();
+        full.place(entry(3, 1, 5));
+        full.place(entry(8, 2, 9));
+        let text = full.serialize();
+        let cut = &text[..text.len() - 6];
+        let s = Save::parse(cut);
+        assert_eq!(s.scores.len(), 1);
+        assert_eq!(s.scores[0].screens, 8);
+    }
+
+    #[test]
+    fn a_version_one_file_reads_the_same_as_a_versionless_one() {
+        let legacy = "unlocked 1\nrun 4 5 6 7 1\n";
+        let current = "version 1\nunlocked 1\nrun 4 5 6 7 1\n";
+        assert_eq!(Save::parse(legacy).scores, Save::parse(current).scores);
+        assert!(Save::parse(legacy).unlocked);
+    }
+
+    #[test]
+    fn a_future_version_is_read_as_empty_and_flagged() {
+        for text in ["version 2\nunlocked 1\nrun 4 5 6 7 1\n", "version x\n"] {
+            let s = Save::parse(text);
+            assert!(s.from_the_future, "{text:?}");
+            assert!(s.scores.is_empty());
+            assert!(!s.unlocked);
+        }
+    }
+
+    #[test]
+    fn an_absent_or_empty_file_is_an_empty_board() {
+        let s = Save::parse("");
+        assert_eq!(s, Save::default());
+        assert!(s.best().is_none());
+        assert!(s.best_on(7).is_none());
+    }
+
+    #[test]
+    fn best_on_finds_the_top_entry_for_a_seed() {
+        let mut s = Save::default();
+        s.place(Entry {
+            seed: 42,
+            screens: 3,
+            shells: 0,
+            shots: 9,
+            daily: false,
+        });
+        s.place(Entry {
+            seed: 42,
+            screens: 11,
+            shells: 0,
+            shots: 9,
+            daily: false,
+        });
+        s.place(entry(20, 0, 1));
+        assert_eq!(s.best_on(42).unwrap().screens, 11);
+        assert!(s.best_on(999).is_none());
+    }
+
+    #[test]
+    fn the_serialised_header_is_the_current_version() {
+        let s = Save::default();
+        assert_eq!(s.serialize().lines().next(), Some("version 1"));
+    }
+}
