@@ -109,8 +109,10 @@ python3 -m http.server -d site 8000   # preview at http://localhost:8000
 ```
 
 `.github/workflows/pages.yml` regenerates the media on every push to `main` that
-touches `site/`, `art/` or either generator, then publishes `site/` to Pages:
-<https://cascadiacollections.github.io/saltline/>.
+touches `site/`, `art/` or either generator, then publishes `site/` to Pages.
+The live URL is whatever Pages reports for this repository — the workflow logs
+it and stamps it into the page's canonical and Open Graph tags, so nothing has
+to be hardcoded while the repo is internal.
 
 ## The three things that matter
 

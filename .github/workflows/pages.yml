@@ -31,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - id: pages
+        uses: actions/configure-pages@v5
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -38,6 +40,22 @@ jobs:
         run: python -m pip install --quiet pillow
       - name: regenerate the site's media from art/
         run: python3 tools/build_site.py
+      # The repository's Pages host is not knowable from the source tree
+      # (an internal repo gets a randomised *.pages.github.io origin), so the
+      # canonical and Open Graph URLs are stamped in from the live base URL.
+      # The repository's Pages host is not knowable from the source tree (an
+      # internal repo gets a randomised *.pages.github.io origin), so the
+      # canonical and Open Graph URLs are stamped in from the live base URL.
+      - name: stamp the canonical and Open Graph URLs
+        env:
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          set -eu
+          base="${BASE_URL%/}/"
+          echo "site URL: $base"
+          sed -i "s#__SITE_URL__#$base#g" site/index.html
+          ! grep -q __SITE_URL__ site/index.html
+
       - name: assets the page needs must exist
         run: |
           set -eu
