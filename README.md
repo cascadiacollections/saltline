@@ -9,7 +9,9 @@ Deterministic Rust simulation core, Godot 4 presentation layer via `gdext`.
 every screen playable. Binaries are unsigned. `RELEASING.md` has the supported
 platforms, the release checklist, and the known-issues list.
 
-Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`) and Godot `4.4.1`.
+Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`), Godot `4.4.1`, and
+`uv` for the Python asset tools. `just` is optional but provides the documented
+shortcuts below.
 
 The `godot` crate is pinned to the matching `api-4-4` feature. If you raise the
 engine version, raise that feature and `compatibility_minimum` in
@@ -43,6 +45,10 @@ godot --path .                   # play
 
 `cargo build` before `godot`: the extension is loaded from
 `target/{debug,release}/`, so a stale build is what the engine will run.
+
+With `just` installed, the same common operations are available as `just test`,
+`just build`, and `just run`. The Python tools use the locked environment from
+`pyproject.toml` and `uv.lock`; run `uv sync` once after checkout.
 
 ## Controls
 
@@ -113,8 +119,8 @@ screen away, to exercise craters and chalk marks), `--salt-hold-draft`,
 Regenerate after editing the generator:
 
 ```sh
-python3 tools/gen_sprites.py     # needs Pillow; writes into art/
-python3 tools/gen_audio.py       # standard library only; writes art/audio/
+uv run python tools/gen_sprites.py     # writes into art/
+uv run python tools/gen_audio.py       # writes art/audio/
 ```
 
 The 16-colour palette is sampled out of `art/palette_16.png` at runtime rather
@@ -143,7 +149,7 @@ the social card with the same palette, rasteriser and native grid the game uses.
 Change a sprite and the page changes with it.
 
 ```sh
-python3 tools/build_site.py           # needs Pillow + Rust; writes into site/assets/
+uv run python tools/build_site.py      # needs Pillow + Rust; writes into site/assets/
 python3 -m http.server -d site 8000   # preview at http://localhost:8000
 ```
 

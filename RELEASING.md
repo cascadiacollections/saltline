@@ -24,11 +24,12 @@ Supported toolchain, pinned and checked in:
 |---|---|
 | Rust | `1.98.1` — `rust-toolchain.toml` |
 | Godot | `4.4.1` — `project.godot` `config/features`, the CI export job, and the `api-4-4` feature on the `godot` crate |
-| Python | 3.9+ with Pillow, only to regenerate `art/` |
+| Python | 3.9+ with Pillow, managed by `uv`, only to regenerate `art/` |
 
 ## Build it
 
 ```sh
+uv sync --locked
 cargo build --release -p salt-line-godot
 godot --headless --path . --import
 godot --headless --path . --export-release "Linux" build/SaltLine.x86_64
