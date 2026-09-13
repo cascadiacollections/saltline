@@ -34,9 +34,13 @@
       (entries) => {
         entries.forEach((e) => {
           if (!e.isIntersecting) return;
-          links.forEach((a) =>
-            a.toggleAttribute("aria-current", a.getAttribute("href") === "#" + e.target.id)
-          );
+          links.forEach((a) => {
+            if (a.getAttribute("href") === "#" + e.target.id) {
+              a.setAttribute("aria-current", "true");
+            } else {
+              a.removeAttribute("aria-current");
+            }
+          });
         });
       },
       { rootMargin: "-45% 0px -50% 0px" }

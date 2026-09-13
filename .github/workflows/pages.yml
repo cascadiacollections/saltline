@@ -13,6 +13,10 @@ on:
       - 'art/**'
       - 'tools/gen_sprites.py'
       - 'tools/build_site.py'
+      - 'crates/salt-line-sim/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -36,6 +40,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - name: install Pillow
         run: python -m pip install --quiet pillow
       - name: regenerate the site's media from art/
@@ -57,7 +62,7 @@ jobs:
         run: |
           set -eu
           for f in index.html style.css main.js assets/hero_wide.png \
-                   assets/shot.gif assets/og.png assets/favicon.png \
+                   assets/shot.gif assets/shot_static.png assets/og.png assets/favicon.png \
                    assets/scene_4x.png assets/sprite_sheet_4x.png \
                    assets/palette_16.png assets/sprites/barrel_strip_5deg.png; do
             test -s "site/$f" || { echo "missing site/$f"; exit 1; }

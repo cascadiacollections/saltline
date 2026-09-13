@@ -139,7 +139,10 @@
     same palette, same native grid, integer scaling only.</p>
 
   <figure class="shot-figure">
-    <img src="assets/shot.gif" alt="Animated: a shell arcs across a dithered night sky, drifting with the wind, and brings a leaning water tower down. A crater stays in the sand." class="px" width="640" height="360" loading="lazy">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="assets/shot_static.png">
+      <img src="assets/shot.gif" alt="Animated: a shell arcs across a dithered night sky, drifting with the wind, and brings a leaning water tower down. A crater stays in the sand." class="px" width="640" height="360" loading="lazy">
+    </picture>
     <figcaption>One shot, sampled off a real fixed-step integration at
       <code>dt = 1/120</code> with wind at +3.2. The tower comes down; the crater
       stays for the rest of the run.</figcaption>
@@ -171,7 +174,7 @@
       <figcaption class="top">Ranging: the barrel shows 5°, the instrument shows the truth</figcaption>
       <div class="sweep-wrap">
         <div class="sweep" role="img" aria-label="Animated barrel sweeping through its 19 drawn angles"></div>
-        <p class="readout"><span id="readout">ANGLE 45.0°</span></p>
+        <p class="readout"><span id="readout">BARREL 0° · TRUE 0.0°</span></p>
       </div>
       <p class="small">The sprite is quantized to 5°. The numeric field is not.
         That gap is the whole reason the <em>Vernier</em> modifier feels like an

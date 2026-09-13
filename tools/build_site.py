@@ -21,6 +21,7 @@ Outputs:
 """
 import os
 import shutil
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -117,8 +118,8 @@ def compose(width=320, height=180, seed=20260907, craters=(), props=()):
         b.blit(spr, x, G.seat(hs, x, spr.w) - spr.h + 2)
 
     tk, pivot = G.tank("base")
-    px = int(EMPLACEMENT_X) - 10
-    py = G.seat(hs, px, tk.w) - tk.h + 3
+    px = int(EMPLACEMENT_X) - pivot[0]
+    py = G.seat(hs, int(EMPLACEMENT_X) - 13, 26) - tk.h + 3
     muzzle = (px + pivot[0], py + pivot[1])
     return b, hs, (px, py), pivot, muzzle
 
@@ -183,6 +184,47 @@ def aim(muzzle, target_x, wind, hs, width, height, arc="high"):
     return pick[0], pick[2], pick[3], pick[4], pick[5]
 
 
+def verified_shot(hs, width, height, wind, target_x):
+    """Return a dialable shot accepted by salt-line-sim's solver and damage model."""
+    request = " ".join(
+        [str(width), str(height), str(wind), str(int(target_x))]
+        + [format(y, ".17g") for y in hs]
+    )
+    proc = subprocess.run(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--release",
+            "-p",
+            "salt-line-sim",
+            "--bin",
+            "site_shot",
+        ],
+        cwd=ROOT,
+        input=request,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    lines = iter(proc.stdout.splitlines())
+    angle_ticks, speed, impact_x, impact_y, path_len = next(lines).split()
+    path = []
+    for _ in range(int(path_len)):
+        x, y = next(lines).split()
+        path.append((float(x), height - float(y)))
+    if next(lines) != "SURFACE":
+        raise RuntimeError("invalid site_shot output")
+    after_hs = [height - float(next(lines)) for _ in range(width)]
+    return (
+        path,
+        (float(impact_x), height - float(impact_y)),
+        float(angle_ticks) / 10.0,
+        float(speed),
+        after_hs,
+    )
+
+
 def tracer(b, path, hit, every=10):
     """The shot, dotted. Alert colour so it reads against the dithered sky,
     where cream would be mistaken for a star."""
@@ -231,8 +273,10 @@ def shot_gif(scale=2, path_out=None):
     b, hs, tank_xy, pivot, muzzle = compose(
         width, height, seed=20260907, craters=((150, 7), (96, 5)), props=PROPS
     )
-    shot = aim(muzzle, target, wind, hs, width, height)
-    err, path, hit, ang, speed = shot
+    path, hit, ang, speed, after_hs = verified_shot(
+        hs, width, height, wind, target
+    )
+    err = abs(hit[0] - target)
 
     with_barrel(b, tank_xy, pivot, ang)
     hud(b, width, height, "WIND +3.2", "SHELLS 28", "34")
@@ -244,9 +288,17 @@ def shot_gif(scale=2, path_out=None):
         width,
         height,
         seed=20260907,
-        craters=((150, 7), (96, 5), (int(hit[0]), 9)),
         props=after_props,
     )
+    ground(ab, after_hs, width, height)
+    for kind, x, state in after_props:
+        if kind == "tower":
+            spr = G.water_tower(state)
+        elif kind == "derrick":
+            spr = G.derrick()
+        else:
+            spr = G.radio_mast()
+        ab.blit(spr, x, G.seat(after_hs, x, spr.w) - spr.h + 2)
     with_barrel(ab, atank, apivot, ang)
     hud(ab, width, height, "WIND +3.2", "SHELLS 27", "34")
     after = ab.image(1)
@@ -339,6 +391,7 @@ def favicon():
 
 # ---------------------------------------------------------------- driver
 def main():
+    shutil.rmtree(OUT_SPR, ignore_errors=True)
     os.makedirs(OUT_SPR, exist_ok=True)
 
     # the shipped art, copied verbatim — the site never re-encodes it
@@ -357,6 +410,9 @@ def main():
     print("hero_wide.png")
 
     ang, speed, err = shot_gif(path_out=os.path.join(OUT, "shot.gif"))
+    with Image.open(os.path.join(OUT, "shot.gif")) as animation:
+        animation.seek(animation.n_frames - 1)
+        animation.convert("RGB").save(os.path.join(OUT, "shot_static.png"))
     print(f"shot.gif (angle {ang} deg, muzzle {speed}, impact error {err:.2f}px)")
 
     og_card().save(os.path.join(OUT, "og.png"))

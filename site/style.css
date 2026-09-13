@@ -245,10 +245,10 @@ figcaption.top { margin: 0 0 .8rem; color: var(--sand); text-transform: uppercas
   border: 1px solid var(--bedrock);
   background: var(--sky-hi);
 }
-.media-grid { display: grid; gap: 1.6rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.media-grid { display: grid; gap: 1.6rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
 .media-grid img { width: 100%; height: auto; border: 1px solid var(--bedrock); }
 
-.split { display: grid; gap: 1.6rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-top: 2.5rem; }
+.split { display: grid; gap: 1.6rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); margin-top: 2.5rem; }
 .split > figure { border: 1px solid var(--bedrock); padding: 1.2rem; background: rgba(0,0,0,.2); }
 .state-row { display: flex; gap: 1.6rem; align-items: flex-end; flex-wrap: wrap; }
 .state-row div { text-align: center; }
@@ -264,7 +264,7 @@ figcaption.top { margin: 0 0 .8rem; color: var(--sand); text-transform: uppercas
   image-rendering: pixelated;
   animation: sweep 3.8s steps(19, end) infinite alternate;
 }
-@keyframes sweep { from { background-position: 0 0; } to { background-position: -2128px 0; } }
+@keyframes sweep { from { background-position: 0 0; } to { background-position: -2016px 0; } }
 .readout {
   margin: 0; color: var(--alert); letter-spacing: .12em;
   border: 1px solid var(--bedrock); background: rgba(0,0,0,.4); padding: .4rem .7rem;
