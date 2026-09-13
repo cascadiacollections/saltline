@@ -262,7 +262,7 @@ figcaption.top { margin: 0 0 .8rem; color: var(--sand); text-transform: uppercas
   background-size: 2128px 112px;   /* 19 frames x 28px, at 4x */
   background-repeat: no-repeat;
   image-rendering: pixelated;
-  animation: sweep 3.8s steps(19, end) infinite alternate;
+  animation: sweep 3.6s steps(18, end) infinite alternate;
 }
 @keyframes sweep { from { background-position: 0 0; } to { background-position: -2016px 0; } }
 .readout {
