@@ -126,7 +126,7 @@ the social card with the same palette, rasteriser and native grid the game uses.
 Change a sprite and the page changes with it.
 
 ```sh
-python3 tools/build_site.py           # needs Pillow; writes into site/assets/
+python3 tools/build_site.py           # needs Pillow + Rust; writes into site/assets/
 python3 -m http.server -d site 8000   # preview at http://localhost:8000
 ```
 

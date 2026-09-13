@@ -11,10 +11,7 @@ use salt_line_sim::solver;
 use salt_line_sim::terrain::{Heightfield, Template};
 use salt_line_sim::EMPLACEMENT_X;
 
-fn value<T: std::str::FromStr>(
-    values: &mut impl Iterator<Item = String>,
-    name: &str,
-) -> T {
+fn value<T: std::str::FromStr>(values: &mut impl Iterator<Item = String>, name: &str) -> T {
     values
         .next()
         .unwrap_or_else(|| panic!("missing {name}"))
@@ -76,8 +73,11 @@ fn main() {
             let mut result = screen.clone();
             let report = result.apply_shot(candidate.shot, &loadout, None, true);
             let trace = report.traces.into_iter().next()?;
-            (report.collapsed.contains(&0) && trace.apex.y <= height - 22.0)
-                .then_some((candidate.shot, trace, result))
+            (report.collapsed.contains(&0) && trace.apex.y <= height - 22.0).then_some((
+                candidate.shot,
+                trace,
+                result,
+            ))
         })
         .max_by(|a, b| a.1.apex.y.total_cmp(&b.1.apex.y))
         .expect("no solver-verified shot fits inside the marketing frame");
