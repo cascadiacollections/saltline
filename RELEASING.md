@@ -61,8 +61,12 @@ step that no amount of CI will cover.
 - [ ] `salt-line-sim` still has zero dependencies
 - [ ] Determinism digests identical across all three platforms
 - [ ] Batch solvability: 5,000 screens, zero unsolvable, zero `Flat` fallbacks
-- [ ] Export succeeds for all three presets
-- [ ] Each exported artifact **launches and renders a frame** (the smoke job)
+- [ ] Export succeeds for all three presets **and writes a file** — Godot has
+      exited 0 having produced nothing
+- [ ] Each exported artifact **launches and renders a frame** (the smoke job).
+      This waits on the rendered PNG rather than the exit code, because a
+      Godot-exported Windows binary is GUI-subsystem and returns 0 the instant
+      it is started
 - [ ] `.sha256` published next to each artifact
 
 **Manual — before tagging**

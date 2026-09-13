@@ -137,7 +137,10 @@ jobs:
             output: SaltLine.exe
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: chickensoft-games/setup-godot@1dc3741f474fcf64a3b302d5fdd263010c200866 # v1
+      # v1 hard-links the macOS binary out of its .app bundle, and the kernel
+      # SIGKILLs anything run through that link (Killed: 9, exit 137). Fixed in
+      # v2.3.0 by using a real symlink.
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
           version: 4.4.1
           use-dotnet: false
@@ -148,13 +151,53 @@ jobs:
         run: cargo build --release -p salt-line-godot
       - name: create output directory
         run: mkdir -p build
+      # The Windows build ships a GUI-subsystem godot.exe: it detaches from the
+      # console, prints nothing, and returns 0 immediately no matter what it
+      # was asked to do. That is why this job used to "export successfully" and
+      # upload an empty artifact. The console wrapper beside it is the one that
+      # waits and reports a real exit code; it locates its partner by filename,
+      # so it has to be run from where it was unpacked.
+      - name: find a Godot that actually runs
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            main=$(find "$HOME/godot" -maxdepth 3 -name 'Godot_v*_win64.exe' \
+                   ! -name '*_console.exe' | head -1)
+            if [ -z "$main" ]; then
+              echo "no unpacked Godot found under $HOME/godot" >&2
+              ls -R "$HOME/godot" >&2 || true
+              exit 1
+            fi
+            console="${main%.exe}_console.exe"
+            # The console wrapper is not restored on a tool-cache hit, so fall
+            # back rather than fail — the output checks below are the real gate.
+            if [ -f "$console" ]; then bin="$console"; else bin="$main"; fi
+          else
+            bin=godot
+          fi
+          echo "GODOT_BIN=$bin" >> "$GITHUB_ENV"
+          "$bin" --version
       - name: import assets
         # A clean checkout has no .godot/ cache, so the PNGs are still PNGs.
         # Exporting without importing first ships an artifact with no art in
         # it — which exports successfully and then launches wrong.
-        run: godot --headless --path . --import
+        shell: bash
+        run: |
+          "$GODOT_BIN" --headless --path . --import
       - name: export playable binary
-        run: godot --headless --path . --export-release "${{ matrix.preset }}" "build/${{ matrix.output }}"
+        shell: bash
+        run: |
+          set -eu
+          "$GODOT_BIN" --headless --path . --export-release \
+            "${{ matrix.preset }}" "build/${{ matrix.output }}"
+          # `--export-release` has been known to exit 0 having written nothing,
+          # so the file is the gate, not the exit code.
+          if [ ! -e "build/${{ matrix.output }}" ]; then
+            echo "the export reported success but produced no artifact" >&2
+            ls -lR build >&2
+            exit 1
+          fi
 
       # Exporting successfully is not the same as being playable. Launch the
       # artifact itself — not the editor, not `cargo run` — and make it render
@@ -176,11 +219,29 @@ jobs:
             exit 1
           fi
           chmod +x "$exe" 2>/dev/null || true
+          rm -f smoke.png
+
+          # An exported Windows binary is GUI-subsystem too, so it detaches and
+          # hands back 0 the moment it is started. Waiting on the rendered file
+          # rather than the exit code is the one check that means the same
+          # thing on all three platforms: it launched, and it drew a screen.
           "$exe" --headless -- \
             --salt-seed 20260907 --salt-screen 12 \
-            --salt-shot smoke.png --salt-shot-at 0.5
+            --salt-shot smoke.png --salt-shot-at 0.5 &
+          launcher=$!
+          for _ in $(seq 1 60); do
+            [ -s smoke.png ] && break
+            sleep 1
+          done
+          wait "$launcher" 2>/dev/null || true
+
           if [ ! -s smoke.png ]; then
-            echo "the build launched but rendered nothing" >&2
+            echo "the exported build never rendered a frame" >&2
+            exit 1
+          fi
+          # Guard against catching a half-written file: it must be a real PNG.
+          if [ "$(head -c 4 smoke.png | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+            echo "smoke.png is not a PNG" >&2
             exit 1
           fi
           echo "launched and rendered $(wc -c < smoke.png) bytes"
@@ -200,6 +261,8 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: salt-line-${{ matrix.preset }}
+          # An empty upload used to pass this job silently. Never again.
+          if-no-files-found: error
           path: |
             build/${{ matrix.output }}
             build/${{ matrix.output }}.sha256
