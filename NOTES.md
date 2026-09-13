@@ -108,19 +108,12 @@ reference scene seats that chassis two rows into the ground.
 
 ---
 
-## 3. Two draft picks that currently do nothing on their second stack
+## 3. Resolved second-stack behavior
 
-Both are listed in DESIGN §4 with `Stacks: 2`, and in both cases the second
-stack has no effect as specified. Left alone rather than invented on, but they
-are dead picks and worth a decision:
-
-- **Vernier.** Stack one takes angle quantization from 0.5° to 0.1°, which is
-  the tick grid's floor. A second stack has nothing left to tighten. Either
-  make it one stack, or make the grid 0.05° and let the second stack reach it.
-- **Salvage.** "Misses that still crater within 30 units of a target refund 1."
-  Stack one grants that; stack two grants the same 30 units and the same 1
-  shell. Refunding 2 on the second stack is the obvious reading, but it is not
-  what the table says.
+- **Vernier.** The deterministic integer angle grid is now 0.05° per tick.
+  Base input remains 0.5°, stack one grants 0.1°, and stack two grants 0.05°.
+- **Salvage.** A qualifying crater remains within 30 horizontal units of a
+  standing target. It refunds one shell per stack, so stack two refunds two.
 
 ---
 
@@ -141,10 +134,17 @@ seeds, with the loadout evolving one seeded pick per band:
   first four screens, so the opening band teaches the arc with nothing to read.
   That may be deliberate. If not, a small floor (±0.4) would put a number on
   the HUD worth looking at from screen 1.
-- Template share across a 100-screen run: `Ridge` 23%, `Flat` 17%, `Chasm` 16%,
-  `Mesa` 13%, `Spires` 11%, `Basin` 7%, `Overhang` 4%. `Overhang` is rare
-  because it needs the unlock *and* band 5; if it should read as a signature
-  screen, its weight wants raising.
+- Template and target-count weights now overlap for build testing: two-target
+  screens begin in band 3, three-target screens in band 9, and later bands
+  retain a small share of simpler counts. Eligible
+  `Overhang` has signature-template weight comparable to `Basin` instead of
+  half its weight, while its capability and solvability gates remain intact.
+- The batch report now includes a deterministic solver-assisted economy
+  baseline (spend/refunds/bonuses/reserve), clear tiers, modifier exposure,
+  death screen/run length, and indirect-shot demand. A reduced 5-seed ×
+  30-screen smoke run after this tuning validated 142 combat screens and 201
+  targets with zero failures or fallbacks; 8 supply screens were skipped by
+  the gate, and the ideal policy averaged 1.42 shots per clear.
 
 ---
 

@@ -5,12 +5,13 @@
 //! between "the shot has been resolved" and "the player has seen it happen".
 
 use godot::classes::{
-    DisplayServer, INode2D, Image, ImageTexture, Input, InputEvent, InputEventKey, Node2D, Os, Time,
+    AudioStream, AudioStreamPlayer, DisplayServer, INode2D, Image, ImageTexture, Input, InputEvent,
+    InputEventKey, Node2D, Os, ResourceLoader, Time,
 };
-use godot::global::Key;
+use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use salt_line_sim::ballistics::{Shot, Trace};
+use salt_line_sim::ballistics::{End, Shot, Trace};
 use salt_line_sim::dmath;
 use salt_line_sim::modifiers::{flags, Loadout, Modifier};
 use salt_line_sim::run::{
@@ -20,6 +21,10 @@ use salt_line_sim::run::{
 use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_MIN};
 
 use crate::palette::{slot, Palette};
+use crate::presentation::{
+    self, RepeatState, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER,
+    LEARN_SHELLS, LEARN_WIND,
+};
 use crate::raster::{self, Canvas, View};
 use crate::save::{self, Entry, Save};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
@@ -43,8 +48,10 @@ const REPEAT_RATE: f64 = 0.035;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Title,
+    Controls,
     SeedEntry,
     Playing,
+    Paused,
     Paywall,
     GameOver,
 }
@@ -61,6 +68,52 @@ struct Anim {
     collapsed: Vec<usize>,
     /// Time since the last shell landed.
     settled: f64,
+    impact_played: bool,
+    collapse_played: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Sound {
+    Fire,
+    Flight,
+    Terrain,
+    Structure,
+    Ricochet,
+    Airburst,
+    Collapse,
+    Draft,
+    LowShell,
+    Ui,
+}
+
+impl Sound {
+    const ALL: [Sound; 10] = [
+        Self::Fire,
+        Self::Flight,
+        Self::Terrain,
+        Self::Structure,
+        Self::Ricochet,
+        Self::Airburst,
+        Self::Collapse,
+        Self::Draft,
+        Self::LowShell,
+        Self::Ui,
+    ];
+
+    fn file(self) -> &'static str {
+        match self {
+            Self::Fire => "fire",
+            Self::Flight => "flight",
+            Self::Terrain => "terrain_impact",
+            Self::Structure => "structure_impact",
+            Self::Ricochet => "ricochet",
+            Self::Airburst => "airburst",
+            Self::Collapse => "collapse",
+            Self::Draft => "draft",
+            Self::LowShell => "low_shell",
+            Self::Ui => "ui",
+        }
+    }
 }
 
 impl Anim {
@@ -111,6 +164,11 @@ pub struct SaltLine {
 
     /// Key edge/repeat state: (key, was_down, timer).
     keys: Vec<(Key, bool, f64)>,
+    pad_edges: Vec<(JoyButton, bool)>,
+    pad_repeat: [RepeatState; 8],
+    controller_active: bool,
+    audio: Vec<Option<Gd<AudioStreamPlayer>>>,
+    low_shell_warned: bool,
 
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
     /// native resolution, and quit. How the pixel output gets checked without
@@ -151,7 +209,7 @@ impl INode2D for SaltLine {
             run: None,
             anim: None,
             clear_hold: 0.0,
-            angle_ticks: 450,
+            angle_ticks: 900,
             power_ticks: 600,
             save: Save::default(),
             entitlement: Entitlement::Free,
@@ -162,6 +220,11 @@ impl INode2D for SaltLine {
             status_time: 0.0,
             debug: false,
             keys: Vec::new(),
+            pad_edges: Vec::new(),
+            pad_repeat: [RepeatState::default(); 8],
+            controller_active: false,
+            audio: Vec::new(),
+            low_shell_warned: false,
             shot_path: None,
             frames: 0,
             elapsed: 0.0,
@@ -177,6 +240,7 @@ impl INode2D for SaltLine {
         self.pal = Palette::load(PALETTE_PATH);
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
         self.save = save::load();
+        self.setup_audio();
         self.entitlement = store::entitlement(self.save.unlocked);
         self.buffer_w = self.pick_width();
         self.apply_buffer_size();
@@ -303,13 +367,14 @@ impl SaltLine {
         // The world is as wide as the buffer, so the run is generated for it.
         let width = self.buffer_w as usize;
         let state = RunState::new(seed, width);
-        self.angle_ticks = 450;
+        self.angle_ticks = 900;
         self.power_ticks = 600;
         self.anim = None;
         self.clear_hold = 0.0;
         self.cam_x = 0;
         self.cam_target = 0.0;
         self.daily = daily;
+        self.low_shell_warned = false;
         self.last_seed = seed;
         self.run = Some(state);
         self.mode = Mode::Playing;
@@ -333,6 +398,196 @@ impl SaltLine {
     }
 
     // ----------------------------------------------------------------- input
+
+    fn setup_audio(&mut self) {
+        self.audio.clear();
+        for sound in Sound::ALL {
+            let path = format!("res://art/audio/{}.wav", sound.file());
+            let Some(resource) = ResourceLoader::singleton().load(&path) else {
+                godot_warn!("salt-line: missing procedural sound {path}");
+                self.audio.push(None);
+                continue;
+            };
+            let Ok(stream) = resource.try_cast::<AudioStream>() else {
+                godot_warn!("salt-line: could not load sound {path}");
+                self.audio.push(None);
+                continue;
+            };
+            let mut player = AudioStreamPlayer::new_alloc();
+            player.set_stream(&stream);
+            self.base_mut().add_child(&player);
+            self.audio.push(Some(player));
+        }
+        self.apply_volume();
+    }
+
+    fn apply_volume(&mut self) {
+        let db = if self.save.muted || self.save.volume == 0 {
+            -80.0
+        } else {
+            20.0 * (self.save.volume as f32 / 100.0).log10()
+        };
+        for player in self.audio.iter_mut().flatten() {
+            player.set_volume_db(db);
+        }
+    }
+
+    fn play_sound(&mut self, sound: Sound) {
+        if let Some(player) = self.audio.get_mut(sound as usize).and_then(Option::as_mut) {
+            player.play();
+        }
+    }
+
+    fn learn(&mut self, bit: u32) {
+        if self.save.learned & bit == 0 {
+            self.save.learned |= bit;
+            save::store(&self.save);
+        }
+    }
+
+    fn binding(&self, action: &str, default_key: &str, default_pad: &str) -> (String, String) {
+        self.save
+            .bindings
+            .iter()
+            .find(|(a, _, _)| a == action)
+            .map(|(_, k, p)| (k.clone(), p.clone()))
+            .unwrap_or_else(|| (default_key.into(), default_pad.into()))
+    }
+
+    fn key_token(token: &str) -> Option<Key> {
+        Some(match token {
+            "LEFT" => Key::LEFT,
+            "RIGHT" => Key::RIGHT,
+            "UP" => Key::UP,
+            "DOWN" => Key::DOWN,
+            "SPACE" => Key::SPACE,
+            "ENTER" => Key::ENTER,
+            "ESCAPE" => Key::ESCAPE,
+            "LBRACKET" => Key::BRACKETLEFT,
+            "RBRACKET" => Key::BRACKETRIGHT,
+            "COMMA" => Key::COMMA,
+            "PERIOD" => Key::PERIOD,
+            "1" => Key::KEY_1,
+            "2" => Key::KEY_2,
+            "3" => Key::KEY_3,
+            "C" => Key::C,
+            "R" => Key::R,
+            "S" => Key::S,
+            "V" => Key::V,
+            "M" => Key::M,
+            _ => return None,
+        })
+    }
+
+    fn pad_token(token: &str) -> Option<JoyButton> {
+        Some(match token {
+            "A" => JoyButton::A,
+            "B" => JoyButton::B,
+            "X" => JoyButton::X,
+            "Y" => JoyButton::Y,
+            "START" => JoyButton::START,
+            "BACK" => JoyButton::BACK,
+            "LB" => JoyButton::LEFT_SHOULDER,
+            "RB" => JoyButton::RIGHT_SHOULDER,
+            "DPAD_LEFT" => JoyButton::DPAD_LEFT,
+            "DPAD_RIGHT" => JoyButton::DPAD_RIGHT,
+            "DPAD_UP" => JoyButton::DPAD_UP,
+            "DPAD_DOWN" => JoyButton::DPAD_DOWN,
+            _ => return None,
+        })
+    }
+
+    fn action_binding(&self, action: &str) -> (String, String) {
+        let defaults = match action {
+            "left" => ("LEFT", "DPAD_LEFT"),
+            "right" => ("RIGHT", "DPAD_RIGHT"),
+            "up" => ("UP", "DPAD_UP"),
+            "down" => ("DOWN", "DPAD_DOWN"),
+            "fire" => ("SPACE", "A"),
+            "fuse_down" => ("LBRACKET", "LB"),
+            "fuse_up" => ("RBRACKET", "RB"),
+            "reposition_left" => ("COMMA", "X"),
+            "reposition_right" => ("PERIOD", "Y"),
+            "draft_1" => ("1", "X"),
+            "draft_2" => ("2", "A"),
+            "draft_3" => ("3", "B"),
+            "confirm" => ("ENTER", "A"),
+            "back" => ("ESCAPE", "B"),
+            "copy" => ("C", "X"),
+            "replay" => ("R", "Y"),
+            "controls" => ("V", "BACK"),
+            "mute" => ("M", "START"),
+            _ => ("", ""),
+        };
+        self.binding(action, defaults.0, defaults.1)
+    }
+
+    fn pad_pressed(&mut self, button: JoyButton) -> bool {
+        let slot = if let Some(i) = self.pad_edges.iter().position(|(b, _)| *b == button) {
+            i
+        } else {
+            self.pad_edges.push((button, false));
+            self.pad_edges.len() - 1
+        };
+        let down = Input::singleton().is_joy_button_pressed(0, button);
+        let was = self.pad_edges[slot].1;
+        self.pad_edges[slot].1 = down;
+        if down {
+            self.controller_active = true;
+        }
+        down && !was
+    }
+
+    fn action_pressed(&mut self, _slot: usize, action: &str) -> bool {
+        let (key, pad) = self.action_binding(action);
+        let key_down = Self::key_token(&key)
+            .map(|k| self.pressed(k))
+            .unwrap_or(false);
+        if key_down {
+            self.controller_active = false;
+        }
+        let pad_down = Self::pad_token(&pad)
+            .map(|b| self.pad_pressed(b))
+            .unwrap_or(false);
+        key_down || pad_down
+    }
+
+    fn action_repeated(&mut self, slot: usize, action: &str, delta: f64) -> u32 {
+        let (key, pad) = self.action_binding(action);
+        let keyboard = Self::key_token(&key)
+            .map(|k| self.repeated(k, delta))
+            .unwrap_or(0);
+        let mut pad_down = Self::pad_token(&pad)
+            .map(|b| Input::singleton().is_joy_button_pressed(0, b))
+            .unwrap_or(false);
+        // Left stick is always available in addition to remappable D-pad.
+        let axis = match action {
+            "left" => Some((JoyAxis::LEFT_X, -1.0)),
+            "right" => Some((JoyAxis::LEFT_X, 1.0)),
+            "up" => Some((JoyAxis::LEFT_Y, -1.0)),
+            "down" => Some((JoyAxis::LEFT_Y, 1.0)),
+            _ => None,
+        };
+        if let Some((axis, sign)) = axis {
+            pad_down |= Input::singleton().get_joy_axis(0, axis) * sign > 0.45;
+        }
+        if keyboard > 0 {
+            self.controller_active = false;
+        }
+        if pad_down {
+            self.controller_active = true;
+        }
+        keyboard + self.pad_repeat[slot].tick(pad_down, delta, REPEAT_DELAY, REPEAT_RATE)
+    }
+
+    fn input_label(&self, action: &str) -> String {
+        let (key, pad) = self.action_binding(action);
+        if self.controller_active {
+            pad
+        } else {
+            key
+        }
+    }
 
     fn key_slot(&mut self, key: Key) -> usize {
         if let Some(i) = self.keys.iter().position(|(k, _, _)| *k == key) {
@@ -390,16 +645,60 @@ impl SaltLine {
         if self.pressed(Key::F1) {
             self.debug = !self.debug;
         }
+        if self.action_pressed(15, "mute") {
+            self.save.muted = !self.save.muted;
+            self.apply_volume();
+            save::store(&self.save);
+            self.note(if self.save.muted {
+                "SOUND MUTED".into()
+            } else {
+                "SOUND ON".into()
+            });
+        }
         match self.mode {
             Mode::Title => {
-                if self.pressed(Key::ENTER) || self.pressed(Key::KP_ENTER) {
+                if self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER) {
                     let seed = daily_seed(Self::today());
+                    self.play_sound(Sound::Ui);
                     self.start_run(seed, true);
                 } else if self.pressed(Key::S) {
                     self.seed_text.clear();
                     self.mode = Mode::SeedEntry;
-                } else if self.pressed(Key::ESCAPE) {
+                } else if self.action_pressed(1, "controls") {
+                    self.play_sound(Sound::Ui);
+                    self.mode = Mode::Controls;
+                } else if self.action_pressed(2, "back") {
                     self.base().get_tree().quit();
+                }
+            }
+            Mode::Controls => {
+                let down = self.action_repeated(0, "left", delta);
+                let up = self.action_repeated(1, "right", delta);
+                if down + up > 0 {
+                    let volume =
+                        (self.save.volume as i32 + (up as i32 - down as i32) * 5).clamp(0, 100);
+                    self.save.volume = volume as u8;
+                    self.save.muted = false;
+                    self.apply_volume();
+                    save::store(&self.save);
+                    self.play_sound(Sound::Ui);
+                }
+                if self.action_pressed(3, "replay") {
+                    self.save.bindings.clear();
+                    save::store(&self.save);
+                    self.note("DEFAULT BINDINGS RESTORED".into());
+                } else if self.action_pressed(2, "back") {
+                    self.play_sound(Sound::Ui);
+                    self.mode = Mode::Title;
+                }
+            }
+            Mode::Paused => {
+                if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
+                    self.play_sound(Sound::Ui);
+                    self.mode = Mode::Playing;
+                } else if self.action_pressed(3, "replay") {
+                    self.play_sound(Sound::Ui);
+                    self.mode = Mode::Title;
                 }
             }
             Mode::SeedEntry => {
@@ -415,15 +714,15 @@ impl SaltLine {
                 }
             }
             Mode::GameOver => {
-                if self.pressed(Key::C) {
+                if self.action_pressed(4, "copy") {
                     // Seed sharing: the seed is the whole run, so the
                     // clipboard is the whole share format.
                     let seed = format_seed(self.last_seed);
                     DisplayServer::singleton().clipboard_set(&GString::from(seed.as_str()));
                     self.note(format!("COPIED {seed}"));
-                } else if self.pressed(Key::ENTER) || self.pressed(Key::ESCAPE) {
+                } else if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
                     self.mode = Mode::Title;
-                } else if self.pressed(Key::R) {
+                } else if self.action_pressed(3, "replay") {
                     let seed = self.last_seed;
                     let daily = self.daily;
                     self.start_run(seed, daily);
@@ -434,18 +733,20 @@ impl SaltLine {
     }
 
     fn handle_play_input(&mut self, delta: f64) {
-        if self.pressed(Key::ESCAPE) {
-            self.mode = Mode::Title;
+        if self.action_pressed(2, "back") {
+            self.mode = Mode::Paused;
             return;
         }
         let phase = self.run.as_ref().map(|r| r.phase);
         let Some(phase) = phase else { return };
 
         if phase == Phase::Drafting {
-            for (i, key) in [Key::KEY_1, Key::KEY_2, Key::KEY_3].into_iter().enumerate() {
-                if self.pressed(key) {
+            for (i, action) in ["draft_1", "draft_2", "draft_3"].into_iter().enumerate() {
+                if self.action_pressed(5 + i, action) {
                     let taken = self.run.as_mut().and_then(|r| r.take_offer(i));
                     if let Some(m) = taken {
+                        self.learn(LEARN_DRAFT);
+                        self.play_sound(Sound::Draft);
                         self.note(format!("TOOK {}", m.name()));
                         self.apply_buffer_size();
                     }
@@ -467,23 +768,25 @@ impl SaltLine {
             .max(1);
         let mult = if self.shift_held() { 10 } else { 1 };
 
-        let left = self.repeated(Key::LEFT, delta) as i32;
-        let right = self.repeated(Key::RIGHT, delta) as i32;
+        let left = self.action_repeated(0, "left", delta) as i32;
+        let right = self.action_repeated(1, "right", delta) as i32;
         if left + right != 0 {
+            self.learn(LEARN_ANGLE);
             self.angle_ticks = (self.angle_ticks + (right - left) * quantum * mult)
                 .clamp(0, dmath::MAX_ANGLE_TICKS);
         }
-        let down = self.repeated(Key::DOWN, delta) as i32;
-        let up = self.repeated(Key::UP, delta) as i32;
+        let down = self.action_repeated(2, "down", delta) as i32;
+        let up = self.action_repeated(3, "up", delta) as i32;
         if up + down != 0 {
+            self.learn(LEARN_POWER);
             self.power_ticks =
                 (self.power_ticks + (up - down) * 5 * mult).clamp(0, POWER_TICKS_MAX);
         }
 
         // Airburst fuse.
         let fuse_step = 4.0 * mult as f64;
-        let minus = self.repeated(Key::BRACKETLEFT, delta) as f64;
-        let plus = self.repeated(Key::BRACKETRIGHT, delta) as f64;
+        let minus = self.action_repeated(4, "fuse_down", delta) as f64;
+        let plus = self.action_repeated(5, "fuse_up", delta) as f64;
         if minus + plus > 0.0 {
             if let Some(r) = self.run.as_mut() {
                 if r.loadout.airburst() {
@@ -494,8 +797,8 @@ impl SaltLine {
         }
 
         // Enfilade reposition.
-        let l = self.pressed(Key::COMMA);
-        let rr = self.pressed(Key::PERIOD);
+        let l = self.action_pressed(8, "reposition_left");
+        let rr = self.action_pressed(9, "reposition_right");
         if l || rr {
             let step = if l { -5.0 } else { 5.0 };
             let ok = self.run.as_mut().map(|r| {
@@ -507,7 +810,7 @@ impl SaltLine {
             }
         }
 
-        if self.pressed(Key::SPACE) || self.pressed(Key::ENTER) {
+        if self.action_pressed(10, "fire") || self.pressed(Key::ENTER) {
             self.fire();
         }
     }
@@ -515,6 +818,18 @@ impl SaltLine {
     // ------------------------------------------------------------- run steps
 
     fn fire(&mut self) {
+        let learned = self.save.learned;
+        if learned & LEARN_WIND != 0 {
+            self.learn(LEARN_SHELLS);
+        } else if learned & LEARN_CRATER != 0
+            && self
+                .run
+                .as_ref()
+                .and_then(|r| r.displayed_wind())
+                .is_some_and(|w| w.abs() > 0.01)
+        {
+            self.learn(LEARN_WIND);
+        }
         let shot = Shot::new(self.angle_ticks, self.power_ticks);
         let Some(run) = self.run.as_mut() else { return };
         if run.shells <= 0 {
@@ -524,6 +839,9 @@ impl SaltLine {
         let Some(report) = run.fire(shot, true) else {
             return;
         };
+        self.learn(LEARN_FIRE);
+        self.play_sound(Sound::Fire);
+        self.play_sound(Sound::Flight);
         let longest = report
             .traces
             .iter()
@@ -537,7 +855,15 @@ impl SaltLine {
             longest,
             collapsed,
             settled: 0.0,
+            impact_played: false,
+            collapse_played: false,
         });
+        let shells = self.run.as_ref().map(|r| r.shells).unwrap_or(99);
+        if shells < 10 && !self.low_shell_warned {
+            self.low_shell_warned = true;
+            self.play_sound(Sound::LowShell);
+            self.note("SHELLS ARE YOUR RUN CLOCK".into());
+        }
     }
 
     fn step(&mut self, delta: f64) {
@@ -547,10 +873,33 @@ impl SaltLine {
 
         // Advance the shot replay. The sim ran at a fixed 1/120; this only
         // walks the recorded path, so playback speed cannot affect anything.
+        let mut sounds = Vec::new();
+        let mut learned_impact = false;
         if let Some(anim) = self.anim.as_mut() {
             anim.t += delta;
             if anim.done() {
                 anim.settled += delta;
+                if !anim.impact_played {
+                    anim.impact_played = true;
+                    learned_impact = true;
+                    if let Some(sound) = anim.traces.first().map(|trace| {
+                        if trace.bounces > 0 {
+                            Sound::Ricochet
+                        } else {
+                            match trace.end {
+                                End::Fuse { .. } => Sound::Airburst,
+                                End::Structure { .. } => Sound::Structure,
+                                _ => Sound::Terrain,
+                            }
+                        }
+                    }) {
+                        sounds.push(sound);
+                    }
+                }
+                if !anim.collapse_played && !anim.collapsed.is_empty() {
+                    anim.collapse_played = true;
+                    sounds.push(Sound::Collapse);
+                }
             }
             let settled = anim.settled;
             let finished = anim.done() && settled > TOPPLE_TIME + 0.12;
@@ -583,6 +932,12 @@ impl SaltLine {
                 self.finish_run();
             }
         }
+        if learned_impact {
+            self.learn(LEARN_CRATER);
+        }
+        for sound in sounds {
+            self.play_sound(sound);
+        }
 
         // Follow the shell when the world is wider than the buffer.
         if self.anim.is_some() {
@@ -603,6 +958,9 @@ impl SaltLine {
 
     fn after_screen_change(&mut self) {
         self.apply_buffer_size();
+        if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
+            self.play_sound(Sound::Draft);
+        }
         // The paywall gate. Brief M6: free to play through screen 15.
         let index = self.run.as_ref().map(|r| r.screen_index).unwrap_or(0);
         if self.entitlement == Entitlement::Free && index >= FREE_SCREENS {
@@ -686,7 +1044,7 @@ impl SaltLine {
             self.apply_buffer_size();
         }
         match self.mode {
-            Mode::Playing | Mode::Paywall => self.render_play(),
+            Mode::Playing | Mode::Paused | Mode::Paywall => self.render_play(),
             _ => self.render_menu(),
         }
 
@@ -769,7 +1127,7 @@ impl SaltLine {
                 let first = self.run.as_ref().map(|r| r.shots_on_screen) == Some(0);
                 if self.auto_miss && first {
                     // A high lob that lands short, well clear of any target.
-                    self.angle_ticks = 700;
+                    self.angle_ticks = 1400;
                     self.power_ticks = 330;
                     self.fire();
                     self.auto_cooldown = 0.35;
@@ -925,8 +1283,16 @@ impl SaltLine {
     }
 
     fn view(&self) -> View {
+        let shake = self
+            .anim
+            .as_ref()
+            .filter(|a| a.done())
+            .map(|a| {
+                presentation::shake_offset(a.settled, if a.collapsed.is_empty() { 1 } else { 2 }).0
+            })
+            .unwrap_or(0);
         View {
-            cam_x: self.cam_x,
+            cam_x: self.cam_x - shake,
             w: self.buffer_w,
             h: self.buffer_h,
         }
@@ -960,11 +1326,16 @@ impl SaltLine {
             Mode::Title => {
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
-                self.centred(y, "ENTER  DAILY RUN", fg);
+                let confirm = self.input_label("confirm");
+                self.centred(y, &format!("{confirm}  DAILY RUN"), fg);
                 y += 8;
                 self.centred(y, "S      SEED ENTRY", fg);
                 y += 8;
-                self.centred(y, "ESC    QUIT", dim);
+                let controls = self.input_label("controls");
+                self.centred(y, &format!("{controls}  CONTROLS / AUDIO"), fg);
+                y += 8;
+                let back = self.input_label("back");
+                self.centred(y, &format!("{back}  QUIT"), dim);
                 y += 14;
                 let best = self.save.best().copied();
                 if let Some(b) = best {
@@ -1002,6 +1373,43 @@ impl SaltLine {
                         y += 7;
                     }
                 }
+            }
+            Mode::Controls => {
+                self.centred(y, "CONTROLS / AUDIO", fg);
+                y += 12;
+                let muted = if self.save.muted { " MUTED" } else { "" };
+                self.centred(
+                    y,
+                    &format!("< >  VOLUME {}%{muted}", self.save.volume),
+                    alert,
+                );
+                y += 10;
+                let rows = [
+                    ("AIM / POWER", "left", "up"),
+                    ("FIRE", "fire", ""),
+                    ("FUSE", "fuse_down", "fuse_up"),
+                    ("REPOSITION", "reposition_left", "reposition_right"),
+                    ("DRAFT", "draft_1", "draft_2"),
+                    ("BACK", "back", ""),
+                ];
+                for (name, a, b) in rows {
+                    let mut labels = self.input_label(a);
+                    if !b.is_empty() {
+                        labels.push('/');
+                        labels.push_str(&self.input_label(b));
+                    }
+                    self.centred(y, &format!("{name}: {labels}"), fg);
+                    y += 7;
+                }
+                y += 4;
+                self.centred(y, "M / START  MUTE     R / Y  RESET", dim);
+                y += 9;
+                self.centred(y, "EDIT bind LINES IN salt_line.txt TO REMAP", dim);
+                y += 7;
+                self.centred(y, "FORMAT: bind ACTION KEY PAD", dim);
+                y += 9;
+                let back = self.input_label("back");
+                self.centred(y, &format!("{back}  BACK"), fg);
             }
             Mode::SeedEntry => {
                 self.centred(y, "ENTER A SEED", dim);
@@ -1104,6 +1512,7 @@ impl SaltLine {
                 raster::draw_trajectory(&mut self.canvas, &view, &t.path, upto, &pal);
             }
         }
+        self.draw_shot_effects(&view);
 
         self.render_hud(
             shells, index, wind_shown, range, fuse, &loadout, &screen, phase,
@@ -1114,6 +1523,8 @@ impl SaltLine {
         }
         if self.mode == Mode::Paywall {
             self.render_paywall();
+        } else if self.mode == Mode::Paused {
+            self.render_pause();
         }
     }
 
@@ -1233,6 +1644,86 @@ impl SaltLine {
         }
     }
 
+    fn draw_shot_effects(&mut self, view: &View) {
+        let Some(anim) = self.anim.as_ref() else {
+            return;
+        };
+        let alert = self.pal.get(slot::ALERT);
+        let dust = self.pal.get(slot::ST_DMG);
+        if presentation::flash_strength(anim.t, 0.0, presentation::MUZZLE_TIME) > 0.0 {
+            let p = anim.before.muzzle();
+            let x = view.sx(p.x);
+            let y = view.sy(p.y);
+            self.canvas.hline(x - 3, x + 3, y, alert);
+            self.canvas.vline(x, y - 3, y + 3, alert);
+            self.canvas.put(x + 2, y - 2, alert);
+            self.canvas.put(x + 2, y + 2, alert);
+        }
+        for (j, trace) in anim.traces.iter().enumerate() {
+            let age = anim.t - trace.flight_time;
+            if !(0.0..presentation::IMPACT_TIME).contains(&age) || !trace.end.detonates() {
+                continue;
+            }
+            let p = trace.end.pos();
+            let x = view.sx(p.x);
+            let y = view.sy(p.y);
+            if age < 0.06 {
+                self.canvas.hline(x - 2, x + 2, y, alert);
+                self.canvas.vline(x, y - 2, y + 2, alert);
+            }
+            let spread = 1 + (age * 30.0) as i32;
+            for i in 0..5 {
+                let dx = ((i * 7 + j * 3) as i32 % (spread * 2 + 1)) - spread;
+                let dy = -((i * 3 + j) as i32 % (spread + 2));
+                self.canvas.put(x + dx, y + dy, dust);
+            }
+        }
+        if anim.done()
+            && !anim.collapsed.is_empty()
+            && anim.settled < presentation::COLLAPSE_TIME
+            && (anim.settled * 30.0) as i32 % 2 == 0
+        {
+            let (w, h) = (self.canvas.w, self.canvas.h);
+            self.canvas.rect_outline(1, 1, w - 2, h - 2, alert);
+        }
+    }
+
+    fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
+        if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 {
+            return Some(format!(
+                "{} {} {}  PICK A MODIFIER",
+                self.input_label("draft_1"),
+                self.input_label("draft_2"),
+                self.input_label("draft_3")
+            ));
+        }
+        let learned = self.save.learned;
+        if learned & LEARN_ANGLE == 0 {
+            Some(format!(
+                "{} / {}  SET ANGLE",
+                self.input_label("left"),
+                self.input_label("right")
+            ))
+        } else if learned & LEARN_POWER == 0 {
+            Some(format!(
+                "{} / {}  SET POWER",
+                self.input_label("up"),
+                self.input_label("down")
+            ))
+        } else if learned & LEARN_FIRE == 0 {
+            Some(format!("{}  FIRE", self.input_label("fire")))
+        } else if learned & LEARN_CRATER == 0 {
+            Some("CRATERS PERSIST - CORRECT FROM THE LAST SHOT".into())
+        } else if learned & LEARN_WIND == 0 {
+            wind.filter(|w| w.abs() > 0.01)
+                .map(|_| "READ WIND - CORRECT AGAINST ITS SIGN".into())
+        } else if learned & LEARN_SHELLS == 0 {
+            Some("SHELLS ARE THE RUN CLOCK - SPEND CAREFULLY".into())
+        } else {
+            None
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_hud(
         &mut self,
@@ -1293,7 +1784,11 @@ impl SaltLine {
         // Instruments, bottom left.
         let mut y = self.canvas.h - 8;
         let shot = Shot::new(self.angle_ticks, self.power_ticks).quantized(loadout);
-        let angle = format!("ANG {:.1}", shot.angle_degrees());
+        let angle = if loadout.angle_quantum_ticks == 1 {
+            format!("ANG {:.2}", shot.angle_degrees())
+        } else {
+            format!("ANG {:.1}", shot.angle_degrees())
+        };
         let power = format!("PWR {}", shot.power_ticks);
         self.canvas.text_small(3, y, &power, fg);
         y -= 7;
@@ -1341,6 +1836,9 @@ impl SaltLine {
             let text = self.status.clone();
             let x = (w - crate::font::small_width(&text) as i32) / 2;
             self.canvas.text_small(x, 24, &text, alert);
+        } else if let Some(text) = self.onboarding_prompt(phase, wind) {
+            let x = (w - crate::font::small_width(&text) as i32) / 2;
+            self.canvas.text_small(x.max(2), 24, &text, alert);
         }
 
         // Only once the shell has actually landed: the sim resolves the clear
@@ -1464,5 +1962,19 @@ impl SaltLine {
         self.centred(cy, "R      RESTORE PURCHASE", fg);
         cy += 8;
         self.centred(cy, "ENTER  END THE RUN", dim);
+    }
+
+    fn render_pause(&mut self) {
+        let pal = self.pal.clone();
+        let fg = pal.get(slot::UI_FG);
+        let dim = pal.get(slot::SKY_LO);
+        let (w, h) = (self.canvas.w, self.canvas.h);
+        self.canvas
+            .plate((w - 150) / 2, (h - 48) / 2, 150, 48, &pal);
+        self.centred((h - 48) / 2 + 8, "PAUSED", fg);
+        let resume = self.input_label("confirm");
+        self.centred((h - 48) / 2 + 21, &format!("{resume} / BACK  RESUME"), fg);
+        let title = self.input_label("replay");
+        self.centred((h - 48) / 2 + 31, &format!("{title}  TITLE"), dim);
     }
 }

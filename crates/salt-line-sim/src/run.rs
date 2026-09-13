@@ -300,6 +300,15 @@ impl Screen {
             .map(|s| abs(s.centre_x() - self.muzzle().x))
     }
 
+    fn salvage_qualifies(&self, detonation: Vec2, lo: &Loadout) -> bool {
+        lo.salvage_radius > 0.0
+            && self
+                .structures
+                .iter()
+                .filter(|s| !s.is_down())
+                .any(|s| abs(s.centre_x() - detonation.x) <= lo.salvage_radius)
+    }
+
     fn fire_options(&self, lo: &Loadout, fuse: Option<f64>, record_path: bool) -> FireOptions {
         FireOptions {
             record_path,
@@ -377,11 +386,7 @@ impl Screen {
         // Salvage: a miss that still cratered within 30 units of a target.
         if lo.salvage_radius > 0.0 && report.collapsed.is_empty() {
             if let Some(det) = report.traces.iter().filter_map(|t| t.detonation()).next() {
-                report.salvage = self
-                    .structures
-                    .iter()
-                    .filter(|s| !s.is_down())
-                    .any(|s| abs(s.centre_x() - det.x) <= lo.salvage_radius);
+                report.salvage = self.salvage_qualifies(det, lo);
             }
         }
 
@@ -484,7 +489,7 @@ pub fn terrain_amplitude(band: u32) -> f64 {
     (1.0 + band as f64 * 0.05).min(2.2)
 }
 
-/// Target count: 1, rising to 2 at band 3 and 3 at band 9.
+/// Maximum target count: 1, rising to 2 at band 3 and 3 at band 9.
 pub fn target_count(band: u32) -> u32 {
     if band >= 9 {
         3
@@ -492,6 +497,19 @@ pub fn target_count(band: u32) -> u32 {
         2
     } else {
         1
+    }
+}
+
+/// Weighted target-count mix for a band. The overlap between tiers keeps
+/// single-, double-, and triple-target economy visible during build testing
+/// instead of switching the whole run at two hard thresholds.
+pub fn target_count_weights(band: u32) -> [u32; 3] {
+    match band {
+        0..=2 => [100, 0, 0],
+        3..=5 => [35, 65, 0],
+        6..=8 => [20, 80, 0],
+        9..=19 => [10, 40, 50],
+        _ => [5, 25, 70],
     }
 }
 
@@ -514,13 +532,13 @@ pub fn template_weights(band: u32, lo: &Loadout) -> [u32; 7] {
             continue;
         }
         w[i] = match t {
-            Template::Flat => 30u32.saturating_sub(band.min(20)),
-            Template::Ridge => 26,
+            Template::Flat => 26u32.saturating_sub(band.min(20)),
+            Template::Ridge => 22,
             Template::Chasm => 20,
-            Template::Mesa => 18,
-            Template::Spires => 14 + late * 2,
-            Template::Overhang => 8 + late * 2,
-            Template::Basin => 10 + late * 2,
+            Template::Mesa => 20,
+            Template::Spires => 18 + late * 2,
+            Template::Overhang => 16 + late * 3,
+            Template::Basin => 16 + late * 2,
         };
     }
     if w.iter().all(|x| *x == 0) {
@@ -550,8 +568,8 @@ fn place_structures(
     width: usize,
     muzzle_x: f64,
     primary_x: f64,
+    count: u32,
 ) -> Vec<Structure> {
-    let count = target_count(band);
     let mut xs: Vec<f64> = Vec::new();
     xs.push(primary_x);
     // Extra targets step back toward the emplacement, never closer than the
@@ -660,7 +678,16 @@ fn assemble(
         terrain::generate(seed, template, &p)
     };
 
-    let structures = place_structures(&field, &mut r_place, band, width, EMPLACEMENT_X, primary_x);
+    let count = r_place.weighted(&target_count_weights(band)) as u32 + 1;
+    let structures = place_structures(
+        &field,
+        &mut r_place,
+        band,
+        width,
+        EMPLACEMENT_X,
+        primary_x,
+        count,
+    );
 
     Screen {
         index,
@@ -934,7 +961,7 @@ impl RunState {
         self.last_apex = Some(report.apex);
 
         if report.salvage {
-            self.grant(1);
+            self.grant(self.loadout.salvage_shells);
         }
 
         if report.cleared {
@@ -1245,6 +1272,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn target_count_mix_overlaps_progression_tiers() {
+        assert_eq!(target_count_weights(0), [100, 0, 0]);
+        assert_eq!(target_count_weights(2), [100, 0, 0]);
+        assert!(target_count_weights(6)[0] > 0);
+        assert_eq!(target_count_weights(6)[2], 0);
+        assert!(target_count_weights(20)[2] > target_count_weights(20)[1]);
+    }
+
+    #[test]
+    fn eligible_overhang_has_signature_weight() {
+        let plain = Loadout::new();
+        assert_eq!(template_weights(8, &plain)[Template::Overhang as usize], 0);
+        let mut unlocked = Loadout::new();
+        unlocked.take(Modifier::Airburst);
+        let weights = template_weights(8, &unlocked);
+        assert!(
+            weights[Template::Overhang as usize] >= weights[Template::Basin as usize],
+            "eligible Overhang should be common enough to exercise its build"
+        );
+    }
+
     // ------------------------------------------------- M3 acceptance: DEMO
     #[test]
     fn undermining_alone_collapses_a_structure_with_no_direct_hit() {
@@ -1406,6 +1455,24 @@ mod tests {
     }
 
     #[test]
+    fn qualifying_salvage_craters_refund_one_shell_per_stack() {
+        let screen = generate_screen(0x005A_1A6E, 0, 320, &Loadout::new());
+        let target_x = screen.structures[0].centre_x();
+        let near = Vec2::new(target_x + 20.0, screen.field.surface_at(target_x + 20.0));
+        let far = Vec2::new(target_x + 31.0, screen.field.surface_at(target_x + 31.0));
+
+        let mut salvage = Loadout::new();
+        salvage.take(Modifier::Salvage);
+        assert!(screen.salvage_qualifies(near, &salvage));
+        assert!(!screen.salvage_qualifies(far, &salvage));
+        assert_eq!(salvage.salvage_shells, 1);
+
+        salvage.take(Modifier::Salvage);
+        assert!(screen.salvage_qualifies(near, &salvage));
+        assert_eq!(salvage.salvage_shells, 2);
+    }
+
+    #[test]
     fn net_drain_is_negative_for_a_perfect_player() {
         // DESIGN §1: a perfect player still trends slowly downward without
         // economy modifiers. One shot costs 1 and refunds 3 — but a screen
@@ -1432,7 +1499,7 @@ mod tests {
             }
             match state.phase {
                 Phase::Firing => {
-                    state.fire(shot(20, 30), false);
+                    state.fire(shot(40, 30), false);
                 }
                 Phase::Cleared => {
                     state.resolve_clear();
@@ -1516,7 +1583,7 @@ mod tests {
         assert_eq!(state.shells, before - 1 + 3 + 1);
         assert_eq!(state.one_shot_streak, 1);
         // A miss on the next screen resets it.
-        state.fire(shot(10, 20), false);
+        state.fire(shot(20, 20), false);
         assert_eq!(state.one_shot_streak, 1, "still standing until the clear");
         let lo = state.loadout.clone();
         let target = state
@@ -1575,7 +1642,7 @@ mod tests {
         state.loadout.take(Modifier::DeadReckoning);
         state.wind_revealed = false;
         assert!(state.displayed_wind().is_none());
-        state.fire(shot(400, 500), false);
+        state.fire(shot(800, 500), false);
         assert!(
             state.displayed_wind().is_some(),
             "wind stays hidden after firing"
@@ -1613,7 +1680,7 @@ mod tests {
         // Clamped to the modifier's +/-25 units.
         assert_eq!(state.emplacement_offset, 25.0);
         assert_eq!(state.screen.muzzle_x, EMPLACEMENT_X + 25.0);
-        state.fire(shot(400, 500), false);
+        state.fire(shot(800, 500), false);
         assert!(!state.reposition(-10.0), "repositioning after firing");
     }
 
@@ -1625,7 +1692,7 @@ mod tests {
             if state.phase != Phase::Firing {
                 break;
             }
-            state.fire(shot(300, 400), false);
+            state.fire(shot(1700, 100), false);
         }
         assert_eq!(state.chalk.len(), 1);
         let mut state = RunState::new(0xCA1, 320);
@@ -1635,7 +1702,7 @@ mod tests {
             if state.phase != Phase::Firing {
                 break;
             }
-            state.fire(shot(300, 400), false);
+            state.fire(shot(1700, 100), false);
         }
         assert_eq!(state.chalk.len(), 2);
     }

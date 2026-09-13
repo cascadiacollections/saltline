@@ -11,7 +11,7 @@
 //! std float methods the sim crate calls.
 //!
 //! Precision is ~1e-16 relative on the reduced interval, which is far tighter
-//! than anything the sim can observe: input angles are quantized to 0.1° ticks
+//! than anything the sim can observe: input angles are quantized to 0.05° ticks
 //! before any trig happens, and the authority on whether a shot connects is
 //! always the fixed-step integration, never the closed-form solve.
 
@@ -20,12 +20,12 @@ pub const TWO_PI: f64 = core::f64::consts::TAU;
 pub const HALF_PI: f64 = core::f64::consts::FRAC_PI_2;
 
 /// Degrees per angle tick. `Vernier` changes the *input* quantization
-/// (DESIGN §4); the tick grid underneath is always 0.1°.
-pub const TICK_DEG: f64 = 0.1;
+/// (DESIGN §4); the integer tick grid underneath is always 0.05°.
+pub const TICK_DEG: f64 = 0.05;
 /// Radians per angle tick.
-pub const TICK_RAD: f64 = 0.1 * PI / 180.0;
+pub const TICK_RAD: f64 = TICK_DEG * PI / 180.0;
 /// Ticks spanning 0°..=90°.
-pub const MAX_ANGLE_TICKS: i32 = 900;
+pub const MAX_ANGLE_TICKS: i32 = 1800;
 
 /// Reciprocal factorials, 3!..19!, odd terms only.
 const R3: f64 = 1.0 / 6.0;
@@ -150,7 +150,7 @@ pub fn bump(d: f64, radius: f64) -> f64 {
     }
 }
 
-/// Nearest angle tick to the direction `(vx, vy)`, clamped to `0..=900`.
+/// Nearest angle tick to the direction `(vx, vy)`, clamped to `0..=1800`.
 ///
 /// A binary search over the tick grid using only `sin`/`cos` of quantized
 /// angles, in place of `atan2`. The cross product
@@ -215,7 +215,7 @@ mod tests {
         assert!(abs(cos(0.0) - 1.0) < 1e-15);
         assert!(abs(cos(HALF_PI)) < 1e-15);
         assert!(abs(sin(PI)) < 1e-15);
-        let (c, s) = dir_from_ticks(450); // 45 degrees
+        let (c, s) = dir_from_ticks(900); // 45 degrees
         assert!(abs(c - s) < 1e-15);
         assert!(abs(hypot(c, s) - 1.0) < 1e-15);
     }

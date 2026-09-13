@@ -6,13 +6,17 @@
 //! looks wrong.
 //!
 //! ```text
-//! version 1
+//! version 2
 //! unlocked 0
+//! volume 75
+//! muted 0
+//! learned 0
+//! bind fire SPACE A
 //! run <seed> <screens> <shells> <shots> <daily>
 //! ```
 
 /// Format version written by this build.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Leaderboard depth kept on disk.
 pub const KEEP: usize = 20;
 
@@ -34,14 +38,37 @@ impl Entry {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
     pub unlocked: bool,
     pub scores: Vec<Entry>,
+    /// Master effects volume, as an integer percentage for a stable text
+    /// representation.
+    pub volume: u8,
+    pub muted: bool,
+    /// Bitset of contextual lessons the player has already demonstrated.
+    pub learned: u32,
+    /// User-editable action bindings: action, keyboard token, pad token.
+    /// Missing actions fall back to the built-in defaults.
+    pub bindings: Vec<(String, String, String)>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
     pub from_the_future: bool,
+}
+
+impl Default for Save {
+    fn default() -> Self {
+        Self {
+            unlocked: false,
+            scores: Vec::new(),
+            volume: 75,
+            muted: false,
+            learned: 0,
+            bindings: Vec::new(),
+            from_the_future: false,
+        }
+    }
 }
 
 impl Save {
@@ -64,6 +91,31 @@ impl Save {
                     }
                 }
                 Some("unlocked") => save.unlocked = it.next() == Some("1"),
+                Some("volume") => {
+                    if let Some(v) = it.next().and_then(|s| s.parse::<u8>().ok()) {
+                        save.volume = v.min(100);
+                    }
+                }
+                Some("muted") => save.muted = it.next() == Some("1"),
+                Some("learned") => {
+                    if let Some(v) = it.next().and_then(|s| s.parse::<u32>().ok()) {
+                        save.learned = v;
+                    }
+                }
+                Some("bind") => {
+                    let parts: Vec<&str> = it.collect();
+                    if parts.len() == 3
+                        && parts
+                            .iter()
+                            .all(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                    {
+                        save.bindings.push((
+                            parts[0].to_ascii_lowercase(),
+                            parts[1].to_ascii_uppercase(),
+                            parts[2].to_ascii_uppercase(),
+                        ));
+                    }
+                }
                 Some("run") => {
                     let parts: Vec<&str> = it.collect();
                     if parts.len() >= 5 {
@@ -96,6 +148,12 @@ impl Save {
         let mut out = String::new();
         out.push_str(&format!("version {VERSION}\n"));
         out.push_str(&format!("unlocked {}\n", if self.unlocked { 1 } else { 0 }));
+        out.push_str(&format!("volume {}\n", self.volume.min(100)));
+        out.push_str(&format!("muted {}\n", if self.muted { 1 } else { 0 }));
+        out.push_str(&format!("learned {}\n", self.learned));
+        for (action, key, pad) in &self.bindings {
+            out.push_str(&format!("bind {action} {key} {pad}\n"));
+        }
         for e in &self.scores {
             out.push_str(&format!(
                 "run {} {} {} {} {}\n",
@@ -163,6 +221,7 @@ mod tests {
         let back = Save::parse(&s.serialize());
         assert_eq!(back.unlocked, s.unlocked);
         assert_eq!(back.scores, s.scores);
+        assert_eq!(back.volume, 75);
     }
 
     #[test]
@@ -241,7 +300,7 @@ mod tests {
 
     #[test]
     fn a_future_version_is_read_as_empty_and_flagged() {
-        for text in ["version 2\nunlocked 1\nrun 4 5 6 7 1\n", "version x\n"] {
+        for text in ["version 3\nunlocked 1\nrun 4 5 6 7 1\n", "version x\n"] {
             let s = Save::parse(text);
             assert!(s.from_the_future, "{text:?}");
             assert!(s.scores.is_empty());
@@ -282,6 +341,29 @@ mod tests {
     #[test]
     fn the_serialised_header_is_the_current_version() {
         let s = Save::default();
-        assert_eq!(s.serialize().lines().next(), Some("version 1"));
+        assert_eq!(s.serialize().lines().next(), Some("version 2"));
+    }
+
+    #[test]
+    fn version_one_and_versionless_files_gain_safe_setting_defaults() {
+        for text in ["version 1\nunlocked 1\n", "unlocked 1\n"] {
+            let s = Save::parse(text);
+            assert_eq!(s.volume, 75);
+            assert!(!s.muted);
+            assert_eq!(s.learned, 0);
+            assert!(s.bindings.is_empty());
+        }
+    }
+
+    #[test]
+    fn settings_and_bindings_round_trip_and_malformed_values_are_safe() {
+        let text = "version 2\nvolume 240\nmuted 1\nlearned 37\n\
+                    bind fire F X\nbind bad-token ! A\n";
+        let s = Save::parse(text);
+        assert_eq!(s.volume, 100);
+        assert!(s.muted);
+        assert_eq!(s.learned, 37);
+        assert_eq!(s.bindings, vec![("fire".into(), "F".into(), "X".into())]);
+        assert_eq!(Save::parse(&s.serialize()), s);
     }
 }

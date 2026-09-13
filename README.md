@@ -29,6 +29,7 @@ failing loudly.
 | `tools/gen_sprites.py` | Regenerates all art; working reference for the terrain math |
 | `site/` | The alpha marketing page, published to GitHub Pages |
 | `tools/build_site.py` | Generates every image on that page out of the art pipeline |
+| `tools/gen_audio.py` | Deterministically generates the original PCM sound effects |
 | `project.godot`, `godot/` | The Godot 4 project. Its root is the repo root, so `res://art/...` is the same path the generator writes |
 | `RELEASING.md` | What the preview is, the release checklist, the playtest matrix, known issues |
 
@@ -45,20 +46,35 @@ godot --path .                   # play
 
 ## Controls
 
-| Key | Action |
-|---|---|
-| Left / Right | Angle, one quantization step (Shift: ten) |
-| Up / Down | Power (Shift: ten steps) |
-| Space | Fire |
-| `[` `]` | Airburst fuse distance |
-| `,` `.` | Reposition the emplacement (needs Enfilade) |
-| 1 / 2 / 3 | Take a draft offer |
-| Enter | Daily run, confirm, continue |
-| S | Seed entry |
-| C | Copy the seed (on the run-over screen) |
-| R | Replay the same seed |
-| F1 | Debug overlay: template, candidate count, camera, buffer size |
-| Esc | Back / quit |
+| Keyboard | Controller | Action |
+|---|---|---|
+| Left / Right | D-pad or left stick | Angle, one quantization step (Shift: ten) |
+| Up / Down | D-pad or left stick | Power (Shift: ten steps) |
+| Space | A | Fire |
+| `[` `]` | LB / RB | Airburst fuse distance |
+| `,` `.` | X / Y | Reposition the emplacement (needs Enfilade) |
+| 1 / 2 / 3 | X / A / B | Take a draft offer |
+| Enter | A | Daily run, confirm, continue |
+| S | — | Seed entry (text entry requires a keyboard) |
+| C | X | Copy the seed (on the run-over screen) |
+| R | Y | Replay the same seed |
+| V | Back/Select | Controls and audio screen |
+| M | Start | Mute/unmute |
+| F1 | — | Debug overlay: template, candidate count, camera, buffer size |
+| Esc | B | Pause / back |
+
+The game automatically changes onboarding labels after the most recent
+keyboard or controller action. Stick aiming uses a 0.45 dead zone and the same
+delayed repeat as the keyboard, so simulation inputs remain quantized.
+
+Volume, mute, learned onboarding steps, and bindings are stored in the
+human-readable `user://salt_line.txt`. The controls screen displays current
+bindings and resets them with R/Y. For practical custom remapping, add lines
+using `bind ACTION KEY PAD`, for example `bind fire F X`. Supported actions are
+`left`, `right`, `up`, `down`, `fire`, `fuse_down`, `fuse_up`,
+`reposition_left`, `reposition_right`, `draft_1`, `draft_2`, `draft_3`,
+`confirm`, `back`, `copy`, `replay`, `controls`, and `mute`. The displayed
+default token names are accepted; unknown or malformed lines are ignored.
 
 The barrel sprite shows the angle rounded to 5°; the numeric field shows the
 true value. That gap is intentional — it is why `Vernier` feels like an
@@ -98,6 +114,7 @@ Regenerate after editing the generator:
 
 ```sh
 python3 tools/gen_sprites.py     # needs Pillow; writes into art/
+python3 tools/gen_audio.py       # standard library only; writes art/audio/
 ```
 
 The 16-colour palette is sampled out of `art/palette_16.png` at runtime rather

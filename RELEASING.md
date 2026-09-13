@@ -12,10 +12,10 @@ It is a preview, not a product. Nothing in it is for sale.
 | | |
 |---|---|
 | Version | `0.1.0-preview` |
-| Shape | Desktop, keyboard only, windowed or fullscreen |
+| Shape | Desktop, keyboard and controller, windowed or fullscreen |
 | Platforms | Linux x86_64, macOS (Apple silicon and Intel), Windows x86_64 |
 | Monetization | **None.** Built without the `monetization` feature; every screen is playable |
-| Save data | Plain text at `user://salt_line.txt`, format version 1 |
+| Save data | Plain text at `user://salt_line.txt`, format version 2 (reads version 1/versionless) |
 | Distribution | CI artifacts and GitHub releases. Not a store build |
 
 Supported toolchain, pinned and checked in:
@@ -98,13 +98,19 @@ release and on all three before any public build.
 **Onboarding**
 
 - [ ] Title → daily run → first screen with no prior save
-- [ ] The first four screens teach the arc; the HUD reads correctly
+- [ ] Non-blocking prompts teach angle, power, fire, correction/craters, wind,
+      shell economy and the first draft; completed prompts stay completed
+- [ ] Prompts swap keyboard/controller labels after the active device changes
 - [ ] Debug overlay (`F1`) toggles and does not disturb the buffer
 
 **Core loop**
 
 - [ ] Angle and power, with and without `Shift`, at both ends of their ranges
 - [ ] Firing, craters persisting, chalk marks after a miss
+- [ ] Muzzle/impact/dust/debris effects and restrained shake line up with the
+      recorded trace; collapse emphasis does not alter replay outcomes
+- [ ] Fire/flight, terrain, structure, ricochet, airburst, collapse, draft,
+      low-shell and UI sounds are audible and distinct
 - [ ] Structures: intact → leaning → collapsed, for **all five** silhouettes
 - [ ] Screen clear hold, then advance
 - [ ] Shell economy: earning, spending, reaching zero
@@ -128,6 +134,10 @@ release and on all three before any public build.
 
 - [ ] Resize narrow and wide; the width floats, the height stays fixed
 - [ ] Fullscreen and back
+- [ ] Controller menus, aim/power repeat and dead zone, fire, draft, fuse,
+      reposition, pause/back, copy and replay
+- [ ] Controls screen volume/mute persist; edited `bind` lines work; reset
+      defaults restores the documented layout
 - [ ] No filtering, no shimmer while panning, at 1x and at large scales
 
 **Game over**
@@ -140,6 +150,8 @@ release and on all three before any public build.
       new file
 - [ ] Corrupt the save by hand (truncate it, garbage a line) and confirm the
       board survives minus the damaged record
+- [ ] Load a version-1 and versionless save; settings gain defaults. Load a
+      future-version save; verify it is not overwritten
 
 ---
 
@@ -153,8 +165,10 @@ Copy this into the release notes, trimmed to what is still true.
   off-by-default feature flag and has no storefront behind it.
 - Binaries are unsigned and un-notarized. macOS Gatekeeper and Windows
   SmartScreen will both warn. See "Owner action required".
-- No audio. The architecture describes it; none is implemented.
-- Keyboard only. No gamepad, no remapping, no accessibility options.
+- Remapping is intentionally plain-text in this preview rather than an
+  interactive capture UI. The in-game controls screen documents the format,
+  displays active bindings and can reset defaults.
+- Seed text entry and the F1 developer overlay require a keyboard.
 - Programmer art throughout. Dimensions and the 16-colour palette are fixed and
   are the contract a real artist would work against.
 

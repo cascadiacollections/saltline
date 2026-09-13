@@ -632,7 +632,7 @@ mod tests {
         let t = simulate_shell(
             &w,
             Vec2::new(30.0, 55.0),
-            Shot::new(450, 700).velocity(&lo),
+            Shot::new(900, 700).velocity(&lo),
             &lo,
             &FireOptions::default(),
             1.0,
@@ -661,7 +661,7 @@ mod tests {
             let a = simulate_shell(
                 &calm,
                 o,
-                Shot::new(450, power).velocity(&lo),
+                Shot::new(900, power).velocity(&lo),
                 &lo,
                 &FireOptions::default(),
                 1.0,
@@ -671,7 +671,7 @@ mod tests {
             let b = simulate_shell(
                 &windy,
                 o,
-                Shot::new(450, power).velocity(&lo),
+                Shot::new(900, power).velocity(&lo),
                 &lo,
                 &FireOptions::default(),
                 1.0,
@@ -706,7 +706,7 @@ mod tests {
         let calm = simulate_shell(
             &world(&f, &[], 0.0),
             Vec2::new(30.0, 25.0),
-            Shot::new(450, 600).velocity(&lo),
+            Shot::new(900, 600).velocity(&lo),
             &lo,
             &opts,
             1.0,
@@ -716,7 +716,7 @@ mod tests {
         let windy = simulate_shell(
             &world(&f, &[], 6.0),
             Vec2::new(30.0, 25.0),
-            Shot::new(450, 600).velocity(&lo),
+            Shot::new(900, 600).velocity(&lo),
             &lo,
             &opts,
             1.0,
@@ -740,7 +740,7 @@ mod tests {
             simulate_shell(
                 &world(&f, &[], wind),
                 Vec2::new(30.0, 25.0),
-                Shot::new(450, 500).velocity(lo),
+                Shot::new(900, 500).velocity(lo),
                 lo,
                 &FireOptions::default(),
                 1.0,
@@ -769,7 +769,7 @@ mod tests {
             let t = simulate_shell(
                 &w,
                 Vec2::new(30.0, 45.0),
-                Shot::new(300, power).velocity(&lo),
+                Shot::new(600, power).velocity(&lo),
                 &lo,
                 &FireOptions::default(),
                 1.0,
@@ -819,7 +819,7 @@ mod tests {
         let t = simulate_shell(
             &w,
             Vec2::new(30.0, 25.0),
-            Shot::new(500, 700).velocity(&lo),
+            Shot::new(1000, 700).velocity(&lo),
             &lo,
             &opts,
             1.0,
@@ -846,7 +846,7 @@ mod tests {
         let shallow = simulate_shell(
             &world(&f, &[], 0.0),
             Vec2::new(30.0, 33.0),
-            Shot::new(60, 900).velocity(&lo),
+            Shot::new(120, 900).velocity(&lo),
             &lo,
             &FireOptions::default(),
             1.0,
@@ -858,7 +858,7 @@ mod tests {
         let steep = simulate_shell(
             &world(&f, &[], 0.0),
             Vec2::new(30.0, 33.0),
-            Shot::new(800, 700).velocity(&lo),
+            Shot::new(1600, 700).velocity(&lo),
             &lo,
             &FireOptions::default(),
             1.0,
@@ -876,7 +876,7 @@ mod tests {
         let t = simulate_shell(
             &world(&f, &[], 0.0),
             Vec2::new(30.0, 65.0),
-            Shot::new(700, 600).velocity(&lo),
+            Shot::new(1400, 600).velocity(&lo),
             &lo,
             &FireOptions::default(),
             1.0,
@@ -894,7 +894,7 @@ mod tests {
         let t2 = simulate_shell(
             &world(&f, &[], 0.0),
             Vec2::new(30.0, 65.0),
-            Shot::new(700, 600).velocity(&plain),
+            Shot::new(1400, 600).velocity(&plain),
             &plain,
             &FireOptions::default(),
             1.0,
@@ -913,7 +913,7 @@ mod tests {
         let traces = fire(
             &world(&f, &[], 0.0),
             Vec2::new(30.0, 45.0),
-            Shot::new(450, 600),
+            Shot::new(900, 600),
             &lo,
             &FireOptions::default(),
         );
@@ -936,7 +936,7 @@ mod tests {
             simulate_shell(
                 &world(&f, &[], 3.7),
                 Vec2::new(30.0, 49.0),
-                Shot::new(437, 613).velocity(&lo),
+                Shot::new(874, 613).velocity(&lo),
                 &lo,
                 &FireOptions::default(),
                 1.0,
@@ -977,10 +977,10 @@ mod tests {
     #[test]
     fn barrel_frames_are_five_degree_steps() {
         assert_eq!(Shot::new(0, 0).barrel_frame(), 0);
-        assert_eq!(Shot::new(24, 0).barrel_frame(), 0);
-        assert_eq!(Shot::new(26, 0).barrel_frame(), 1);
-        assert_eq!(Shot::new(450, 0).barrel_frame(), 9);
-        assert_eq!(Shot::new(900, 0).barrel_frame(), 18);
+        assert_eq!(Shot::new(49, 0).barrel_frame(), 0);
+        assert_eq!(Shot::new(51, 0).barrel_frame(), 1);
+        assert_eq!(Shot::new(900, 0).barrel_frame(), 9);
+        assert_eq!(Shot::new(1800, 0).barrel_frame(), 18);
     }
 
     #[test]
