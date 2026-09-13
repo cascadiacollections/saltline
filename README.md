@@ -15,6 +15,8 @@ Deterministic Rust simulation core, Godot 4 presentation layer via `gdext`.
 | `crates/salt-line-godot` | Rendering, input, UI. Draws what the sim says is true |
 | `art/` | Native-resolution sprites, 16-colour palette, reference scene |
 | `tools/gen_sprites.py` | Regenerates all art; working reference for the terrain math |
+| `site/` | The alpha marketing page, published to GitHub Pages |
+| `tools/build_site.py` | Generates every image on that page out of the art pipeline |
 | `project.godot`, `godot/` | The Godot 4 project. Its root is the repo root, so `res://art/...` is the same path the generator writes |
 
 ## Quick start
@@ -92,6 +94,23 @@ Replace these with hand-drawn work before release, but keep the dimensions and
 the palette fixed. The gap to close first: only the water tower has all three
 damage states drawn. Every other silhouette falls back to its intact sprite
 while leaning, and to a procedural rubble mound when it goes down.
+
+## The marketing page
+
+`site/` is a static page — no framework, no build step for the markup, no
+third-party requests. Its media is not hand-exported: `tools/build_site.py`
+imports `tools/gen_sprites.py` and draws the hero screen, the animated shot and
+the social card with the same palette, rasteriser and native grid the game uses.
+Change a sprite and the page changes with it.
+
+```sh
+python3 tools/build_site.py           # needs Pillow; writes into site/assets/
+python3 -m http.server -d site 8000   # preview at http://localhost:8000
+```
+
+`.github/workflows/pages.yml` regenerates the media on every push to `main` that
+touches `site/`, `art/` or either generator, then publishes `site/` to Pages:
+<https://cascadiacollections.github.io/saltline/>.
 
 ## The three things that matter
 

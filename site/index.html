@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Salt Line — artillery roguelike, alpha</title>
+<meta name="description" content="Salt Line is a single-player artillery roguelike: endless procedural horizon, persistent terrain damage, shells as the run resource. Deterministic Rust core, Godot 4 presentation. Free, open source, alpha.">
+<link rel="canonical" href="https://cascadiacollections.github.io/saltline/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Salt Line — artillery roguelike, alpha">
+<meta property="og:description" content="Endless procedural horizon. Persistent terrain damage. Shells are the run resource. Deterministic Rust sim, Godot 4 presentation. Free and open source.">
+<meta property="og:url" content="https://cascadiacollections.github.io/saltline/">
+<meta property="og:image" content="https://cascadiacollections.github.io/saltline/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#2e2a26">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="assets/favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="brand" href="#top">
+    <img src="assets/sprites/tank_base.png" alt="" width="30" height="12" class="px brand-spr">
+    <span>SALT&nbsp;LINE</span>
+  </a>
+  <nav aria-label="Sections">
+    <a href="#what">What it is</a>
+    <a href="#media">Media</a>
+    <a href="#modifiers">Modifiers</a>
+    <a href="#build">Build it</a>
+    <a class="ext" href="https://github.com/cascadiacollections/saltline">Source ↗</a>
+  </nav>
+</header>
+
+<main id="main">
+
+<section id="top" class="hero">
+  <div class="hero-art" aria-hidden="true">
+    <img src="assets/hero_wide.png" alt="" class="px" width="1280" height="360" fetchpriority="high">
+    <div class="crt"></div>
+  </div>
+
+  <div class="hero-copy">
+    <p class="kicker"><span class="blink">▌</span> ALPHA 0.1 &nbsp;·&nbsp; FREE &nbsp;·&nbsp; SOURCE INCLUDED</p>
+    <h1>Salt&nbsp;Line</h1>
+    <p class="tagline">A single-player artillery roguelike. Endless procedural horizon,
+      terrain that stays broken, shells as the only currency, and a fresh
+      modifier draft every four screens.</p>
+
+    <ul class="badges" aria-label="At a glance">
+      <li>Deterministic sim</li>
+      <li>320×180, 16 colours</li>
+      <li>Rust + Godot 4</li>
+      <li>No ads, no telemetry</li>
+    </ul>
+
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/cascadiacollections/saltline">Get the source</a>
+      <a class="btn" href="#build">Build &amp; play</a>
+      <a class="btn ghost" href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Read the design doc</a>
+    </div>
+
+    <p class="fineprint">Linux · macOS · Windows &nbsp;—&nbsp; builds from source today, packaged
+      builds when the alpha stops moving.</p>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------ shareware -->
+<section class="shareware" aria-labelledby="sw-h">
+  <div class="panel dosbox">
+    <div class="dosbar"><span>README.TXT</span><span class="dots">■ ■ ■</span></div>
+<pre class="dos">
+              S A L T   L I N E   —   ALPHA RELEASE
+              ======================================
+
+  DISTRIBUTION .... Unlimited. Copy it, mirror it, fork it.
+  EPISODES ........ One. There is no Episode Two to order.
+  REGISTRATION .... Not required. There is no key, no nag
+                    screen, no timer, and no crippled build.
+  PRICE ........... $0.00 US. The repository is the product.
+  SUPPORT ......... File an issue. That is the whole system.
+
+  IF YOU LIKE IT: star the repo, send a seed that broke it,
+  or draw a sprite. That is the registration fee.
+</pre>
+  </div>
+  <div class="sw-copy">
+    <h2 id="sw-h">Shareware ethics, current engineering</h2>
+    <p>Salt Line borrows the part of 1994 worth keeping: the whole game in one
+      download, no gate in the middle, and a text file that tells you the truth.
+      What it doesn't borrow is the tooling. Underneath the dithered sky is a
+      dependency-free Rust simulation with a proof obligation attached to every
+      screen it shows you.</p>
+    <p class="note">This is an <strong>alpha</strong>. Things move, saves are just
+      seeds, and the art is honest programmer art awaiting a hand-drawn pass.</p>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------- what -->
+<section id="what" aria-labelledby="what-h">
+  <h2 id="what-h">The three things that matter</h2>
+  <div class="cards">
+    <article class="card">
+      <h3><span class="num">01</span> Wind is an acceleration</h3>
+      <p>Not a velocity offset. Lateral drift grows with the <em>square</em> of
+        flight time, so a lofted shot is punished far harder than a flat one.
+        Most of the difficulty curve falls straight out of that one decision.</p>
+      <code>vx += wind * dt</code>
+    </article>
+    <article class="card">
+      <h3><span class="num">02</span> Every screen is proven solvable</h3>
+      <p>Before a screen is drawn, the generator finds three or more surviving
+        trajectory candidates per target — checked against your current loadout
+        and verified by the same damage model the game runs. If it can't, it
+        rolls again. You are never handed an impossible board.</p>
+      <code>MIN_SOLUTIONS = 3</code>
+    </article>
+    <article class="card">
+      <h3><span class="num">03</span> Determinism is a feature</h3>
+      <p>Same seed plus same inputs gives a byte-identical final state on Linux,
+        macOS and Windows — enforced in CI by comparing a digest across all
+        three. No libm, no thread RNG, no map iteration in any state-affecting
+        path. A run saves as a seed and a shot log.</p>
+      <code>DT = 1.0 / 120.0 · f64 throughout</code>
+    </article>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------- media -->
+<section id="media" aria-labelledby="media-h">
+  <h2 id="media-h">Media</h2>
+  <p class="lede">Everything below is generated by the game's own art pipeline —
+    same palette, same native grid, integer scaling only.</p>
+
+  <figure class="shot-figure">
+    <img src="assets/shot.gif" alt="Animated: a shell arcs across a dithered night sky, drifting with the wind, and brings a leaning water tower down. A crater stays in the sand." class="px" width="640" height="360" loading="lazy">
+    <figcaption>One shot, sampled off a real fixed-step integration at
+      <code>dt = 1/120</code> with wind at +3.2. The tower comes down; the crater
+      stays for the rest of the run.</figcaption>
+  </figure>
+
+  <div class="media-grid">
+    <figure>
+      <img src="assets/scene_4x.png" alt="Reference screen at 4x: dithered sky, layered sand and bedrock, a leaning water tower, a radio mast and a derrick on the horizon." class="px" width="1280" height="720" loading="lazy">
+      <figcaption>The reference screen. Terrain is a heightfield with sand, rock
+        and bedrock layers — each material takes damage differently.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/sprite_sheet_4x.png" alt="Contact sheet of every sprite: three emplacement variants, water tower states, derrick, mast, silo, pylon, and the barrel angle strip." class="px" width="1840" height="488" loading="lazy">
+      <figcaption>Every silhouette in the game, plus the 19-frame barrel strip.</figcaption>
+    </figure>
+  </div>
+
+  <div class="split">
+    <figure class="states">
+      <figcaption class="top">Structures remember: intact → leaning → collapsed</figcaption>
+      <div class="state-row">
+        <div><img src="assets/sprites/tower_intact.png" alt="Water tower, intact" class="px x6" width="17" height="34" loading="lazy"><span>INTACT</span></div>
+        <div><img src="assets/sprites/tower_leaning.png" alt="Water tower, leaning after partial damage" class="px x6" width="17" height="34" loading="lazy"><span>LEANING</span></div>
+        <div><img src="assets/sprites/tower_collapsed.png" alt="Water tower, collapsed into rubble" class="px x6" width="17" height="8" loading="lazy"><span>COLLAPSED</span></div>
+      </div>
+    </figure>
+
+    <figure class="ranging">
+      <figcaption class="top">Ranging: the barrel shows 5°, the instrument shows the truth</figcaption>
+      <div class="sweep-wrap">
+        <div class="sweep" role="img" aria-label="Animated barrel sweeping through its 19 drawn angles"></div>
+        <p class="readout"><span id="readout">ANGLE 45.0°</span></p>
+      </div>
+      <p class="small">The sprite is quantized to 5°. The numeric field is not.
+        That gap is the whole reason the <em>Vernier</em> modifier feels like an
+        instrument instead of a stat.</p>
+    </figure>
+  </div>
+
+  <figure class="palette">
+    <img src="assets/palette_16.png" alt="The sixteen-colour palette: four terrain tones, three sky tones, three hull tones, three structure tones, two UI tones and one alert orange." class="px" width="768" height="80" loading="lazy">
+    <figcaption>Sixteen colours, fixed. The PNG is sampled at runtime rather than
+      transcribed into code, so the image stays the single source of truth.</figcaption>
+  </figure>
+</section>
+
+<!-- --------------------------------------------------------- modifiers -->
+<section id="modifiers" aria-labelledby="mod-h">
+  <h2 id="mod-h">Draft every four screens</h2>
+  <p class="lede">Twenty-four modifiers, four columns, three offers. They are data
+    rows folded into a loadout — never a branch in the ballistics core.</p>
+  <div class="mods">
+    <div class="mod-col"><h3>Shell</h3><ul>
+      <li>Ballast</li><li>Sabot</li><li>Airburst</li><li>Skipstone</li>
+      <li>Auger</li><li>Cluster</li><li>Thermal Lance</li><li>Featherweight</li>
+    </ul></div>
+    <div class="mod-col"><h3>Instrument</h3><ul>
+      <li>Vernier</li><li>Anemometer</li><li>Rangefinder</li><li>Chalk Marks</li>
+      <li>Dead Reckoning</li><li>Plumb Line</li>
+    </ul></div>
+    <div class="mod-col"><h3>Economy</h3><ul>
+      <li>Salvage</li><li>Quartermaster</li><li>Depot</li><li>Standing Orders</li>
+      <li>Scavenger Rites</li><li>Forced March</li>
+    </ul></div>
+    <div class="mod-col"><h3>Structural</h3><ul>
+      <li>Enfilade</li><li>Sapper's Eye</li><li>Long Lens</li><li>Storm Front</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------- build -->
+<section id="build" aria-labelledby="build-h">
+  <h2 id="build-h">Build it &amp; play</h2>
+  <div class="build-grid">
+    <div>
+      <div class="codeblock">
+        <button class="copy" type="button" data-copy="#quickstart">Copy</button>
+<pre id="quickstart"><code>git clone https://github.com/cascadiacollections/saltline
+cd saltline
+cargo test                       # sim + presentation, no engine needed
+cargo build -p salt-line-godot   # the GDExtension
+godot --path .                   # play</code></pre>
+      </div>
+      <p class="small">Build before you launch: the engine loads the extension out
+        of <code>target/</code>, so a stale build is what it will run.</p>
+
+      <h3>Controls</h3>
+      <table class="keys">
+        <tbody>
+          <tr><th scope="row"><kbd>←</kbd> <kbd>→</kbd></th><td>Angle, one quantization step (<kbd>Shift</kbd>: ten)</td></tr>
+          <tr><th scope="row"><kbd>↑</kbd> <kbd>↓</kbd></th><td>Power (<kbd>Shift</kbd>: ten steps)</td></tr>
+          <tr><th scope="row"><kbd>Space</kbd></th><td>Fire</td></tr>
+          <tr><th scope="row"><kbd>[</kbd> <kbd>]</kbd></th><td>Airburst fuse distance</td></tr>
+          <tr><th scope="row"><kbd>,</kbd> <kbd>.</kbd></th><td>Reposition the emplacement (needs Enfilade)</td></tr>
+          <tr><th scope="row"><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></th><td>Take a draft offer</td></tr>
+          <tr><th scope="row"><kbd>S</kbd> / <kbd>C</kbd> / <kbd>R</kbd></th><td>Seed entry / copy seed / replay seed</td></tr>
+          <tr><th scope="row"><kbd>F1</kbd></th><td>Debug overlay</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <aside class="reqs panel">
+      <h3>System requirements</h3>
+      <dl>
+        <dt>OS</dt><dd>Linux, macOS, Windows</dd>
+        <dt>Engine</dt><dd>Godot 4 (presentation only)</dd>
+        <dt>Toolchain</dt><dd>Rust, stable</dd>
+        <dt>Internal res</dt><dd>320×180, integer-scaled</dd>
+        <dt>Colours</dt><dd>16, fixed</dd>
+        <dt>Network</dt><dd>None. Ever.</dd>
+        <dt>Save file</dt><dd>(seed, width, shot log)</dd>
+        <dt>Dependencies</dt><dd>The sim crate has none — not even <code>rand</code></dd>
+      </dl>
+      <h3>Headless tools</h3>
+      <ul class="tools">
+        <li><code>batch</code> — 5,000 screens across 50 seeds, solvability gate</li>
+        <li><code>determinism</code> — 200 runs replayed and hashed</li>
+        <li><code>--salt-gallery</code> — one frame per shape template</li>
+        <li><code>--salt-shot</code> — screenshot any seed and screen</li>
+      </ul>
+    </aside>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------- alpha -->
+<section class="alpha-note" aria-labelledby="alpha-h">
+  <h2 id="alpha-h">What "alpha" means here</h2>
+  <ul class="checks">
+    <li class="yes">The simulation is done and tested: ballistics, terrain damage, drafting, solvability, determinism.</li>
+    <li class="yes">It is playable end to end, from the first screen to the run-over seed you can copy and share.</li>
+    <li class="no">The art is generated programmer art. Only the water tower has all three damage states drawn.</li>
+    <li class="no">There is no audio pass, no packaged build, and no settings menu worth the name.</li>
+    <li class="no">Balance numbers move between commits. Seeds stay reproducible; they do not stay comparable across versions.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer>
+  <div class="foot-grid">
+    <div>
+      <p class="brand-foot">SALT&nbsp;LINE</p>
+      <p class="small">Single-player artillery roguelike.<br>Deterministic Rust core, Godot 4 presentation.</p>
+    </div>
+    <nav aria-label="Project links">
+      <a href="https://github.com/cascadiacollections/saltline">Repository</a>
+      <a href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Design doc</a>
+      <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md">README</a>
+      <a href="https://github.com/cascadiacollections/saltline/issues">Issues</a>
+    </nav>
+    <p class="small colophon">No code, assets or naming lineage from any existing
+      artillery game. This page ships no trackers, no cookies and no third-party
+      requests; every image on it is produced by
+      <code>tools/build_site.py</code> from the game's own art pipeline.</p>
+  </div>
+</footer>
+
+<script src="main.js" defer></script>
+</body>
+</html>
