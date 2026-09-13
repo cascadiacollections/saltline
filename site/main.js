@@ -34,9 +34,13 @@
       (entries) => {
         entries.forEach((e) => {
           if (!e.isIntersecting) return;
-          links.forEach((a) =>
-            a.toggleAttribute("aria-current", a.getAttribute("href") === "#" + e.target.id)
-          );
+          links.forEach((a) => {
+            if (a.getAttribute("href") === "#" + e.target.id) {
+              a.setAttribute("aria-current", "true");
+            } else {
+              a.removeAttribute("aria-current");
+            }
+          });
         });
       },
       { rootMargin: "-45% 0px -50% 0px" }
@@ -45,7 +49,7 @@
   }
 
   // ------------------------------------------------- barrel angle readout
-  // Mirrors the CSS sweep: 19 drawn frames, 5 degrees apart, alternating.
+  // Mirrors the CSS sweep: 19 drawn frames, 18 transitions, alternating.
   // The sprite can only show the quantized angle; the field shows the true
   // one, which is the entire point of the Vernier modifier.
   const readout = document.getElementById("readout");
@@ -56,7 +60,7 @@
       readout.textContent = "BARREL 45° · TRUE 45.0°";
     } else {
       const FRAMES = 19;
-      const STEP_MS = 200; // 3.8s / 19, matching the CSS animation
+      const STEP_MS = 200; // 3.6s / 18, matching the CSS animation
       let frame = 0;
       let dir = 1;
       let jitter = 0;

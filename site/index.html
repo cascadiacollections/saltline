@@ -139,10 +139,13 @@
     same palette, same native grid, integer scaling only.</p>
 
   <figure class="shot-figure">
-    <img src="assets/shot.gif" alt="Animated: a shell arcs across a dithered night sky, drifting with the wind, and brings a leaning water tower down. A crater stays in the sand." class="px" width="640" height="360" loading="lazy">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="assets/shot_static.png">
+      <img src="assets/shot.gif" alt="A shell impact brings a leaning water tower down, leaving its wreckage on the sand." class="px" width="640" height="360" loading="lazy">
+    </picture>
     <figcaption>One shot, sampled off a real fixed-step integration at
-      <code>dt = 1/120</code> with wind at +3.2. The tower comes down; the crater
-      stays for the rest of the run.</figcaption>
+      <code>dt = 1/120</code> with wind at +3.2. The tower comes down, and its
+      wreckage stays for the rest of the run.</figcaption>
   </figure>
 
   <div class="media-grid">
@@ -152,7 +155,7 @@
         and bedrock layers — each material takes damage differently.</figcaption>
     </figure>
     <figure>
-      <img src="assets/sprite_sheet_4x.png" alt="Contact sheet of every sprite: three emplacement variants, water tower states, derrick, mast, silo, pylon, and the barrel angle strip." class="px" width="1840" height="488" loading="lazy">
+      <img src="assets/sprite_sheet_4x.png" alt="Contact sheet of every sprite: three emplacement variants, water tower states, derrick, mast, silo, pylon, and the barrel angle strip." class="px" width="3312" height="488" loading="lazy">
       <figcaption>Every silhouette in the game, plus the 19-frame barrel strip.</figcaption>
     </figure>
   </div>
@@ -171,7 +174,7 @@
       <figcaption class="top">Ranging: the barrel shows 5°, the instrument shows the truth</figcaption>
       <div class="sweep-wrap">
         <div class="sweep" role="img" aria-label="Animated barrel sweeping through its 19 drawn angles"></div>
-        <p class="readout"><span id="readout">ANGLE 45.0°</span></p>
+        <p class="readout"><span id="readout">BARREL 0° · TRUE 0.0°</span></p>
       </div>
       <p class="small">The sprite is quantized to 5°. The numeric field is not.
         That gap is the whole reason the <em>Vernier</em> modifier feels like an
