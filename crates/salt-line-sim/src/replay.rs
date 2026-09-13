@@ -227,7 +227,7 @@ mod tests {
             match state.phase {
                 Phase::Firing => {
                     // Aim vaguely at the nearest target, then wobble.
-                    let angle = r.range_u32(150, 800) as i32;
+                    let angle = r.range_u32(300, 1600) as i32;
                     let power = r.range_u32(250, 1000) as i32;
                     if state.fire(shot(angle, power), false).is_none() {
                         break;
@@ -264,13 +264,29 @@ mod tests {
 
     #[test]
     fn drafts_are_carried_in_the_log() {
-        let played = play(31337, 320, 400);
+        let mut played = RunState::new(31337, 320);
+        while played.screen_index < crate::BAND_LEN {
+            let target = played
+                .screen
+                .structures
+                .iter()
+                .position(|s| !s.is_down())
+                .expect("screen has no standing target");
+            let candidates = crate::solver::solve_target(&played.screen, &played.loadout, target);
+            played.fuse = played.screen.default_fuse(target).unwrap_or(0.0);
+            played.fire(candidates[0].shot, false);
+            played.resolve_clear();
+            if played.phase == Phase::Drafting {
+                played.take_offer(0);
+            }
+        }
         let drafts = played
             .log
             .iter()
             .filter(|e| e.angle_ticks == DRAFT_MARK)
             .count();
         assert!(drafts > 0, "the run never reached a draft");
+        played.fire(shot(900, 500), false);
         // Dropping the draft entries changes the reconstruction, which is why
         // they have to be in the log at all.
         let mut stripped = Replay::of(&played);
@@ -289,7 +305,7 @@ mod tests {
             .iter()
             .position(|e| e.angle_ticks != DRAFT_MARK)
             .unwrap();
-        tweaked.log[idx].angle_ticks += 5;
+        tweaked.log[idx].angle_ticks += 10;
         let h1 = tweaked.final_hash().unwrap();
         assert_ne!(h0, h1, "hash is blind to a changed shot");
     }

@@ -103,7 +103,7 @@ pub struct Effect {
     pub crater_mult: f64,
     pub blast_mult: f64,
     pub mass_mult: f64,
-    /// Tightest input quantization granted, in 0.1-degree ticks.
+    /// Divisor applied to angle quantization per stack (`1` is neutral).
     pub angle_quantum: i32,
     pub ricochet_bounces: u8,
     pub cluster_submunitions: u8,
@@ -120,6 +120,8 @@ pub struct Effect {
     pub enfilade_units: f64,
     /// Radius inside which a near miss still refunds.
     pub salvage_radius: f64,
+    /// Shells refunded by a qualifying near miss, per stack.
+    pub salvage_shells: i32,
     pub flags: u32,
 }
 
@@ -131,7 +133,7 @@ impl Effect {
         crater_mult: 1.0,
         blast_mult: 1.0,
         mass_mult: 1.0,
-        angle_quantum: ANGLE_QUANTUM_TICKS,
+        angle_quantum: 1,
         ricochet_bounces: 0,
         cluster_submunitions: 0,
         chalk_marks: 0,
@@ -142,6 +144,7 @@ impl Effect {
         reserve_cap: i32::MAX,
         enfilade_units: 0.0,
         salvage_radius: 0.0,
+        salvage_shells: 0,
         flags: 0,
     };
 }
@@ -285,12 +288,12 @@ pub static POOL: [Entry; MODIFIER_COUNT] = [
     entry(
         Modifier::Vernier,
         "VERNIER",
-        "Angle quantization 0.5 -> 0.1 degrees.",
+        "Angle quantization 0.5 -> 0.1 -> 0.05 degrees.",
         Tag::Precision,
         Category::Instrument,
         2,
         Effect {
-            angle_quantum: 1,
+            angle_quantum: 5,
             ..Effect::NONE
         },
     ),
@@ -359,12 +362,13 @@ pub static POOL: [Entry; MODIFIER_COUNT] = [
     entry(
         Modifier::Salvage,
         "SALVAGE",
-        "Misses cratering within 30 units of a target refund 1.",
+        "Misses cratering within 30 units refund 1 shell per stack.",
         Tag::Economy,
         Category::Economy,
         2,
         Effect {
             salvage_radius: 30.0,
+            salvage_shells: 1,
             ..Effect::NONE
         },
     ),
@@ -533,6 +537,7 @@ pub struct Loadout {
     pub reserve_cap: i32,
     pub enfilade_units: f64,
     pub salvage_radius: f64,
+    pub salvage_shells: i32,
     pub flags: u32,
 }
 
@@ -556,6 +561,7 @@ impl Default for Loadout {
             reserve_cap: i32::MAX,
             enfilade_units: 0.0,
             salvage_radius: 0.0,
+            salvage_shells: 0,
             flags: 0,
         };
         l.recompute();
@@ -619,6 +625,7 @@ impl Loadout {
             reserve_cap: i32::MAX,
             enfilade_units: 0.0,
             salvage_radius: 0.0,
+            salvage_shells: 0,
             flags: 0,
         };
         *self = base;
@@ -640,7 +647,9 @@ impl Loadout {
                 self.refund_mult *= e.refund_mult;
             }
             let n32 = n as i32;
-            self.angle_quantum_ticks = self.angle_quantum_ticks.min(e.angle_quantum);
+            for _ in 0..n {
+                self.angle_quantum_ticks = (self.angle_quantum_ticks / e.angle_quantum).max(1);
+            }
             self.ricochet_bounces += e.ricochet_bounces * n;
             self.cluster_submunitions += e.cluster_submunitions * n;
             self.chalk_marks += e.chalk_marks * n;
@@ -649,6 +658,7 @@ impl Loadout {
             self.reserve_cap = self.reserve_cap.min(e.reserve_cap);
             self.enfilade_units += e.enfilade_units * n as f64;
             self.salvage_radius = self.salvage_radius.max(e.salvage_radius);
+            self.salvage_shells += e.salvage_shells * n32;
             self.flags |= e.flags;
         }
     }
@@ -776,13 +786,27 @@ mod tests {
     #[test]
     fn vernier_tightens_quantization() {
         let l = Loadout::new();
-        assert_eq!(l.angle_quantum_ticks, 5);
-        assert_eq!(l.quantize_angle(452), 450);
-        assert_eq!(l.quantize_angle(453), 455);
+        assert_eq!(l.angle_quantum_ticks, 10);
+        assert_eq!(l.quantize_angle(904), 900);
+        assert_eq!(l.quantize_angle(906), 910);
         let mut v = Loadout::new();
         v.take(Modifier::Vernier);
+        assert_eq!(v.angle_quantum_ticks, 2);
+        assert_eq!(v.quantize_angle(905), 906);
+        v.take(Modifier::Vernier);
         assert_eq!(v.angle_quantum_ticks, 1);
-        assert_eq!(v.quantize_angle(453), 453);
+        assert_eq!(v.quantize_angle(907), 907);
+    }
+
+    #[test]
+    fn salvage_refund_scales_with_stacks() {
+        let mut l = Loadout::new();
+        l.take(Modifier::Salvage);
+        assert_eq!(l.salvage_radius, 30.0);
+        assert_eq!(l.salvage_shells, 1);
+        l.take(Modifier::Salvage);
+        assert_eq!(l.salvage_radius, 30.0);
+        assert_eq!(l.salvage_shells, 2);
     }
 
     #[test]

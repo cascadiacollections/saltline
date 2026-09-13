@@ -283,7 +283,7 @@ Tags mark the build each supports: **DRIFT**, **DEMO**, **PRECISION**,
 
 | Name | Effect | Tag | Stacks |
 |---|---|---|---|
-| **Vernier** | Angle quantization from 0.5° to 0.1°. | PRECISION | 2 |
+| **Vernier** | Angle quantization from 0.5° to 0.1°, then 0.05°. | PRECISION | 2 |
 | **Anemometer** | Wind value shown to one decimal instead of rounded. | PRECISION | 1 |
 | **Rangefinder** | Exact horizontal distance to nearest target displayed. | PRECISION | 1 |
 | **Chalk Marks** | Previous shot's landing point stays marked on the terrain. | PRECISION | 2 |

@@ -12,12 +12,12 @@
 //!
 //! Exit status is non-zero if any screen failed to validate, so CI can gate on it.
 
-use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier};
+use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::screen_seed;
-use salt_line_sim::run::{generate_screen, Screen};
+use salt_line_sim::run::{generate_screen, refund, Screen};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::Template;
-use salt_line_sim::{band_of, BAND_LEN, MIN_SOLUTIONS, SCREEN_W_REF};
+use salt_line_sim::{band_of, BAND_LEN, MIN_SOLUTIONS, SCREEN_W_REF, START_SHELLS};
 
 /// Which loadout the screens are validated against. Solvability is a property
 /// of the screen *and* the loadout, so the harness has to pick one.
@@ -256,16 +256,61 @@ fn main() {
     let mut by_template: Vec<Bucket> = vec![Bucket::default(); Template::ALL.len()];
     let mut failures: Vec<(u64, u32, &'static str, usize)> = Vec::new();
     let mut supply_screens = 0u64;
+    let mut modifier_screens = [0u64; MODIFIER_COUNT];
+    let mut modifier_picks = [0u64; MODIFIER_COUNT];
+    let mut economy_spent = 0u64;
+    let mut economy_refunds = 0u64;
+    let mut economy_bonus = 0u64;
+    let mut combat_clears = 0u64;
+    let mut targets_cleared = 0u64;
+    let mut one_shot_clears = 0u64;
+    let mut clear_tiers = [0u64; 4];
+    let mut indirect_shots = 0u64;
+    let mut deaths = 0u64;
+    let mut death_screen_sum = 0u64;
+    let mut earliest_death = u32::MAX;
+    let mut latest_death = 0u32;
+    let mut run_length_sum = 0u64;
+    let mut ending_shell_sum = 0i64;
+    let mut min_ending_shells = i32::MAX;
     let started = std::time::Instant::now();
 
     for s in 0..args.seeds {
         let run_seed =
             salt_line_sim::rng::mix64(0x5341_4C54 ^ s.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut reserve = START_SHELLS;
+        let mut previous = Loadout::new();
+        let mut alive = true;
+        let mut run_length = 0u32;
+        let mut one_shot_streak = 0u32;
         for index in 0..args.screens {
             let lo = loadout_for(args.build, run_seed, index);
+            for m in Modifier::all() {
+                if lo.has(m) {
+                    modifier_screens[m.index()] += 1;
+                }
+                let added = lo.stacks(m).saturating_sub(previous.stacks(m));
+                if added > 0 {
+                    modifier_picks[m.index()] += added as u64;
+                    if alive {
+                        let grant = m.entry().effect.instant_shells * added as i32;
+                        reserve = (reserve + grant).min(lo.cap());
+                        economy_bonus += grant.max(0) as u64;
+                    }
+                }
+            }
+            if alive {
+                reserve = reserve.min(lo.cap());
+            }
+            previous = lo.clone();
             let screen = generate_screen(run_seed, index, args.width, &lo);
             if screen.supply {
                 supply_screens += 1;
+                if alive {
+                    reserve = (reserve + 6).min(lo.cap());
+                    economy_bonus += 6;
+                    run_length += 1;
+                }
                 continue;
             }
             let report = if args.fast {
@@ -278,6 +323,45 @@ fn main() {
             // readable difficulty signal.
             let worst = report.worst;
             let direct = report.worst_direct;
+
+            if alive {
+                let shots = screen.structures.len() as i32;
+                if reserve < shots {
+                    alive = false;
+                    deaths += 1;
+                    death_screen_sum += index as u64;
+                    earliest_death = earliest_death.min(index);
+                    latest_death = latest_death.max(index);
+                } else {
+                    reserve -= shots;
+                    economy_spent += shots as u64;
+                    targets_cleared += shots as u64;
+                    indirect_shots += report
+                        .per_target_direct
+                        .iter()
+                        .filter(|&&count| count == 0)
+                        .count() as u64;
+                    let paid = refund(shots as u32, &lo);
+                    let mut bonus = lo.shells_per_clear;
+                    if shots == 1 {
+                        one_shot_streak += 1;
+                        if lo.standing_orders() {
+                            bonus += one_shot_streak as i32;
+                        }
+                    } else {
+                        one_shot_streak = 0;
+                    }
+                    reserve = (reserve + paid + bonus).min(lo.cap());
+                    economy_refunds += paid.max(0) as u64;
+                    economy_bonus += bonus.max(0) as u64;
+                    combat_clears += 1;
+                    run_length += 1;
+                    clear_tiers[(shots.clamp(1, 4) - 1) as usize] += 1;
+                    if shots == 1 {
+                        one_shot_clears += 1;
+                    }
+                }
+            }
 
             let band = band_of(index) as usize;
             if by_band.len() <= band {
@@ -296,6 +380,9 @@ fn main() {
                 }
             }
         }
+        run_length_sum += run_length as u64;
+        ending_shell_sum += reserve as i64;
+        min_ending_shells = min_ending_shells.min(reserve);
     }
 
     let elapsed = started.elapsed();
@@ -351,6 +438,7 @@ fn main() {
         if b.screens == 0 {
             continue;
         }
+
         let share = b.screens as f64 / total.max(1) as f64;
         println!(
             "{:>9} {:>7} {:>6.2} {:>5.1}% {:>7.2} {:>6}  {bar}",
@@ -362,6 +450,67 @@ fn main() {
             b.fallbacks,
             bar = bar(b.screens, max_screens, 24)
         );
+    }
+
+    // -------------------------------------------- deterministic play model
+    // This is an ideal solver-assisted policy: one successful shot per target,
+    // preferring a direct candidate. It provides a stable economy baseline;
+    // movement away from it after tuning is immediately visible.
+    println!("\nsolver-assisted run metrics");
+    println!(
+        "shell economy: spent {economy_spent}, clear refunds {economy_refunds}, \
+         modifier/supply bonus {economy_bonus}, mean ending reserve {:.2}, min {}",
+        ending_shell_sum as f64 / args.seeds.max(1) as f64,
+        if min_ending_shells == i32::MAX {
+            0
+        } else {
+            min_ending_shells
+        }
+    );
+    println!(
+        "clear efficiency: {combat_clears} combat clears, {:.2} shots/clear, {:.2} targets/shell, \
+         {:.1}% single-shot screens; tiers 1/2/3/4+ = {}/{}/{}/{}",
+        economy_spent as f64 / combat_clears.max(1) as f64,
+        targets_cleared as f64 / economy_spent.max(1) as f64,
+        one_shot_clears as f64 / combat_clears.max(1) as f64 * 100.0,
+        clear_tiers[0],
+        clear_tiers[1],
+        clear_tiers[2],
+        clear_tiers[3]
+    );
+    println!(
+        "indirect-shot usage: {indirect_shots}/{} target shots ({:.2}%) had no direct candidate",
+        economy_spent,
+        indirect_shots as f64 / economy_spent.max(1) as f64 * 100.0
+    );
+    println!(
+        "death/run length: {deaths}/{} runs exhausted; mean run {:.1}/{} screens{}",
+        args.seeds,
+        run_length_sum as f64 / args.seeds.max(1) as f64,
+        args.screens,
+        if deaths == 0 {
+            String::from(", no death screen")
+        } else {
+            format!(
+                ", death screen mean {:.1}, range {}..{}",
+                death_screen_sum as f64 / deaths as f64,
+                earliest_death,
+                latest_death
+            )
+        }
+    );
+    println!("modifier frequency (picks, share of generated screens held)");
+    for m in Modifier::all() {
+        let held = modifier_screens[m.index()];
+        let picks = modifier_picks[m.index()];
+        if held > 0 || picks > 0 {
+            println!(
+                "  {:<18} {:>5} {:>7.2}%",
+                m.name(),
+                picks,
+                held as f64 / total.max(1) as f64 * 100.0
+            );
+        }
     }
 
     // -------------------------------------------------------------- totals

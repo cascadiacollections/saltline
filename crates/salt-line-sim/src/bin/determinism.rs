@@ -31,7 +31,7 @@ fn play(run_seed: u64) -> RunState {
     for _ in 0..DECISIONS {
         match state.phase {
             Phase::Firing => {
-                let angle = r.range_u32(150, 800) as i32;
+                let angle = r.range_u32(300, 1600) as i32;
                 let power = r.range_u32(250, 1000) as i32;
                 if state.fire(Shot::new(angle, power), false).is_none() {
                     break;

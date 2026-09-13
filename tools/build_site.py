@@ -227,7 +227,7 @@ def verified_shot(hs, width, height, wind, target_x):
     return (
         path,
         (float(impact_x), height - float(impact_y)),
-        float(angle_ticks) / 10.0,
+        float(angle_ticks) / 20.0,
         float(speed),
         after_hs,
     )

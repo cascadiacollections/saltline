@@ -55,12 +55,12 @@ pub const POWER_MAX: f64 = 300.0;
 /// Power is an integer tick count so a shot is exactly reproducible.
 pub const POWER_TICKS_MAX: i32 = 1000;
 
-/// Default angle input quantization, in 0.1-degree ticks: 0.5 degrees.
-/// `Vernier` takes this to 1 tick (DESIGN §4).
-pub const ANGLE_QUANTUM_TICKS: i32 = 5;
+/// Default angle input quantization, in 0.05-degree ticks: 0.5 degrees.
+/// Vernier's first stack takes this to 0.1 degrees and its second to 0.05.
+pub const ANGLE_QUANTUM_TICKS: i32 = 10;
 /// The barrel sprite shows 5-degree steps while the numeric field shows the
 /// true value. DESIGN §5.3: that gap is intentional.
-pub const BARREL_FRAME_TICKS: i32 = 50;
+pub const BARREL_FRAME_TICKS: i32 = 100;
 
 /// Point projectile with a collision radius (DESIGN §3).
 pub const SHELL_RADIUS: f64 = 1.0;
