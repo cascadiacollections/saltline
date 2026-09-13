@@ -5,6 +5,12 @@ terrain damage, shells as the run resource, modifier drafting every four screens
 
 Deterministic Rust simulation core, Godot 4 presentation layer via `gdext`.
 
+**Status: 0.1.0 desktop development preview.** Not for sale, nothing to buy,
+every screen playable. Binaries are unsigned. `RELEASING.md` has the supported
+platforms, the release checklist, and the known-issues list.
+
+Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`) and Godot `4.4.1`.
+
 ## Contents
 
 | Path | What it is |
@@ -16,6 +22,7 @@ Deterministic Rust simulation core, Godot 4 presentation layer via `gdext`.
 | `art/` | Native-resolution sprites, 16-colour palette, reference scene |
 | `tools/gen_sprites.py` | Regenerates all art; working reference for the terrain math |
 | `project.godot`, `godot/` | The Godot 4 project. Its root is the repo root, so `res://art/...` is the same path the generator writes |
+| `RELEASING.md` | What the preview is, the release checklist, the playtest matrix, known issues |
 
 ## Quick start
 
@@ -88,10 +95,19 @@ python3 tools/gen_sprites.py     # needs Pillow; writes into art/
 The 16-colour palette is sampled out of `art/palette_16.png` at runtime rather
 than transcribed, so the image stays the single source of truth.
 
-Replace these with hand-drawn work before release, but keep the dimensions and
-the palette fixed. The gap to close first: only the water tower has all three
-damage states drawn. Every other silhouette falls back to its intact sprite
-while leaning, and to a procedural rubble mound when it goes down.
+Regenerating rewrites every PNG, and different Pillow versions encode identical
+pixels to different bytes. Compare pixels, not file hashes, before committing
+the churn.
+
+All five silhouettes now have all three damage states. The water tower is drawn
+per state by hand; the derrick, mast, silo and pylon are sheared about their own
+footing and wrecked from the intact drawing, so the states cannot drift away
+from the geometry they came from.
+
+Replace all of it with hand-drawn work before any public release, but keep the
+dimensions and the palette fixed — they are the contract. Still open: no barrel
+strip for the Ballast or Forced March chassis, so those builds read from the
+hull alone.
 
 ## The three things that matter
 
@@ -122,7 +138,24 @@ platform. What that costs, concretely:
 - A run persists as `(run_seed, width, shot log)` and nothing else. Draft picks
   ride in the same triple with `angle_ticks = -1`.
 
+## Monetization
+
+The preview is built **without** the `monetization` feature and sells nothing.
+The paywall, the free-screen gate and the storefront seam all exist in
+`crates/salt-line-godot/src/store.rs`, behind that flag.
+
+No build grants the unlock locally. Entitlement is asked of the platform at
+startup; the `unlocked` line in the save file is a cache of that answer and is
+never treated as proof of purchase, because it is a text file the player owns.
+With no storefront SDK linked, a monetized build answers `Unavailable` — which
+is why it is not the build that ships.
+
 ## Independence
 
 No code, assets, or naming lineage from any existing artillery game. See
-`design/DESIGN.md` §7 for the pre-release checklist.
+`design/DESIGN.md` §7 for the pre-release checklist, and `RELEASING.md` for the
+signing, store and clearance work that has to happen outside this repository.
+
+## License
+
+MIT. See `LICENSE`.

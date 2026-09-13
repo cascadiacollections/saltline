@@ -1,0 +1,11 @@
+# Pinned so a build here, a build in CI and a build on a contributor's machine
+# are the same build. The determinism gate in CI compares digests across three
+# platforms; a floating toolchain would let a codegen change move that digest
+# without a commit to blame.
+#
+# Raise this deliberately: bump the version, run the determinism job, and note
+# any digest change in NOTES.md.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

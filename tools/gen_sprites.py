@@ -324,14 +324,90 @@ def pylon():
     return b
 
 
-def rubble(w=17, h=8):
+def rubble(w=17, h=8, phase=1.7):
     b = Buf(w, h)
+    amp = max(2, h - 5)
     for i in range(w):
-        hh = int(2 + 3 * abs(math.sin(i * 1.7)))
+        hh = int(2 + amp * abs(math.sin(i * phase)))
+        hh = max(1, min(h, hh))
         for j in range(hh):
             c = rgba("st_dmg") if j < hh - 1 else rgba("st")
             b.set(i, h - 1 - j, c)
     return b
+
+
+# ------------------------------------------------- shared damage-state passes
+#
+# DESIGN §5.4 wants `Leaning` to read as a state change in the drawing, not
+# only in the bounding box. Rather than hand-draw a second silhouette per
+# structure, the intact drawing is sheared about its own footing: the base row
+# does not move, the top row moves by `m`, and the footing takes damage tone.
+#
+# The sheared buffer is `w + 2m` wide and the pixels are written at `x + m`, so
+# the base column lands exactly where the intact sprite's base column lands
+# once the Godot layer centres the sprite on the footprint. Without that pad
+# the whole structure would appear to slide sideways as it leans.
+
+
+def lean_shift(h, j, m):
+    """Shear offset for row `j`: 0 at the base, `m` at the top."""
+    if h <= 1:
+        return 0
+    return int(round(m * (h - 1 - j) / (h - 1)))
+
+
+def leaning(src, m=None, footing=4):
+    """Shear an intact structure and bruise its footing."""
+    if m is None:
+        m = max(2, src.h // 5)
+    b = Buf(src.w + 2 * m, src.h)
+    for j in range(src.h):
+        o = m + lean_shift(src.h, j, m)
+        for i in range(src.w):
+            c = src.px[j][i]
+            if c[3] == 0:
+                continue
+            # The bottom rows carry the failure: bent members go to the damage
+            # tone so the state is legible even against a busy horizon.
+            if j >= src.h - footing and c != rgba("alert"):
+                c = rgba("st_dmg")
+            b.set(i + o, j, c)
+    # A stress crack where the shear starts.
+    y = src.h - footing - 1
+    if 0 <= y < src.h:
+        for i in range(src.w):
+            if src.px[y][i][3] != 0:
+                b.set(i + m + lean_shift(src.h, y, m), y, rgba("st_dmg"))
+    return b
+
+
+def collapsed(src, phase=1.7):
+    """Wreckage the width of the structure's own silhouette."""
+    return rubble(src.w, max(5, min(10, src.h // 4)), phase)
+
+
+def check_lean_alignment(name, src, lean):
+    """A lean must not look like a sideways jump.
+
+    The Godot layer centres every structure sprite on its footprint, so a
+    leaning sprite that is wider than its intact one shifts by half the
+    difference unless the shear is padded on both sides. Verified here, at the
+    only place the padding is decided.
+    """
+    def base(buf):
+        for j in range(buf.h - 1, -1, -1):
+            xs = [i for i in range(buf.w) if buf.px[j][i][3] != 0]
+            if xs:
+                return j, min(xs)
+        raise AssertionError(f"{name}: empty sprite")
+
+    ja, xa = base(src)
+    jb, xb = base(lean)
+    assert ja == jb, f"{name}: lean changed the footing row {ja} -> {jb}"
+    assert xa - src.w / 2 == xb - lean.w / 2, (
+        f"{name}: leaning base is offset from the intact base by "
+        f"{(xb - lean.w / 2) - (xa - src.w / 2)}px once centred"
+    )
 
 
 # ---------------------------------------------------------------- scene
@@ -437,9 +513,19 @@ def sheet():
         ("FORCED", tank("forced")[0]),
         ("TOWER", water_tower("intact")), ("LEANING", water_tower("leaning")),
         ("COLLAPSED", water_tower("collapsed")),
-        ("DERRICK", derrick()), ("MAST", radio_mast()),
-        ("SILO", silo()), ("PYLON", pylon()),
     ]
+    for label, make, phase in (
+        ("DERRICK", derrick, 1.7),
+        ("MAST", radio_mast, 2.3),
+        ("SILO", silo, 1.1),
+        ("PYLON", pylon, 2.9),
+    ):
+        src = make()
+        items += [
+            (label, src),
+            ("LEANING", leaning(src)),
+            ("COLLAPSED", collapsed(src, phase)),
+        ]
     cell_w, cell_h = 46, 56
     cols = len(items)
     b = Buf(cell_w * cols, cell_h + 30, rgba("sky_mid"))
@@ -490,10 +576,24 @@ if __name__ == "__main__":
     water_tower("intact").image().save(f"{SPR}/tower_intact.png")
     water_tower("leaning").image().save(f"{SPR}/tower_leaning.png")
     water_tower("collapsed").image().save(f"{SPR}/tower_collapsed.png")
+    # Every structure now has all three damage states (DESIGN §5.4). The water
+    # tower is hand-drawn per state; the rest are sheared and wrecked from
+    # their intact silhouette, which keeps the drawings in lockstep with the
+    # only place their geometry is defined.
     derrick().image().save(f"{SPR}/derrick.png")
     radio_mast().image().save(f"{SPR}/radio_mast.png")
     silo().image().save(f"{SPR}/silo.png")
     pylon().image().save(f"{SPR}/pylon.png")
+    for name, make, phase in (
+        ("derrick", derrick, 1.7),
+        ("radio_mast", radio_mast, 2.3),
+        ("silo", silo, 1.1),
+        ("pylon", pylon, 2.9),
+    ):
+        src = make()
+        leaning(src).image().save(f"{SPR}/{name}_leaning.png")
+        collapsed(src, phase).image().save(f"{SPR}/{name}_collapsed.png")
+        check_lean_alignment(name, src, leaning(src))
 
     # 19-frame barrel strips, 5° increments, packed horizontally — one per
     # build silhouette (§5.3). Sliced at 28px by the Godot layer.

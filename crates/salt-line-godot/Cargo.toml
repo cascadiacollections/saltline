@@ -1,12 +1,21 @@
 [package]
 name = "salt-line-godot"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 # `rlib` alongside `cdylib` so the rasteriser, the fonts and the camera maths
 # can be unit-tested with `cargo test`. Those parts touch no engine API.
 crate-type = ["cdylib", "rlib"]
+
+[features]
+# Off by default: the development preview has no paywall and nothing for sale.
+# Turning this on arms the paywall, which then requires a real storefront —
+# see `src/store.rs`.
+default = []
+monetization = []
 
 [dependencies]
 godot = "0.5"

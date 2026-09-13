@@ -4,9 +4,11 @@ on:
   push:
   pull_request:
 
+# Read-only. Nothing in this workflow writes to the repository or to the
+# Actions API; artifact upload and download authenticate with the run's own
+# runtime token, not with GITHUB_TOKEN.
 permissions:
   contents: read
-  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,9 +24,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: cargo test -p salt-line-sim (headless, no Godot installed)
         run: cargo test -p salt-line-sim
       - name: cargo test -p salt-line-godot (rasteriser, fonts, camera maths)
@@ -37,7 +39,7 @@ jobs:
           cargo run --release -q -p salt-line-sim --bin determinism | tee digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-${{ matrix.os }}.txt
           cat digest-${{ matrix.os }}.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: digest-${{ matrix.os }}
           path: digest-${{ matrix.os }}.txt
@@ -50,7 +52,7 @@ jobs:
     needs: sim
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: digest-*
           merge-multiple: true
@@ -78,9 +80,9 @@ jobs:
     name: batch solvability
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: 5,000 screens across 50 seeds
         run: cargo run --release -q -p salt-line-sim --bin batch
       - name: each intended build shape
@@ -95,11 +97,11 @@ jobs:
     name: fmt + clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: the sim crate must stay dependency-free
@@ -134,21 +136,77 @@ jobs:
             preset: Windows Desktop
             output: SaltLine.exe
     steps:
-      - uses: actions/checkout@v4
-      - uses: chickensoft-games/setup-godot@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: chickensoft-games/setup-godot@1dc3741f474fcf64a3b302d5fdd263010c200866 # v1
         with:
           version: 4.4.1
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: build the release GDExtension
         run: cargo build --release -p salt-line-godot
       - name: create output directory
         run: mkdir -p build
+      - name: import assets
+        # A clean checkout has no .godot/ cache, so the PNGs are still PNGs.
+        # Exporting without importing first ships an artifact with no art in
+        # it — which exports successfully and then launches wrong.
+        run: godot --headless --path . --import
       - name: export playable binary
         run: godot --headless --path . --export-release "${{ matrix.preset }}" "build/${{ matrix.output }}"
-      - uses: actions/upload-artifact@v4
+
+      # Exporting successfully is not the same as being playable. Launch the
+      # artifact itself — not the editor, not `cargo run` — and make it render
+      # a real screen and write the PNG out. This is what catches a missing
+      # GDExtension, an unimported sprite, or a crash on startup.
+      - name: smoke launch the exported artifact
+        shell: bash
+        run: |
+          set -eu
+          exe="build/${{ matrix.output }}"
+          if [ -d "$exe" ]; then
+            # macOS exports a bundle; the executable inside it is named by the
+            # preset, so find it rather than guess at it.
+            exe=$(find "$exe/Contents/MacOS" -maxdepth 1 -type f | head -1)
+          fi
+          if [ ! -e "$exe" ]; then
+            echo "no executable inside the exported artifact:" >&2
+            ls -lR build >&2
+            exit 1
+          fi
+          chmod +x "$exe" 2>/dev/null || true
+          "$exe" --headless -- \
+            --salt-seed 20260907 --salt-screen 12 \
+            --salt-shot smoke.png --salt-shot-at 0.5
+          if [ ! -s smoke.png ]; then
+            echo "the build launched but rendered nothing" >&2
+            exit 1
+          fi
+          echo "launched and rendered $(wc -c < smoke.png) bytes"
+      - name: checksum
+        shell: bash
+        run: |
+          set -eu
+          cd build
+          if command -v sha256sum >/dev/null; then
+            sha256sum -- "${{ matrix.output }}" > "${{ matrix.output }}.sha256" 2>/dev/null || \
+              find "${{ matrix.output }}" -type f -exec sha256sum {} + > "${{ matrix.output }}.sha256"
+          else
+            shasum -a 256 -- "${{ matrix.output }}" > "${{ matrix.output }}.sha256" 2>/dev/null || \
+              find "${{ matrix.output }}" -type f -exec shasum -a 256 {} + > "${{ matrix.output }}.sha256"
+          fi
+          cat "${{ matrix.output }}.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: salt-line-${{ matrix.preset }}
-          path: build/${{ matrix.output }}
+          path: |
+            build/${{ matrix.output }}
+            build/${{ matrix.output }}.sha256
+      - name: the smoke frame, for eyeballing a failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-${{ matrix.preset }}
+          path: smoke.png
+          if-no-files-found: warn

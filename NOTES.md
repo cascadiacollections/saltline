@@ -152,11 +152,15 @@ seeds, with the loadout evolving one seeded pick per band:
 
 Programmer art, per the brief, but two gaps affect play rather than polish:
 
-- **Only the water tower has all three damage states.** Every other silhouette
-  falls back to its intact sprite while `Leaning` — so the state change is
-  visible only in the shifted bounding box, not in the drawing — and to a
-  procedural rubble mound when it collapses. `Leaning` is a real state that
-  changes the shot you need; it should look like one.
+- **All five silhouettes now have all three damage states.** ~~Only the water
+  tower has them.~~ The tower is still the only one drawn by hand per state.
+  The derrick, mast, silo and pylon derive `Leaning` by shearing the intact
+  drawing about its own footing — base row fixed, top row displaced, footing
+  bruised to the damage tone — and `Collapsed` from a wreck sized to their own
+  silhouette rather than the tower's. Deriving rather than redrawing is the
+  decision here: it keeps the damage states from drifting away from the
+  geometry, at the cost of four leaning poses that are a shear and not a
+  drawing. Replace them when real art lands.
 - **No barrel strip for the Ballast or Forced March chassis.** The generator
   now emits base, sabot, cluster and auger strips; the two chassis variants
   reuse the base barrel, which is correct but means those builds read only from

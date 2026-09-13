@@ -21,8 +21,9 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_
 
 use crate::palette::{slot, Palette};
 use crate::raster::{self, Canvas, View};
-use crate::save::{Entry, Save};
+use crate::save::{self, Entry, Save};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
+use crate::store::{self, Entitlement};
 
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
@@ -98,6 +99,9 @@ pub struct SaltLine {
     power_ticks: i32,
 
     save: Save,
+    /// What the platform says this player owns. Asked once at startup; the
+    /// save file's `unlocked` flag is a cache, never the authority.
+    entitlement: Entitlement,
     seed_text: String,
     daily: bool,
     last_seed: u64,
@@ -150,6 +154,7 @@ impl INode2D for SaltLine {
             angle_ticks: 450,
             power_ticks: 600,
             save: Save::default(),
+            entitlement: Entitlement::Free,
             seed_text: String::new(),
             daily: true,
             last_seed: 0,
@@ -171,7 +176,8 @@ impl INode2D for SaltLine {
     fn ready(&mut self) {
         self.pal = Palette::load(PALETTE_PATH);
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
-        self.save = Save::load();
+        self.save = save::load();
+        self.entitlement = store::entitlement(self.save.unlocked);
         self.buffer_w = self.pick_width();
         self.apply_buffer_size();
         if let Some(dir) = Self::cmdline_value("--salt-gallery") {
@@ -401,7 +407,9 @@ impl SaltLine {
             }
             Mode::Paywall => {
                 if self.pressed(Key::U) {
-                    self.unlock();
+                    self.unlock(false);
+                } else if self.pressed(Key::R) {
+                    self.unlock(true);
                 } else if self.pressed(Key::ENTER) || self.pressed(Key::ESCAPE) {
                     self.finish_run();
                 }
@@ -597,20 +605,33 @@ impl SaltLine {
         self.apply_buffer_size();
         // The paywall gate. Brief M6: free to play through screen 15.
         let index = self.run.as_ref().map(|r| r.screen_index).unwrap_or(0);
-        if !self.save.unlocked && index >= FREE_SCREENS {
+        if self.entitlement == Entitlement::Free && index >= FREE_SCREENS {
             self.mode = Mode::Paywall;
         }
     }
 
-    fn unlock(&mut self) {
-        // A real store call goes here: the one-time unlock IAP. The platform
-        // SDK is not wired up yet, so this grants it locally and persists the
-        // flag — the same code path a successful purchase or a restore would
-        // take.
-        self.save.unlocked = true;
-        self.save.store();
-        self.mode = Mode::Playing;
-        self.note("UNLOCKED".into());
+    /// Ask the platform to sell or restore the unlock. This is the only path
+    /// that may grant it; there is deliberately no local override, because a
+    /// key that unlocks a paid build is a key that ships in the paid build.
+    fn unlock(&mut self, restore: bool) {
+        let outcome = if restore {
+            store::restore()
+        } else {
+            store::purchase()
+        };
+        match outcome {
+            store::Outcome::Granted => {
+                // Cache it so the title screen is right before the next
+                // platform round trip answers.
+                self.save.unlocked = true;
+                save::store(&self.save);
+                self.entitlement = Entitlement::Full;
+                self.mode = Mode::Playing;
+                self.note("UNLOCKED".into());
+            }
+            store::Outcome::Cancelled => self.note("CANCELLED".into()),
+            store::Outcome::Unavailable(why) => self.note(why.into()),
+        }
     }
 
     fn finish_run(&mut self) {
@@ -623,7 +644,7 @@ impl SaltLine {
                 shots,
                 daily: self.daily,
             };
-            self.save.record(entry);
+            save::record(&mut self.save, entry);
         }
         self.mode = Mode::GameOver;
     }
@@ -954,7 +975,12 @@ impl SaltLine {
                     );
                     y += 10;
                 }
-                if !self.save.unlocked {
+                if !store::MONETIZED {
+                    // The build is not selling anything, and says so where a
+                    // player will see it before they start a run.
+                    self.centred(y, "DEVELOPMENT PREVIEW - NOT FOR SALE", alert);
+                    y += 8;
+                } else if self.entitlement == Entitlement::Free {
                     self.centred(y, &format!("FREE THROUGH SCREEN {FREE_SCREENS}"), dim);
                     y += 8;
                 }
@@ -1422,7 +1448,7 @@ impl SaltLine {
         let alert = pal.get(slot::ALERT);
         let (w, h) = (self.canvas.w, self.canvas.h);
         let bw = (w - 40).max(120);
-        let bh = 72;
+        let bh = 80;
         let x = (w - bw) / 2;
         let y = (h - bh) / 2;
         self.canvas.plate(x, y, bw, bh, &pal);
@@ -1434,6 +1460,8 @@ impl SaltLine {
         self.centred(cy, "ONE PURCHASE, NO ADS, NO TIMERS", dim);
         cy += 14;
         self.centred(cy, "U      UNLOCK", fg);
+        cy += 8;
+        self.centred(cy, "R      RESTORE PURCHASE", fg);
         cy += 8;
         self.centred(cy, "ENTER  END THE RUN", dim);
     }

@@ -14,7 +14,9 @@ pub mod game;
 pub mod palette;
 pub mod raster;
 pub mod save;
+pub mod save_format;
 pub mod sprites;
+pub mod store;
 
 struct SaltLineExtension;
 
