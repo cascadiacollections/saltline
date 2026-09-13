@@ -149,6 +149,22 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: build the release GDExtension
         run: cargo build --release -p salt-line-godot
+      # The editor that drives --import and --export-release is itself a debug
+      # context, so it resolves the `*.debug` entries in salt_line.gdextension
+      # and only the release profile is built here. Staging a copy at the debug
+      # path costs nothing and turns "extension silently failed to load" into a
+      # condition CI can actually see.
+      - name: stage the GDExtension for the editor
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p target/debug
+          for f in target/release/*salt_line_godot.so \
+                   target/release/*salt_line_godot.dylib \
+                   target/release/salt_line_godot.dll; do
+            if [ -e "$f" ]; then cp "$f" "target/debug/$(basename "$f")"; fi
+          done
+          ls -l target/debug
       - name: create output directory
         run: mkdir -p build
       # The Windows build ships a GUI-subsystem godot.exe: it detaches from the

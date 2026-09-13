@@ -38,6 +38,11 @@ window/vsync/vsync_mode=1
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0
+; Required to export for arm64 or universal macOS, which refuses to build
+; without an ETC2/ASTC path available. Every texture here is imported
+; lossless (compress/mode=0), so nothing actually gets VRAM-compressed and
+; the nearest-neighbour presentation is unaffected.
+textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_2d=0
 anti_aliasing/quality/screen_space_aa=0
 textures/default_filters/use_nearest_mipmap_filter=true
