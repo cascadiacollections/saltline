@@ -251,6 +251,10 @@ jobs:
           fi
           chmod +x "$exe" 2>/dev/null || true
           rm -f smoke.png
+          # Since Godot 4.7 an exported build no longer writes a relative path
+          # under the directory it was started from, so pass it absolute. `pwd -W`
+          # gives the Windows form (D:/...) the engine expects there.
+          shot="$(pwd -W 2>/dev/null || pwd)/smoke.png"
 
           # An exported Windows binary is GUI-subsystem too, so it detaches and
           # hands back 0 the moment it is started. Waiting on the rendered file
@@ -258,7 +262,7 @@ jobs:
           # thing on all three platforms: it launched, and it drew a screen.
           "$exe" --headless -- \
             --salt-seed 20260907 --salt-screen 12 \
-            --salt-shot smoke.png --salt-shot-at 0.5 &
+            --salt-shot "$shot" --salt-shot-at 0.5 &
           launcher=$!
           for _ in $(seq 1 60); do
             if [ -s smoke.png ]; then break; fi
