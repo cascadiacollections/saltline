@@ -213,9 +213,13 @@ jobs:
         # A clean checkout has no .godot/ cache, so the PNGs are still PNGs.
         # Exporting without importing first ships an artifact with no art in
         # it — which exports successfully and then launches wrong.
+        #
+        # --frame-delay works around godotengine/godot#111048: on a cold cache the
+        # editor quits before the GDExtension docs finish generating and crashes
+        # (reliably on the macOS runner with 4.7.2, signal 11). Remove it once fixed.
         shell: bash
         run: |
-          "$GODOT_BIN" --headless --path . --import
+          "$GODOT_BIN" --headless --path . --frame-delay 800 --import
       - name: export playable binary
         shell: bash
         run: |
