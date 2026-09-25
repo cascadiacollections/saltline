@@ -4,9 +4,10 @@
 //! what the sim says is true, feeds it integer inputs, and animates the gap
 //! between "the shot has been resolved" and "the player has seen it happen".
 
+use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
     AudioStream, AudioStreamPlayer, DisplayServer, INode2D, Image, ImageTexture, Input, InputEvent,
-    InputEventKey, Node2D, Os, ResourceLoader, Time,
+    InputEventKey, InputEventScreenTouch, Node2D, Os, ResourceLoader, Time,
 };
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
@@ -29,6 +30,7 @@ use crate::raster::{self, Canvas, View};
 use crate::save::{self, Entry, Save};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
 use crate::store::{self, Entitlement};
+use crate::touch::{Button, Rect, TouchPad};
 
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
@@ -43,6 +45,12 @@ const CLEAR_HOLD: f64 = 0.55;
 const TOPPLE_TIME: f64 = 0.22;
 /// Key repeat: delay before repeating, then interval.
 const REPEAT_DELAY: f64 = 0.28;
+
+/// The on-screen seed keypad. Each key's label is also its touch action.
+const SEED_KEYS: [&str; 36] = [
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
+    "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+];
 const REPEAT_RATE: f64 = 0.035;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -167,6 +175,14 @@ pub struct SaltLine {
     pad_edges: Vec<(JoyButton, bool)>,
     pad_repeat: [RepeatState; 8],
     controller_active: bool,
+    /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
+    touch_buttons: Vec<Button>,
+    touch: TouchPad,
+    /// Showing touch controls. On from the first touch, off again at the next
+    /// key or button press, like `controller_active`.
+    touch_active: bool,
+    /// The platform's back gesture (Android), taken as the `back` action.
+    back_requested: bool,
     audio: Vec<Option<Gd<AudioStreamPlayer>>>,
     low_shell_warned: bool,
 
@@ -223,6 +239,10 @@ impl INode2D for SaltLine {
             pad_edges: Vec::new(),
             pad_repeat: [RepeatState::default(); 8],
             controller_active: false,
+            touch_buttons: Vec::new(),
+            touch: TouchPad::default(),
+            touch_active: false,
+            back_requested: false,
             audio: Vec::new(),
             low_shell_warned: false,
             shot_path: None,
@@ -237,6 +257,9 @@ impl INode2D for SaltLine {
     }
 
     fn ready(&mut self) {
+        // Phones and tablets start with touch controls; desktops show them only
+        // once the screen is actually touched.
+        self.touch_active = Os::singleton().has_feature("mobile");
         self.pal = Palette::load(PALETTE_PATH);
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
         self.save = save::load();
@@ -287,6 +310,37 @@ impl INode2D for SaltLine {
         }
     }
 
+    fn input(&mut self, event: Gd<InputEvent>) {
+        let Ok(touch) = event.try_cast::<InputEventScreenTouch>() else {
+            return;
+        };
+        self.touch_active = true;
+        // The one texture is drawn at the origin at 1:1, so the node's local
+        // space is buffer pixels whatever the window is scaled to.
+        let local = self
+            .base()
+            .make_input_local(&touch.clone().upcast::<InputEvent>());
+        let pos = local
+            .try_cast::<InputEventScreenTouch>()
+            .map(|t| t.get_position())
+            .unwrap_or_else(|_| touch.get_position());
+        if touch.is_pressed() {
+            self.touch
+                .finger_down(touch.get_index(), pos.x, pos.y, &self.touch_buttons);
+        } else {
+            self.touch.finger_up(touch.get_index());
+        }
+    }
+
+    fn on_notification(&mut self, what: CanvasItemNotification) {
+        match what {
+            CanvasItemNotification::WM_GO_BACK_REQUEST => self.back_requested = true,
+            CanvasItemNotification::WM_WINDOW_FOCUS_OUT
+            | CanvasItemNotification::APPLICATION_FOCUS_OUT => self.touch.release_all(),
+            _ => {}
+        }
+    }
+
     fn unhandled_input(&mut self, event: Gd<InputEvent>) {
         if self.mode != Mode::SeedEntry {
             return;
@@ -302,15 +356,8 @@ impl INode2D for SaltLine {
             Key::BACKSPACE => {
                 self.seed_text.pop();
             }
-            Key::ENTER | Key::KP_ENTER => {
-                let seed = if self.seed_text.trim().is_empty() {
-                    daily_seed(Self::today())
-                } else {
-                    parse_seed(&self.seed_text)
-                };
-                self.start_run(seed, false);
-            }
-            Key::ESCAPE => self.mode = Mode::Title,
+            Key::ENTER | Key::KP_ENTER => self.start_seeded_run(),
+            Key::ESCAPE => self.leave_seed_entry(),
             _ => {
                 if (32..127).contains(&unicode) && self.seed_text.chars().count() < 20 {
                     self.seed_text.push(unicode as u8 as char);
@@ -325,6 +372,19 @@ impl SaltLine {
 
     /// Days since the Unix epoch. The clock is read here, in the presentation
     /// layer — nothing in the sim ever touches system time.
+    fn start_seeded_run(&mut self) {
+        let seed = if self.seed_text.trim().is_empty() {
+            daily_seed(Self::today())
+        } else {
+            parse_seed(&self.seed_text)
+        };
+        self.start_run(seed, false);
+    }
+
+    fn leave_seed_entry(&mut self) {
+        self.mode = Mode::Title;
+    }
+
     fn today() -> u64 {
         let secs = Time::singleton().get_unix_time_from_system();
         (secs / 86400.0).floor().max(0.0) as u64
@@ -534,6 +594,7 @@ impl SaltLine {
         self.pad_edges[slot].1 = down;
         if down {
             self.controller_active = true;
+            self.touch_active = false;
         }
         down && !was
     }
@@ -545,11 +606,13 @@ impl SaltLine {
             .unwrap_or(false);
         if key_down {
             self.controller_active = false;
+            self.touch_active = false;
         }
         let pad_down = Self::pad_token(&pad)
             .map(|b| self.pad_pressed(b))
             .unwrap_or(false);
-        key_down || pad_down
+        let touch_down = self.touch.pressed(action) || (action == "back" && self.back_requested);
+        key_down || pad_down || touch_down
     }
 
     fn action_repeated(&mut self, slot: usize, action: &str, delta: f64) -> u32 {
@@ -573,14 +636,21 @@ impl SaltLine {
         }
         if keyboard > 0 {
             self.controller_active = false;
+            self.touch_active = false;
         }
         if pad_down {
             self.controller_active = true;
+            self.touch_active = false;
         }
-        keyboard + self.pad_repeat[slot].tick(pad_down, delta, REPEAT_DELAY, REPEAT_RATE)
+        keyboard
+            + self.pad_repeat[slot].tick(pad_down, delta, REPEAT_DELAY, REPEAT_RATE)
+            + self.touch.repeated(action)
     }
 
     fn input_label(&self, action: &str) -> String {
+        if self.touch_active {
+            return touch_label(action).to_string();
+        }
         let (key, pad) = self.action_binding(action);
         if self.controller_active {
             pad
@@ -642,6 +712,12 @@ impl SaltLine {
     }
 
     fn handle_input(&mut self, delta: f64) {
+        self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        self.handle_mode_input(delta);
+        self.back_requested = false;
+    }
+
+    fn handle_mode_input(&mut self, delta: f64) {
         if self.pressed(Key::F1) {
             self.debug = !self.debug;
         }
@@ -661,7 +737,7 @@ impl SaltLine {
                     let seed = daily_seed(Self::today());
                     self.play_sound(Sound::Ui);
                     self.start_run(seed, true);
-                } else if self.pressed(Key::S) {
+                } else if self.pressed(Key::S) || self.touch.pressed("seed") {
                     self.seed_text.clear();
                     self.mode = Mode::SeedEntry;
                 } else if self.action_pressed(1, "controls") {
@@ -702,7 +778,19 @@ impl SaltLine {
                 }
             }
             Mode::SeedEntry => {
-                // Text comes in through `unhandled_input`.
+                // Keyboard text comes in through `unhandled_input`; these are
+                // the touch buttons and the on-screen keypad.
+                if self.touch.pressed("confirm") {
+                    self.start_seeded_run();
+                } else if self.action_pressed(2, "back") {
+                    self.leave_seed_entry();
+                } else if self.touch.pressed("del") {
+                    self.seed_text.pop();
+                } else if let Some(k) = SEED_KEYS.iter().find(|k| self.touch.pressed(k)) {
+                    if self.seed_text.chars().count() < 20 {
+                        self.seed_text.push_str(k);
+                    }
+                }
             }
             Mode::Paywall => {
                 if self.pressed(Key::U) {
@@ -1038,6 +1126,7 @@ impl SaltLine {
     // --------------------------------------------------------------- drawing
 
     fn render(&mut self) {
+        self.touch_buttons.clear();
         let want_w = self.pick_width();
         if self.run.is_none() && want_w != self.buffer_w {
             self.buffer_w = want_w;
@@ -1327,16 +1416,25 @@ impl SaltLine {
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
                 let confirm = self.input_label("confirm");
-                self.centred(y, &format!("{confirm}  DAILY RUN"), fg);
-                y += 8;
-                self.centred(y, "S      SEED ENTRY", fg);
-                y += 8;
+                y = self.menu_row(
+                    y,
+                    "confirm",
+                    &format!("{confirm}  DAILY RUN"),
+                    "DAILY RUN",
+                    fg,
+                );
+                y = self.menu_row(y, "seed", "S      SEED ENTRY", "SEED ENTRY", fg);
                 let controls = self.input_label("controls");
-                self.centred(y, &format!("{controls}  CONTROLS / AUDIO"), fg);
-                y += 8;
+                y = self.menu_row(
+                    y,
+                    "controls",
+                    &format!("{controls}  CONTROLS / AUDIO"),
+                    "CONTROLS / AUDIO",
+                    fg,
+                );
                 let back = self.input_label("back");
-                self.centred(y, &format!("{back}  QUIT"), dim);
-                y += 14;
+                y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", dim);
+                y += 6;
                 let best = self.save.best().copied();
                 if let Some(b) = best {
                     self.centred(
@@ -1355,7 +1453,8 @@ impl SaltLine {
                     self.centred(y, &format!("FREE THROUGH SCREEN {FREE_SCREENS}"), dim);
                     y += 8;
                 }
-                let n = self.save.scores.len().min(5);
+                let room = ((self.canvas.h - y - 12) / 7).max(0) as usize;
+                let n = self.save.scores.len().min(5).min(room);
                 if n > 0 {
                     y += 4;
                     self.centred(y, "LOCAL BOARD", dim);
@@ -1373,6 +1472,24 @@ impl SaltLine {
                         y += 7;
                     }
                 }
+            }
+            Mode::Controls if self.touch_active => {
+                self.centred(y, "CONTROLS / AUDIO", fg);
+                y += 16;
+                let muted = if self.save.muted { " MUTED" } else { "" };
+                let text = format!("VOLUME {}%{muted}", self.save.volume);
+                let tw = crate::font::small_width(&text) as i32;
+                let tx = (w - tw) / 2;
+                self.canvas.text_small(tx, y, &text, alert);
+                self.draw_touch_button(tx - 26, y - 6, 20, 17, "-", "left");
+                self.draw_touch_button(tx + tw + 6, y - 6, 20, 17, "+", "right");
+                y += 20;
+                let mute = if self.save.muted { "UNMUTE" } else { "MUTE" };
+                y = self.menu_row(y, "mute", "", mute, fg);
+                y += 4;
+                self.centred(y, "IN PLAY: < > ANGLE   - + POWER", dim);
+                y += 12;
+                self.menu_row(y, "back", "", "BACK", fg);
             }
             Mode::Controls => {
                 self.centred(y, "CONTROLS / AUDIO", fg);
@@ -1417,11 +1534,18 @@ impl SaltLine {
                 let text = self.seed_text.clone();
                 let shown = format!("> {text}");
                 self.centred(y, &shown, fg);
-                y += 14;
-                self.centred(y, "ANY TEXT WORKS. BLANK USES TODAY'S DAILY.", dim);
-                y += 8;
-                self.centred(y, "ENTER  START     ESC  BACK", fg);
-                y += 14;
+                y += 10;
+                if self.touch_active {
+                    y = self.draw_seed_keypad(y) + 6;
+                    y = self.menu_row(y, "confirm", "", "START", fg);
+                    y = self.menu_row(y, "back", "", "BACK", dim);
+                } else {
+                    y += 4;
+                    self.centred(y, "ANY TEXT WORKS. BLANK USES TODAY'S DAILY.", dim);
+                    y += 8;
+                    self.centred(y, "ENTER  START     ESC  BACK", fg);
+                    y += 14;
+                }
                 if !text.trim().is_empty() {
                     let seed = parse_seed(&text);
                     self.centred(y, &format!("SEED {}", format_seed(seed)), alert);
@@ -1445,12 +1569,10 @@ impl SaltLine {
                     self.centred(y, &format!("SEED {}", format_seed(seed)), dim);
                     y += 14;
                 }
-                self.centred(y, "R      SAME SEED AGAIN", fg);
-                y += 8;
-                self.centred(y, "C      COPY SEED", fg);
-                y += 8;
-                self.centred(y, "ENTER  TITLE", fg);
-                y += 12;
+                y = self.menu_row(y, "replay", "R      SAME SEED AGAIN", "SAME SEED AGAIN", fg);
+                y = self.menu_row(y, "copy", "C      COPY SEED", "COPY SEED", fg);
+                y = self.menu_row(y, "confirm", "ENTER  TITLE", "TITLE", fg);
+                y += 4;
                 if self.status_time > 0.0 {
                     let text = self.status.clone();
                     self.centred(y, &text, alert);
@@ -1463,6 +1585,121 @@ impl SaltLine {
     fn centred(&mut self, y: i32, text: &str, c: crate::palette::Rgba) {
         let x = (self.canvas.w - crate::font::small_width(text) as i32) / 2;
         self.canvas.text_small(x.max(1), y, text, c);
+    }
+
+    // ---------------------------------------------------------------- touch
+
+    /// Make a rectangle of this frame's buffer a button for the next frame's
+    /// touches. Only called while touch controls are showing.
+    fn touch_button(&mut self, rect: Rect, action: &'static str) {
+        self.touch_buttons.push(Button { rect, action });
+    }
+
+    /// A plate with a glyph on it, lit while a finger is on it.
+    fn draw_touch_button(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        label: &str,
+        action: &'static str,
+    ) {
+        let pal = self.pal.clone();
+        self.canvas.plate(x, y, w, h, &pal);
+        let c = if self.touch.held(action) {
+            pal.get(slot::ALERT)
+        } else {
+            pal.get(slot::UI_FG)
+        };
+        let tx = x + (w - crate::font::small_width(label) as i32) / 2;
+        let ty = y + (h - crate::font::SMALL_H as i32) / 2;
+        self.canvas.text_small(tx, ty, label, c);
+        self.touch_button(Rect::new(x, y, w, h), action);
+    }
+
+    /// The seed keypad: letters and digits in the game's own font, since a seed
+    /// is any text and the platform keyboard is not dependable inside a game
+    /// view. Returns the y below it.
+    fn draw_seed_keypad(&mut self, top: i32) -> i32 {
+        let (kw, kh, pitch) = (18, 15, 20);
+        let rows = [&SEED_KEYS[..13], &SEED_KEYS[13..26], &SEED_KEYS[26..]];
+        let mut y = top;
+        for (r, keys) in rows.into_iter().enumerate() {
+            let del_w = if r == 2 { 36 + 2 } else { 0 };
+            let row_w = keys.len() as i32 * pitch - 2 + del_w;
+            let mut x = (self.canvas.w - row_w) / 2;
+            for &k in keys {
+                self.draw_touch_button(x, y, kw, kh, k, k);
+                x += pitch;
+            }
+            if r == 2 {
+                self.draw_touch_button(x, y, 36, kh, "DEL", "del");
+            }
+            y += kh + 2;
+        }
+        y
+    }
+
+    /// A menu line. With a keyboard or controller it reads "KEY  TEXT"; on a
+    /// touchscreen the line itself is the button, spaced for a finger rather
+    /// than a key. Returns the y of the next line.
+    fn menu_row(
+        &mut self,
+        y: i32,
+        action: &'static str,
+        keyed: &str,
+        text: &str,
+        c: crate::palette::Rgba,
+    ) -> i32 {
+        if !self.touch_active {
+            self.centred(y, keyed, c);
+            return y + 8;
+        }
+        let pal = self.pal.clone();
+        let tw = crate::font::small_width(text) as i32;
+        let pad = 10;
+        let x = (self.canvas.w - tw) / 2 - pad;
+        self.canvas.plate(x, y - 4, tw + 2 * pad, 13, &pal);
+        let c = if self.touch.held(action) {
+            pal.get(slot::ALERT)
+        } else {
+            c
+        };
+        self.canvas.text_small(x + pad, y, text, c);
+        // The target is a little taller than the plate: rows are 16 apart.
+        self.touch_button(Rect::new(x, y - 5, tw + 2 * pad, 15), action);
+        y + 16
+    }
+
+    /// Aim, power and fire along the bottom edge, which is always solid ground,
+    /// never sky, targets or the emplacement. Fuse and reposition sit above
+    /// them only while a modifier provides them. The pause button is top centre,
+    /// clear of the wind and shells plates.
+    fn draw_play_controls(&mut self, loadout: &Loadout) {
+        let (w, h) = (self.canvas.w, self.canvas.h);
+        let (bw, bh) = (22, 18);
+        let y = h - bh - 3;
+        // Right of the ANG/PWR readouts in the bottom-left corner.
+        let x0 = 44;
+        self.draw_touch_button(x0, y, bw, bh, "<", "left");
+        self.draw_touch_button(x0 + bw + 3, y, bw, bh, ">", "right");
+        self.draw_touch_button(x0 + 2 * bw + 12, y, bw, bh, "-", "down");
+        self.draw_touch_button(x0 + 3 * bw + 15, y, bw, bh, "+", "up");
+        // Left of the screen index in the bottom-right corner.
+        self.draw_touch_button(w - 16 - 40, y, 40, bh, "FIRE", "fire");
+
+        let y2 = y - bh - 3;
+        if loadout.airburst() {
+            self.draw_touch_button(x0, y2, bw, bh, "F-", "fuse_down");
+            self.draw_touch_button(x0 + bw + 3, y2, bw, bh, "F+", "fuse_up");
+        }
+        if loadout.enfilade_units > 0.0 {
+            self.draw_touch_button(x0 + 2 * bw + 12, y2, bw, bh, "E<", "reposition_left");
+            self.draw_touch_button(x0 + 3 * bw + 15, y2, bw, bh, "E>", "reposition_right");
+        }
+
+        self.draw_touch_button((w - 20) / 2, 3, 20, 13, "II", "back");
     }
 
     fn render_play(&mut self) {
@@ -1517,6 +1754,9 @@ impl SaltLine {
         self.render_hud(
             shells, index, wind_shown, range, fuse, &loadout, &screen, phase,
         );
+        if self.touch_active && self.mode == Mode::Playing && phase != Phase::Drafting {
+            self.draw_play_controls(&loadout);
+        }
 
         if phase == Phase::Drafting {
             self.render_draft(&offers, &loadout);
@@ -1689,6 +1929,9 @@ impl SaltLine {
     }
 
     fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
+        if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 && self.touch_active {
+            return Some("TAP A CARD  PICK A MODIFIER".into());
+        }
         if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 {
             return Some(format!(
                 "{} {} {}  PICK A MODIFIER",
@@ -1711,7 +1954,12 @@ impl SaltLine {
                 self.input_label("down")
             ))
         } else if learned & LEARN_FIRE == 0 {
-            Some(format!("{}  FIRE", self.input_label("fire")))
+            // On a touchscreen the button already says FIRE.
+            if self.touch_active {
+                Some("TAP FIRE".into())
+            } else {
+                Some(format!("{}  FIRE", self.input_label("fire")))
+            }
         } else if learned & LEARN_CRATER == 0 {
             Some("CRATERS PERSIST - CORRECT FROM THE LAST SHOT".into())
         } else if learned & LEARN_WIND == 0 {
@@ -1899,6 +2147,10 @@ impl SaltLine {
         for (i, m) in offers.iter().enumerate() {
             let x = gap + i as i32 * (card_w + gap);
             self.canvas.plate(x, top, card_w, card_h, &pal);
+            if self.touch_active {
+                let action = ["draft_1", "draft_2", "draft_3"][i.min(2)];
+                self.touch_button(Rect::new(x, top, card_w, card_h), action);
+            }
             let e = m.entry();
             self.canvas
                 .text_small(x + 3, top + 4, &format!("{}", i + 1), alert);
@@ -1934,7 +2186,11 @@ impl SaltLine {
             }
         }
 
-        let hint = "1 2 3  CHOOSE";
+        let hint = if self.touch_active {
+            "TAP A CARD"
+        } else {
+            "1 2 3  CHOOSE"
+        };
         let hx = (w - crate::font::small_width(hint) as i32) / 2;
         self.canvas.text_small(hx, top + card_h + 6, hint, fg);
     }
@@ -1969,6 +2225,14 @@ impl SaltLine {
         let fg = pal.get(slot::UI_FG);
         let dim = pal.get(slot::SKY_LO);
         let (w, h) = (self.canvas.w, self.canvas.h);
+        if self.touch_active {
+            let top = (h - 64) / 2;
+            self.canvas.plate((w - 150) / 2, top, 150, 64, &pal);
+            self.centred(top + 8, "PAUSED", fg);
+            let y = self.menu_row(top + 26, "confirm", "", "RESUME", fg);
+            self.menu_row(y, "replay", "", "TITLE", dim);
+            return;
+        }
         self.canvas
             .plate((w - 150) / 2, (h - 48) / 2, 150, 48, &pal);
         self.centred((h - 48) / 2 + 8, "PAUSED", fg);
@@ -1976,5 +2240,23 @@ impl SaltLine {
         self.centred((h - 48) / 2 + 21, &format!("{resume} / BACK  RESUME"), fg);
         let title = self.input_label("replay");
         self.centred((h - 48) / 2 + 31, &format!("{title}  TITLE"), dim);
+    }
+}
+
+/// What a prompt calls an action on a touchscreen: the glyph on its on-screen
+/// button, or nothing where the prompt's own line is the button.
+fn touch_label(action: &str) -> &'static str {
+    match action {
+        "left" => "<",
+        "right" => ">",
+        "up" => "+",
+        "down" => "-",
+        "fire" => "FIRE",
+        "fuse_down" => "F-",
+        "fuse_up" => "F+",
+        "reposition_left" => "E<",
+        "reposition_right" => "E>",
+        "draft_1" | "draft_2" | "draft_3" => "TAP",
+        _ => "",
     }
 }
