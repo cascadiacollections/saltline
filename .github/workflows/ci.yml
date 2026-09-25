@@ -157,7 +157,7 @@ jobs:
       # v2.3.0 by using a real symlink.
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
-          version: 4.4.1
+          version: 4.7.2
           use-dotnet: false
           include-templates: true
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
@@ -213,9 +213,13 @@ jobs:
         # A clean checkout has no .godot/ cache, so the PNGs are still PNGs.
         # Exporting without importing first ships an artifact with no art in
         # it — which exports successfully and then launches wrong.
+        #
+        # --frame-delay works around godotengine/godot#111048: on a cold cache the
+        # editor quits before the GDExtension docs finish generating and crashes
+        # (reliably on the macOS runner with 4.7.2, signal 11). Remove it once fixed.
         shell: bash
         run: |
-          "$GODOT_BIN" --headless --path . --import
+          "$GODOT_BIN" --headless --path . --frame-delay 800 --import
       - name: export playable binary
         shell: bash
         run: |
@@ -251,6 +255,10 @@ jobs:
           fi
           chmod +x "$exe" 2>/dev/null || true
           rm -f smoke.png
+          # Since Godot 4.7 an exported build no longer writes a relative path
+          # under the directory it was started from, so pass it absolute. `pwd -W`
+          # gives the Windows form (D:/...) the engine expects there.
+          shot="$(pwd -W 2>/dev/null || pwd)/smoke.png"
 
           # An exported Windows binary is GUI-subsystem too, so it detaches and
           # hands back 0 the moment it is started. Waiting on the rendered file
@@ -258,7 +266,7 @@ jobs:
           # thing on all three platforms: it launched, and it drew a screen.
           "$exe" --headless -- \
             --salt-seed 20260907 --salt-screen 12 \
-            --salt-shot smoke.png --salt-shot-at 0.5 &
+            --salt-shot "$shot" --salt-shot-at 0.5 &
           launcher=$!
           for _ in $(seq 1 60); do
             if [ -s smoke.png ]; then break; fi

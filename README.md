@@ -9,11 +9,11 @@ Deterministic Rust simulation core, Godot 4 presentation layer via `gdext`.
 every screen playable. Binaries are unsigned. `RELEASING.md` has the supported
 platforms, the release checklist, and the known-issues list.
 
-Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`), Godot `4.4.1`, and
+Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`), Godot `4.7.2`, and
 `uv` for the Python asset tools. `just` is optional but provides the documented
 shortcuts below.
 
-The `godot` crate is pinned to the matching `api-4-4` feature. If you raise the
+The `godot` crate is pinned to the matching `api-4-7` feature. If you raise the
 engine version, raise that feature and `compatibility_minimum` in
 `salt_line.gdextension` with it: bindings built against a newer API than the
 running engine do not load, and the game boots to an empty window instead of

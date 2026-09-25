@@ -18,10 +18,10 @@ default = []
 monetization = []
 
 [dependencies]
-# `api-4-4` pins the GDExtension API level to the engine version this project
+# `api-4-7` pins the GDExtension API level to the engine version this project
 # targets (see project.godot config/features and RELEASING.md). Without it the
 # bindings build against the newest API the crate knows about, and the
-# resulting extension silently refuses to load on 4.4.1 -- the game boots to an
+# resulting extension silently refuses to load on 4.7.2 -- the game boots to an
 # empty scene and hangs. Building down-level still runs on newer engines.
-godot = { version = "0.5", features = ["api-4-4"] }
+godot = { version = "0.5", features = ["api-4-7"] }
 salt-line-sim = { path = "../salt-line-sim" }
