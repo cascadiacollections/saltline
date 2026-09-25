@@ -13,7 +13,7 @@ It is a preview, not a product. Nothing in it is for sale.
 |---|---|
 | Version | `0.1.0-preview` |
 | Shape | Desktop, keyboard and controller, windowed or fullscreen |
-| Platforms | Linux x86_64, macOS (Apple silicon and Intel), Windows x86_64 |
+| Platforms | Linux x86_64, macOS (Apple silicon and Intel), Windows x86_64; Android arm64 (debug-signed sideload builds, touch controls) |
 | Monetization | **None.** Built without the `monetization` feature; every screen is playable |
 | Save data | Plain text at `user://salt_line.txt`, format version 2 (reads version 1/versionless) |
 | Distribution | CI artifacts and GitHub releases. Not a store build |

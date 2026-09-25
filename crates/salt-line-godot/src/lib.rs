@@ -18,6 +18,7 @@ pub mod save;
 pub mod save_format;
 pub mod sprites;
 pub mod store;
+pub mod touch;
 
 struct SaltLineExtension;
 

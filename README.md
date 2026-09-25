@@ -50,27 +50,42 @@ With `just` installed, the same common operations are available as `just test`,
 `just build`, and `just run`. The Python tools use the locked environment from
 `pyproject.toml` and `uv.lock`; run `uv sync` once after checkout.
 
+### Android
+
+`just android` builds the arm64 APK and installs and launches it on the
+attached device or emulator (set `ANDROID_SERIAL` if there is more than one);
+`just android-log` follows its log. It needs rustup, the Android SDK and NDK
+(`ANDROID_HOME`, `ANDROID_NDK_HOME`, defaulting to `~/Android/Sdk` and its
+newest NDK), Godot's export templates, and a debug keystore in the Godot editor
+settings. Phones use the Compatibility renderer; the desktop keeps Forward+.
+
 ## Controls
 
-| Keyboard | Controller | Action |
-|---|---|---|
-| Left / Right | D-pad or left stick | Angle, one quantization step (Shift: ten) |
-| Up / Down | D-pad or left stick | Power (Shift: ten steps) |
-| Space | A | Fire |
-| `[` `]` | LB / RB | Airburst fuse distance |
-| `,` `.` | X / Y | Reposition the emplacement (needs Enfilade) |
-| 1 / 2 / 3 | X / A / B | Take a draft offer |
-| Enter | A | Daily run, confirm, continue |
-| S | — | Seed entry (text entry requires a keyboard) |
-| C | X | Copy the seed (on the run-over screen) |
-| R | Y | Replay the same seed |
-| V | Back/Select | Controls and audio screen |
-| M | Start | Mute/unmute |
-| F1 | — | Debug overlay: template, candidate count, camera, buffer size |
-| Esc | B | Pause / back |
+| Keyboard | Controller | Touch | Action |
+|---|---|---|---|
+| Left / Right | D-pad or left stick | `<` `>` | Angle, one quantization step (Shift: ten) |
+| Up / Down | D-pad or left stick | `-` `+` | Power (Shift: ten steps) |
+| Space | A | FIRE | Fire |
+| `[` `]` | LB / RB | `F-` `F+` | Airburst fuse distance (with Airburst) |
+| `,` `.` | X / Y | `E<` `E>` | Reposition the emplacement (needs Enfilade) |
+| 1 / 2 / 3 | X / A / B | Tap a card | Take a draft offer |
+| Enter | A | Tap the row | Daily run, confirm, continue |
+| S | — | SEED ENTRY | Seed entry (touch has an on-screen keypad) |
+| C | X | COPY SEED | Copy the seed (on the run-over screen) |
+| R | Y | SAME SEED AGAIN | Replay the same seed |
+| V | Back/Select | CONTROLS / AUDIO | Controls and audio screen |
+| M | Start | MUTE | Mute/unmute |
+| F1 | — | — | Debug overlay: template, candidate count, camera, buffer size |
+| Esc | B | `II`, or the back gesture | Pause / back |
+
+Touch buttons are drawn in the game's own buffer and font (DESIGN §5.1, §5.6)
+and sit along the bottom edge, which is always solid ground. Phones start with
+them showing; elsewhere they appear on the first touch. Any key or controller
+press switches back, and a tap switches to touch again. Holding a button
+repeats like holding a key.
 
 The game automatically changes onboarding labels after the most recent
-keyboard or controller action. Stick aiming uses a 0.45 dead zone and the same
+keyboard, controller or touch input. Stick aiming uses a 0.45 dead zone and the same
 delayed repeat as the keyboard, so simulation inputs remain quantized.
 
 Volume, mute, learned onboarding steps, and bindings are stored in the
