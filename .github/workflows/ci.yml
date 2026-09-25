@@ -14,9 +14,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Read-only. Nothing in this workflow writes to the repository or to the
-# Actions API; artifact upload and download authenticate with the run's own
-# runtime token, not with GITHUB_TOKEN.
+# Read-only by default; artifact upload and download authenticate with the
+# run's own runtime token, not with GITHUB_TOKEN. The one exception is the
+# dev-release job, which runs only for pushes to main and asks for
+# contents: write to replace the `dev` prerelease.
 permissions:
   contents: read
 
@@ -321,3 +322,189 @@ jobs:
           name: smoke-${{ matrix.preset }}
           path: smoke.png
           if-no-files-found: warn
+      # One zip per platform for the dev release. `ditto` keeps the macOS
+      # bundle's symlinks and permissions, and zip keeps the Linux binary's +x;
+      # a plain artifact upload keeps neither.
+      - name: package for the dev release
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p dist
+          case "${{ runner.os }}" in
+            macOS) ditto -c -k --keepParent "build/${{ matrix.output }}" dist/SaltLine-macos.zip ;;
+            Windows) 7z a -tzip dist/SaltLine-windows-x86_64.zip "./build/${{ matrix.output }}" > /dev/null ;;
+            Linux) (cd build && zip -q ../dist/SaltLine-linux-x86_64.zip "${{ matrix.output }}") ;;
+          esac
+          ls -l dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.preset }}
+          path: dist/*
+          if-no-files-found: error
+
+  # A release-optimised APK for sideloading. It is signed with the debug key in
+  # the ANDROID_DEBUG_KEYSTORE secret (base64) when that is set, so each dev
+  # build installs over the last one, and over a local `just android` build
+  # made with the same key. Without the secret a throwaway key is made per run,
+  # and the previous build has to be uninstalled first.
+  android:
+    name: android (arm64)
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: android
+      - name: build the GDExtension for Android
+        run: |
+          set -eu
+          rustup target add aarch64-linux-android
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cargo build --release -p salt-line-godot --target aarch64-linux-android \
+            --config "target.aarch64-linux-android.linker=\"$bin/aarch64-linux-android24-clang\""
+          "$bin/llvm-strip" --strip-debug target/aarch64-linux-android/release/libsalt_line_godot.so
+      - name: signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+        run: |
+          set -eu
+          ks="$RUNNER_TEMP/debug.keystore"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$ks"
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE is not set; signing with a throwaway key"
+            keytool -genkeypair -keystore "$ks" -alias androiddebugkey -storepass android \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          {
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$ks"
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey"
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android"
+          } >> "$GITHUB_ENV"
+      - name: import assets
+        run: godot --headless --path . --frame-delay 800 --import
+      - name: export the APK
+        run: |
+          set -eu
+          # Godot takes the SDK from ANDROID_HOME and the JDK from JAVA_HOME.
+          export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+          mkdir -p build dist
+          godot --headless --path . --export-release "Android" build/SaltLine.apk
+          test -s build/SaltLine.apk
+          cp build/SaltLine.apk dist/SaltLine-android-arm64.apk
+          ls -l dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-android
+          path: dist/*
+          if-no-files-found: error
+
+  # Native build for Windows on ARM (e.g. Snapdragon laptops), cross-compiled on
+  # the x64 runner and exported with Godot's arm64 template. It cannot be
+  # launched here, so unlike the playable jobs there is no smoke test.
+  windows-arm64:
+    name: windows (arm64, cross-built)
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-arm64
+      - name: build the GDExtension for both architectures
+        shell: bash
+        run: |
+          set -eu
+          rustup target add aarch64-pc-windows-msvc
+          cargo build --release -p salt-line-godot --target aarch64-pc-windows-msvc
+          # The editor that runs the export is x64 and loads the extension
+          # itself (see the playable job), so it needs its own build as well.
+          cargo build --release -p salt-line-godot
+          mkdir -p target/debug
+          cp target/release/salt_line_godot.dll target/debug/
+      - name: find a Godot that actually runs
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            main=$(find "$HOME/godot" -maxdepth 3 -name 'Godot_v*_win64.exe' \
+                   ! -name '*_console.exe' | head -1)
+            if [ -z "$main" ]; then
+              echo "no unpacked Godot found under $HOME/godot" >&2
+              ls -R "$HOME/godot" >&2 || true
+              exit 1
+            fi
+            console="${main%.exe}_console.exe"
+            # The console wrapper is not restored on a tool-cache hit, so fall
+            # back rather than fail — the output checks below are the real gate.
+            if [ -f "$console" ]; then bin="$console"; else bin="$main"; fi
+          else
+            bin=godot
+          fi
+          echo "GODOT_BIN=$bin" >> "$GITHUB_ENV"
+          "$bin" --version
+      - name: import assets
+        shell: bash
+        run: |
+          "$GODOT_BIN" --headless --path . --frame-delay 800 --import
+      - name: export the arm64 binary
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p build dist
+          "$GODOT_BIN" --headless --path . --export-release "Windows Desktop ARM64" build/SaltLine-arm64.exe
+          test -s build/SaltLine-arm64.exe
+          7z a -tzip dist/SaltLine-windows-arm64.zip ./build/SaltLine-arm64.exe > /dev/null
+          ls -l dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-windows-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  # Replaces the `dev` prerelease with this commit's builds, so the latest main
+  # is one download away on any device. Only after every check has passed.
+  dev-release:
+    name: dev release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [determinism, solvability, lint, playable, android, windows-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: replace the dev prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          ls -l
+          short="${GITHUB_SHA::7}"
+          gh release delete dev --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create dev ./* \
+            --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "Development build ($short)" \
+            --notes "Latest main, built from $short. Unsigned desktop builds and a debug-signed Android APK, for testing only (see RELEASING.md)."

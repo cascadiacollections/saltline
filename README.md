@@ -50,6 +50,16 @@ With `just` installed, the same common operations are available as `just test`,
 `just build`, and `just run`. The Python tools use the locked environment from
 `pyproject.toml` and `uv.lock`; run `uv sync` once after checkout.
 
+### Development builds
+
+Every push to `main` that passes CI replaces the
+[`dev` prerelease](https://github.com/cascadiacollections/saltline/releases/tag/dev)
+with that commit's builds: Linux x86_64, macOS, Windows x86_64 and arm64, and
+an Android arm64 APK. They are for testing, not distribution: the desktop builds
+are unsigned, and the APK is signed with a debug key (with the
+`ANDROID_DEBUG_KEYSTORE` repository secret, the same key as local
+`just android` builds, so either installs over the other).
+
 ### Android
 
 `just android` builds the arm64 APK and installs and launches it on the
