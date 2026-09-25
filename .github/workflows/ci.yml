@@ -157,7 +157,7 @@ jobs:
       # v2.3.0 by using a real symlink.
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
-          version: 4.4.1
+          version: 4.7.2
           use-dotnet: false
           include-templates: true
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
