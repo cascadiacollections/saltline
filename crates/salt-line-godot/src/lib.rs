@@ -24,6 +24,7 @@ pub mod pads;
 pub mod palette;
 pub mod presentation;
 pub mod raster;
+pub mod render;
 pub mod resume;
 pub mod save;
 pub mod save_format;
