@@ -315,6 +315,8 @@ pub struct SaltLine {
     last_crash: Option<String>,
     /// The player has copied `last_crash` this session.
     crash_copied: bool,
+    /// Told the player this session that their save is from a newer build.
+    future_noted: bool,
     /// Showing the error screen. See `broken_frame`.
     broken: bool,
 }
@@ -390,6 +392,7 @@ impl INode2D for SaltLine {
             last_crash: None,
             crash_copied: false,
             broken: false,
+            future_noted: false,
         }
     }
 
@@ -1654,7 +1657,7 @@ impl SaltLine {
                 daily: self.daily,
             };
             if !save::record(&mut self.save, entry).saved {
-                self.note("SCORE NOT SAVED".into());
+                self.note_not_saved("SCORE NOT SAVED");
             }
         }
         self.mode = Mode::GameOver;
@@ -3074,7 +3077,19 @@ impl SaltLine {
             return;
         }
         if !save::store(&self.save) {
-            self.note("SETTINGS NOT SAVED".into());
+            self.note_not_saved("SETTINGS NOT SAVED");
+        }
+    }
+
+    /// Say a write failed. A save from a newer build is never written by this
+    /// one (by design, `save::store`), so every change would fail; that gets
+    /// one note saying why, once a session, instead of a complaint each time.
+    fn note_not_saved(&mut self, what: &str) {
+        if !self.save.from_the_future {
+            self.note(what.into());
+        } else if !self.future_noted {
+            self.future_noted = true;
+            self.note("SAVE IS FROM A NEWER VERSION".into());
         }
     }
 
@@ -3144,7 +3159,7 @@ impl SaltLine {
 
     /// A panic has happened somewhere in the Rust side. gdext caught it, but
     /// the state it left is not to be trusted, so the game stops here: no sim
-    /// steps, no saves (`write_settings` checks too), just the report and a
+    /// steps, no saves (`save::store` refuses too), just the report and a
     /// way out.
     fn broken_frame(&mut self, delta: f64) {
         // Wall clock still runs, for `--salt-shot-at` captures of this screen.
@@ -3158,13 +3173,17 @@ impl SaltLine {
         self.begin_input_frame(delta);
         self.apply_frame_cap();
         if self.action_pressed(4, "copy") {
-            let text = crash::report()
-                .or_else(|| {
-                    save::on_disk(crash::REPORT_PATH).and_then(|p| std::fs::read_to_string(p).ok())
-                })
-                .unwrap_or_else(|| "SALT LINE CRASH REPORT\n(report unavailable)\n".into());
-            DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
-            self.note("REPORT COPIED".into());
+            // Only a finished report: a panic off the main thread can stop the
+            // game while the hook is still writing, and half a report copied
+            // looks like a whole one.
+            if crash::report_ready() {
+                let text = crash::report()
+                    .unwrap_or_else(|| "SALT LINE CRASH REPORT\n(report unavailable)\n".into());
+                DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
+                self.note("REPORT COPIED".into());
+            } else {
+                self.note("REPORT NOT READY - TRY AGAIN".into());
+            }
         } else if self.action_pressed(2, "back") {
             self.base().get_tree().quit();
         }

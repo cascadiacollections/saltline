@@ -47,7 +47,7 @@ pub fn load() -> Save {
     let save = match durable::pick(main.as_deref(), temp.as_deref()) {
         Pick::Main => Save::parse(main.as_deref().unwrap_or_default()),
         Pick::Temp => {
-            godot_warn!("salt-line: {SAVE_PATH} missing or empty; recovered {TEMP_PATH}");
+            godot_warn!("salt-line: {SAVE_PATH} missing or damaged; recovered {TEMP_PATH}");
             Save::parse(temp.as_deref().unwrap_or_default())
         }
         Pick::Empty => Save::default(),
@@ -66,6 +66,11 @@ pub fn store(save: &Save) -> bool {
     if save.from_the_future {
         // Refusing to write is the whole point of the flag: do not overwrite a
         // newer file with a downgraded build's understanding of it.
+        return false;
+    }
+    if crate::crash::panicked() {
+        // After a panic the state in memory is not trusted enough to replace
+        // the last good save with. `record` goes through here too.
         return false;
     }
     let text = save.serialize();
@@ -117,6 +122,14 @@ pub struct Recorded {
 
 /// Record a finished run and persist.
 pub fn record(save: &mut Save, entry: Entry) -> Recorded {
+    if crate::crash::panicked() {
+        // A score from a run that panicked is not one to put on the board,
+        // even in memory.
+        return Recorded {
+            place: None,
+            saved: false,
+        };
+    }
     let place = save.place(entry);
     let saved = store(save);
     Recorded { place, saved }

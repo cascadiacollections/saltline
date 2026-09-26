@@ -811,12 +811,27 @@ pub enum Phase {
 }
 
 /// One entry in the shot log. DESIGN §3: seed plus this reconstructs a run.
+///
+/// Besides the aim, a shot's outcome depends on the Airburst fuse and the
+/// Enfilade emplacement offset, so both are recorded as they stood when the
+/// shot was fired. Both are integers — the fuse in tenths of a unit, the
+/// offset in whole units — and the live game only ever holds values on that
+/// grid (`RunState::set_fuse`, `RunState::reposition`), so a replay applies
+/// bit-identical floats. They are recorded on every shot, whether or not the
+/// loadout uses them; a draft entry leaves both at 0.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LoggedShot {
     pub screen_index: u32,
     pub angle_ticks: i32,
     pub power_ticks: i32,
+    /// Airburst fuse, in tenths of a unit from the muzzle.
+    pub fuse_tenths: i32,
+    /// Enfilade offset of the emplacement from `EMPLACEMENT_X`, whole units.
+    pub emplacement_offset: i32,
 }
+
+/// Fuse resolution: the fuse is held and logged in tenths of a unit.
+pub const FUSE_STEPS_PER_UNIT: i32 = 10;
 
 /// The run state machine. DESIGN §1.
 #[derive(Clone, Debug)]
@@ -834,9 +849,12 @@ pub struct RunState {
     pub phase: Phase,
     /// Offers on the table while `phase == Drafting`.
     pub offers: Vec<Modifier>,
-    /// Airburst fuse, in units from the muzzle. Player-set.
+    /// Airburst fuse, in units from the muzzle. Player-set, always a whole
+    /// number of tenths (see `set_fuse`); `fire` re-quantizes it anyway, so a
+    /// direct write cannot put an unloggable value into a shot.
     pub fuse: f64,
-    /// Enfilade offset applied to this screen, if any.
+    /// Enfilade offset applied to this screen, if any. Always a whole number
+    /// of units; only `reposition` should change it.
     pub emplacement_offset: f64,
     pub log: Vec<LoggedShot>,
     /// Last landing points, for Chalk Marks.
@@ -850,7 +868,6 @@ impl RunState {
     pub fn new(run_seed: u64, width: usize) -> Self {
         let loadout = Loadout::new();
         let screen = generate_screen(run_seed, 0, width, &loadout);
-        let fuse = screen.default_fuse(0).unwrap_or(0.0);
         let mut s = Self {
             run_seed,
             width,
@@ -864,7 +881,7 @@ impl RunState {
             screen,
             phase: Phase::Firing,
             offers: Vec::new(),
-            fuse,
+            fuse: 0.0,
             emplacement_offset: 0.0,
             log: Vec::new(),
             chalk: Vec::new(),
@@ -904,7 +921,7 @@ impl RunState {
         self.wind_revealed = !self.loadout.dead_reckoning();
         self.emplacement_offset = 0.0;
         self.screen.muzzle_x = EMPLACEMENT_X;
-        self.fuse = self.screen.default_fuse(0).unwrap_or(0.0);
+        self.set_fuse(self.screen.default_fuse(0).unwrap_or(0.0));
         if self.screen.supply {
             self.shells = (self.shells + 6).min(self.loadout.cap());
         }
@@ -912,20 +929,51 @@ impl RunState {
 
     /// Enfilade: reposition the emplacement before the first shot of a screen.
     /// Refuses once a shot has been taken (DESIGN §4).
+    ///
+    /// The offset is rounded to whole units, then clamped to the modifier's
+    /// range and to keep the emplacement between x = 14 and mid-screen, so
+    /// the muzzle always sits on a value the shot log can record exactly.
     pub fn reposition(&mut self, offset: f64) -> bool {
         let limit = self.loadout.enfilade_units;
         if limit <= 0.0 || self.shots_on_screen > 0 {
             return false;
         }
-        let off = clamp(offset, -limit, limit);
-        let x = clamp(EMPLACEMENT_X + off, 14.0, self.width as f64 * 0.5);
-        self.emplacement_offset = x - EMPLACEMENT_X;
-        self.screen.muzzle_x = x;
+        self.apply_offset(crate::dmath::round(offset) as i32);
         true
     }
 
+    /// Move the emplacement to a whole-unit offset, clamped. The caller has
+    /// already checked that Enfilade allows it.
+    fn apply_offset(&mut self, offset: i32) {
+        let limit = crate::dmath::floor(self.loadout.enfilade_units) as i32;
+        let lo = limit.min(EMPLACEMENT_X as i32 - 14);
+        let hi = limit.min(self.width as i32 / 2 - EMPLACEMENT_X as i32);
+        let off = offset.clamp(-lo, hi.max(-lo));
+        self.emplacement_offset = off as f64;
+        self.screen.muzzle_x = EMPLACEMENT_X + off as f64;
+    }
+
+    /// The emplacement offset as the shot log records it.
+    pub fn offset_units(&self) -> i32 {
+        self.emplacement_offset as i32
+    }
+
+    /// Set the Airburst fuse, in units. Rounded to the nearest tenth and
+    /// clamped to 0..=1.5 screen widths.
     pub fn set_fuse(&mut self, units: f64) {
-        self.fuse = clamp(units, 0.0, self.width as f64 * 1.5);
+        // `as` saturates and maps NaN to 0, so any input lands on the grid.
+        self.set_fuse_tenths(crate::dmath::round(units * FUSE_STEPS_PER_UNIT as f64) as i32);
+    }
+
+    /// Set the fuse directly in tenths of a unit, clamped like `set_fuse`.
+    pub fn set_fuse_tenths(&mut self, tenths: i32) {
+        let max = self.width as i32 * FUSE_STEPS_PER_UNIT * 3 / 2;
+        self.fuse = tenths.clamp(0, max) as f64 / FUSE_STEPS_PER_UNIT as f64;
+    }
+
+    /// The fuse as the shot log records it.
+    pub fn fuse_tenths(&self) -> i32 {
+        crate::dmath::round(self.fuse * FUSE_STEPS_PER_UNIT as f64) as i32
     }
 
     /// Fire. Consumes a shell, applies the shot, advances the run.
@@ -934,6 +982,8 @@ impl RunState {
             return None;
         }
         let shot = shot.quantized(&self.loadout);
+        // Snap the fuse to the logged grid, in case it was written directly.
+        self.set_fuse_tenths(self.fuse_tenths());
         self.shells -= 1;
         self.total_shots += 1;
         self.shots_on_screen += 1;
@@ -941,6 +991,8 @@ impl RunState {
             screen_index: self.screen_index,
             angle_ticks: shot.angle_ticks,
             power_ticks: shot.power_ticks,
+            fuse_tenths: self.fuse_tenths(),
+            emplacement_offset: self.offset_units(),
         });
 
         let fuse = Some(self.fuse);
@@ -1026,6 +1078,8 @@ impl RunState {
             screen_index: self.screen_index,
             angle_ticks: crate::replay::DRAFT_MARK,
             power_ticks: which as i32,
+            fuse_tenths: 0,
+            emplacement_offset: 0,
         });
         let instant = self.loadout.take(m);
         self.offers.clear();
@@ -1682,6 +1736,51 @@ mod tests {
         assert_eq!(state.screen.muzzle_x, EMPLACEMENT_X + 25.0);
         state.fire(shot(800, 500), false);
         assert!(!state.reposition(-10.0), "repositioning after firing");
+    }
+
+    #[test]
+    fn enfilade_offsets_are_whole_units() {
+        let mut state = RunState::new(0xE1, 320);
+        state.loadout.take(Modifier::Enfilade);
+        assert!(state.reposition(7.4));
+        assert_eq!(state.emplacement_offset, 7.0);
+        assert!(state.reposition(-3.5));
+        assert_eq!(state.emplacement_offset, -3.0);
+        // The emplacement stops at x = 14, short of the modifier's -25.
+        assert!(state.reposition(-25.0));
+        assert_eq!(state.emplacement_offset, 14.0 - EMPLACEMENT_X);
+        assert_eq!(state.screen.muzzle_x, 14.0);
+        state.fire(shot(800, 500), false);
+        assert_eq!(state.log[0].emplacement_offset, -16);
+    }
+
+    #[test]
+    fn the_fuse_is_held_and_logged_in_tenths() {
+        let mut state = RunState::new(0xF5, 320);
+        state.set_fuse(123.456);
+        assert_eq!(state.fuse, 123.5);
+        assert_eq!(state.fuse_tenths(), 1235);
+        state.set_fuse(-4.0);
+        assert_eq!(state.fuse, 0.0);
+        state.set_fuse(f64::NAN);
+        assert_eq!(state.fuse, 0.0);
+        state.set_fuse(1e9);
+        assert_eq!(state.fuse, 480.0, "clamped to 1.5 screen widths");
+        // A direct write is snapped to the grid when the shot is fired, so
+        // what flew is what was logged.
+        state.fuse = 87.6543;
+        state.fire(shot(800, 500), false);
+        assert_eq!(state.fuse, 87.7);
+        assert_eq!(state.log[0].fuse_tenths, 877);
+    }
+
+    #[test]
+    fn a_new_screen_starts_with_the_fuse_on_the_grid() {
+        let state = RunState::new(0xF6, 333);
+        let tenths = state.fuse_tenths();
+        assert_eq!(state.fuse, tenths as f64 / 10.0);
+        let exact = state.screen.default_fuse(0).unwrap();
+        assert!((state.fuse - exact).abs() <= 0.05 + 1e-9);
     }
 
     #[test]

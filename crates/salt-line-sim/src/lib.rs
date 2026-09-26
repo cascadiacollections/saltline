@@ -16,6 +16,30 @@ pub mod run; // M3 — economy, screen assembly, state machine
 pub mod solver; // M2 — solvability validation
 pub mod terrain; // M1 — noise, heightfield, scar buffer, materials // M4 — seed + shot log -> verified reconstruction
 
+/// Version of the sim's outcomes. DESIGN §9.3.
+///
+/// Bumped on any change that alters a replay's outcome: generation,
+/// ballistics, damage, the economy, or what the shot log records. A log
+/// recorded under one epoch is only replayed by a sim of the same epoch;
+/// under any other it keeps its seed and nothing else.
+///
+/// Enforced rather than remembered: `tests/golden_runs.rs` hashes the pinned
+/// screen digests together with the golden-run corpus and asserts the result
+/// is this epoch's entry in [`EPOCHS`]. Every bump gets a line in NOTES.md.
+///
+/// Epoch 1 is everything before the fuse and emplacement offset were logged.
+pub const SIM_EPOCH: u32 = 2;
+
+/// Every epoch's digest, oldest first. Append-only: a sim change appends
+/// `(SIM_EPOCH, digest)` after bumping `SIM_EPOCH`; an existing entry is never
+/// edited, so a digest cannot be replaced without a bump. The tests check
+/// that the last entry is `SIM_EPOCH`, that no digest repeats, and that each
+/// is recorded in NOTES.md. Epoch 1 predates the digest and has no entry.
+pub const EPOCHS: &[(u32, u64)] = &[(2, 0xce60_de84_8487_e4a5)];
+
+/// The digest `SIM_EPOCH` vouches for: the last entry of [`EPOCHS`].
+pub const EPOCH_DIGEST: u64 = EPOCHS[EPOCHS.len() - 1].1;
+
 /// Fixed simulation timestep. Never make this variable.
 pub const DT: f64 = 1.0 / 120.0;
 

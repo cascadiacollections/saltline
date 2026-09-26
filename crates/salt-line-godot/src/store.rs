@@ -15,8 +15,16 @@
 //!   unlock must come from a platform purchase or restore. Until a real
 //!   storefront SDK is wired up, both answer `Unavailable`, which is the
 //!   honest answer and cannot be mistaken for a sale.
+//!
+//! The module is a *seam*: a narrow, engine-free interface that `game.rs`
+//! calls at the three points a store matters (launch, purchase, restore).
+//! A platform SDK replaces the bodies of these functions; nothing else in the
+//! game needs to know which store, if any, is behind them. `game.rs` shows the
+//! paywall once a `Free` player reaches the screen after the last free one,
+//! and sets the cached flag only on [`Outcome::Granted`].
 
-/// Is this build selling anything at all?
+/// Is this build selling anything at all? True only with the
+/// `monetization` Cargo feature.
 pub const MONETIZED: bool = cfg!(feature = "monetization");
 
 /// What the platform says the player owns.
@@ -24,7 +32,9 @@ pub const MONETIZED: bool = cfg!(feature = "monetization");
 pub enum Entitlement {
     /// Everything is playable. In a development preview this is unconditional.
     Full,
-    /// Free content only — screens 1..=`FREE_SCREENS`.
+    /// Free content only — screens
+    /// 1..=[`FREE_SCREENS`](salt_line_sim::run::FREE_SCREENS), counted from 1
+    /// as the player sees them.
     Free,
 }
 
@@ -41,9 +51,11 @@ pub enum Outcome {
 
 /// What this build is entitled to at launch.
 ///
-/// `cached` is the flag read from the save file. It is accepted only in a
-/// monetized build that has no storefront to ask; the moment a real SDK lands,
-/// this function asks the SDK and the cache becomes a display hint.
+/// `cached` is the `unlocked` flag read from the save file. It is currently
+/// ignored: a development preview is always [`Entitlement::Full`], and a
+/// monetized build with no storefront to ask is always
+/// [`Entitlement::Free`]. When a real SDK lands, this function asks it and
+/// the cache becomes a display hint, never the authority.
 pub fn entitlement(cached: bool) -> Entitlement {
     if !MONETIZED {
         // Nothing is for sale, so there is nothing to gate.
