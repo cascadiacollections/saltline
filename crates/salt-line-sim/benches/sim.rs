@@ -45,7 +45,15 @@ fn resolve_a_shot(bencher: Bencher, record_path: bool) {
         record_path,
         ..FireOptions::default()
     };
-    bencher.bench(|| fire(&world, screen.muzzle(), black_box(Shot::new(900, 600)), &lo, &opts));
+    bencher.bench(|| {
+        fire(
+            &world,
+            screen.muzzle(),
+            black_box(Shot::new(900, 600)),
+            &lo,
+            &opts,
+        )
+    });
 }
 
 /// Rebuilding a whole run from its seed and shot log, which is what seed

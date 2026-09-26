@@ -54,11 +54,18 @@ With `just` installed, the same common operations are available as `just test`,
 
 Every push to `main` that passes CI replaces the
 [`dev` prerelease](https://github.com/cascadiacollections/saltline/releases/tag/dev)
-with that commit's builds: Linux x86_64, macOS, Windows x86_64 and arm64, and
-an Android arm64 APK. They are for testing, not distribution: the desktop builds
-are unsigned, and the APK is signed with a debug key (with the
-`ANDROID_DEBUG_KEYSTORE` repository secret, the same key as local
-`just android` builds, so either installs over the other).
+with that commit's builds: Linux x86_64, macOS (universal), Windows x86_64 and
+arm64, and an Android arm64 APK. They are for testing, not distribution: the
+desktop builds are unsigned. The APK is signed with the release key once the
+owner has set it up (so dev builds and releases install over each other), and
+with the debug key until then. Each dev APK gets a higher versionCode than the
+last, so it installs as an update; see RELEASING.md for what that means for
+going back to a release.
+
+Pushing a `vX.Y.Z` tag builds the same set and publishes it as release
+`vX.Y.Z`, with notes from [`CHANGELOG.md`](CHANGELOG.md); see
+[RELEASING.md](RELEASING.md) for the version rule, the Android versionCode
+scheme and signing.
 
 ### Android
 
@@ -68,6 +75,34 @@ attached device or emulator (set `ANDROID_SERIAL` if there is more than one);
 (`ANDROID_HOME`, `ANDROID_NDK_HOME`, defaulting to `~/Android/Sdk` and its
 newest NDK), Godot's export templates, and a debug keystore in the Godot editor
 settings. Phones use the Compatibility renderer; the desktop keeps Forward+.
+
+A local build has versionCode 1, lower than any CI build, so `just android`
+installs with `adb install -r -d` (a debug APK may downgrade). It only
+installs over a CI build signed with the same key: over a release-signed dev
+build or release it fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and the
+fix is `adb uninstall com.cascadiacollections.saltline`, which deletes the
+saves on that device.
+
+### iOS
+
+On a Mac, `just ios` builds the extension for arm64, exports an Xcode project
+to `build/ios`, signs it, then installs and launches it on the attached iPhone
+(set `IOS_DEVICE` to a name or UDID if there is more than one). Signing uses
+Xcode's automatic provisioning, which also registers the phone with your
+account. It needs a paid Apple developer account for installs that last a year.
+It also needs:
+
+- Xcode, signed in to that account under Settings > Accounts
+- rustup and Godot's export templates
+- your Team ID as `application/app_store_team_id` in the iOS preset of
+  `export_presets.cfg` (it is public, and in every app you sign)
+- Developer Mode on the iPhone (Settings > Privacy & Security), with the phone
+  trusting the Mac
+
+If the command-line signing step fails, `just ios-project` stops after the
+export. Open `build/ios/SaltLine.xcodeproj`, pick your team under Signing &
+Capabilities and press Run. CI builds the same project unsigned on every pull
+request.
 
 ## Controls
 
@@ -266,6 +301,9 @@ platform. What that costs, concretely:
   multiplication is not associative.
 - A run persists as `(run_seed, width, shot log)` and nothing else. Draft picks
   ride in the same triple with `angle_ticks = -1`.
+- CI holds it to that: the sim runs on Linux and Windows (x86_64 and arm64) and
+  on macOS (Apple silicon), and the determinism job fails unless all five
+  digests are identical.
 
 ## Monetization
 
