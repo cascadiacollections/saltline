@@ -307,7 +307,8 @@ pub struct FireOptions {
 pub enum End {
     /// Hit the ground. `pos` is the refined contact point, or where a
     /// tunnelling shell stopped; `material` is the surface layer of that
-    /// column, or for a tunnelling shell the layer it stopped in.
+    /// column, or for a tunnelling shell the layer it stopped in. The run
+    /// sizes the crater from the surface layer either way.
     Terrain { pos: Vec2, material: Material },
     /// Entered target box `index` (into [`World::targets`]). `pos` is the end
     /// of the step that entered it, not a refined contact point.
@@ -550,15 +551,19 @@ pub fn simulate_shell(
         if tunneling {
             // The budget is spent as distance travelled along the path.
             tunnel_left -= dmath::hypot(p.x - prev.x, p.y - prev.y);
-            // Bedrock stops it at the shell's own depth (DESIGN §4), which
-            // can come before the budget runs out when it entered Rock.
-            let material = world.field.material_below(p.x, p.y);
-            if material == Material::Bedrock || tunnel_left <= 0.0 {
-                break End::Terrain { pos: p, material };
-            }
             if !inside {
-                // Punched through and came out the far side.
+                // Punched through and came out the far side. Checked first:
+                // a point in the air has no layer, and one over a deep crater
+                // would otherwise read as bedrock and stop the shell there.
                 tunneling = false;
+            } else {
+                // Bedrock stops it at the shell's own depth (DESIGN §4),
+                // which can come before the budget runs out when it entered
+                // Rock.
+                let material = world.field.material_below(p.x, p.y);
+                if material == Material::Bedrock || tunnel_left <= 0.0 {
+                    break End::Terrain { pos: p, material };
+                }
             }
         } else if inside {
             // Refine the contact point between the last two samples so shallow
@@ -1101,6 +1106,49 @@ mod tests {
             "{:?}",
             t.end
         );
+    }
+
+    #[test]
+    fn auger_leaving_the_ground_does_not_stop_in_the_air() {
+        // A Rock ledge (dug 15 into ground at 60) drops into a pit whose
+        // columns stand on higher ground (90) dug out to 20, so a point in
+        // the pit's air is more than 30 below its column's original surface.
+        // A shell that tunnels out of the ledge must fly on into the pit,
+        // not read that air as bedrock and stop in it.
+        let mut f = flat(320, 60.0);
+        for i in 0..f.len() {
+            if i < 100 {
+                f.scar[i] = 15.0;
+                f.material[i] = Material::Rock;
+            } else {
+                f.base[i] = 90.0;
+                f.scar[i] = 70.0;
+                f.material[i] = Material::Bedrock;
+            }
+        }
+        let mut lo = Loadout::new();
+        lo.take(crate::modifiers::Modifier::Auger);
+        for k in 0..20 {
+            let t = simulate_shell(
+                &world(&f, &[], 0.0),
+                Vec2::new(80.0 + k as f64 * 0.1, 50.0),
+                Vec2::new(180.0, -40.0),
+                &lo,
+                &FireOptions::default(),
+                1.0,
+                true,
+                true,
+            );
+            assert!(t.tunneled, "offset {k}: auger did not tunnel");
+            let p = t.end.pos();
+            assert!(
+                p.y - SHELL_RADIUS <= f.surface_at(p.x) + 1e-9,
+                "offset {k}: stopped in the air at ({}, {}), surface {}",
+                p.x,
+                p.y,
+                f.surface_at(p.x)
+            );
+        }
     }
 
     #[test]

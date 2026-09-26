@@ -30,7 +30,9 @@
 mod common;
 
 use salt_line_sim::modifiers::Loadout;
-use salt_line_sim::replay::{decode_log, encode_log, screen_hash, state_hash, Hasher, Replay};
+use salt_line_sim::replay::{
+    decode_log, encode_log, screen_hash, state_hash, Hasher, Replay, DRAFT_MARK,
+};
 use salt_line_sim::run::{generate_screen, Phase, RunState};
 use salt_line_sim::{band_of, EPOCHS, EPOCH_DIGEST, SIM_EPOCH};
 
@@ -153,6 +155,10 @@ fn the_corpus_covers_what_it_should() {
         "no golden run has a shot whose Enfilade offset decides its outcome"
     );
     assert!(
+        runs.iter().any(|g| drafts_on_a_supply_screen(&g.replay)),
+        "no golden run drafts on a supply screen just before a band start"
+    );
+    assert!(
         states.iter().any(|s| band_of(s.screen_index) >= 4),
         "no golden run reaches band 4"
     );
@@ -163,6 +169,19 @@ fn the_corpus_covers_what_it_should() {
     for w in [320, 400] {
         assert!(states.iter().any(|s| s.width == w), "no run at width {w}");
     }
+}
+
+/// Whether the log has a draft pick on a screen with no shots: a Scavenger
+/// Rites supply screen just before a band start, which opens the draft as
+/// it is walked through.
+fn drafts_on_a_supply_screen(replay: &Replay) -> bool {
+    replay.log.iter().any(|d| {
+        d.angle_ticks == DRAFT_MARK
+            && !replay
+                .log
+                .iter()
+                .any(|e| e.angle_ticks != DRAFT_MARK && e.screen_index == d.screen_index)
+    })
 }
 
 /// Everything a replay's outcome depends on, in one number: the pinned
