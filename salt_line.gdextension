@@ -18,3 +18,5 @@ windows.debug.arm64 =    "res://target/aarch64-pc-windows-msvc/debug/salt_line_g
 windows.release.arm64 =  "res://target/aarch64-pc-windows-msvc/release/salt_line_godot.dll"
 android.debug.arm64 =    "res://target/aarch64-linux-android/debug/libsalt_line_godot.so"
 android.release.arm64 =  "res://target/aarch64-linux-android/release/libsalt_line_godot.so"
+ios.debug =              "res://target/aarch64-apple-ios/debug/libsalt_line_godot.dylib"
+ios.release =            "res://target/aarch64-apple-ios/release/libsalt_line_godot.dylib"
