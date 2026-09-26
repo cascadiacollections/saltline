@@ -1,19 +1,39 @@
 //! Upkeep around the game: the buffer and window, sounds, settings, crash
 //! reports, pausing on focus loss, and keeping the run on disk (DESIGN §9.1).
+//!
+//! Almost every helper here does one thing: push an [`Effect`]. None of them
+//! touches a file, a speaker or the window; that is the adapter's job, done
+//! later, in order (see the effect catalogue in `app`).
+//!
+//! # The run file
+//!
+//! The run in play is kept on disk as its seed and shot log, so a run the
+//! operating system killed can be continued (DESIGN §9.6). Its life:
+//!
+//! ```text
+//!  start_run ─► begin_persisting ─► persist_run writes on every log change
+//!                                     │
+//!        quit to title: suspend_run ──┤ kept; CONTINUE offers it
+//!        new run:  confirm_discard ───┤ two presses, then replaced
+//!        run over: finish_run ────────┘ stop_persisting: Discard, then Score
+//! ```
 
 use super::*;
 
 impl Game {
+    /// Show `text` on the status line for `STATUS_TIME` seconds.
     pub(super) fn note(&mut self, text: String) {
         self.status = text;
         self.status_time = STATUS_TIME;
         self.fx.push(Effect::Redraw);
     }
 
+    /// Ask for `sound`.
     pub(super) fn play(&mut self, sound: Sound) {
         self.fx.push(Effect::Play(sound));
     }
 
+    /// Ask for the players' volume to follow the save's.
     pub(super) fn apply_volume(&mut self) {
         self.fx.push(Effect::Volume(self.volume_db()));
     }
@@ -23,6 +43,9 @@ impl Game {
         self.play.preview_epoch = self.play.preview_epoch.wrapping_add(1);
     }
 
+    /// The player has done the thing onboarding bit `bit` teaches. Written
+    /// at once, and only the first time, so a lesson learned is never shown
+    /// again even if the app is killed straight after.
     pub(super) fn learn(&mut self, bit: u32) {
         if self.save.learned & bit == 0 {
             self.save.learned |= bit;
@@ -30,6 +53,9 @@ impl Game {
         }
     }
 
+    /// Size the buffer for the display and the loadout, and tell the adapter.
+    /// Always asks, even when nothing changed; `Canvas::resize` does nothing
+    /// at an unchanged size.
     pub(super) fn apply_buffer_size(&mut self) {
         let h = if self.long_lens() {
             LONG_LENS_H
@@ -97,6 +123,7 @@ impl Game {
         }
     }
 
+    /// Ask for the save to be written for a settings change.
     pub(super) fn write_settings(&mut self) {
         self.fx.push(Effect::Store(Store::Settings));
     }
@@ -113,6 +140,8 @@ impl Game {
         }
     }
 
+    /// Put last session's crash report on the clipboard. The first copy
+    /// retires the report on disk, so the next launch does not offer it.
     pub(super) fn copy_last_crash(&mut self) {
         let Some(text) = self.crash.last_crash.clone() else {
             return;
