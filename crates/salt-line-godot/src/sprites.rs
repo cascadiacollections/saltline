@@ -120,6 +120,18 @@ fn load(path: &str, missing: &mut Vec<String>) -> Option<Sprite> {
 }
 
 impl Sprites {
+    /// Load one standalone image into the software renderer. This is used for
+    /// full-frame art such as the title background, with the same exported-
+    /// resource path and RGBA conversion as the sprite collection.
+    pub fn load_one(path: &str) -> Option<Sprite> {
+        let mut missing = Vec::new();
+        let sprite = load(path, &mut missing);
+        if sprite.is_none() {
+            godot_warn!("salt-line: missing image: {path}");
+        }
+        sprite
+    }
+
     /// Load every sprite from `dir` (a `res://` directory, no trailing
     /// slash). Never fails; see [`Sprites::missing`].
     pub fn load_all(dir: &str) -> Sprites {

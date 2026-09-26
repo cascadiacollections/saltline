@@ -44,6 +44,7 @@
 
 use salt_line_sim::ballistics::{self, FireOptions, Shot, Trace};
 use salt_line_sim::modifiers::{flags, Loadout, Modifier};
+use salt_line_sim::rng::mix64;
 use salt_line_sim::run::{format_seed, parse_seed, Phase, Screen, StructState};
 use salt_line_sim::{Vec2, DT};
 
@@ -53,7 +54,7 @@ use crate::input::Action;
 use crate::keypad;
 use crate::palette::{slot, Palette};
 use crate::presentation;
-use crate::raster::{self, Canvas, View};
+use crate::raster::{self, Canvas, Sprite, View};
 use crate::save_format::{ArcHint, TouchAim};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
 use crate::touch::{Button, Rect};
@@ -65,6 +66,30 @@ use crate::touch::{Button, Rect};
 pub struct Art {
     pub pal: Palette,
     pub sprites: Option<Sprites>,
+    pub title_background: Option<Sprite>,
+    /// Wide native-resolution playfield backgrounds. Slots stay present when
+    /// an image is missing so a seed's selection never changes silently.
+    pub parallax_backgrounds: Vec<Option<Sprite>>,
+}
+
+const BACKGROUND_CHOICE_TAG: u64 = 0xBA6C_6A0D_0000_0001;
+const BACKGROUND_CROP_TAG: u64 = 0xBA6C_6A0D_0000_0002;
+
+fn background_index(seed: u64, count: usize) -> Option<usize> {
+    (count > 0).then(|| (mix64(seed ^ BACKGROUND_CHOICE_TAG) % count as u64) as usize)
+}
+
+fn parallax_offset(seed: u64, background_w: i32, canvas_w: i32, cam_x: i32) -> i32 {
+    let travel = (background_w - canvas_w).max(0);
+    if travel == 0 {
+        return 0;
+    }
+    // Ping-pong inside the overscan rather than wrapping from one edge to the
+    // other. The image never exposes a seam, even on an unusually wide pan.
+    let period = travel * 2;
+    let phase = (mix64(seed ^ BACKGROUND_CROP_TAG) % period as u64) as i32;
+    let p = (phase + cam_x.div_euclid(4)).rem_euclid(period);
+    p.min(period - p)
 }
 
 /// Drawing work kept from one frame to the next.
@@ -140,6 +165,8 @@ struct Painter<'a> {
     g: &'a Game,
     pal: &'a Palette,
     sprites: Option<&'a Sprites>,
+    title_background: Option<&'a Sprite>,
+    parallax_backgrounds: &'a [Option<Sprite>],
     canvas: &'a mut Canvas,
     buttons: &'a mut Vec<Button>,
     cache: &'a mut Cache,
@@ -157,6 +184,8 @@ impl<'a> Painter<'a> {
             g,
             pal: &art.pal,
             sprites: art.sprites.as_ref(),
+            title_background: art.title_background.as_ref(),
+            parallax_backgrounds: &art.parallax_backgrounds,
             canvas,
             buttons,
             cache,
@@ -212,6 +241,15 @@ impl Painter<'_> {
         let view = self.g.view();
         // A calm sky behind the menus, with the same dither as the game.
         raster::draw_sky(self.canvas, &view, pal);
+        // Title art is authored at the native 320x180. Wider phone buffers
+        // reveal the normal sky at the sides rather than scaling the pixels.
+        if matches!(self.g.mode, Mode::Title) {
+            if let Some(background) = self.title_background {
+                let x = (self.canvas.w - background.w) / 2;
+                let y = (self.canvas.h - background.h) / 2;
+                self.canvas.blit(background, x, y);
+            }
+        }
         let fg = pal.get(slot::UI_FG);
         let dim = pal.get(slot::SKY_LO);
         let alert = pal.get(slot::ALERT);
@@ -233,6 +271,15 @@ impl Painter<'_> {
 
         match self.g.mode {
             Mode::Title => {
+                if self.g.input.touch_active {
+                    let (ex, ey) = self.g.display.corner_pad;
+                    let label = if self.g.save.title_music {
+                        "MUS ON"
+                    } else {
+                        "MUS OFF"
+                    };
+                    self.draw_touch_button(w - 42 - ex, 3 + ey, 42, 13, label, Action::TitleMusic);
+                }
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
                 let confirm = self.g.input_label(Action::Confirm);
@@ -661,6 +708,7 @@ impl Painter<'_> {
         let sappers = loadout.has_flag(flags::SAPPERS_EYE);
 
         raster::draw_sky(self.canvas, &view, pal);
+        self.draw_parallax_background(run.run_seed, &view);
         raster::draw_terrain(self.canvas, &view, &screen.field, pal);
         if sappers {
             raster::draw_material_boundaries(self.canvas, &view, &screen.field, pal);
@@ -711,6 +759,22 @@ impl Painter<'_> {
         if self.g.mode == Mode::Paused {
             self.render_pause();
         }
+    }
+
+    /// Pick one background for the whole run, then move its wide crop at a
+    /// quarter of the world camera speed. The seed also chooses the starting
+    /// crop, so shared seeds share the same view without consuming simulation
+    /// RNG or becoming part of replay state.
+    fn draw_parallax_background(&mut self, seed: u64, view: &View) {
+        let Some(index) = background_index(seed, self.parallax_backgrounds.len()) else {
+            return;
+        };
+        let Some(background) = self.parallax_backgrounds[index].as_ref() else {
+            return;
+        };
+        let x = -parallax_offset(seed, background.w, self.canvas.w, view.cam_x);
+        let y = self.canvas.h - background.h;
+        self.canvas.blit(background, x, y);
     }
 
     /// While a drag aims: the band from where the finger went down to where it
@@ -1308,6 +1372,30 @@ mod tests {
     }
 
     #[test]
+    fn background_choice_is_seed_stable_and_uses_every_variant() {
+        for seed in 0..64 {
+            assert_eq!(background_index(seed, 3), background_index(seed, 3));
+        }
+        let used: std::collections::BTreeSet<_> = (0..64)
+            .filter_map(|seed| background_index(seed, 3))
+            .collect();
+        assert_eq!(used, [0, 1, 2].into_iter().collect());
+        assert_eq!(background_index(42, 0), None);
+    }
+
+    #[test]
+    fn parallax_crop_is_bounded_and_slower_than_the_camera() {
+        let offsets: Vec<_> = (0..=448)
+            .map(|cam| parallax_offset(42, 512, 400, cam))
+            .collect();
+        assert!(offsets.iter().all(|&x| (0..=112).contains(&x)));
+        assert!(offsets
+            .windows(2)
+            .all(|pair| (pair[1] - pair[0]).abs() <= 1));
+        assert_eq!(parallax_offset(42, 320, 400, 100), 0);
+    }
+
+    #[test]
     fn the_title_screen_is_pinned() {
         let (canvas, buttons) = draw(&game());
         assert!(buttons.is_empty(), "no touch buttons on a desktop");
@@ -1416,6 +1504,7 @@ mod tests {
         assert_eq!(
             actions(&buttons),
             [
+                Action::TitleMusic,
                 Action::Confirm,
                 Action::Seed,
                 Action::Controls,
@@ -1432,6 +1521,7 @@ mod tests {
         assert_eq!(
             actions(&buttons),
             [
+                Action::TitleMusic,
                 Action::Confirm,
                 Action::NewRun,
                 Action::Seed,

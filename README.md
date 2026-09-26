@@ -86,7 +86,8 @@ saves on that device.
 
 On a Mac, `just ios` builds the extension for arm64, exports an Xcode project
 to `build/ios`, signs it, then installs and launches it on the attached iPhone
-(set `IOS_DEVICE` to a name or UDID if there is more than one). Signing uses
+(set `IOS_DEVICE` to a name or UDID if there is more than one physical iPhone).
+Signing uses
 Xcode's automatic provisioning, which also registers the phone with your
 account. It needs a paid Apple developer account for installs that last a year.
 It also needs:
@@ -94,7 +95,8 @@ It also needs:
 - Xcode, signed in to that account under Settings > Accounts
 - rustup and Godot's export templates
 - your Team ID as `application/app_store_team_id` in the iOS preset of
-  `export_presets.cfg` (it is public, and in every app you sign)
+  `export_presets.cfg` (it is public, and in every app you sign), or in the
+  `IOS_TEAM` environment variable to override that value locally
 - Developer Mode on the iPhone (Settings > Privacy & Security), with the phone
   trusting the Mac
 
@@ -144,6 +146,10 @@ Touch aiming has two modes, chosen with AIM on the CONTROLS / AUDIO screen:
 
 Until a player picks one, the defaults are `DEFAULT_TOUCH_AIM` and
 `DEFAULT_ARC_HINT` in `app.rs`.
+
+Settings, unlocks and scores are stored separately on each device. A new iOS
+install therefore starts with `AIM: BUTTONS` even if an Android install was
+previously changed to `AIM: DRAG`; choose `AIM: DRAG` on CONTROLS / AUDIO.
 
 LAST ARC, on the same screen for every input, leaves the last shot's path
 drawn as a faint dotted line until the next shot or the next screen. It is on
@@ -340,6 +346,7 @@ nothing crashed. The files live in Godot's user data folder:
 | macOS | `~/Library/Application Support/Godot/app_userdata/Salt Line/` |
 | Windows | `%APPDATA%\Godot\app_userdata\Salt Line\` |
 | Android | App-private; use the in-game copy button |
+| iOS | App-private; settings and progress do not sync with Android |
 
 The save (`salt_line.txt`) is written to a temporary file, flushed to disk and
 renamed over the old one, so a crash mid-write costs at most the newest

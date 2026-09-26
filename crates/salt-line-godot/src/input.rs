@@ -208,6 +208,8 @@ pub enum Action {
     Replay,
     Controls,
     Mute,
+    /// The title screen's dedicated music toggle.
+    TitleMusic,
     LastArc,
     Seed,
     NewRun,
@@ -271,7 +273,9 @@ impl Action {
             Self::LastArc => "last_arc",
             Self::Seed => "seed",
             Self::NewRun => "new_run",
-            Self::AimMode | Self::ArcHint | Self::Type(_) | Self::Delete => return None,
+            Self::TitleMusic | Self::AimMode | Self::ArcHint | Self::Type(_) | Self::Delete => {
+                return None;
+            }
         })
     }
 

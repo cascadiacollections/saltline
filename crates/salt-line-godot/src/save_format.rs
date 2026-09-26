@@ -167,6 +167,8 @@ pub struct Save {
     pub volume: u8,
     /// Effects muted. Independent of `volume`.
     pub muted: bool,
+    /// Whether the looping title music plays. Independent of effects mute.
+    pub title_music: bool,
     /// Bitset of contextual lessons the player has already demonstrated,
     /// one [`presentation`](crate::presentation) `LEARN_*` bit each.
     pub learned: u32,
@@ -195,6 +197,7 @@ impl Default for Save {
             scores: Vec::new(),
             volume: 75,
             muted: false,
+            title_music: true,
             learned: 0,
             bindings: Vec::new(),
             touch_aim: None,
@@ -240,6 +243,7 @@ impl Save {
                     }
                 }
                 Some("muted") => save.muted = it.next() == Some("1"),
+                Some("title_music") => save.title_music = it.next() != Some("0"),
                 Some("touch_aim") => save.touch_aim = it.next().and_then(TouchAim::from_token),
                 Some("arc_hint") => save.arc_hint = it.next().and_then(ArcHint::from_token),
                 Some("last_arc") => {
@@ -309,6 +313,10 @@ impl Save {
         out.push_str(&format!("version {VERSION}\n"));
         out.push_str(&format!("volume {}\n", self.volume.min(100)));
         out.push_str(&format!("muted {}\n", if self.muted { 1 } else { 0 }));
+        out.push_str(&format!(
+            "title_music {}\n",
+            if self.title_music { 1 } else { 0 }
+        ));
         out.push_str(&format!("learned {}\n", self.learned));
         if let Some(a) = self.touch_aim {
             out.push_str(&format!("touch_aim {}\n", a.token()));
@@ -538,7 +546,7 @@ mod tests {
 
     #[test]
     fn settings_and_bindings_round_trip_and_malformed_values_are_safe() {
-        let text = "version 2\nvolume 240\nmuted 1\nlearned 37\n\
+        let text = "version 2\nvolume 240\nmuted 1\ntitle_music 0\nlearned 37\n\
                     bind fire F X\nbind bad-token ! A\n";
         let s = Save::parse(text);
         assert_eq!(s.volume, 100);
@@ -549,9 +557,17 @@ mod tests {
             assert_eq!(Save::parse(line).volume, 75, "{line}");
         }
         assert!(s.muted);
+        assert!(!s.title_music);
         assert_eq!(s.learned, 37);
         assert_eq!(s.bindings, vec![("fire".into(), "F".into(), "X".into())]);
         assert_eq!(Save::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn title_music_defaults_on_and_remembers_either_choice() {
+        assert!(Save::parse("").title_music);
+        assert!(Save::parse("title_music 1\n").title_music);
+        assert!(!Save::parse("title_music 0\n").title_music);
     }
 
     #[test]
@@ -658,7 +674,7 @@ mod tests {
 
             #[test]
             fn any_line_soup_parses_without_panicking(
-                lines in prop::collection::vec("(version|unlocked|volume|muted|learned|touch_aim|arc_hint|last_arc|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
+                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
             ) {
                 let _ = Save::parse(&lines.join("\n"));
             }

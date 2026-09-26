@@ -5,6 +5,7 @@ expression: save.serialize()
 version 2
 volume 65
 muted 0
+title_music 1
 learned 11
 touch_aim drag
 arc_hint short

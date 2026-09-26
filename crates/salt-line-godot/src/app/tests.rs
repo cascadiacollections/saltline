@@ -822,6 +822,34 @@ fn muting_silences_every_player() {
 }
 
 #[test]
+fn the_title_music_button_is_separate_from_effects_and_persists() {
+    let mut g = game();
+    g.set_buttons(&[button(Action::TitleMusic)]);
+    g.events(&[
+        Event::FingerDown {
+            index: 0,
+            x: 5.0,
+            y: 5.0,
+        },
+        Event::FingerUp { index: 0 },
+    ]);
+    let fx = tick(&mut g, idle());
+    assert!(!g.save.title_music);
+    assert!(!g.save.muted);
+    assert_eq!(g.status, "TITLE MUSIC OFF");
+    assert!(fx.contains(&Effect::TitleMusic(false)));
+    assert_eq!(count(&fx, is_settings), 1);
+}
+
+#[test]
+fn starting_a_run_stops_the_title_loop() {
+    let mut g = game();
+    let fx = tick(&mut g, keys(&[Key::Enter]));
+    assert_eq!(g.mode, Mode::Playing);
+    assert!(fx.contains(&Effect::TitleMusic(false)));
+}
+
+#[test]
 fn a_settings_write_that_fails_says_so() {
     let mut g = game();
     g.stored(Store::Settings, false);

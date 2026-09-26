@@ -87,7 +87,8 @@ android-log:
 # (Settings > Accounts), rustup, Godot's export templates, and your Team ID in the iOS preset
 # (application/app_store_team_id in export_presets.cfg). Godot exports an Xcode project,
 # xcodebuild signs it with automatic provisioning (which also registers the phone), and
-# devicectl installs it. Set IOS_DEVICE to a device name or UDID when more than one is attached.
+# devicectl installs it. IOS_TEAM overrides the preset's Team ID. Set IOS_DEVICE to a
+# device name or UDID when more than one physical iPhone is attached.
 
 # Build the GDExtension for iOS.
 ios-lib profile="debug":
@@ -96,19 +97,28 @@ ios-lib profile="debug":
         --target aarch64-apple-ios {{ if profile == "release" { "--release" } else { "" } }}
 
 # Export the Xcode project to build/ios (open build/ios/SaltLine.xcodeproj to run from Xcode).
-ios-project: ios-lib
+# Build the host extension too: Godot loads it while importing the project on a clean checkout.
+ios-project: build ios-lib
     #!/usr/bin/env bash
     set -euo pipefail
-    team=$(sed -n 's/^application\/app_store_team_id="\(.*\)"$/\1/p' export_presets.cfg)
+    team="${IOS_TEAM:-$(sed -n 's/^application\/app_store_team_id="\(.*\)"$/\1/p' export_presets.cfg)}"
     if [ -z "$team" ]; then
         echo "error: set application/app_store_team_id in the iOS preset of export_presets.cfg" >&2
-        echo "       (your 10-character Team ID, from developer.apple.com/account > Membership)" >&2
+        echo "       or set IOS_TEAM (your 10-character Team ID)" >&2
         exit 1
     fi
     rm -rf build/ios && mkdir -p build/ios
     godot --headless --path . --frame-delay 800 --import
     godot --headless --path . --export-debug "iOS" build/ios/SaltLine.ipa
     test -d build/ios/SaltLine.xcodeproj
+    # Godot 4.7.2 emits empty usage strings even though Salt Line does not use
+    # the camera, microphone or photo library. Empty strings make Xcode warn.
+    info=build/ios/SaltLine/SaltLine-Info.plist
+    for key in NSCameraUsageDescription NSMicrophoneUsageDescription NSPhotoLibraryUsageDescription; do
+        plutil -remove "$key" "$info" 2>/dev/null || true
+    done
+    # The template also compiles dummy.h as a source file; this directive then warns.
+    sed -i '' '/^#pragma once$/d' build/ios/SaltLine/dummy.h
     # Godot skips a missing extension library without a word, and the app then starts
     # with no game in it, so check it was wrapped into a framework.
     if ! find build/ios -name 'libsalt_line_godot.framework' | grep -q .; then
@@ -120,19 +130,37 @@ ios-project: ios-lib
 ios: ios-project
     #!/usr/bin/env bash
     set -euo pipefail
-    team=$(sed -n 's/^application\/app_store_team_id="\(.*\)"$/\1/p' export_presets.cfg)
-    xcodebuild -project build/ios/SaltLine.xcodeproj -configuration Debug -sdk iphoneos \
+    team="${IOS_TEAM:-$(sed -n 's/^application\/app_store_team_id="\(.*\)"$/\1/p' export_presets.cfg)}"
+    # Documents may be backed by a macOS file provider, which adds FinderInfo to copied
+    # frameworks and makes codesign reject them. Stage the generated project outside it.
+    stage=$(mktemp -d "${TMPDIR:-/tmp}/saltline-ios.XXXXXX")
+    trap 'rm -rf "$stage"' EXIT
+    mkdir -p "$stage/project" "$stage/out"
+    rsync -a --exclude out build/ios/ "$stage/project/"
+    xattr -cr "$stage"
+    xcodebuild -project "$stage/project/SaltLine.xcodeproj" -configuration Debug -sdk iphoneos \
         -allowProvisioningUpdates DEVELOPMENT_TEAM="$team" CODE_SIGN_STYLE=Automatic \
-        SYMROOT="$PWD/build/ios/out" -quiet build
-    app=$(ls -d build/ios/out/Debug-iphoneos/*.app | head -1)
+        COMPILER_INDEX_STORE_ENABLE=NO SYMROOT="$stage/out" -quiet build
+    app=$(ls -d "$stage"/out/Debug-iphoneos/*.app | head -1)
     device="${IOS_DEVICE:-}"
     if [ -z "$device" ]; then
         list=$(mktemp)
         xcrun devicectl list devices --json-output "$list" >/dev/null
-        device=$(python3 -c 'import json,sys; d=[x for x in json.load(open(sys.argv[1]))["result"]["devices"] if x.get("hardwareProperties",{}).get("platform")=="iOS"]; print(d[0]["identifier"] if d else "")' "$list")
+        device=$(python3 -c '
+    import json, sys
+    devices = json.load(open(sys.argv[1]))["result"]["devices"]
+    phones = [d for d in devices if
+        d.get("properties", {}).get("hardware", {}).get("deviceType") == "iPhone"
+        and d.get("properties", {}).get("hardware", {}).get("reality") == "physical"
+        and d.get("properties", {}).get("connection", {}).get("state") == "connected"]
+    if len(phones) != 1:
+        names = ", ".join(d.get("properties", {}).get("state", {}).get("name", d["identifier"]) for d in phones)
+        suffix = f": {names}" if names else "; plug one in or set IOS_DEVICE"
+        sys.exit(f"error: expected one connected physical iPhone, found {len(phones)}{suffix}")
+    print(phones[0]["identifier"])
+    ' "$list")
         rm -f "$list"
     fi
-    if [ -z "$device" ]; then echo "error: no iPhone found; plug it in and trust this Mac" >&2; exit 1; fi
     xcrun devicectl device install app --device "$device" "$app"
     xcrun devicectl device process launch --device "$device" com.cascadiacollections.saltline
 

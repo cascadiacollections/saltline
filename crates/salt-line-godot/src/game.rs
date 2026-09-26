@@ -88,6 +88,16 @@ use crate::touch::Button;
 
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
+const TITLE_BACKGROUND_PATH: &str = "res://art/title_background_320x180.png";
+const PARALLAX_BACKGROUND_PATHS: [&str; 3] = [
+    "res://art/backgrounds/parallax_sky_512x180.png",
+    "res://art/backgrounds/parallax_mesas_512x180.png",
+    "res://art/backgrounds/parallax_dunes_512x180.png",
+];
+/// Music sits behind the sharper one-shot effects instead of competing with them.
+const TITLE_GAIN_DB: f32 = -8.0;
+/// A cold launch should not hit the speaker at the track's full level.
+const TITLE_FADE_SECONDS: f64 = 1.0;
 
 /// The one Godot node the game needs, registered with the engine as
 /// `SaltLine` and used as the root of `godot/main.tscn`. It owns the core ([`Game`]) and
@@ -144,6 +154,10 @@ pub struct SaltLine {
     /// One player per `Sound`, in `Sound::ALL` order, so `sound as usize`
     /// finds it. `None` where the file failed to load: that sound is silent.
     audio: Vec<Option<Gd<AudioStreamPlayer>>>,
+    /// Master gain last sent by the core; title music adds its own offset.
+    audio_db: f32,
+    /// Seconds remaining in the title track's linear-amplitude fade-in.
+    title_fade: f64,
 
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
     /// native resolution, and quit. How the pixel output gets checked without
@@ -182,6 +196,8 @@ impl INode2D for SaltLine {
             pad_prune: 0.0,
             touch_buttons: Vec::new(),
             audio: Vec::new(),
+            audio_db: -80.0,
+            title_fade: 0.0,
             shot_path: None,
             frames: 0,
             elapsed: 0.0,
@@ -198,6 +214,11 @@ impl INode2D for SaltLine {
         self.art = Art {
             pal: Palette::load(PALETTE_PATH),
             sprites: Some(Sprites::load_all(SPRITE_DIR)),
+            title_background: Sprites::load_one(TITLE_BACKGROUND_PATH),
+            parallax_backgrounds: PARALLAX_BACKGROUND_PATHS
+                .iter()
+                .map(|path| Sprites::load_one(path))
+                .collect(),
         };
         self.g = Game::new(mobile, save::load());
         self.find_last_crash();
@@ -252,6 +273,7 @@ impl INode2D for SaltLine {
             )
         });
         self.apply(fx);
+        self.tick_title_music(capped);
         // A stick held over that moved the aim this frame is a hand on it,
         // however long it has been held: not drift (`Pads::in_use`).
         if self.intents.stick.iter().any(|&held| held)
@@ -419,8 +441,34 @@ impl SaltLine {
                     }
                 }
                 Effect::Volume(db) => {
-                    for player in self.audio.iter_mut().flatten() {
-                        player.set_volume_db(db);
+                    self.audio_db = db;
+                    for (index, player) in self.audio.iter_mut().enumerate() {
+                        if let Some(player) = player {
+                            let gain = if index == Sound::Title as usize {
+                                title_volume_db(db)
+                            } else {
+                                db
+                            };
+                            player.set_volume_db(gain);
+                        }
+                    }
+                }
+                Effect::TitleMusic(on) => {
+                    if let Some(player) = self
+                        .audio
+                        .get_mut(Sound::Title as usize)
+                        .and_then(Option::as_mut)
+                    {
+                        if on {
+                            if !player.is_playing() {
+                                self.title_fade = TITLE_FADE_SECONDS;
+                                player.set_volume_db(-80.0);
+                                player.play();
+                            }
+                        } else {
+                            self.title_fade = 0.0;
+                            player.stop();
+                        }
                     }
                 }
                 Effect::Redraw => self.redraw.mark(),
@@ -587,7 +635,44 @@ impl SaltLine {
             self.audio.push(Some(player));
         }
         let db = self.g.volume_db();
-        self.apply(vec![Effect::Volume(db)]);
+        self.apply(vec![
+            Effect::Volume(db),
+            Effect::TitleMusic(self.g.title_music_playing()),
+        ]);
+    }
+
+    /// Keep title playback continuous even on backends that ignore the WAV
+    /// loop flag, and ease in only when the track is deliberately started.
+    /// A fallback restart after the natural end is already at the settled
+    /// level, so the loop does not pulse every fourteen seconds.
+    fn tick_title_music(&mut self, delta: f64) {
+        if !self.g.title_music_playing() {
+            return;
+        }
+        let target = title_volume_db(self.audio_db);
+        let Some(player) = self
+            .audio
+            .get_mut(Sound::Title as usize)
+            .and_then(Option::as_mut)
+        else {
+            return;
+        };
+        if !player.is_playing() {
+            self.title_fade = 0.0;
+            player.set_volume_db(target);
+            player.play();
+            return;
+        }
+        if self.title_fade > 0.0 {
+            self.title_fade = (self.title_fade - delta).max(0.0);
+            let progress = (1.0 - self.title_fade / TITLE_FADE_SECONDS) as f32;
+            let db = if progress <= 0.0 {
+                -80.0
+            } else {
+                (target + 20.0 * progress.log10()).max(-80.0)
+            };
+            player.set_volume_db(db);
+        }
     }
 
     /// Every argument, whether it arrived before or after `--`.
@@ -863,6 +948,10 @@ impl SaltLine {
             godot_print!("salt-line: wrote {path} ({w}x{h}) -> {err:?}");
         }
     }
+}
+
+fn title_volume_db(master: f32) -> f32 {
+    (master + TITLE_GAIN_DB).max(-80.0)
 }
 
 /// The keys the core reads, and the engine's names for them.

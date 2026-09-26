@@ -104,6 +104,7 @@
 //! |---|---|---|---|---|
 //! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a draft offered or taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
 //! | `Volume(dB)` | mute, the Controls volume (the node sets it once itself at launch) | `set_volume_db` on every player | no | no |
+//! | `TitleMusic(on)` | the title music toggle and transitions to/from the title | start or stop the looping title player | no | no |
 //! | `Redraw` | any status note, a buffer change, pausing, and [`Game::tick`] when the frame's [`FrameState`] changed | `frame::Redraw::mark` | no | no |
 //! | `RecheckDisplay` | [`Game::tick`], on entering Title or GameOver | `frame::DisplayPoll::invalidate` | no | no |
 //! | `Buffer { w, h, letterbox }` | launch, a run started or continued, a draft taken, a screen change, a change of window size or cutout | resize the canvas, set the window's content scale size, offset the node | no | no |
@@ -341,13 +342,15 @@ pub enum Sound {
     LowShell,
     /// A menu choice.
     Ui,
+    /// The looping title track.
+    Title,
 }
 
 impl Sound {
     /// Every sound, in declaration order. The node creates one player per
     /// entry in this order and finds a sound's player at `sound as usize`,
     /// so the order here must match the enum's.
-    pub const ALL: [Sound; 10] = [
+    pub const ALL: [Sound; 11] = [
         Self::Fire,
         Self::Flight,
         Self::Terrain,
@@ -358,6 +361,7 @@ impl Sound {
         Self::Draft,
         Self::LowShell,
         Self::Ui,
+        Self::Title,
     ];
 
     /// The file under `res://art/audio`, without `.wav`.
@@ -373,6 +377,7 @@ impl Sound {
             Self::Draft => "draft",
             Self::LowShell => "low_shell",
             Self::Ui => "ui",
+            Self::Title => "title_loop",
         }
     }
 }
@@ -436,6 +441,8 @@ pub enum Effect {
     Play(Sound),
     /// Set every sound player's volume, in dB.
     Volume(f32),
+    /// Start or stop the dedicated looping title player.
+    TitleMusic(bool),
     /// Something visible changed: draw the next frame. See `frame::Redraw`.
     Redraw,
     /// Read the display's safe area again rather than wait for the next
@@ -553,6 +560,7 @@ pub struct FrameState {
     seed: (usize, Focus),
     settings: (
         u8,
+        bool,
         bool,
         Option<bool>,
         Option<TouchAim>,
@@ -878,6 +886,7 @@ impl Game {
         // Dirty-flag backstop: fingerprint what the frame shows now, and
         // compare once input and the step have run.
         let before = self.frame_state();
+        let title_music_before = self.title_music_playing();
         self.begin_input_frame(delta, intents);
         self.handle_mode_input(delta);
         // The back gesture is a one-frame press, like a key's.
@@ -889,6 +898,10 @@ impl Game {
         self.persist_run();
         self.tick_settings(delta);
         let after = self.frame_state();
+        let title_music_after = self.title_music_playing();
+        if title_music_after != title_music_before {
+            self.fx.push(Effect::TitleMusic(title_music_after));
+        }
         if after != before {
             self.fx.push(Effect::Redraw);
             // Between runs the buffer may take a new width: look at the
@@ -969,6 +982,11 @@ impl Game {
         } else {
             20.0 * (self.save.volume as f32 / 100.0).log10()
         }
+    }
+
+    /// Whether the adapter should currently be playing the title loop.
+    pub fn title_music_playing(&self) -> bool {
+        self.mode == Mode::Title && self.save.title_music
     }
 }
 
@@ -1418,6 +1436,7 @@ impl Game {
             settings: (
                 self.save.volume,
                 self.save.muted,
+                self.save.title_music,
                 self.save.last_arc,
                 self.save.touch_aim,
                 self.save.arc_hint,

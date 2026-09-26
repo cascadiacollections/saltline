@@ -180,6 +180,15 @@ impl Game {
         }
         match self.mode {
             Mode::Title => {
+                if self.action_pressed(Action::TitleMusic) {
+                    self.save.title_music = !self.save.title_music;
+                    self.settings.touch();
+                    self.note(if self.save.title_music {
+                        "TITLE MUSIC ON".into()
+                    } else {
+                        "TITLE MUSIC OFF".into()
+                    });
+                }
                 // With a saved run, confirm is CONTINUE and a new daily run
                 // moves to its own action; without one, confirm starts the
                 // daily.
