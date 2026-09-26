@@ -640,3 +640,112 @@ cleared):
 | Always dig every cache | **worse** than baseline, so digging is never automatic |
 
 The levers, in order: chance per screen, tier shares, payouts, depths.
+
+---
+
+## 9. Run history and replay versioning
+
+**Status: proposed.** Nothing here is built yet.
+
+Every finished run is kept on the device as its seed, rules and shot log.
+From that the game can offer **play this seed again**, **watch that run**,
+and **share a run**. A run is a few kilobytes of text, so there is no
+database: the storage model is the same as the save file's, plain text the
+player owns (README, "Monetization").
+
+### 9.1 Storage
+
+- **File:** `user://runs.txt`, next to `salt_line.txt`. One line per finished
+  run, appended when the run ends. Runs abandoned mid-way are not recorded; see
+  §9.6 for resuming.
+- **Durability:** append and flush. A torn last line, from a crash mid-write, is
+  skipped by the parser, the same rule the save file uses. Compaction rewrites
+  the file through a temp file and a rename, as `save::store` already does.
+- **Retention:** keep the most recent 500 runs, plus every run on the board.
+  Compact once the file passes the cap by 10%.
+- **Why not SQLite:** it's a C dependency on every target (Android, iOS,
+  Windows arm64 cross-builds), it isn't hand-editable, and nothing here needs a
+  query engine. The largest realistic history is a few megabytes.
+
+### 9.2 Line format
+
+```
+run <epoch> <seed> <rules> <width> <day> <screens> <shells> <shots> <daily> <log>
+```
+
+| Field | Meaning |
+|---|---|
+| `epoch` | `SIM_EPOCH` of the build that recorded the run (§9.3) |
+| `seed`, `rules` | the run's identity (§8.1) |
+| `width` | buffer width the run was generated at. A replay must use it, whatever the current device |
+| `day` | days since the Unix epoch, for sorting and display |
+| `screens`, `shells`, `shots`, `daily` | the result, as the board records it |
+| `log` | the shot log |
+
+The **log** is space-separated tokens:
+
+- `@N` sets the screen index.
+- `A:P` is a shot at angle ticks `A` and power ticks `P`.
+- `DN` is a pick of draft offer `N`.
+
+For example: `@0 900:600 860:640 @1 700:520 @2 … @4 D1 …`. This keeps the
+line readable, keeps each entry's screen for replay validation, and costs
+about 8 bytes a shot.
+
+### 9.3 Replay versioning: `SIM_EPOCH`
+
+A shot log only reproduces its run on a sim that resolves shots
+identically. Any change that alters generation or ballistics, which the
+pinned screen digests and the determinism gate already detect (§6), makes
+old logs replay to a different run. An old log silently diverging would be
+worse than no replay at all.
+
+- `salt-line-sim` exports `SIM_EPOCH: u32`, bumped on any change that alters a
+  replay's outcome.
+- **Enforced, not remembered.** A test combines the pinned screen digests and a
+  small golden-run corpus (§9.5) into one hash, and asserts it equals
+  `EPOCH_DIGEST`, which is recorded next to `SIM_EPOCH`. If the sim's outcomes
+  change, the test fails with "bump SIM_EPOCH and update EPOCH_DIGEST". The
+  bump goes in NOTES.md with the reason.
+- **On load:**
+  - Epoch matches: the run can be watched and replays exactly.
+  - Epoch differs: the run keeps its seed, rules and result, so *play again*
+    still works, but *watch* is unavailable and the entry is marked as from an
+    earlier version. It is never replayed and never shown diverging.
+
+### 9.4 Presentation
+
+This follows the no-words direction (§5.6) and the touch menus.
+
+- **PAST RUNS** from the title screen: a list of seed, screens and day, newest
+  first. Rows from an older epoch are dimmed.
+- **Row actions:**
+  - PLAY AGAIN starts a new run on the same seed, rules and width.
+  - WATCH plays the run back using the in-game shot animation, with a speed
+    toggle. It's only offered when the epoch matches.
+  - COPY copies the run line.
+- **Sharing a run:** pasting a copied run line into seed entry imports it. The
+  parser validates it. If the epoch differs, it imports as a seed only.
+
+### 9.5 Testing
+
+- The runs parser gets the save parser's treatment: a property round trip,
+  a format snapshot, and a fuzz target (`fuzz/`).
+- **Golden runs:** `crates/salt-line-sim/tests/golden_runs.txt` holds a few
+  recorded runs across bands and loadouts, each with its final `state_hash`.
+  CI asserts they still reproduce. It's the regression corpus for §9.3, and it
+  is regenerated in the same commit that bumps `SIM_EPOCH`.
+
+### 9.6 Open questions
+
+- **Resume.** Mobile operating systems kill backgrounded apps. An in-progress
+  run could be written the same way, as the log so far, and resumed by
+  replaying it on launch. The sim reconstructs a 60-shot run in about a quarter
+  of a millisecond, so this is cheap. It needs a rule for a shot that was in
+  flight when the app died. The likely answer: the shot is committed once it's
+  in the log, and resuming replays its outcome.
+- **Replays across epochs.** Old sims could be kept around to replay old runs
+  (a versioned sim, or a pinned build). That's likely not worth it: the seed
+  survives, and the seed is what players share.
+- **Export.** A share format for whole runs (`saltline-run:` plus the line) is
+  simple, but it waits until there is somewhere to share them.
