@@ -19,32 +19,32 @@ impl Game {
     }
 
     /// The key and pad tokens bound to an action.
-    pub fn action_binding(&self, action: Action) -> (String, String) {
+    pub(crate) fn action_binding(&self, action: Action) -> (String, String) {
         let defaults = input::default_binding(action);
         self.binding(action, defaults.0, defaults.1)
     }
 
     /// Once per frame, before any action is read.
     pub(super) fn begin_input_frame(&mut self, delta: f64, intents: &Intents) {
-        self.controls.begin(intents);
-        self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        self.input.controls.begin(intents);
+        self.input.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
     }
 
     /// This frame's press of a key, taken. See `Controls::pressed`.
     pub(super) fn pressed(&mut self, key: Key) -> bool {
-        self.controls.pressed(key)
+        self.input.controls.pressed(key)
     }
 
     pub(super) fn shift_held(&self) -> bool {
-        self.controls.held(Key::Shift)
+        self.input.controls.held(Key::Shift)
     }
 
     /// True on the frame the button went down on any joypad.
     pub(super) fn pad_pressed(&mut self, button: Pad) -> bool {
-        let down = self.controls.take_pad(button);
+        let down = self.input.controls.take_pad(button);
         if down {
-            self.controller_active = true;
-            self.touch_active = false;
+            self.input.controller_active = true;
+            self.input.touch_active = false;
         }
         down
     }
@@ -55,12 +55,12 @@ impl Game {
             .map(|k| self.pressed(k))
             .unwrap_or(false);
         if key_down {
-            self.controller_active = false;
-            self.touch_active = false;
+            self.input.controller_active = false;
+            self.input.touch_active = false;
         }
         let pad_down = self.pad_action_pressed(action);
-        let touch_down =
-            self.touch.pressed(action) || (action == Action::Back && self.back_requested);
+        let touch_down = self.input.touch.pressed(action)
+            || (action == Action::Back && self.input.back_requested);
         key_down || pad_down || touch_down
     }
 
@@ -75,10 +75,15 @@ impl Game {
     pub(super) fn action_repeated(&mut self, slot: usize, action: Action, delta: f64) -> u32 {
         let (key, pad) = self.action_binding(action);
         let keyboard = Key::from_token(&key)
-            .map(|k| self.controls.repeated(k, delta, REPEAT_DELAY, REPEAT_RATE))
+            .map(|k| {
+                self.input
+                    .controls
+                    .repeated(k, delta, REPEAT_DELAY, REPEAT_RATE)
+            })
             .unwrap_or(0);
         let buttons = match Pad::from_token(&pad) {
             Some(b) => self
+                .input
                 .controls
                 .pad_repeated(b, delta, REPEAT_DELAY, REPEAT_RATE),
             None => 0,
@@ -91,28 +96,29 @@ impl Game {
             Action::Down => Some(input::STICK_DOWN),
             _ => None,
         };
-        let stick_down = dir.is_some_and(|d| self.controls.stick(d));
+        let stick_down = dir.is_some_and(|d| self.input.controls.stick(d));
         let stick =
-            self.controls
+            self.input
+                .controls
                 .stick_repeated(slot, stick_down, delta, REPEAT_DELAY, REPEAT_RATE);
         if keyboard > 0 {
-            self.controller_active = false;
-            self.touch_active = false;
+            self.input.controller_active = false;
+            self.input.touch_active = false;
         }
         if buttons > 0 || stick_down {
-            self.controller_active = true;
-            self.touch_active = false;
+            self.input.controller_active = true;
+            self.input.touch_active = false;
         }
-        keyboard + buttons + stick + self.touch.repeated(action)
+        keyboard + buttons + stick + self.input.touch.repeated(action)
     }
 
     /// What a prompt calls an action on the device in use.
-    pub fn input_label(&self, action: Action) -> String {
-        if self.touch_active {
+    pub(crate) fn input_label(&self, action: Action) -> String {
+        if self.input.touch_active {
             return input::touch_label(action).to_string();
         }
         let (key, pad) = self.action_binding(action);
-        if self.controller_active {
+        if self.input.controller_active {
             pad
         } else {
             key
@@ -139,7 +145,7 @@ impl Game {
         }
         match self.mode {
             Mode::Title => {
-                let resumable = self.resumable.is_some();
+                let resumable = self.run_file.resumable.is_some();
                 let confirm = self.action_pressed(Action::Confirm) || self.pressed(Key::KpEnter);
                 let daily = if resumable {
                     self.action_pressed(Action::NewRun)
@@ -158,7 +164,7 @@ impl Game {
                     if self.confirm_discard("seed") {
                         self.open_seed_entry();
                     }
-                } else if self.last_crash.is_some() && self.action_pressed(Action::Copy) {
+                } else if self.crash.last_crash.is_some() && self.action_pressed(Action::Copy) {
                     self.copy_last_crash();
                 } else if self.action_pressed(Action::Controls) {
                     self.play(Sound::Ui);
@@ -167,7 +173,7 @@ impl Game {
                     self.fx.push(Effect::Quit);
                 }
                 if self.mode != Mode::Title {
-                    self.discard_armed = None;
+                    self.run_file.discard_armed = None;
                 }
             }
             Mode::Controls => {
@@ -182,11 +188,11 @@ impl Game {
                     self.settings.touch();
                     self.play(Sound::Ui);
                 }
-                if self.touch.pressed(Action::AimMode) {
+                if self.input.touch.pressed(Action::AimMode) {
                     self.save.touch_aim = Some(self.touch_aim().next());
                     self.settings.touch();
                     self.play(Sound::Ui);
-                } else if self.touch.pressed(Action::ArcHint) {
+                } else if self.input.touch.pressed(Action::ArcHint) {
                     self.save.arc_hint = Some(self.arc_hint().next());
                     self.settings.touch();
                     self.play(Sound::Ui);
@@ -220,15 +226,15 @@ impl Game {
                 if self.action_pressed(Action::Copy) {
                     // Seed sharing: the seed is the whole run, so the
                     // clipboard is the whole share format.
-                    let seed = format_seed(self.last_seed);
+                    let seed = format_seed(self.play.last_seed);
                     self.fx.push(Effect::Clipboard(seed.clone()));
                     self.note(format!("COPIED {seed}"));
                 } else if self.action_pressed(Action::Confirm) || self.action_pressed(Action::Back)
                 {
                     self.mode = Mode::Title;
                 } else if self.action_pressed(Action::Replay) {
-                    let seed = self.last_seed;
-                    let daily = self.daily;
+                    let seed = self.play.last_seed;
+                    let daily = self.play.daily;
                     self.start_run(seed, daily);
                 }
             }
@@ -245,23 +251,23 @@ impl Game {
         let dy = self.action_repeated(2, Action::Down, delta) as i32
             - self.action_repeated(3, Action::Up, delta) as i32;
         if dx != 0 || dy != 0 {
-            self.seed_focus.step(dx, dy);
+            self.input.seed_focus.step(dx, dy);
         }
         let key = if self.pad_action_pressed(Action::Confirm) {
-            Some(self.seed_focus.action())
+            Some(self.input.seed_focus.action())
         } else if self.pad_action_pressed(Action::Back) {
             Some(if self.seed_text.is_empty() {
                 Action::Back
             } else {
                 keypad::DEL
             })
-        } else if self.touch.pressed(Action::Back) || self.back_requested {
+        } else if self.input.touch.pressed(Action::Back) || self.input.back_requested {
             Some(Action::Back)
         } else {
             [Action::Confirm, keypad::DEL]
                 .into_iter()
                 .chain(keypad::KEYS)
-                .find(|k| self.touch.pressed(*k))
+                .find(|k| self.input.touch.pressed(*k))
         };
         match key {
             Some(Action::Confirm) => self.start_seeded_run(),
@@ -278,17 +284,17 @@ impl Game {
 
     pub(super) fn handle_play_input(&mut self, delta: f64) {
         if self.action_pressed(Action::Back) {
-            self.touch.cancel_drag();
+            self.input.touch.cancel_drag();
             self.mode = Mode::Paused;
             return;
         }
-        let phase = self.run.as_ref().map(|r| r.phase);
+        let phase = self.play.run.as_ref().map(|r| r.phase);
         let Some(phase) = phase else { return };
 
         // A drag only aims on the screen it started on: drafting or a shot in
         // the air forgets it, so it can never drop into a later shot.
-        if phase != Phase::Firing || self.anim.is_some() || self.clear_hold > 0.0 {
-            self.touch.cancel_drag();
+        if phase != Phase::Firing || self.play.anim.is_some() || self.play.clear_hold > 0.0 {
+            self.input.touch.cancel_drag();
         }
 
         if phase == Phase::Drafting {
@@ -297,7 +303,7 @@ impl Game {
                 .enumerate()
             {
                 if self.action_pressed(action) {
-                    let taken = self.run.as_mut().and_then(|r| r.take_offer(i));
+                    let taken = self.play.run.as_mut().and_then(|r| r.take_offer(i));
                     if let Some(m) = taken {
                         self.new_preview();
                         self.learn(LEARN_DRAFT);
@@ -311,11 +317,12 @@ impl Game {
         }
 
         // Nothing but waiting while a shot is in the air.
-        if self.anim.is_some() || self.clear_hold > 0.0 {
+        if self.play.anim.is_some() || self.play.clear_hold > 0.0 {
             return;
         }
 
         let quantum = self
+            .play
             .run
             .as_ref()
             .map(|r| r.loadout.angle_quantum_ticks)
@@ -327,15 +334,15 @@ impl Game {
         let right = self.action_repeated(1, Action::Right, delta) as i32;
         if left + right != 0 {
             self.learn(LEARN_ANGLE);
-            self.angle_ticks = (self.angle_ticks + (right - left) * quantum * mult)
+            self.play.angle_ticks = (self.play.angle_ticks + (right - left) * quantum * mult)
                 .clamp(0, dmath::MAX_ANGLE_TICKS);
         }
         let down = self.action_repeated(2, Action::Down, delta) as i32;
         let up = self.action_repeated(3, Action::Up, delta) as i32;
         if up + down != 0 {
             self.learn(LEARN_POWER);
-            self.power_ticks =
-                (self.power_ticks + (up - down) * 5 * mult).clamp(0, POWER_TICKS_MAX);
+            self.play.power_ticks =
+                (self.play.power_ticks + (up - down) * 5 * mult).clamp(0, POWER_TICKS_MAX);
         }
 
         // Airburst fuse.
@@ -343,7 +350,7 @@ impl Game {
         let minus = self.action_repeated(4, Action::FuseDown, delta) as f64;
         let plus = self.action_repeated(5, Action::FuseUp, delta) as f64;
         if minus + plus > 0.0 {
-            if let Some(r) = self.run.as_mut() {
+            if let Some(r) = self.play.run.as_mut() {
                 if r.loadout.airburst() {
                     let f = r.fuse + (plus - minus) * fuse_step;
                     r.set_fuse(f);
@@ -356,7 +363,7 @@ impl Game {
         let rr = self.action_pressed(Action::RepositionRight);
         if l || rr {
             let step = if l { -5.0 } else { 5.0 };
-            let ok = self.run.as_mut().map(|r| {
+            let ok = self.play.run.as_mut().map(|r| {
                 let target = r.emplacement_offset + step;
                 r.reposition(target)
             });
@@ -378,28 +385,29 @@ impl Game {
     /// the readouts and barrel show exactly what a release would fire; pulling
     /// back inside the dead zone puts the old aim back and cancels.
     pub(super) fn handle_drag_aim(&mut self, quantum: i32) {
-        let dropped = self.touch.dropped();
-        let Some((start, end)) = dropped.or(self.touch.drag()) else {
+        let dropped = self.input.touch.dropped();
+        let Some((start, end)) = dropped.or(self.input.touch.drag()) else {
             // Abandoned (paused, focus lost): put the old aim back.
-            if let Some(before) = self.drag_from.take() {
-                (self.angle_ticks, self.power_ticks) = before;
+            if let Some(before) = self.input.drag_from.take() {
+                (self.play.angle_ticks, self.play.power_ticks) = before;
             }
             return;
         };
         let before = *self
+            .input
             .drag_from
-            .get_or_insert((self.angle_ticks, self.power_ticks));
+            .get_or_insert((self.play.angle_ticks, self.play.power_ticks));
         let aim = crate::aim::pull_to_aim(start, end, quantum);
         match aim {
             Some((angle, power)) => {
                 self.learn(LEARN_ANGLE);
                 self.learn(LEARN_POWER);
-                (self.angle_ticks, self.power_ticks) = (angle, power);
+                (self.play.angle_ticks, self.play.power_ticks) = (angle, power);
             }
-            None => (self.angle_ticks, self.power_ticks) = before,
+            None => (self.play.angle_ticks, self.play.power_ticks) = before,
         }
         if dropped.is_some() {
-            self.drag_from = None;
+            self.input.drag_from = None;
             if aim.is_some() {
                 self.fire();
             }
@@ -419,9 +427,9 @@ impl Game {
         self.mode = Mode::Title;
     }
 
-    pub fn open_seed_entry(&mut self) {
+    pub(crate) fn open_seed_entry(&mut self) {
         self.seed_text.clear();
-        self.seed_focus = Focus::default();
+        self.input.seed_focus = Focus::default();
         self.mode = Mode::SeedEntry;
     }
 }

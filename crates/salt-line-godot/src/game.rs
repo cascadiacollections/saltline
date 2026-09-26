@@ -179,9 +179,9 @@ impl INode2D for SaltLine {
         let fx = self.g.tick_with(delta, &self.intents, |g| {
             crash::note(
                 g.mode_name(),
-                g.run.as_ref(),
-                (g.angle_ticks, g.power_ticks),
-                g.resumed,
+                g.play.run.as_ref(),
+                (g.play.angle_ticks, g.play.power_ticks),
+                g.run_file.resumed,
             )
         });
         self.apply(fx);
@@ -439,9 +439,10 @@ impl SaltLine {
             return;
         };
         crash::set_report_file(path.clone());
-        self.g.last_crash = std::fs::read_to_string(path)
+        let report = std::fs::read_to_string(path)
             .ok()
             .filter(|t| !t.trim().is_empty());
+        self.g.set_last_crash(report);
     }
 
     /// Hand the core whatever saved run there is.
@@ -514,7 +515,7 @@ impl SaltLine {
     /// `--salt-gallery <dir>`: render one frame per shape template, plus a
     /// damaged variant of each, and quit. See `Game::gallery`.
     fn gallery(&mut self, dir: &str) {
-        for (name, run) in Game::gallery(self.g.buffer_w as usize) {
+        for (name, run) in Game::gallery(self.g.display.buffer_w as usize) {
             let Some(run) = run else {
                 godot_warn!("salt-line: no {name} screen found");
                 continue;
@@ -560,7 +561,7 @@ impl SaltLine {
     /// window is the whole display; on a desktop the "safe area" is the
     /// monitor's, not the window's.
     fn cutout_px(&self, (win_x, _): (i32, i32)) -> (i32, i32) {
-        if !self.g.mobile {
+        if !self.g.display.mobile {
             return (0, 0);
         }
         let safe = DisplayServer::singleton().get_display_safe_area();
@@ -737,7 +738,7 @@ impl SaltLine {
         }
         self.save_canvas(&path);
         self.shot_path = None;
-        self.g.capturing = false;
+        self.g.capture_taken();
         self.base().get_tree().quit();
     }
 

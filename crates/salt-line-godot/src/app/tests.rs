@@ -138,12 +138,12 @@ fn spent_run(seed: u64) -> RunState {
 /// A run held at its first draft by the autopilot.
 fn at_draft() -> Game {
     let mut g = playing(777);
-    g.auto = true;
-    g.auto_hold_draft = true;
+    g.dev.auto = true;
+    g.dev.auto_hold_draft = true;
     run_until(&mut g, 5000, |g| {
-        g.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting)
+        g.play.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting)
     });
-    g.auto = false;
+    g.dev.auto = false;
     g.take_effects();
     g
 }
@@ -155,7 +155,7 @@ fn the_game_starts_at_the_title_sized_for_the_window() {
     let mut g = Game::new(false, Save::default());
     let fx = g.fit_display(WINDOW, (0, 0));
     assert_eq!(g.mode, Mode::Title);
-    assert_eq!((g.buffer_w, g.buffer_h), (320, 180));
+    assert_eq!((g.display.buffer_w, g.display.buffer_h), (320, 180));
     assert_eq!(
         fx,
         vec![
@@ -173,7 +173,7 @@ fn the_game_starts_at_the_title_sized_for_the_window() {
 fn a_wider_window_makes_a_wider_buffer() {
     let mut g = Game::new(false, Save::default());
     g.fit_display((1600, 720), (0, 0));
-    assert_eq!(g.buffer_w, 400);
+    assert_eq!(g.display.buffer_w, 400);
 }
 
 #[test]
@@ -181,9 +181,9 @@ fn confirm_on_the_title_starts_todays_daily() {
     let mut g = game();
     let fx = tick(&mut g, keys(&[Key::Enter]));
     assert_eq!(g.mode, Mode::Playing);
-    assert!(g.daily);
-    assert_eq!(g.last_seed, daily_seed(TODAY));
-    assert_eq!(g.run.as_ref().unwrap().width, 320);
+    assert!(g.play.daily);
+    assert_eq!(g.play.last_seed, daily_seed(TODAY));
+    assert_eq!(g.play.run.as_ref().unwrap().width, 320);
     assert!(fx.contains(&Effect::Play(Sound::Ui)));
     assert!(fx.contains(&Effect::Aspect(Aspect::Expand)));
     assert_eq!(g.status, format!("SEED {}", format_seed(daily_seed(TODAY))));
@@ -196,10 +196,10 @@ fn a_pad_can_start_a_run_and_the_prompts_follow_it() {
     let mut g = game();
     tick(&mut g, pads(&[Pad::A]));
     assert_eq!(g.mode, Mode::Playing);
-    assert!(g.controller_active);
+    assert!(g.input.controller_active);
     assert_eq!(g.input_label(Action::Fire), "A");
     tick(&mut g, keys(&[Key::Left]));
-    assert!(!g.controller_active);
+    assert!(!g.input.controller_active);
     assert_eq!(g.input_label(Action::Fire), "SPACE");
 }
 
@@ -229,17 +229,17 @@ fn quitting_to_the_title_keeps_the_run_for_continue() {
     tick(&mut g, keys(&[Key::Escape]));
     let fx = tick(&mut g, keys(&[Key::R]));
     assert_eq!(g.mode, Mode::Title);
-    assert!(g.resumable.is_some());
+    assert!(g.run_file.resumable.is_some());
     assert!(!fx.contains(&Effect::RunFile(RunFile::Discard)));
     // Entering the title looks at the display again.
     assert!(fx.contains(&Effect::RecheckDisplay));
 
     // Confirm is CONTINUE now, and puts the player back where they were.
-    let seed = g.run.as_ref().unwrap().run_seed;
+    let seed = g.play.run.as_ref().unwrap().run_seed;
     tick(&mut g, keys(&[Key::Enter]));
     assert_eq!(g.mode, Mode::Playing);
-    assert!(g.resumed);
-    assert_eq!(g.run.as_ref().unwrap().run_seed, seed);
+    assert!(g.run_file.resumed);
+    assert_eq!(g.play.run.as_ref().unwrap().run_seed, seed);
     assert_eq!(g.status, format!("SCREEN 1  SEED {}", format_seed(seed)));
 }
 
@@ -250,17 +250,17 @@ fn a_new_run_over_a_saved_one_asks_twice() {
     tick(&mut g, keys(&[Key::R]));
     let fx = tick(&mut g, keys(&[Key::N]));
     assert_eq!(g.mode, Mode::Title);
-    assert_eq!(g.discard_armed, Some("daily"));
+    assert_eq!(g.run_file.discard_armed, Some("daily"));
     assert!(fx.contains(&Effect::Play(Sound::Ui)));
     // A different action arms itself instead.
     tick(&mut g, keys(&[Key::S]));
-    assert_eq!(g.discard_armed, Some("seed"));
+    assert_eq!(g.run_file.discard_armed, Some("seed"));
     tick(&mut g, keys(&[Key::N]));
     tick(&mut g, keys(&[Key::N]));
     assert_eq!(g.mode, Mode::Playing);
-    assert!(g.daily);
-    assert!(g.resumable.is_none());
-    assert_eq!(g.discard_armed, None);
+    assert!(g.play.daily);
+    assert!(g.run_file.resumable.is_none());
+    assert_eq!(g.run_file.discard_armed, None);
 }
 
 #[test]
@@ -292,8 +292,8 @@ fn a_typed_seed_starts_that_run() {
     assert_eq!(g.seed_text, "SALT");
     tick(&mut g, typing(Typed::Enter));
     assert_eq!(g.mode, Mode::Playing);
-    assert!(!g.daily);
-    assert_eq!(g.last_seed, parse_seed("SALT"));
+    assert!(!g.play.daily);
+    assert_eq!(g.play.last_seed, parse_seed("SALT"));
 }
 
 #[test]
@@ -307,8 +307,8 @@ fn a_blank_seed_is_todays_daily_seed_but_not_a_daily_run() {
             ..typing(Typed::Enter)
         },
     );
-    assert_eq!(g.last_seed, daily_seed(TODAY + 1));
-    assert!(!g.daily);
+    assert_eq!(g.play.last_seed, daily_seed(TODAY + 1));
+    assert!(!g.play.daily);
 }
 
 #[test]
@@ -345,9 +345,16 @@ fn the_controller_types_on_the_keypad() {
 #[test]
 fn a_tap_steps_the_aim_once_and_is_learned_once() {
     let mut g = playing(1);
-    let quantum = g.run.as_ref().unwrap().loadout.angle_quantum_ticks.max(1);
+    let quantum = g
+        .play
+        .run
+        .as_ref()
+        .unwrap()
+        .loadout
+        .angle_quantum_ticks
+        .max(1);
     let fx = tick(&mut g, keys(&[Key::Right]));
-    assert_eq!(g.angle_ticks, 900 + quantum);
+    assert_eq!(g.play.angle_ticks, 900 + quantum);
     assert_eq!(g.save.learned & LEARN_ANGLE, LEARN_ANGLE);
     let learned = |e: &Effect| matches!(e, Effect::Store(Store::Learned));
     assert_eq!(count(&fx, learned), 1);
@@ -359,22 +366,22 @@ fn a_tap_steps_the_aim_once_and_is_learned_once() {
 fn a_held_key_repeats_after_the_delay() {
     let mut g = playing(1);
     tick(&mut g, keys(&[Key::Up]));
-    assert_eq!(g.power_ticks, 605);
+    assert_eq!(g.play.power_ticks, 605);
     // Held for just under the delay: nothing more.
     for _ in 0..16 {
         tick(&mut g, held(&[Key::Up]));
     }
-    assert_eq!(g.power_ticks, 605);
+    assert_eq!(g.play.power_ticks, 605);
     // Held on: repeats every 35 ms, about one every other frame.
     for _ in 0..60 {
         tick(&mut g, held(&[Key::Up]));
     }
-    assert!(g.power_ticks > 605 + 5 * 20, "{}", g.power_ticks);
+    assert!(g.play.power_ticks > 605 + 5 * 20, "{}", g.play.power_ticks);
     // Let go: it stops.
-    let before = g.power_ticks;
+    let before = g.play.power_ticks;
     tick(&mut g, idle());
     tick(&mut g, idle());
-    assert_eq!(g.power_ticks, before);
+    assert_eq!(g.play.power_ticks, before);
 }
 
 #[test]
@@ -383,13 +390,13 @@ fn shift_makes_the_steps_coarse_and_the_aim_is_clamped() {
     let mut i = keys(&[Key::Down]);
     i.keys_held.push(Key::Shift);
     tick(&mut g, i);
-    assert_eq!(g.power_ticks, 550);
-    g.power_ticks = POWER_TICKS_MAX - 1;
+    assert_eq!(g.play.power_ticks, 550);
+    g.play.power_ticks = POWER_TICKS_MAX - 1;
     tick(&mut g, keys(&[Key::Up]));
-    assert_eq!(g.power_ticks, POWER_TICKS_MAX);
-    g.angle_ticks = 0;
+    assert_eq!(g.play.power_ticks, POWER_TICKS_MAX);
+    g.play.angle_ticks = 0;
     tick(&mut g, keys(&[Key::Left]));
-    assert_eq!(g.angle_ticks, 0);
+    assert_eq!(g.play.angle_ticks, 0);
 }
 
 #[test]
@@ -398,19 +405,24 @@ fn the_stick_aims_as_the_dpad_does() {
     let mut i = idle();
     i.stick[input::STICK_RIGHT] = true;
     tick(&mut g, i);
-    assert!(g.angle_ticks > 900);
-    assert!(g.controller_active);
+    assert!(g.play.angle_ticks > 900);
+    assert!(g.input.controller_active);
 }
 
 #[test]
 fn the_fuse_moves_only_with_airburst() {
     let mut g = playing(1);
-    let fuse = g.run.as_ref().unwrap().fuse;
+    let fuse = g.play.run.as_ref().unwrap().fuse;
     tick(&mut g, keys(&[Key::BracketRight]));
-    assert_eq!(g.run.as_ref().unwrap().fuse, fuse);
-    g.run.as_mut().unwrap().loadout.take(Modifier::Airburst);
+    assert_eq!(g.play.run.as_ref().unwrap().fuse, fuse);
+    g.play
+        .run
+        .as_mut()
+        .unwrap()
+        .loadout
+        .take(Modifier::Airburst);
     tick(&mut g, keys(&[Key::BracketRight]));
-    assert!(g.run.as_ref().unwrap().fuse > fuse);
+    assert!(g.play.run.as_ref().unwrap().fuse > fuse);
 }
 
 #[test]
@@ -418,7 +430,7 @@ fn reposition_without_enfilade_says_so() {
     let mut g = playing(1);
     tick(&mut g, keys(&[Key::Period]));
     assert_eq!(g.status, "NO ENFILADE");
-    assert_eq!(g.run.as_ref().unwrap().emplacement_offset, 0.0);
+    assert_eq!(g.play.run.as_ref().unwrap().emplacement_offset, 0.0);
 }
 
 // ----------------------------------------------------------------- firing
@@ -426,28 +438,28 @@ fn reposition_without_enfilade_says_so() {
 #[test]
 fn firing_replays_the_shot_then_lands_it() {
     let mut g = playing(1);
-    let shells = g.run.as_ref().unwrap().shells;
+    let shells = g.play.run.as_ref().unwrap().shells;
     let fx = tick(&mut g, keys(&[Key::Space]));
-    assert!(g.anim.is_some());
-    assert_eq!(g.run.as_ref().unwrap().shells, shells - 1);
+    assert!(g.play.anim.is_some());
+    assert_eq!(g.play.run.as_ref().unwrap().shells, shells - 1);
     assert!(fx.contains(&Effect::Play(Sound::Fire)));
     assert!(fx.contains(&Effect::Play(Sound::Flight)));
     // The log grew, so the run file is written in the same frame.
     assert_eq!(count(&fx, is_run_write), 1);
-    assert!(!g.last_arc.is_empty());
+    assert!(!g.play.last_arc.is_empty());
 
     // The screen shown is the one before the shot until the shell lands.
     assert!(std::ptr::eq(
         g.shown_screen().unwrap(),
-        &g.anim.as_ref().unwrap().before
+        &g.play.anim.as_ref().unwrap().before
     ));
 
     // No aiming while it flies.
-    let aim = (g.angle_ticks, g.power_ticks);
+    let aim = (g.play.angle_ticks, g.play.power_ticks);
     tick(&mut g, keys(&[Key::Up]));
-    assert_eq!((g.angle_ticks, g.power_ticks), aim);
+    assert_eq!((g.play.angle_ticks, g.play.power_ticks), aim);
 
-    let fx = run_until(&mut g, 2000, |g| g.anim.is_none());
+    let fx = run_until(&mut g, 2000, |g| g.play.anim.is_none());
     let impacts = count(&fx, |e| {
         matches!(
             e,
@@ -459,7 +471,7 @@ fn firing_replays_the_shot_then_lands_it() {
     assert_eq!(g.save.learned & LEARN_CRATER, LEARN_CRATER);
     assert!(std::ptr::eq(
         g.shown_screen().unwrap(),
-        &g.run.as_ref().unwrap().screen
+        &g.play.run.as_ref().unwrap().screen
     ));
 }
 
@@ -467,9 +479,9 @@ fn firing_replays_the_shot_then_lands_it() {
 fn a_long_frame_moves_the_replay_a_tenth_of_a_second_at_most() {
     let mut g = playing(1);
     tick(&mut g, keys(&[Key::Space]));
-    let t = g.anim.as_ref().unwrap().t;
+    let t = g.play.anim.as_ref().unwrap().t;
     g.tick(30.0, &idle());
-    assert!((g.anim.as_ref().unwrap().t - t - resume::MAX_FRAME_DELTA).abs() < 1e-9);
+    assert!((g.play.anim.as_ref().unwrap().t - t - resume::MAX_FRAME_DELTA).abs() < 1e-9);
     g.status_time = 1.0;
     g.tick(f64::NAN, &idle());
     assert_eq!(g.status_time, 1.0, "a NaN frame is no time at all");
@@ -480,8 +492,8 @@ fn a_long_frame_moves_the_replay_a_tenth_of_a_second_at_most() {
 #[test]
 fn the_last_shell_ends_the_run_and_it_is_scored_exactly_once() {
     let mut g = playing(9);
-    let seed = g.last_seed;
-    g.run.as_mut().unwrap().shells = 1;
+    let seed = g.play.last_seed;
+    g.play.run.as_mut().unwrap().shells = 1;
     tick(&mut g, keys(&[Key::Space]));
     let fx = run_until(&mut g, 4000, |g| g.mode == Mode::GameOver);
     assert_eq!(count(&fx, is_score), 1);
@@ -530,7 +542,7 @@ fn game_over_copies_the_seed_and_replays_it() {
     assert_eq!(g.status, format!("COPIED {}", format_seed(9)));
     tick(&mut g, keys(&[Key::R]));
     assert_eq!(g.mode, Mode::Playing);
-    assert_eq!(g.last_seed, 9);
+    assert_eq!(g.play.last_seed, 9);
     g.finish_run();
     tick(&mut g, keys(&[Key::Enter]));
     assert_eq!(g.mode, Mode::Title);
@@ -539,12 +551,12 @@ fn game_over_copies_the_seed_and_replays_it() {
 #[test]
 fn quitting_a_run_that_already_ended_scores_it() {
     let mut g = playing(9);
-    *g.run.as_mut().unwrap() = spent_run(9);
+    *g.play.run.as_mut().unwrap() = spent_run(9);
     g.mode = Mode::Paused;
     let fx = tick(&mut g, keys(&[Key::R]));
     assert_eq!(g.mode, Mode::GameOver);
     assert_eq!(count(&fx, is_score), 1);
-    assert!(g.resumable.is_none());
+    assert!(g.run_file.resumable.is_none());
 }
 
 #[test]
@@ -581,9 +593,9 @@ fn a_board_that_cannot_be_written_keeps_the_run_and_says_so() {
 #[test]
 fn a_draft_pick_takes_the_offer() {
     let mut g = at_draft();
-    let offer = g.run.as_ref().unwrap().offers[1];
+    let offer = g.play.run.as_ref().unwrap().offers[1];
     let fx = tick(&mut g, keys(&[Key::Num2]));
-    assert!(g.run.as_ref().unwrap().loadout.has(offer));
+    assert!(g.play.run.as_ref().unwrap().loadout.has(offer));
     assert!(fx.contains(&Effect::Play(Sound::Draft)));
     assert_eq!(g.status, format!("TOOK {}", offer.name()));
     assert_eq!(g.save.learned & LEARN_DRAFT, LEARN_DRAFT);
@@ -594,10 +606,10 @@ fn a_draft_pick_takes_the_offer() {
 #[test]
 fn in_a_draft_pad_a_picks_the_second_card_and_does_not_fire() {
     let mut g = at_draft();
-    let offer = g.run.as_ref().unwrap().offers[1];
+    let offer = g.play.run.as_ref().unwrap().offers[1];
     tick(&mut g, pads(&[Pad::A]));
-    assert!(g.run.as_ref().unwrap().loadout.has(offer));
-    assert!(g.anim.is_none());
+    assert!(g.play.run.as_ref().unwrap().loadout.has(offer));
+    assert!(g.play.anim.is_none());
 }
 
 #[test]
@@ -613,7 +625,7 @@ fn the_draft_prompt_names_the_keys_until_a_card_is_taken() {
 
 fn drag_game() -> Game {
     let mut g = playing(1);
-    g.touch_active = true;
+    g.input.touch_active = true;
     g.save.touch_aim = Some(TouchAim::Drag);
     g
 }
@@ -632,9 +644,9 @@ fn a_drag_aims_live_and_fires_on_release() {
         y: 140.0,
     }]);
     tick(&mut g, idle());
-    let aim = (g.angle_ticks, g.power_ticks);
+    let aim = (g.play.angle_ticks, g.play.power_ticks);
     assert_ne!(aim, (900, 600));
-    assert_eq!(g.drag_from, Some((900, 600)));
+    assert_eq!(g.input.drag_from, Some((900, 600)));
     assert_eq!(
         g.onboarding_prompt(Phase::Firing, None).as_deref(),
         Some("LET GO TO FIRE  PULL BACK TO CANCEL")
@@ -642,8 +654,8 @@ fn a_drag_aims_live_and_fires_on_release() {
     g.events(&[Event::FingerUp { index: 0 }]);
     let fx = tick(&mut g, idle());
     assert!(fx.contains(&Effect::Play(Sound::Fire)));
-    assert!(g.anim.is_some());
-    assert_eq!(g.drag_from, None);
+    assert!(g.play.anim.is_some());
+    assert_eq!(g.input.drag_from, None);
 }
 
 #[test]
@@ -666,10 +678,10 @@ fn a_drag_pulled_back_into_the_dead_zone_cancels() {
         y: 101.0,
     }]);
     tick(&mut g, idle());
-    assert_eq!((g.angle_ticks, g.power_ticks), (900, 600));
+    assert_eq!((g.play.angle_ticks, g.play.power_ticks), (900, 600));
     g.events(&[Event::FingerUp { index: 0 }]);
     tick(&mut g, idle());
-    assert!(g.anim.is_none());
+    assert!(g.play.anim.is_none());
 }
 
 #[test]
@@ -693,8 +705,8 @@ fn losing_focus_mid_drag_puts_the_aim_back() {
     tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Playing);
     tick(&mut g, idle());
-    assert_eq!((g.angle_ticks, g.power_ticks), (900, 600));
-    assert!(g.anim.is_none());
+    assert_eq!((g.play.angle_ticks, g.play.power_ticks), (900, 600));
+    assert!(g.play.anim.is_none());
 }
 
 #[test]
@@ -710,12 +722,12 @@ fn touch_buttons_press_their_actions() {
         x: 15.0,
         y: 15.0,
     }]);
-    assert!(g.touch_active);
+    assert!(g.input.touch_active);
     tick(&mut g, idle());
-    assert!(g.anim.is_some());
+    assert!(g.play.anim.is_some());
     // A key press hands the prompts back to the keyboard.
     tick(&mut g, keys(&[Key::M]));
-    assert!(!g.touch_active);
+    assert!(!g.input.touch_active);
 }
 
 // -------------------------------------------------------- focus and pause
@@ -739,12 +751,12 @@ fn losing_focus_does_not_pause_a_draft_the_autopilot_or_a_capture() {
     assert_eq!(g.mode, Mode::Playing);
 
     let mut g = playing(1);
-    g.auto = true;
+    g.dev.auto = true;
     g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Playing);
 
     let mut g = playing(1);
-    g.capturing = true;
+    g.dev.capturing = true;
     g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Playing);
 
@@ -819,7 +831,7 @@ fn a_settings_write_that_fails_says_so() {
 #[test]
 fn last_sessions_crash_report_is_copied_once_and_retired() {
     let mut g = game();
-    g.last_crash = Some("SALT LINE CRASH REPORT".into());
+    g.crash.last_crash = Some("SALT LINE CRASH REPORT".into());
     let fx = tick(&mut g, keys(&[Key::C]));
     assert!(fx.contains(&Effect::Clipboard("SALT LINE CRASH REPORT".into())));
     assert_eq!(
@@ -833,7 +845,7 @@ fn last_sessions_crash_report_is_copied_once_and_retired() {
     );
     // Starting a run stops offering it; the file was already moved.
     let fx = tick(&mut g, keys(&[Key::Enter]));
-    assert!(g.last_crash.is_none());
+    assert!(g.crash.last_crash.is_none());
     assert_eq!(
         count(&fx, |e| *e == Effect::CrashReport(CrashReport::Retire)),
         0
@@ -843,7 +855,7 @@ fn last_sessions_crash_report_is_copied_once_and_retired() {
 #[test]
 fn starting_a_run_retires_an_uncopied_report() {
     let mut g = game();
-    g.last_crash = Some("report".into());
+    g.crash.last_crash = Some("report".into());
     let fx = tick(&mut g, keys(&[Key::Enter]));
     assert_eq!(
         count(&fx, |e| *e == Effect::CrashReport(CrashReport::Retire)),
@@ -856,7 +868,7 @@ fn the_error_screen_copies_only_a_finished_report() {
     let mut g = playing(1);
     g.status_time = 2.0;
     let fx = g.broken_tick(FRAME, &keys(&[Key::C]), || None);
-    assert!(g.broken);
+    assert!(g.crash.broken);
     assert!(g.idle());
     assert!(fx.iter().all(|e| !matches!(e, Effect::Clipboard(_))));
     assert_eq!(g.status, "REPORT NOT READY - TRY AGAIN");
@@ -878,7 +890,7 @@ fn a_rebuild_that_never_finished_is_thrown_away() {
     );
     assert_eq!(g.status, resume::Stale::Diverged.note());
     assert_eq!(g.status_time, STALE_STATUS_TIME);
-    assert!(g.resumable.is_none());
+    assert!(g.run_file.resumable.is_none());
 }
 
 #[test]
@@ -889,12 +901,12 @@ fn a_saved_run_is_offered_and_its_file_put_back() {
     let mut g = game();
     let fx = g.saved_run(SavedRun::Found(line));
     assert_eq!(fx, vec![Effect::RunFile(RunFile::Restore)]);
-    assert_eq!(g.resumable.as_ref().map(|s| s.seed), Some(42));
+    assert_eq!(g.run_file.resumable.as_ref().map(|s| s.seed), Some(42));
 
     let fx = tick(&mut g, keys(&[Key::Enter]));
     assert_eq!(g.mode, Mode::Playing);
-    assert!(g.daily);
-    assert_eq!(g.run.as_ref().unwrap().log.len(), 1);
+    assert!(g.play.daily);
+    assert_eq!(g.play.run.as_ref().unwrap().log.len(), 1);
     // Already on disk as rebuilt: nothing to write.
     assert_eq!(count(&fx, is_run_write), 0);
 }
@@ -905,15 +917,15 @@ fn a_run_from_another_width_keeps_it_letterboxed_until_the_title() {
     let mut g = game();
     g.saved_run(SavedRun::Found(Saved::of(&run, false).to_line()));
     let fx = tick(&mut g, keys(&[Key::Enter]));
-    assert_eq!(g.buffer_w, 400);
-    assert!(g.kept_width);
+    assert_eq!(g.display.buffer_w, 400);
+    assert!(g.display.kept_width);
     assert!(fx.contains(&Effect::Aspect(Aspect::Keep)));
     tick(&mut g, keys(&[Key::Escape]));
     let fx = tick(&mut g, keys(&[Key::R]));
     assert_eq!(g.mode, Mode::Title);
     let fx = [fx, tick(&mut g, idle())].concat();
-    assert_eq!(g.buffer_w, 320);
-    assert!(!g.kept_width);
+    assert_eq!(g.display.buffer_w, 320);
+    assert!(!g.display.kept_width);
     assert!(fx.contains(&Effect::Aspect(Aspect::Expand)));
 }
 
@@ -934,7 +946,7 @@ fn a_saved_run_that_had_ended_is_scored_at_launch() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(g.resumable.is_none());
+    assert!(g.run_file.resumable.is_none());
     g.stored(why, true);
     assert_eq!(g.save.scores.len(), 1);
     assert_eq!(g.status, "LAST RUN SCORED");
@@ -949,7 +961,7 @@ fn a_run_file_this_build_cannot_read_is_discarded() {
         Effect::RunFile(RunFile::Abandon(Abandoned::Unreadable(_)))
     ));
     assert_eq!(g.status_time, STALE_STATUS_TIME);
-    assert!(g.resumable.is_none());
+    assert!(g.run_file.resumable.is_none());
 }
 
 #[test]
@@ -964,7 +976,7 @@ fn continue_that_cannot_rebuild_drops_the_run() {
         fuse_tenths: 0,
         emplacement_offset: 0,
     });
-    g.resumable = Some(saved);
+    g.run_file.resumable = Some(saved);
     let fx = tick(&mut g, keys(&[Key::Enter]));
     assert!(fx.contains(&Effect::RunFile(RunFile::Discard)));
     assert_eq!(g.mode, Mode::Title);
@@ -983,9 +995,9 @@ fn a_screen_jump_is_not_kept_for_resume() {
         "12".into(),
     ]);
     g.start_dev(&args, TODAY);
-    assert_eq!(g.run.as_ref().unwrap().screen_index, 12);
+    assert_eq!(g.play.run.as_ref().unwrap().screen_index, 12);
     assert_eq!(g.status, "SCREEN 13");
-    assert!(!g.run_persist);
+    assert!(!g.run_file.run_persist);
     let fx = frames(&mut g, 30);
     assert_eq!(count(&fx, is_run_write), 0);
 }
@@ -996,8 +1008,10 @@ fn the_autopilot_starts_a_run_and_plays_it() {
     g.start_dev(&DevArgs::parse(&["--salt-auto".into()]), TODAY);
     tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Playing);
-    assert_eq!(g.last_seed, daily_seed(TODAY));
-    run_until(&mut g, 600, |g| g.run.as_ref().unwrap().total_shots > 0);
+    assert_eq!(g.play.last_seed, daily_seed(TODAY));
+    run_until(&mut g, 600, |g| {
+        g.play.run.as_ref().unwrap().total_shots > 0
+    });
 }
 
 // ----------------------------------------------------------------- redraw
@@ -1024,9 +1038,9 @@ fn f1_toggles_the_debug_overlay() {
 #[test]
 fn a_phone_starts_with_touch_controls_and_corner_insets() {
     let g = Game::new(true, Save::default());
-    assert!(g.touch_active);
-    assert_eq!(g.corner_pad, (10, 6));
-    assert_eq!(Game::new(false, Save::default()).corner_pad, (0, 0));
+    assert!(g.input.touch_active);
+    assert_eq!(g.display.corner_pad, (10, 6));
+    assert_eq!(Game::new(false, Save::default()).display.corner_pad, (0, 0));
 }
 
 #[test]
@@ -1035,14 +1049,14 @@ fn a_camera_cutout_is_letterboxed_and_followed() {
     // A 20:9 phone held landscape with a camera hole on the left.
     g.fit_display((2400, 1080), (96, 0));
     // 2304 usable pixels at 6 screen pixels to one.
-    assert_eq!((g.buffer_w, g.buffer_h), (384, 180));
-    assert_eq!(g.letterbox, (16, 0));
+    assert_eq!((g.display.buffer_w, g.display.buffer_h), (384, 180));
+    assert_eq!(g.display.letterbox, (16, 0));
     // The phone turns round: the hole is on the right now.
     let mut i = idle();
     i.window = (2400, 1080);
     i.cutout = (0, 96);
     let fx = tick(&mut g, i);
-    assert_eq!(g.letterbox, (0, 16));
+    assert_eq!(g.display.letterbox, (0, 16));
     assert!(fx.contains(&Effect::Buffer {
         w: 384,
         h: 180,
@@ -1056,14 +1070,14 @@ fn the_buffer_keeps_its_width_through_a_run() {
     let mut wide = idle();
     wide.window = (1600, 720);
     tick(&mut g, wide.clone());
-    assert_eq!(g.buffer_w, 320, "the world is as wide as the run");
+    assert_eq!(g.display.buffer_w, 320, "the world is as wide as the run");
     // The next run is generated for the window as it is now.
     g.finish_run();
     let mut again = keys(&[Key::R]);
     again.window = (1600, 720);
     tick(&mut g, again);
-    assert_eq!(g.buffer_w, 400);
-    assert_eq!(g.run.as_ref().unwrap().width, 400);
+    assert_eq!(g.display.buffer_w, 400);
+    assert_eq!(g.play.run.as_ref().unwrap().width, 400);
 }
 
 // ---------------------------------------------------------- touch menus
@@ -1140,7 +1154,7 @@ fn the_touch_keypad_types_a_seed() {
     g.events(&[Event::FingerUp { index: 0 }]);
     tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Playing);
-    assert_eq!(g.last_seed, parse_seed("SEA"));
+    assert_eq!(g.play.last_seed, parse_seed("SEA"));
 }
 
 #[test]
@@ -1158,7 +1172,7 @@ fn bind_lines_in_an_existing_save_still_bind() {
     assert_eq!(g.action_binding(Action::AimMode), ("".into(), "".into()));
     tick(&mut g, keys(&[Key::Enter]));
     tick(&mut g, keys(&[Key::U]));
-    assert!(g.anim.is_some(), "U fires");
+    assert!(g.play.anim.is_some(), "U fires");
     tick(&mut g, keys(&[Key::C]));
     assert_eq!(g.mode, Mode::Paused, "C is back");
 }
@@ -1170,10 +1184,10 @@ fn rebinding_moves_an_action_and_reset_restores_it() {
         .bindings
         .push(("fire".into(), "U".into(), "B".into()));
     tick(&mut g, keys(&[Key::Space]));
-    assert!(g.anim.is_none(), "space no longer fires");
+    assert!(g.play.anim.is_none(), "space no longer fires");
     assert_eq!(g.input_label(Action::Fire), "U");
     tick(&mut g, keys(&[Key::U]));
-    assert!(g.anim.is_some());
+    assert!(g.play.anim.is_some());
 
     let mut g = game();
     g.save
@@ -1230,8 +1244,8 @@ fn the_enter_that_starts_a_seeded_run_does_not_fire_but_a_later_space_does() {
         ]),
     );
     assert_eq!(g.mode, Mode::Playing);
-    assert_eq!(g.last_seed, parse_seed("S"));
-    assert!(g.anim.is_none(), "Enter typed, not pressed");
+    assert_eq!(g.play.last_seed, parse_seed("S"));
+    assert!(g.play.anim.is_none(), "Enter typed, not pressed");
 
     // A Space after the Enter, in the same frame, is no longer in seed entry.
     let mut g = game();
@@ -1244,16 +1258,19 @@ fn the_enter_that_starts_a_seeded_run_does_not_fire_but_a_later_space_does() {
         ]),
     );
     assert_eq!(g.mode, Mode::Playing);
-    assert!(g.anim.is_some(), "the Space fired in the run's first frame");
+    assert!(
+        g.play.anim.is_some(),
+        "the Space fired in the run's first frame"
+    );
 }
 
 #[test]
 fn a_key_that_types_nothing_moves_the_keypad_focus() {
     let mut g = game();
     g.open_seed_entry();
-    g.controller_active = true;
+    g.input.controller_active = true;
     tick(&mut g, with_events(vec![Event::key(Key::Right)]));
-    assert_eq!(g.seed_focus.action(), Action::Type('B'));
+    assert_eq!(g.input.seed_focus.action(), Action::Type('B'));
     assert_eq!(g.seed_text, "");
 }
 
@@ -1289,8 +1306,8 @@ fn touches_arrive_with_the_frame() {
             Event::FingerUp { index: 0 },
         ]),
     );
-    assert!(g.touch_active);
-    assert!(g.anim.is_some(), "a tap inside one frame still fires");
+    assert!(g.input.touch_active);
+    assert!(g.play.anim.is_some(), "a tap inside one frame still fires");
 }
 
 #[test]
@@ -1302,7 +1319,7 @@ fn a_touch_queued_before_focus_is_lost_is_let_go_with_the_rest() {
         y: 100.0,
     }]);
     assert!(fx.contains(&Effect::Redraw));
-    assert!(g.touch_active);
-    assert!(!g.touch.active(), "no finger left stuck down");
+    assert!(g.input.touch_active);
+    assert!(!g.input.touch.active(), "no finger left stuck down");
     assert_eq!(g.mode, Mode::Paused);
 }

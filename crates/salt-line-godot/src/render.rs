@@ -210,7 +210,7 @@ impl Painter<'_> {
                 // With a saved run, confirm continues it and a new run is a
                 // separate action that asks twice (`confirm_discard`).
                 let again = "PRESS AGAIN - SAVED RUN IS LOST";
-                if self.g.resumable.is_some() {
+                if self.g.run_file.resumable.is_some() {
                     y = self.menu_row(
                         y,
                         Action::Confirm,
@@ -219,7 +219,7 @@ impl Painter<'_> {
                         alert,
                     );
                     let key = self.g.input_label(Action::NewRun);
-                    let text = if self.g.discard_armed == Some("daily") {
+                    let text = if self.g.run_file.discard_armed == Some("daily") {
                         again
                     } else {
                         "NEW DAILY RUN"
@@ -235,7 +235,7 @@ impl Painter<'_> {
                     );
                 }
                 let seed = self.g.input_label(Action::Seed);
-                let seed_text = if self.g.discard_armed == Some("seed") {
+                let seed_text = if self.g.run_file.discard_armed == Some("seed") {
                     again
                 } else {
                     "SEED ENTRY"
@@ -257,8 +257,8 @@ impl Painter<'_> {
                 );
                 let back = self.g.input_label(Action::Back);
                 y = self.menu_row(y, Action::Back, &format!("{back}  QUIT"), "QUIT", dim);
-                if self.g.last_crash.is_some() {
-                    let text = if self.g.crash_copied {
+                if self.g.crash.last_crash.is_some() {
+                    let text = if self.g.crash.crash_copied {
                         "CRASH REPORT COPIED"
                     } else {
                         "COPY LAST CRASH REPORT"
@@ -305,7 +305,7 @@ impl Painter<'_> {
                     }
                 }
             }
-            Mode::Controls if self.g.touch_active => {
+            Mode::Controls if self.g.input.touch_active => {
                 self.centred(y, "CONTROLS / AUDIO", fg);
                 y += 16;
                 let muted = if self.g.save.muted { " MUTED" } else { "" };
@@ -421,7 +421,7 @@ impl Painter<'_> {
             Mode::GameOver => {
                 self.centred(y, "OUT OF SHELLS", alert);
                 y += 14;
-                if let Some(run) = self.g.run.as_ref() {
+                if let Some(run) = self.g.play.run.as_ref() {
                     let (screens, shells, shots) = run.score();
                     let seed = run.run_seed;
                     self.centred(y, &format!("{screens} SCREENS CLEARED"), fg);
@@ -510,20 +510,21 @@ impl Painter<'_> {
     /// Menu lines are plates rather than "KEY  TEXT": on a touchscreen, and
     /// for a controller on the seed keypad, where the focus moves over them.
     fn plated(&self) -> bool {
-        self.g.touch_active || (self.g.controller_active && self.g.mode == Mode::SeedEntry)
+        self.g.input.touch_active
+            || (self.g.input.controller_active && self.g.mode == Mode::SeedEntry)
     }
 
     /// The controller's keypad focus is on this action's plate.
     fn focused(&self, action: Action) -> bool {
         self.g.mode == Mode::SeedEntry
-            && self.g.controller_active
-            && !self.g.touch_active
-            && self.g.seed_focus.action() == action
+            && self.g.input.controller_active
+            && !self.g.input.touch_active
+            && self.g.input.seed_focus.action() == action
     }
 
     /// A plate's label lights while a finger is on it or the focus is.
     fn lit(&self, action: Action) -> bool {
-        self.g.touch.held(action) || self.focused(action)
+        self.g.input.touch.held(action) || self.focused(action)
     }
 
     /// A menu line. With a keyboard or controller it reads "KEY  TEXT"; on a
@@ -567,7 +568,7 @@ impl Painter<'_> {
     /// clear of the wind and shells plates.
     fn draw_play_controls(&mut self, loadout: &Loadout) {
         let (w, h) = (self.canvas.w, self.canvas.h);
-        let (ex, ey) = self.g.corner_pad;
+        let (ex, ey) = self.g.display.corner_pad;
         let (bw, bh) = (22, 18);
         let y = h - bh - 3 - ey;
         // Right of the ANG/PWR readouts in the bottom-left corner.
@@ -603,7 +604,7 @@ impl Painter<'_> {
         let Some(screen) = self.g.shown_screen().cloned() else {
             return;
         };
-        let Some(run) = self.g.run.as_ref() else {
+        let Some(run) = self.g.play.run.as_ref() else {
             return;
         };
         let loadout = run.loadout.clone();
@@ -633,15 +634,15 @@ impl Painter<'_> {
         }
 
         // Under the structures and emplacement, so it never hides either.
-        if self.g.anim.is_none() && apex.is_some() && self.g.last_arc_on() {
-            raster::draw_last_arc(self.canvas, &view, &self.g.last_arc, pal);
+        if self.g.play.anim.is_none() && apex.is_some() && self.g.last_arc_on() {
+            raster::draw_last_arc(self.canvas, &view, &self.g.play.last_arc, pal);
         }
 
         self.draw_structures(&screen, &view);
         self.draw_player(&screen, &loadout, &view);
 
         // The shot in flight.
-        if let Some(anim) = self.g.anim.as_ref() {
+        if let Some(anim) = self.g.play.anim.as_ref() {
             let upto = (anim.t / DT).floor().max(0.0) as usize;
             let traces: Vec<&Trace> = anim.traces.iter().collect();
             for t in traces {
@@ -652,14 +653,14 @@ impl Painter<'_> {
             }
         }
         self.draw_shot_effects(&view);
-        if self.g.anim.is_none() && phase == Phase::Firing && self.g.mode == Mode::Playing {
+        if self.g.play.anim.is_none() && phase == Phase::Firing && self.g.mode == Mode::Playing {
             self.draw_drag_preview(&screen, &loadout, wind_shown, &view);
         }
 
         self.render_hud(
             shells, index, wind_shown, range, fuse, &loadout, &screen, phase,
         );
-        if self.g.touch_active && self.g.mode == Mode::Playing && phase != Phase::Drafting {
+        if self.g.input.touch_active && self.g.mode == Mode::Playing && phase != Phase::Drafting {
             self.draw_play_controls(&loadout);
         }
 
@@ -684,7 +685,7 @@ impl Painter<'_> {
         if !self.g.drag_aiming() {
             return;
         }
-        let Some((start, now)) = self.g.touch.drag() else {
+        let Some((start, now)) = self.g.input.touch.drag() else {
             return;
         };
         let pal = self.pal;
@@ -698,7 +699,7 @@ impl Painter<'_> {
         }
         self.canvas
             .rect(sx - 1, sy - 1, 3, 3, pal.get(slot::SKY_LO));
-        if self.g.drag_from.is_none()
+        if self.g.input.drag_from.is_none()
             || crate::aim::pull_to_aim(start, now, loadout.angle_quantum_ticks).is_none()
         {
             return;
@@ -709,23 +710,23 @@ impl Painter<'_> {
             ArcHint::Wind => wind_shown.unwrap_or(0.0),
             ArcHint::Short | ArcHint::Full => 0.0,
         };
-        let Some(run) = self.g.run.as_ref() else {
+        let Some(run) = self.g.play.run.as_ref() else {
             return;
         };
         // A whole ballistic flight per frame while a finger is held still is
         // wasted: the path only changes when one of these does.
         let key = PreviewKey {
-            angle: self.g.angle_ticks,
-            power: self.g.power_ticks,
+            angle: self.g.play.angle_ticks,
+            power: self.g.play.power_ticks,
             hint,
             wind: wind.to_bits(),
             seed: run.run_seed,
             index: run.screen_index,
             shots: run.shots_on_screen,
             offset: run.emplacement_offset.to_bits(),
-            epoch: self.g.preview_epoch,
+            epoch: self.g.play.preview_epoch,
         };
-        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks);
+        let shot = Shot::new(self.g.play.angle_ticks, self.g.play.power_ticks);
         let (path, upto) = self
             .cache
             .preview
@@ -736,12 +737,14 @@ impl Painter<'_> {
     fn draw_structures(&mut self, screen: &Screen, view: &View) {
         let toppling = self
             .g
+            .play
             .anim
             .as_ref()
             .map(|a| a.done() && a.settled < TOPPLE_TIME && !a.collapsed.is_empty())
             .unwrap_or(false);
         let collapsed_now: Vec<usize> = self
             .g
+            .play
             .anim
             .as_ref()
             .map(|a| a.collapsed.clone())
@@ -809,7 +812,7 @@ impl Painter<'_> {
 
     fn draw_player(&mut self, screen: &Screen, loadout: &Loadout, view: &View) {
         let muzzle = screen.muzzle();
-        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks).quantized(loadout);
+        let shot = Shot::new(self.g.play.angle_ticks, self.g.play.power_ticks).quantized(loadout);
         let frame = shot.barrel_frame();
 
         let (tank, pivot, barrel) = match self.sprites {
@@ -845,7 +848,7 @@ impl Painter<'_> {
     }
 
     fn draw_shot_effects(&mut self, view: &View) {
-        let Some(anim) = self.g.anim.as_ref() else {
+        let Some(anim) = self.g.play.anim.as_ref() else {
             return;
         };
         let alert = self.pal.get(slot::ALERT);
@@ -905,7 +908,7 @@ impl Painter<'_> {
         let dim = pal.get(slot::SKY_LO);
         let alert = pal.get(slot::ALERT);
         let w = self.canvas.w;
-        let (ex, ey) = self.g.corner_pad;
+        let (ex, ey) = self.g.display.corner_pad;
 
         // Wind, top left: a windsock flying the way the wind blows, then its
         // strength as a number. The sock never grows with strength, so the
@@ -963,7 +966,7 @@ impl Painter<'_> {
 
         // Instruments, bottom left.
         let mut y = self.canvas.h - 8 - ey;
-        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks).quantized(loadout);
+        let shot = Shot::new(self.g.play.angle_ticks, self.g.play.power_ticks).quantized(loadout);
         let angle = if loadout.angle_quantum_ticks == 1 {
             format!("ANG {:.2}", shot.angle_degrees())
         } else {
@@ -989,6 +992,7 @@ impl Painter<'_> {
             y -= 7;
             let off = self
                 .g
+                .play
                 .run
                 .as_ref()
                 .map(|r| r.emplacement_offset)
@@ -1028,7 +1032,7 @@ impl Painter<'_> {
         // the instant the trigger is pulled, and announcing it while the shot
         // is still visibly in the air gives the result away.
         let _ = phase;
-        if self.g.clear_hold > 0.0 {
+        if self.g.play.clear_hold > 0.0 {
             let text = "SCREEN CLEAR";
             let x = (w - crate::font::small_width(text) as i32) / 2;
             self.canvas.text_small(x, 34 + ey, text, fg);
@@ -1041,8 +1045,11 @@ impl Painter<'_> {
                 format!("CND {}", screen.candidates.min(999)),
                 format!("ATT {}", screen.attempts),
                 format!("MAT {}", raster::material_name(m)),
-                format!("CAM {}", self.g.cam_x),
-                format!("BUF {}X{}", self.g.buffer_w, self.g.buffer_h),
+                format!("CAM {}", self.g.play.cam_x),
+                format!(
+                    "BUF {}X{}",
+                    self.g.display.buffer_w, self.g.display.buffer_h
+                ),
                 format!("WND {:.3}", screen.wind),
             ];
             let mut dy = 42;
@@ -1082,7 +1089,7 @@ impl Painter<'_> {
         for (i, m) in offers.iter().enumerate() {
             let x = gap + i as i32 * (card_w + gap);
             self.canvas.plate(x, top, card_w, card_h, pal);
-            if self.g.touch_active {
+            if self.g.input.touch_active {
                 let action = [Action::Draft1, Action::Draft2, Action::Draft3][i.min(2)];
                 self.touch_button(Rect::new(x, top, card_w, card_h), action);
             }
@@ -1121,7 +1128,7 @@ impl Painter<'_> {
             }
         }
 
-        let hint = if self.g.touch_active {
+        let hint = if self.g.input.touch_active {
             "TAP A CARD"
         } else {
             "1 2 3  CHOOSE"
@@ -1135,7 +1142,7 @@ impl Painter<'_> {
         let fg = pal.get(slot::UI_FG);
         let dim = pal.get(slot::SKY_LO);
         let (w, h) = (self.canvas.w, self.canvas.h);
-        if self.g.touch_active {
+        if self.g.input.touch_active {
             let top = (h - 64) / 2;
             self.canvas.plate((w - 150) / 2, top, 150, 64, pal);
             self.centred(top + 8, "PAUSED", fg);
@@ -1213,7 +1220,7 @@ mod tests {
 
     /// Draw `g` as the node would, into a canvas the size the core asked for.
     fn draw(g: &Game) -> (Canvas, Vec<Button>) {
-        let mut canvas = Canvas::new(g.buffer_w, g.buffer_h);
+        let mut canvas = Canvas::new(g.display.buffer_w, g.display.buffer_h);
         let mut buttons = Vec::new();
         frame(
             g,
@@ -1277,7 +1284,7 @@ mod tests {
     #[test]
     fn touch_menus_lay_out_their_buttons() {
         let mut g = game();
-        g.touch_active = true;
+        g.input.touch_active = true;
         let (_, buttons) = draw(&g);
         assert_eq!(
             actions(&buttons),
@@ -1289,8 +1296,8 @@ mod tests {
             ]
         );
 
-        g.last_crash = Some("report".into());
-        g.resumable = Some(crate::resume::Saved::of(
+        g.crash.last_crash = Some("report".into());
+        g.run_file.resumable = Some(crate::resume::Saved::of(
             &salt_line_sim::run::RunState::new(1, 320),
             false,
         ));
@@ -1312,7 +1319,7 @@ mod tests {
     fn touch_play_lays_out_aim_fire_and_pause() {
         let mut g = game();
         g.start_run(1, false);
-        g.touch_active = true;
+        g.input.touch_active = true;
         let (_, buttons) = draw(&g);
         assert_eq!(
             actions(&buttons),
@@ -1337,7 +1344,7 @@ mod tests {
         g.open_seed_entry();
         let (keyed, buttons) = draw(&g);
         assert!(buttons.is_empty());
-        g.controller_active = true;
+        g.input.controller_active = true;
         let (plated, buttons) = draw(&g);
         assert_eq!(buttons.len(), keypad::KEYS.len() + 3);
         assert!(buttons.iter().any(|b| b.action == keypad::DEL));
@@ -1348,7 +1355,7 @@ mod tests {
     fn the_drag_band_and_arc_show_only_while_dragging() {
         let mut g = game();
         g.start_run(1, false);
-        g.touch_active = true;
+        g.input.touch_active = true;
         g.save.touch_aim = Some(TouchAim::Drag);
         g.take_effects();
         let (still, _) = draw(&g);
@@ -1389,9 +1396,9 @@ mod tests {
     #[test]
     fn the_error_screen_offers_the_report() {
         let mut g = game();
-        g.touch_active = true;
+        g.input.touch_active = true;
         g.broken_tick(0.0, &idle(), || None);
-        let mut canvas = Canvas::new(g.buffer_w, g.buffer_h);
+        let mut canvas = Canvas::new(g.display.buffer_w, g.display.buffer_h);
         let mut buttons = vec![Button {
             rect: Rect::new(0, 0, 1, 1),
             action: Action::Delete,

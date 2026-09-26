@@ -110,7 +110,7 @@ impl FakeDisk {
     fn launch(&mut self) -> Game {
         let save = self.save.as_deref().map(Save::parse).unwrap_or_default();
         let mut g = Game::new(false, save);
-        g.last_crash = self.crash_report.clone();
+        g.set_last_crash(self.crash_report.clone());
         let found = if self.set_aside.is_some() {
             Some(SavedRun::Interrupted)
         } else {
@@ -158,17 +158,19 @@ fn until(g: &mut Game, disk: &mut FakeDisk, done: impl Fn(&Game) -> bool) {
 
 /// Fire a wild shot and wait for it to land.
 fn throw_one(g: &mut Game, disk: &mut FakeDisk) {
-    g.angle_ticks = 1400;
-    g.power_ticks = 0;
+    g.play.angle_ticks = 1400;
+    g.play.power_ticks = 0;
     tick(g, disk, keys(&[Key::Space]));
-    until(g, disk, |g| g.anim.is_none() && g.clear_hold <= 0.0);
+    until(g, disk, |g| {
+        g.play.anim.is_none() && g.play.clear_hold <= 0.0
+    });
 }
 
 /// Throw every shell away, as a player out of luck would, so the log
 /// replays to a finished run.
 fn throw_all(g: &mut Game, disk: &mut FakeDisk) {
     while g.mode != Mode::GameOver {
-        if g.run.as_ref().unwrap().phase == Phase::Drafting {
+        if g.play.run.as_ref().unwrap().phase == Phase::Drafting {
             tick(g, disk, keys(&[Key::Num1]));
         } else {
             throw_one(g, disk);
@@ -188,7 +190,7 @@ fn finish_a_run(disk: &mut FakeDisk) -> Played {
     let mut g = disk.launch();
     tick(&mut g, disk, keys(&[Key::Enter]));
     throw_all(&mut g, disk);
-    let run = g.run.as_ref().unwrap();
+    let run = g.play.run.as_ref().unwrap();
     Played {
         seed: run.run_seed,
         log: run.log.clone(),
@@ -204,7 +206,7 @@ fn quit_mid_run(disk: &mut FakeDisk) -> Played {
     tick(&mut g, disk, keys(&[Key::Escape]));
     tick(&mut g, disk, keys(&[Key::R]));
     assert_eq!(g.mode, Mode::Title);
-    let run = g.run.as_ref().unwrap();
+    let run = g.play.run.as_ref().unwrap();
     Played {
         seed: run.run_seed,
         log: run.log.clone(),
@@ -216,7 +218,7 @@ fn continue_and_finish(disk: &mut FakeDisk) -> Played {
     let mut g = disk.launch();
     tick(&mut g, disk, keys(&[Key::Enter]));
     throw_all(&mut g, disk);
-    let run = g.run.as_ref().unwrap();
+    let run = g.play.run.as_ref().unwrap();
     Played {
         seed: run.run_seed,
         log: run.log.clone(),
@@ -268,7 +270,7 @@ fn crash_everywhere(start: FakeDisk, flow: fn(&mut FakeDisk) -> Played) {
         disk.budget = None;
         disk.fail_scores = 0;
         let first = disk.launch();
-        if let Some(saved) = first.resumable.as_ref() {
+        if let Some(saved) = first.run_file.resumable.as_ref() {
             assert_eq!(saved.seed, played.seed, "crash after {k}");
             assert!(
                 played.log.starts_with(&saved.log),
@@ -317,7 +319,7 @@ fn a_quit_run_is_offered_again_exactly_as_played() {
     let mut disk = FakeDisk::default();
     let played = quit_mid_run(&mut disk);
     let g = disk.launch();
-    let saved = g.resumable.as_ref().expect("offered");
+    let saved = g.run_file.resumable.as_ref().expect("offered");
     assert_eq!(saved.log, played.log);
 }
 
@@ -355,7 +357,7 @@ fn a_failed_score_survives_a_crash_anywhere() {
 fn nothing_queued_before_a_panic_is_replayed_after_it() {
     let mut g = Game::new(false, Save::default());
     g.fit_display(WINDOW, (0, 0));
-    g.last_crash = Some("report".into());
+    g.crash.last_crash = Some("report".into());
     // A frame that got this far and panicked: a run started, its crash
     // report retired and the run file written, all still queued.
     g.start_run(1, false);
