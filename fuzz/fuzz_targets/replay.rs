@@ -6,7 +6,7 @@
 //! the rebuilt run's log must survive the text form's round trip.
 //!
 //! The round trip is checked on `state.log`, not on the input: `fire`
-//! quantizes and clamps what it records, so an input angle of -5 is logged
+//! quantises and clamps what it records, so an input angle of -5 is logged
 //! as 0, and only the recorded log is promised to be canonical.
 //!
 //! Fuzzing complements the property tests: libFuzzer mutates raw bytes

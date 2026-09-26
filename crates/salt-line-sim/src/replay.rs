@@ -29,7 +29,7 @@
 //!
 //! [`state_hash`] folds the run state into one `u64`, floats by bit pattern.
 //! Comparing a live run's hash with its reconstruction's is the determinism
-//! check: the property tests do it for random runs, `bin/determinism.rs`
+//! check: the property tests do it for random runs, `src/bin/determinism.rs`
 //! does it for 200 runs on every CI platform (DESIGN §6), and
 //! `tests/golden_runs.rs` does it against hashes recorded in a checked-in
 //! corpus.
@@ -60,6 +60,8 @@ pub struct Replay {
 impl Replay {
     /// Snapshot a run's identity and log. Cheap apart from cloning the log;
     /// valid at any point, since a prefix of a valid log is a valid log.
+    /// The rebuilt state matches the live one only at replay boundaries (see
+    /// [`state_hash`]): not while `Cleared`, nor after an unfired reposition.
     pub fn of(state: &RunState) -> Self {
         Self {
             run_seed: state.run_seed,
@@ -73,11 +75,13 @@ impl Replay {
     /// rather than being silently skipped — a log that does not replay cleanly
     /// is a determinism bug, and it should be visible as one.
     ///
-    /// Each shot entry replays the inputs in the order the live game applies
-    /// them: move the emplacement, set the fuse, fire, then resolve a clear
-    /// at once. Shot values are passed through [`RunState::fire`], which
-    /// quantizes them, so an off-grid angle in a hand-written log replays as
-    /// the quantized shot and is logged that way in the rebuilt state.
+    /// Each shot entry replays its inputs in a fixed order: move the
+    /// emplacement, set the fuse, fire, then resolve a clear at once. Shot
+    /// values are passed through [`RunState::fire`], which quantises them, so
+    /// an off-grid angle in a hand-written log replays as the quantised shot
+    /// and is logged that way in the rebuilt state. Angle and power are
+    /// clamped like live input; fuse and offset must reproduce the logged
+    /// value exactly, or the entry is refused.
     ///
     /// # Errors
     ///
@@ -146,25 +150,15 @@ impl Replay {
 pub enum ReplayError {
     /// A shot while the run was not in `Phase::Firing`: after it ended, or
     /// while a draft was open.
-    UnexpectedShot {
-        at: usize,
-    },
+    UnexpectedShot { at: usize },
     /// A draft pick while no draft was open.
-    UnexpectedDraft {
-        at: usize,
-    },
+    UnexpectedDraft { at: usize },
     /// A draft pick whose index has no offer.
-    NoSuchOffer {
-        at: usize,
-    },
-    // `RunState::fire` refused the shot. Not expected after the phase check,
-    // since the run leaves `Firing` as soon as the shells run out; kept so a
-    // refusal is an error rather than a panic. (A plain comment, not a doc
-    // comment: with every variant documented, rustfmt would collapse the
-    // variants onto single lines.)
-    ShotRefused {
-        at: usize,
-    },
+    NoSuchOffer { at: usize },
+    /// [`RunState::fire`] refused the shot. Not expected after the phase
+    /// check, since the run leaves `Firing` as soon as the shells run out;
+    /// kept so a refusal is an error rather than a panic.
+    ShotRefused { at: usize },
     /// A shot logged against a different screen than the one the run is on:
     /// the log and the reconstruction have diverged.
     ScreenMismatch {
@@ -174,17 +168,11 @@ pub enum ReplayError {
     },
     /// The logged emplacement offset cannot be applied: no Enfilade, a shot
     /// already taken on the screen, or outside the allowed range.
-    OffsetRefused {
-        at: usize,
-    },
+    OffsetRefused { at: usize },
     /// The logged fuse is outside the range `RunState::set_fuse` allows.
-    FuseOutOfRange {
-        at: usize,
-    },
+    FuseOutOfRange { at: usize },
     /// A draft entry with a fuse or offset: `take_offer` logs both as 0.
-    MalformedDraft {
-        at: usize,
-    },
+    MalformedDraft { at: usize },
 }
 
 // ------------------------------------------------------------- text form
@@ -266,8 +254,8 @@ pub enum LogError {
 /// name the same run, and a round trip would not be the identity. With one
 /// canonical form a run line can be compared, deduplicated or hashed as
 /// text, and a hand-edited or corrupted line is rejected instead of being
-/// read as something nearby. Whitespace between tokens is the one
-/// allowance: any run of it separates tokens.
+/// read as something nearby. Whitespace is the one allowance:
+/// leading, trailing and any run between tokens.
 ///
 /// Decoding checks the syntax only. Whether the entries make a legal run
 /// (the right screens, picks with something on offer, fuses in range) is
@@ -437,6 +425,9 @@ impl Hasher {
 /// only affect what the HUD shows. For the same reason a live run whose
 /// player has repositioned but not yet fired (a pending `muzzle_x`) does not
 /// match its reconstruction until that shot is logged.
+///
+/// Changing what is hashed, or its order, moves every golden-run hash and
+/// the epoch digest, so it needs the `SIM_EPOCH` procedure (DESIGN §9.3).
 pub fn state_hash(s: &RunState) -> u64 {
     let mut h = Hasher::new();
     h.write_u64(s.run_seed);
@@ -476,6 +467,10 @@ pub fn state_hash(s: &RunState) -> u64 {
 /// the epoch digest: adding, removing or reordering a field changes them
 /// all, even though no outcome changed, and needs the same `SIM_EPOCH`
 /// procedure as a sim change.
+///
+/// `wind_late` goes in as `unwrap_or(0.0)`, so `None` and `Some(0.0)` hash
+/// the same. `candidates`, `attempts` and `fell_back` are not hashed, so the
+/// pinned snapshots do not catch a change to them.
 pub fn hash_screen(h: &mut Hasher, screen: &crate::run::Screen) {
     h.write_u32(screen.index);
     h.write_u64(screen.seed);

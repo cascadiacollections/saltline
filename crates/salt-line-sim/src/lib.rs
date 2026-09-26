@@ -25,7 +25,9 @@
 //!
 //! Units used throughout: world units are pixels of the internal buffer, y
 //! up; angles are integer ticks of 0.05 degrees; power is an integer tick
-//! count, `0..=POWER_TICKS_MAX`; time is seconds, stepped by [`DT`].
+//! count, `0..=POWER_TICKS_MAX`; time is seconds, stepped by [`DT`]. The
+//! Airburst fuse is held on a grid of tenths of a world unit and logged as
+//! an integer count of tenths.
 //!
 //! Comments cite "brief M1" to "brief M6": milestones of the brief the first
 //! build was written against, which is no longer in the repository.
@@ -33,11 +35,11 @@
 pub mod ballistics; // M1 — integration, collision
 pub mod dmath; // platform-stable trig, so the sim never calls libm
 pub mod modifiers; // M3 — pool, draft, loadout deltas
-pub mod replay;
+pub mod replay; // M4 — seed + shot log -> verified reconstruction
 pub mod rng; // M1 — SplitMix64, PCG32
 pub mod run; // M3 — economy, screen assembly, state machine
 pub mod solver; // M2 — solvability validation
-pub mod terrain; // M1 — noise, heightfield, scar buffer, materials // M4 — seed + shot log -> verified reconstruction
+pub mod terrain; // M1 — noise, heightfield, scar buffer, materials
 
 /// Version of the sim's outcomes. DESIGN §9.3.
 ///

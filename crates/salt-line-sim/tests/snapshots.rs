@@ -9,7 +9,8 @@
 //!
 //! The same screen digests are also folded into the epoch digest in
 //! `golden_runs.rs`, so accepting a changed snapshot without bumping
-//! `SIM_EPOCH` fails that test (DESIGN §9.3).
+//! `SIM_EPOCH` and appending its digest to `EPOCHS` fails that test
+//! (DESIGN §9.3).
 
 mod common;
 

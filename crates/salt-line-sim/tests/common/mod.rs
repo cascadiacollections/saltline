@@ -83,8 +83,7 @@ pub fn play(seed: u64, width: usize, moves: &[Decision]) -> RunState {
         match state.phase {
             Phase::Firing => {
                 // Move first, since a solver shot's fuse depends on where the
-                // muzzle is; then aim (which may set that fuse), then the
-                // decision's own fuse, which overrides it, then fire.
+                // muzzle is.
                 if let Some(off) = d.reposition {
                     state.reposition(off);
                 }

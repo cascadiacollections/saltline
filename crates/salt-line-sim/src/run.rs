@@ -12,17 +12,17 @@
 //! A screen is generated from nothing but the run seed, its index, the buffer
 //! width and the loadout ([`generate_screen`]). Its seed comes from
 //! [`screen_seed`], a stateless hash of run seed and index (DESIGN §2.2), so
-//! no generator state carries from one screen to the next. Screen 400 costs
-//! the same as screen 0 and needs none of the screens before it, which is
-//! what lets tests, the batch harness and a level inspector jump anywhere in
-//! a run. Inside a screen, each system (wind, shape, placement, template
+//! no generator state carries from one screen to the next. Screen 400 needs
+//! none of the screens before it (later bands cost more only because they
+//! try harder templates), which is what lets tests, the batch harness and a
+//! level inspector jump anywhere in a run. Inside a screen, each system (wind, shape, placement, template
 //! choice) draws from its own named [`substream`] of that seed, so adding a
 //! draw to one cannot shift the values another sees.
 //!
 //! Generation is generate-and-test: assemble a candidate, ask
 //! [`solver::validate`] whether it has enough distinct solutions, and on
 //! failure try again with the next seed, then with the `Flat` template, then
-//! with the terrain out of the way (DESIGN §2.3 step 6, §2.4).
+//! with the terrain flattened (DESIGN §2.3 step 6, §2.4).
 //!
 //! # The run state machine
 //!
@@ -151,8 +151,9 @@ impl StructureKind {
 pub enum StructState {
     /// Integrity above 0.35 and support above 0.6.
     Intact = 0,
-    /// Integrity at or below 0.35, or support at or below 0.6. The bounding
-    /// box shifts toward the weaker side, and the screen is not cleared.
+    /// Integrity at or below 0.35, or support at or below 0.6, and not
+    /// collapsed. The bounding box shifts toward the weaker side, and the
+    /// screen is not cleared.
     Leaning = 1,
     /// Integrity at or below 0, or support at or below 0.3. A collapsed
     /// structure takes no further blast damage.
@@ -188,8 +189,9 @@ pub struct Structure {
     /// material factor times the shell's damage scale; it can go negative.
     pub integrity: f64,
     /// How well the ground still holds it up, 0.0..=1.0: the footprint's
-    /// remaining height relative to `original_mean`, with the loss scaled up
-    /// by [`StructureKind::top_heaviness`].
+    /// remaining height relative to `original_mean`, with the loss
+    /// multiplied by [`StructureKind::top_heaviness`] (above 1 for top-heavy
+    /// kinds, below 1 for Silo and Pylon), clamped to 0..=1.
     pub support: f64,
     /// Damage state, derived from `integrity` and `support`.
     pub state: StructState,
@@ -335,7 +337,8 @@ pub struct Screen {
     /// DESIGN §2.4 asks to be logged.
     pub candidates: usize,
     /// Generation attempts it took, counting from 1. Above `MAX_GEN_ATTEMPTS`
-    /// means the template attempts all failed; for the batch harness.
+    /// means the template attempts all failed; for the batch harness; 0 for
+    /// a supply screen.
     pub attempts: u32,
     /// Whether generation gave up on the drawn template and used `Flat`.
     pub fell_back: bool,
@@ -442,7 +445,7 @@ impl Screen {
     /// Fire a shot and apply everything it does: craters, structural damage,
     /// undermining, collapse and debris.
     ///
-    /// `shot` is used as given; [`RunState::fire`] quantizes it to the
+    /// `shot` is used as given; [`RunState::fire`] quantises it to the
     /// loadout first, and callers that bypass it (tests, the solver's
     /// candidates) pass shots already on the grid. `fuse` is the Airburst
     /// fuse in world units from the muzzle, ignored without Airburst.
@@ -515,7 +518,7 @@ impl Screen {
         }
 
         // Salvage: a shot that felled nothing but whose first detonation
-        // landed within `salvage_radius` (30 units with the modifier) of a
+        // landed horizontally within `salvage_radius` (30 units with the modifier) of a
         // standing target's centre.
         if lo.salvage_radius > 0.0 && report.collapsed.is_empty() {
             if let Some(det) = report.traces.iter().filter_map(|t| t.detonation()).next() {
@@ -574,7 +577,9 @@ impl Screen {
     }
 
     /// Recompute support from the scar buffer and re-resolve every state.
-    /// DESIGN §2.7: support is recomputed after every detonation.
+    /// Called once per shot, after every detonation (DESIGN §2.7 says after
+    /// each detonation; with Cluster this differs — see NOTES or the
+    /// follow-up issue).
     ///
     /// Public because undermining can happen without a detonation of its own —
     /// debris landing, or a test excavating a footprint directly.
@@ -856,12 +861,15 @@ fn assemble(
 ///
 /// 1. Up to `MAX_GEN_ATTEMPTS` drawn templates, each on the next seed.
 /// 2. Up to `MAX_GEN_ATTEMPTS` `Flat` screens on a separate run of seeds.
-/// 3. A terrain-free gentle roll with a single target.
+/// 3. No template: the screen seed's base ridge flattened to a gentle roll,
+///    cut to one target.
 ///
 /// Rungs 1 and 2 return a screen only if it passes [`solver::validate`].
 /// Rung 3 is returned without that gate: it relies on a single target
 /// inside the distance cap on gentle terrain always being reachable, and
-/// records whatever candidate count the solver finds. Supply screens
+/// records whatever candidate count the solver finds. No test forces rung 3
+/// or asserts that it is solvable; the batch harness's candidate gate would
+/// only notice if a sampled screen happened to reach it. Supply screens
 /// (Scavenger Rites) have no targets and skip validation too.
 ///
 /// Pure: the same arguments always give a bit-identical screen, whatever was
@@ -911,7 +919,7 @@ pub fn generate_screen(run_seed: u64, index: u32, width: usize, lo: &Loadout) ->
         }
     }
 
-    // Terrain out of the way entirely, one target. This cannot fail: a target
+    // No template, terrain flattened, one target. This cannot fail: a target
     // inside the distance cap on a gentle roll is always reachable.
     let mut screen = assemble(index, seed0, width, Template::Flat, band, lo, true);
     screen.structures.truncate(1);
@@ -970,7 +978,8 @@ pub enum Phase {
     /// Splitting the clear into two calls costs nothing in determinism: no
     /// logged input can take effect in between (`fire` refuses outside
     /// `Firing`, `reposition` after the screen's first shot), so the log
-    /// needs no entry for the pause.
+    /// needs no entry for the pause; a fuse set meanwhile is reset when the
+    /// next screen is entered.
     Cleared,
     /// A draft is open; `RunState::take_offer` must be called.
     Drafting,
@@ -997,7 +1006,7 @@ pub struct LoggedShot {
     /// Screen the entry was made on. For a draft pick, the screen that was
     /// just cleared, since the run has not advanced when the pick is made.
     pub screen_index: u32,
-    /// Angle in 0.05-degree ticks, after quantization to the loadout's
+    /// Angle in 0.05-degree ticks, after quantisation to the loadout's
     /// angle grid and clamping to `0..=MAX_ANGLE_TICKS`. `DRAFT_MARK` for a
     /// draft pick.
     pub angle_ticks: i32,
@@ -1055,7 +1064,7 @@ pub struct RunState {
     /// Offers on the table while `phase == Drafting`.
     pub offers: Vec<Modifier>,
     /// Airburst fuse, in units from the muzzle. Player-set, always a whole
-    /// number of tenths (see `set_fuse`); `fire` re-quantizes it anyway, so a
+    /// number of tenths (see `set_fuse`); `fire` re-quantises it anyway, so a
     /// direct write cannot put an unloggable value into a shot.
     pub fuse: f64,
     /// Enfilade offset applied to this screen, if any. Always a whole number
@@ -1200,13 +1209,14 @@ impl RunState {
 
     /// Fire. Consumes a shell, applies the shot, advances the run.
     ///
-    /// The shot is quantized to the loadout's angle grid and clamped to the
-    /// input ranges first, and the logged entry records the quantized values
+    /// The shot is quantised to the loadout's angle grid and clamped to the
+    /// input ranges first, and the logged entry records the quantised values
     /// with the fuse and offset in effect, so the log holds exactly what
     /// flew. The entry is appended before the shot resolves.
     ///
-    /// Afterwards the phase is `Cleared` if every target is down, `Over` if
-    /// that was the last shell, and `Firing` otherwise. Returns `None`, and
+    /// Afterwards the phase is `Cleared` if every target is down (checked
+    /// first, so a clear on the last shell still pays its refund), else
+    /// `Over` if the reserve is empty, else `Firing`. Returns `None`, and
     /// changes nothing, outside `Phase::Firing` or with no shells left.
     pub fn fire(&mut self, shot: Shot, record_path: bool) -> Option<ShotReport> {
         if self.phase != Phase::Firing || self.shells <= 0 {
@@ -1292,7 +1302,7 @@ impl RunState {
         // A draft fires at the end of each band (DESIGN §1). The offers come
         // from the next screen's seed and the loadout, not from a running
         // generator, so they are fixed by what the log already contains and
-        // a replay meets the same three.
+        // a replay meets the same offers.
         let next = self.screen_index + 1;
         if next.is_multiple_of(BAND_LEN) {
             let offers = draft_offers(screen_seed(self.run_seed, next), &self.loadout);
