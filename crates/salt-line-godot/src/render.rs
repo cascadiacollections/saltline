@@ -809,8 +809,10 @@ impl Painter<'_> {
                 st.base
             };
             if state == StructState::Collapsed && !faithful {
-                // No collapsed drawing for this silhouette yet: a rubble mound
-                // the width of its own footprint beats a water tower's.
+                // The collapsed drawing did not load (every silhouette has
+                // one; see `Sprites::structure`), so `sprite` is the intact
+                // one: a rubble mound the width of its footprint reads as
+                // wreckage where a standing silhouette would not.
                 raster::draw_rubble(self.canvas, view, st.x0 as f64, footprint, ground, pal);
                 continue;
             }
