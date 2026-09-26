@@ -1072,7 +1072,6 @@ impl Painter<'_> {
         // Only once the shell has actually landed: the sim resolves the clear
         // the instant the trigger is pulled, and announcing it while the shot
         // is still visibly in the air gives the result away.
-        let _ = phase;
         if self.g.play.clear_hold > 0.0 {
             let text = "SCREEN CLEAR";
             let x = (w - crate::font::small_width(text) as i32) / 2;
