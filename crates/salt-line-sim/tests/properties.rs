@@ -6,65 +6,37 @@
 //! records it under `proptest-regressions/`; commit that file so the case
 //! stays covered.
 
+mod common;
+
+use common::{play, Decision};
 use proptest::prelude::*;
 use salt_line_sim::ballistics::Shot;
 use salt_line_sim::dmath::{self, MAX_ANGLE_TICKS};
 use salt_line_sim::modifiers::Loadout;
-use salt_line_sim::replay::{state_hash, Replay};
+use salt_line_sim::replay::{decode_log, encode_log, state_hash, Replay};
 use salt_line_sim::rng::Pcg32;
-use salt_line_sim::run::{Phase, RunState};
 use salt_line_sim::{POWER_TICKS_MAX, SCREEN_W_MAX, SCREEN_W_MIN};
-
-/// One player decision. How it applies depends on the phase it lands in: a
-/// shot while firing, a pick while drafting.
-#[derive(Clone, Debug)]
-struct Decision {
-    angle: i32,
-    power: i32,
-    pick: usize,
-}
 
 fn decisions() -> impl Strategy<Value = Vec<Decision>> {
     prop::collection::vec(
-        (0..=MAX_ANGLE_TICKS, 0..=POWER_TICKS_MAX, 0usize..3)
-            .prop_map(|(angle, power, pick)| Decision { angle, power, pick }),
+        (
+            0..=MAX_ANGLE_TICKS,
+            0..=POWER_TICKS_MAX,
+            0usize..3,
+            prop::bool::weighted(0.7),
+            prop::option::weighted(0.4, -20.0f64..500.0),
+            prop::option::weighted(0.4, -40.0f64..40.0),
+        )
+            .prop_map(|(angle, power, pick, solve, fuse, reposition)| Decision {
+                angle,
+                power,
+                pick,
+                solve,
+                fuse,
+                reposition,
+            }),
         0..40,
     )
-}
-
-/// Play the decisions, checking the run's invariants after every step.
-fn play(seed: u64, width: usize, moves: &[Decision]) -> RunState {
-    let mut state = RunState::new(seed, width);
-    for d in moves {
-        let before = (state.screen_index, state.log.len());
-        match state.phase {
-            Phase::Firing => {
-                if state.fire(Shot::new(d.angle, d.power), false).is_none() {
-                    break;
-                }
-                state.resolve_clear();
-            }
-            Phase::Drafting => {
-                if state
-                    .take_offer(d.pick.min(state.offers.len().saturating_sub(1)))
-                    .is_none()
-                {
-                    state.skip_draft();
-                }
-            }
-            Phase::Cleared => {
-                state.resolve_clear();
-            }
-            Phase::Over(_) => break,
-        }
-        assert!(state.shells >= 0, "shells went negative: {}", state.shells);
-        assert!(
-            state.screen_index >= before.0,
-            "the screen index went backwards"
-        );
-        assert!(state.log.len() >= before.1, "the log lost entries");
-    }
-    state
 }
 
 proptest! {
@@ -83,8 +55,40 @@ proptest! {
         let rebuilt = replay.reconstruct().expect("a recorded run failed to replay");
         prop_assert_eq!(state_hash(&played), state_hash(&rebuilt));
         prop_assert_eq!(&played.log, &rebuilt.log);
+        prop_assert_eq!(decode_log(&encode_log(&played.log)), Ok(played.log.clone()));
         prop_assert_eq!(played.shells, rebuilt.shells);
         prop_assert_eq!(played.screens_cleared, rebuilt.screens_cleared);
+    }
+}
+
+/// Token soup for the text-form parser: mostly well-formed tokens, some
+/// repeats and contradictions, a few non-canonical numbers.
+fn log_text() -> impl Strategy<Value = String> {
+    let token = prop::sample::select(vec![
+        "@0", "@1", "@2", "@7", "F0", "F5", "F1095", "E0", "E3", "E-16", "D0", "D2", "900:600",
+        "1:2", "0:0", "@+1", "@01", "F+5", "E-0", "-1:3", "1:", "v2", "x",
+    ]);
+    (
+        prop::sample::select(vec!["v2", "v2", "v2", "v1", "v02", ""]),
+        prop::collection::vec(token, 0..16),
+    )
+        .prop_map(|(v, toks)| {
+            let mut all = vec![v];
+            all.extend(toks);
+            all.join(" ")
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2048))]
+
+    /// Only canonical text is accepted, so whatever parses encodes back to
+    /// the same tokens: one run, one text.
+    #[test]
+    fn an_accepted_log_text_encodes_back_to_itself(text in log_text()) {
+        if let Ok(log) = decode_log(&text) {
+            prop_assert_eq!(encode_log(&log), text.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
     }
 }
 
@@ -185,4 +189,30 @@ fn a_trailing_zero_weight_is_never_picked() {
             assert_ne!(r.weighted(&[2, 3, 0]), 2);
         }
     }
+}
+
+/// The replay property is only as strong as the runs it sees. Check that the
+/// scripted player really reaches Airburst and Enfilade and that they decide
+/// shots: a shot fired with Airburst whose fuse, changed, changes how the run
+/// turns out, and likewise a shot fired from a moved emplacement. Without
+/// those, a replay that ignored either input would still pass.
+#[test]
+fn the_scripted_player_uses_the_fuse_and_enfilade() {
+    let (mut fuse_runs, mut offset_runs) = (0, 0);
+    for seed in 0..24u64 {
+        let played = play(seed, 320, &common::seeded_decisions(seed, 40, 0.7));
+        let replay = Replay::of(&played);
+        let rebuilt = replay.reconstruct().expect("replay failed");
+        assert_eq!(state_hash(&played), state_hash(&rebuilt), "seed {seed}");
+        fuse_runs += common::fuse_matters(&replay) as u32;
+        offset_runs += common::offset_matters(&replay) as u32;
+    }
+    assert!(
+        fuse_runs >= 3,
+        "only {fuse_runs} runs had a shot whose Airburst fuse mattered"
+    );
+    assert!(
+        offset_runs >= 3,
+        "only {offset_runs} runs had a shot whose Enfilade offset mattered"
+    );
 }

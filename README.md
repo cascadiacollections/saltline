@@ -54,11 +54,18 @@ With `just` installed, the same common operations are available as `just test`,
 
 Every push to `main` that passes CI replaces the
 [`dev` prerelease](https://github.com/cascadiacollections/saltline/releases/tag/dev)
-with that commit's builds: Linux x86_64, macOS, Windows x86_64 and arm64, and
-an Android arm64 APK. They are for testing, not distribution: the desktop builds
-are unsigned, and the APK is signed with a debug key (with the
-`ANDROID_DEBUG_KEYSTORE` repository secret, the same key as local
-`just android` builds, so either installs over the other).
+with that commit's builds: Linux x86_64, macOS (universal), Windows x86_64 and
+arm64, and an Android arm64 APK. They are for testing, not distribution: the
+desktop builds are unsigned. The APK is signed with the release key once the
+owner has set it up (so dev builds and releases install over each other), and
+with the debug key until then. Each dev APK gets a higher versionCode than the
+last, so it installs as an update; see RELEASING.md for what that means for
+going back to a release.
+
+Pushing a `vX.Y.Z` tag builds the same set and publishes it as release
+`vX.Y.Z`, with notes from [`CHANGELOG.md`](CHANGELOG.md); see
+[RELEASING.md](RELEASING.md) for the version rule, the Android versionCode
+scheme and signing.
 
 ### Android
 
@@ -68,6 +75,13 @@ attached device or emulator (set `ANDROID_SERIAL` if there is more than one);
 (`ANDROID_HOME`, `ANDROID_NDK_HOME`, defaulting to `~/Android/Sdk` and its
 newest NDK), Godot's export templates, and a debug keystore in the Godot editor
 settings. Phones use the Compatibility renderer; the desktop keeps Forward+.
+
+A local build has versionCode 1, lower than any CI build, so `just android`
+installs with `adb install -r -d` (a debug APK may downgrade). It only
+installs over a CI build signed with the same key: over a release-signed dev
+build or release it fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and the
+fix is `adb uninstall com.cascadiacollections.saltline`, which deletes the
+saves on that device.
 
 ### iOS
 
@@ -287,6 +301,9 @@ platform. What that costs, concretely:
   multiplication is not associative.
 - A run persists as `(run_seed, width, shot log)` and nothing else. Draft picks
   ride in the same triple with `angle_ticks = -1`.
+- CI holds it to that: the sim runs on Linux and Windows (x86_64 and arm64) and
+  on macOS (Apple silicon), and the determinism job fails unless all five
+  digests are identical.
 
 ## Monetization
 
@@ -305,6 +322,35 @@ is why it is not the build that ships.
 No code, assets, or naming lineage from any existing artillery game. See
 `design/DESIGN.md` §7 for the pre-release checklist, and `RELEASING.md` for the
 signing, store and clearance work that has to happen outside this repository.
+
+## Reporting bugs
+
+The game has no network code and no telemetry. If the Rust side panics, the
+game stops on a "SOMETHING BROKE" screen instead of carrying on with
+half-updated state, and writes a plain-text report beside the save: version,
+OS and architecture, the panic message and source location, and the run's
+seed, width, screen and shot log (enough to replay it). **COPY REPORT** puts it
+on the clipboard; the next launch offers **COPY LAST CRASH REPORT** on the title
+screen, then keeps the file as `crash-old.txt`. Nothing leaves the device unless
+you paste it somewhere.
+
+Open an issue with the bug template and paste the report, or the seed if
+nothing crashed. The files live in Godot's user data folder:
+
+| Platform | Folder |
+|---|---|
+| Linux | `~/.local/share/godot/app_userdata/Salt Line/` |
+| macOS | `~/Library/Application Support/Godot/app_userdata/Salt Line/` |
+| Windows | `%APPDATA%\Godot\app_userdata\Salt Line\` |
+| Android | App-private; use the in-game copy button |
+
+The save (`salt_line.txt`) is written to a temporary file, flushed to disk and
+renamed over the old one, so a crash mid-write costs at most the newest
+record; if only the temporary file survives, the next launch loads it. On
+Linux, macOS and Android the directory is flushed after the rename as well,
+so the swap survives a power cut. On Windows the rename is atomic but the
+directory is not flushed, so a power cut in the moments after a write could
+still leave the previous save in place.
 
 ## License
 

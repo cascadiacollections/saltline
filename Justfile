@@ -28,6 +28,25 @@ fmt:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# macOS exports ship one universal dylib: `macos.release` in salt_line.gdextension points at
+# target/universal-apple-darwin/release. Debug builds stay host-only at target/debug, so
+# `just run` does not need this; run it before `godot --export-release "macOS"` on a Mac.
+
+# Build the universal (arm64 + x86_64) macOS release library.
+macos-universal:
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build --release -p salt-line-godot --target aarch64-apple-darwin
+    RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build --release -p salt-line-godot --target x86_64-apple-darwin
+    mkdir -p target/universal-apple-darwin/release
+    lipo -create -output target/universal-apple-darwin/release/libsalt_line_godot.dylib \
+        target/aarch64-apple-darwin/release/libsalt_line_godot.dylib \
+        target/x86_64-apple-darwin/release/libsalt_line_godot.dylib
+    lipo -info target/universal-apple-darwin/release/libsalt_line_godot.dylib
+
+# Check the version is consistent everywhere it is written down (RELEASING.md, "Version rule").
+version-check:
+    python3 tools/release_version.py check
+
 # Android (arm64-v8a). Needs rustup, the Android SDK + NDK (ANDROID_HOME, ANDROID_NDK_HOME;
 # defaults to ~/Android/Sdk and its newest NDK), Godot's export templates and a debug keystore
 # in the editor settings. Set ANDROID_SERIAL to pick a device when more than one is attached.
@@ -55,7 +74,8 @@ android-apk: android-lib
 
 # Build, install and launch on the attached device or emulator.
 android: android-apk
-    "{{ adb }}" install -r build/SaltLine.apk
+    # -d: CI builds carry a far higher versionCode than this local build's 1, and a debug APK may downgrade.
+    "{{ adb }}" install -r -d build/SaltLine.apk
     "{{ adb }}" shell am force-stop com.cascadiacollections.saltline
     "{{ adb }}" shell monkey -p com.cascadiacollections.saltline -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 

@@ -1,11 +1,13 @@
 name: ci
 
 on:
-  # Only main on push. Without the branch filter a pull request branch runs the
-  # whole matrix twice for every commit -- once for push, once for
-  # pull_request -- which is pure waste on the macOS and Windows runners.
+  # Only main and release tags on push. Without the branch filter a pull
+  # request branch runs the whole matrix twice for every commit -- once for
+  # push, once for pull_request -- which is pure waste on the macOS and Windows
+  # runners. A `vX.Y.Z` tag runs everything and ends in the `release` job.
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 # Superseded runs are not worth paying for; a new push to the same ref makes
@@ -15,14 +17,21 @@ concurrency:
   cancel-in-progress: true
 
 # Read-only by default; artifact upload and download authenticate with the
-# run's own runtime token, not with GITHUB_TOKEN. The one exception is the
-# dev-release job, which runs only for pushes to main and asks for
-# contents: write to replace the `dev` prerelease.
+# run's own runtime token, not with GITHUB_TOKEN. The two exceptions are the
+# dev-release job (pushes to main, replaces the `dev` prerelease) and the
+# release job (`v*` tags, publishes that version's release); each asks for
+# contents: write for itself.
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+
+# Every rust-cache step sets `lookup-only` on tag builds, so a build that
+# publishes a release starts from nothing cached (zizmor cache-poisoning).
+# PR caches are scoped to refs/pull/N/merge and a tag run can only restore
+# main's, so the exposure is whatever reached main's cache; a release is not
+# worth even that. Tag builds are cold and slower, and clean.
 
 jobs:
   # The sim crate must build and test with no engine present, on every
@@ -34,13 +43,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The arm64 runners are here because arm64 is shipped (Android,
+        # Windows on ARM, Apple silicon via macos-latest), so its digest has to
+        # join the comparison below. Hosted arm64 runners are not offered to
+        # private and internal repositories on every plan; if a label is not
+        # available to this repo its job sits queued rather than failing. If
+        # that happens, drop the label here and the count in `determinism`.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: cargo-nextest
@@ -85,8 +102,10 @@ jobs:
             printf '%-28s %s\n' "$f" "$(cat "$f")"
             found=$((found + 1))
           done
-          if [ "$found" -lt 3 ]; then
-            echo "expected three platform digests, got $found" >&2
+          # One per `sim` matrix entry; keep in step with that list.
+          expected=5
+          if [ "$found" -ne "$expected" ]; then
+            echo "expected $expected platform digests, got $found" >&2
             exit 1
           fi
           if [ "$(cat digest-*.txt | sort -u | wc -l)" -ne 1 ]; then
@@ -94,6 +113,37 @@ jobs:
             exit 1
           fi
           echo "all platforms agree: $(cat digest-ubuntu-latest.txt)"
+
+  # Every place the version is written down agrees (RELEASING.md, "Version
+  # rule"), on every run so drift is caught in review. On a `v*` tag the tag
+  # must match as well and CHANGELOG.md must have that version's section,
+  # which becomes the release notes; a mismatched tag publishes nothing.
+  version:
+    name: version consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history, so a tag build can check its commit is on main.
+          fetch-depth: 0
+      # python3 on the runner is enough: the script needs only Python 3.9+.
+      - name: check versions
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -eu
+          if [ "$IS_TAG" = "true" ]; then
+            python3 tools/release_version.py check --tag "$GITHUB_REF_NAME"
+            # Releases are cut from main only, never from a side branch.
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "tag $GITHUB_REF_NAME points at ${GITHUB_SHA::7}, which is not on main" >&2
+              exit 1
+            fi
+          else
+            python3 tools/release_version.py check
+          fi
 
   # Brief M2 acceptance: every screen the generator can produce is solvable.
   solvability:
@@ -106,6 +156,8 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: 5,000 screens across 50 seeds
         run: cargo run --release -q -p salt-line-sim --bin batch
       - name: each intended build shape
@@ -128,6 +180,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: the sim crate must stay dependency-free
@@ -183,6 +237,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
           key: coverage
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
@@ -217,6 +272,7 @@ jobs:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
           key: miri
       - name: miri
         env:
@@ -245,9 +301,14 @@ jobs:
 
   playable:
     name: playable (${{ matrix.os }})
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    # Tag builds are cold (no cache) and may wait on Apple's notary service.
+    timeout-minutes: ${{ startsWith(github.ref, 'refs/tags/v') && 75 || 40 }}
+    # Tag builds run in the `release` environment, which holds the Apple
+    # signing secrets and admits only main and v* tags (RELEASING.md, "Owner
+    # action required"). An empty name means no environment at all.
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -275,8 +336,29 @@ jobs:
           include-templates: true
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: build the release GDExtension
+        if: runner.os != 'macOS'
         run: cargo build --release -p salt-line-godot
+      # The macOS export ships one universal dylib (arm64 + x86_64), which is
+      # what `macos.release` in salt_line.gdextension points at; `just
+      # macos-universal` is the same thing on a Mac. Debug builds stay
+      # host-only at target/debug, so local development is unchanged.
+      - name: build the universal macOS GDExtension
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release -p salt-line-godot --target aarch64-apple-darwin
+          cargo build --release -p salt-line-godot --target x86_64-apple-darwin
+          out=target/universal-apple-darwin/release
+          mkdir -p "$out"
+          lipo -create -output "$out/libsalt_line_godot.dylib" \
+            target/aarch64-apple-darwin/release/libsalt_line_godot.dylib \
+            target/x86_64-apple-darwin/release/libsalt_line_godot.dylib
+          lipo -info "$out/libsalt_line_godot.dylib"
+          lipo "$out/libsalt_line_godot.dylib" -verify_arch arm64 x86_64
       # The editor that drives --import and --export-release is itself a debug
       # context, so it resolves the `*.debug` entries in salt_line.gdextension
       # and only the release profile is built here. Staging a copy at the debug
@@ -288,7 +370,7 @@ jobs:
           set -eu
           mkdir -p target/debug
           for f in target/release/*salt_line_godot.so \
-                   target/release/*salt_line_godot.dylib \
+                   target/universal-apple-darwin/release/libsalt_line_godot.dylib \
                    target/release/salt_line_godot.dll; do
             if [ -e "$f" ]; then cp "$f" "target/debug/$(basename "$f")"; fi
           done
@@ -346,6 +428,73 @@ jobs:
             ls -lR build >&2
             exit 1
           fi
+      # The export copies whatever `macos.release` points at into the bundle;
+      # check that what shipped really is universal.
+      - name: the macOS bundle carries a universal extension
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          lib=$(find build/SaltLine.app/Contents -name '*salt_line_godot*.dylib' | head -1)
+          if [ -z "$lib" ]; then
+            echo "no GDExtension inside the exported bundle" >&2
+            find build/SaltLine.app >&2
+            exit 1
+          fi
+          lipo -info "$lib"
+          lipo "$lib" -verify_arch arm64 x86_64
+          lipo -info "$(find build/SaltLine.app/Contents/MacOS -maxdepth 1 -type f | head -1)"
+
+      # Developer ID signing and notarization, for tag builds only and only when
+      # every Apple secret is set (RELEASING.md, "Owner action required").
+      # Without them the app ships unsigned, as the preview always has.
+      - name: macOS signing credentials
+        id: apple
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          if [ -n "$P12" ] && [ -n "$P12_PASSWORD" ] && [ -n "$NOTARY_KEY" ] \
+             && [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Apple signing secrets are not all set; the macOS build is unsigned and un-notarized"
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: sign the macOS app (Developer ID, hardened runtime)
+        if: steps.apple.outputs.sign == 'true'
+        env:
+          P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+        run: |
+          set -eu
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kcpass=$(uuidgen)
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security import "$RUNNER_TEMP/devid.p12" -k "$kc" -P "$P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/devid.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc" > /dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$kc" \
+                     | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
+          if [ -z "$identity" ]; then
+            echo "APPLE_DEVELOPER_ID_P12 holds no Developer ID Application identity" >&2
+            exit 1
+          fi
+          app=build/SaltLine.app
+          # Inside out: nested code first, then the bundle.
+          find "$app/Contents" -name '*.dylib' -print0 | while IFS= read -r -d '' lib; do
+            codesign --force --timestamp --options runtime --sign "$identity" "$lib"
+          done
+          codesign --force --timestamp --options runtime --sign "$identity" "$app"
+          codesign --verify --strict --deep --verbose=2 "$app"
 
       # Exporting successfully is not the same as being playable. Launch the
       # artifact itself — not the editor, not `cargo run` — and make it render
@@ -406,6 +555,37 @@ jobs:
             exit 1
           fi
           echo "launched and rendered $(wc -c < smoke.png) bytes"
+      # After the smoke test, so a build that cannot launch is never sent to
+      # Apple; before the checksum, because stapling changes the bundle.
+      - name: notarize and staple the macOS app
+        if: steps.apple.outputs.sign == 'true'
+        env:
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          set -eu
+          key="$RUNNER_TEMP/notary.p8"
+          printf '%s' "$NOTARY_KEY" | base64 --decode > "$key"
+          ditto -c -k --keepParent build/SaltLine.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
+            --wait --timeout 30m --output-format json | tee "$RUNNER_TEMP/notary.json"
+          status=$(plutil -extract status raw -o - "$RUNNER_TEMP/notary.json")
+          if [ "$status" != "Accepted" ]; then
+            id=$(plutil -extract id raw -o - "$RUNNER_TEMP/notary.json")
+            xcrun notarytool log "$id" \
+              --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" >&2 || true
+            echo "notarization finished as '$status'" >&2
+            exit 1
+          fi
+          rm -f "$key"
+          xcrun stapler staple build/SaltLine.app
+          xcrun stapler validate build/SaltLine.app
+          spctl --assess --type execute --verbose=2 build/SaltLine.app
+      - name: remove the signing keychain
+        if: always() && steps.apple.outputs.sign == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
       - name: checksum
         shell: bash
         run: |
@@ -434,10 +614,10 @@ jobs:
           name: smoke-${{ matrix.preset }}
           path: smoke.png
           if-no-files-found: warn
-      # One zip per platform for the dev release. `ditto` keeps the macOS
+      # One zip per platform for the dev and tagged releases. `ditto` keeps the macOS
       # bundle's symlinks and permissions, and zip keeps the Linux binary's +x;
       # a plain artifact upload keeps neither.
-      - name: package for the dev release
+      - name: package for release
         shell: bash
         run: |
           set -eu
@@ -454,16 +634,24 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # A release-optimised APK for sideloading. It is signed with the debug key in
-  # the ANDROID_DEBUG_KEYSTORE secret (base64) when that is set, so each dev
-  # build installs over the last one, and over a local `just android` build
-  # made with the same key. Without the secret a throwaway key is made per run,
-  # and the previous build has to be uninstalled first.
+  # A release-optimised APK for sideloading. Pushes to main (dev builds) and
+  # v* tags are signed with the release key when its three secrets are set in
+  # the `release` environment, so dev builds and releases install over each
+  # other in versionCode order; without them they fall back to the debug key
+  # with a warning. Pull requests always use the debug key: the
+  # ANDROID_DEBUG_KEYSTORE secret (base64) when set, the same key as a local
+  # `just android`, else a throwaway key made per run.
+  # The versionCode is written into the preset per build (RELEASING.md,
+  # "Android versionCode").
   android:
     name: android (arm64)
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # Pushes to main and v* tags run in the `release` environment, which holds
+    # the Android release key; pull requests never do, and stay on the debug
+    # key. An empty name means no environment at all.
+    environment: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && 'release' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -476,6 +664,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
           key: android
       - name: build the GDExtension for Android
         run: |
@@ -485,14 +674,53 @@ jobs:
           cargo build --release -p salt-line-godot --target aarch64-linux-android \
             --config "target.aarch64-linux-android.linker=\"$bin/aarch64-linux-android24-clang\""
           "$bin/llvm-strip" --strip-debug target/aarch64-linux-android/release/libsalt_line_godot.so
-      - name: signing key
+      # Godot's CLI cannot override version/code, so the preset is edited in
+      # place in this throwaway checkout. Tags get the version's release slot;
+      # everything else gets the run number, below it (RELEASING.md).
+      - name: versionCode
         env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -eu
+          tool=tools/release_version.py
+          if [ "$IS_TAG" = "true" ]; then
+            code=$(python3 "$tool" android-code --run "$RUN_NUMBER" --release)
+            python3 "$tool" set-android --code "$code"
+          else
+            code=$(python3 "$tool" android-code --run "$RUN_NUMBER")
+            base=$(python3 "$tool" version)
+            python3 "$tool" set-android --code "$code" --name "$base-dev.$RUN_NUMBER"
+          fi
+      - name: signing key
+        id: key
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+          # Only main pushes and tags ask for the release key, and only they run
+          # in the `release` environment that holds it.
+          RELEASE_KEYSTORE_B64: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && secrets.ANDROID_RELEASE_KEYSTORE || '' }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD || '' }}
+          RELEASE_KEY_ALIAS: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && secrets.ANDROID_RELEASE_KEY_ALIAS || '' }}
+          WANT_RELEASE_KEY: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+        run: |
+          set -eu
+          if [ -n "$RELEASE_KEYSTORE_B64" ] && [ -n "$RELEASE_KEYSTORE_PASSWORD" ] && [ -n "$RELEASE_KEY_ALIAS" ]; then
+            ks="$RUNNER_TEMP/release.keystore"
+            printf '%s' "$RELEASE_KEYSTORE_B64" | base64 -d > "$ks"
+            {
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$ks"
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=$RELEASE_KEY_ALIAS"
+            } >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "signing with the release key"
+            exit 0
+          fi
+          if [ "$WANT_RELEASE_KEY" = "true" ]; then
+            echo "::warning::ANDROID_RELEASE_KEYSTORE, ANDROID_RELEASE_KEYSTORE_PASSWORD and ANDROID_RELEASE_KEY_ALIAS are not all set in the release environment; this APK is signed with the debug key and will not install over a release-signed build"
+          fi
           ks="$RUNNER_TEMP/debug.keystore"
-          if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > "$ks"
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            printf '%s' "$DEBUG_KEYSTORE_B64" | base64 -d > "$ks"
           else
             echo "::warning::ANDROID_DEBUG_KEYSTORE is not set; signing with a throwaway key"
             keytool -genkeypair -keystore "$ks" -alias androiddebugkey -storepass android \
@@ -502,11 +730,14 @@ jobs:
           {
             echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$ks"
             echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey"
-            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android"
           } >> "$GITHUB_ENV"
+          echo "mode=debug" >> "$GITHUB_OUTPUT"
       - name: import assets
         run: godot --headless --path . --frame-delay 800 --import
       - name: export the APK
+        env:
+          # Kept out of GITHUB_ENV so the password lives only in this step.
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ steps.key.outputs.mode == 'release' && secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD || 'android' }}
         run: |
           set -eu
           # Godot takes the SDK from ANDROID_HOME and the JDK from JAVA_HOME.
@@ -516,6 +747,14 @@ jobs:
           test -s build/SaltLine.apk
           cp build/SaltLine.apk dist/SaltLine-android-arm64.apk
           ls -l dist
+      # The certificate digest is what decides whether this APK installs over
+      # an existing one; print it so a key mix-up is visible in the log.
+      - name: signing certificate and version
+        run: |
+          set -eu
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$tools/apksigner" verify --print-certs dist/SaltLine-android-arm64.apk
+          "$tools/aapt2" dump badging dist/SaltLine-android-arm64.apk | head -1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-android
@@ -544,6 +783,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ios
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: build the GDExtension for iOS
         run: |
           rustup target add aarch64-apple-ios
@@ -574,7 +814,7 @@ jobs:
   # launched here, so unlike the playable jobs there is no smoke test.
   windows-arm64:
     name: windows (arm64, cross-built)
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -589,6 +829,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
           key: windows-arm64
       - name: build the GDExtension for both architectures
         shell: bash
@@ -646,7 +887,7 @@ jobs:
   dev-release:
     name: dev release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [determinism, solvability, lint, playable, android, windows-arm64]
+    needs: [version, determinism, solvability, lint, playable, android, windows-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -670,4 +911,52 @@ jobs:
           gh release create dev ./* \
             --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
             --title "Development build ($short)" \
-            --notes "Latest main, built from $short. Unsigned desktop builds and a debug-signed Android APK, for testing only (see RELEASING.md)."
+            --notes "Latest main, built from $short. Unsigned desktop builds and an Android APK, for testing only (see RELEASING.md for how it is signed)."
+
+  # A `vX.Y.Z` tag publishes release vX.Y.Z: the same downloads as the dev
+  # build, as a normal (not pre-) release, with that version's CHANGELOG.md
+  # section as its notes. Only after every check has passed, including the
+  # version gate, which fails when the tag does not match the version in the
+  # tree. The tag itself is pushed by a human (RELEASING.md).
+  release:
+    name: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [version, determinism, solvability, lint, deny, playable, android, windows-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            tools/release_version.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          python3 tools/release_version.py notes "$version" > "$RUNNER_TEMP/notes.md"
+          {
+            echo
+            echo '---'
+            echo
+            echo "Built from ${GITHUB_SHA::7}. Verify downloads against SHA256SUMS; RELEASING.md says which builds are signed."
+          } >> "$RUNNER_TEMP/notes.md"
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          ls -l
+          gh release create "$tag" ./* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --title "Salt Line $version" \
+            --notes-file "$RUNNER_TEMP/notes.md"
