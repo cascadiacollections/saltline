@@ -5,6 +5,24 @@
 //! What must hold whatever the moment of the crash: a finished run is on the
 //! board at most once, a saved run that is offered is the run as it was
 //! played, and last session's crash report is never lost.
+//!
+//! # The technique
+//!
+//! Exhaustive fault injection, cheap because the core does no I/O of its
+//! own. A flow (finish a run, quit mid-run, continue and finish) is played
+//! once to count its disk operations, `n`. It is then replayed `n + 1`
+//! times from the same starting disk, with [`FakeDisk`]'s `budget` letting
+//! through only the first `k` operations: the process "dies" after the
+//! `k`-th, and everything after it is lost, as a power cut would lose it.
+//! Each surviving disk is launched on twice, as the node would launch, and
+//! the invariants are checked. One effect is one operation: the node's
+//! writes are atomic (`durable`'s temp-and-rename), so a write is either
+//! there or not. `RunFile::Discard` is several deletes in the node and is
+//! modelled here as one; a crash part-way through it is not exercised.
+//!
+//! The tests would fail if the core's effect order changed in a way that
+//! could score twice: for instance `RunFile::Discard` queued after
+//! `Store(Score)` rather than before it.
 
 use super::*;
 use pretty_assertions::assert_eq;
@@ -213,7 +231,7 @@ fn quit_mid_run(disk: &mut FakeDisk) -> Played {
     }
 }
 
-/// Launch over a saved run, continue it, fire once more, then finish it.
+/// Launch over a saved run, continue it, and throw every shell left.
 fn continue_and_finish(disk: &mut FakeDisk) -> Played {
     let mut g = disk.launch();
     tick(&mut g, disk, keys(&[Key::Enter]));
@@ -327,6 +345,7 @@ fn a_quit_run_is_offered_again_exactly_as_played() {
 fn continuing_a_run_survives_a_crash_anywhere() {
     let mut start = FakeDisk::default();
     quit_mid_run(&mut start);
+    // Count only the operations of the flow under test.
     start.done = 0;
     crash_everywhere(start, continue_and_finish);
 }
