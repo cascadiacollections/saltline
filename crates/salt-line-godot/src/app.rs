@@ -24,6 +24,37 @@
 //!
 //! The sim (`salt-line-sim`) sits under all three and knows none of them.
 //!
+//! ## Why split it
+//!
+//! * **Testability.** Godot cannot be started under `cargo test`, and a
+//!   node's `process` cannot be called without it. Everything worth testing
+//!   (menus, pausing, the order of disk writes, what happens after a crash)
+//!   is therefore kept out of the node, where a test can build a [`Game`],
+//!   hand it a frame of input and read back what it asked for.
+//! * **The engine boundary.** Nothing in this module names a Godot type.
+//!   Keys, pad buttons and touches arrive as the crate's own
+//!   [`Key`], [`Pad`] and
+//!   [`Event`]; files, sounds and the window leave as
+//!   [`Effect`]s. Moving to another engine, or another gdext release, means
+//!   rewriting `game.rs` and nothing here.
+//! * **One direction of flow.** Each frame runs the same way round:
+//!   intents in, state changed, effects out, then a frame drawn from the
+//!   state. The core never calls the engine back mid-frame, so the order of
+//!   everything it asked for is visible in one `Vec` (the effect, or
+//!   command, pattern: requests as data, carried out by someone else).
+//!
+//! ```text
+//!  Intents ──► Game::tick ──► Vec<Effect> ──► adapter carries them out
+//!                  │                          (Store feeds back via stored())
+//!                  ▼
+//!            &Game ──► render::frame ──► Canvas + Vec<Button>
+//!                                            │          │
+//!                                   texture upload   set_buttons: next
+//!                                                    frame's touches
+//! ```
+//!
+//! The frame loop as the node runs it is drawn at the top of `game.rs`.
+//!
 //! `Game`'s methods are split by concern: this file has the frame, the
 //! environment events, launch and the read-only queries; `app/controls.rs`
 //! reads actions and runs each mode's input; `app/play.rs` is a run in play;
@@ -61,6 +92,94 @@
 //! effects at once: a phone may never resume a paused app, so its settings
 //! are written now. They take the events queued since the last frame first,
 //! so nothing is taken out of order.
+//!
+//! # Effect catalogue
+//!
+//! Every [`Effect`], who asks for it, and what `game.rs` does with it. Only
+//! a save write reports back; only effects that touch a file are dropped
+//! after a panic.
+//!
+//! | Effect | Emitted by | Adapter action | Feedback via `stored()` | Dropped after panic |
+//! |---|---|---|---|---|
+//! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a draft taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
+//! | `Volume(dB)` | mute, the Controls volume (the node sets it once itself at launch) | `set_volume_db` on every player | no | no |
+//! | `Redraw` | any status note, a buffer change, pausing, and [`Game::tick`] when the frame's [`FrameState`] changed | `frame::Redraw::mark` | no | no |
+//! | `RecheckDisplay` | [`Game::tick`], on entering Title or GameOver | `frame::DisplayPoll::invalidate` | no | no |
+//! | `Buffer { w, h, letterbox }` | launch, a run started or continued, a draft taken, a screen change, a change of window size or cutout | resize the canvas, set the window's content scale size, offset the node | no | no |
+//! | `Aspect` | a run started or continued, leaving a resumed run | set the window's content scale aspect | no | no |
+//! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT | `DisplayServer::clipboard_set` | no | no |
+//! | `Quit` | back on the title or the error screen | `SceneTree::quit` | no | no |
+//! | `Store(Learned)` | an onboarding step done for the first time | `save::store`, then [`Game::stored`] | yes, ignored | yes |
+//! | `Store(Settings)` | settings once they settle (`durable::Debounce`), or on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
+//! | `Store(Score)` | a run finished, or a finished run found at launch | `save::store` with the entry placed, then [`Game::stored`] | yes: placed in memory on success, `RunFile::Keep` on failure | yes |
+//! | `RunFile(Write)` | the run's log grew (a shot, a draft) | atomic write of `user://run.txt` | no | yes |
+//! | `RunFile(Keep)` | [`Game::stored`], for a score that did not reach disk | atomic write of `user://run.txt` | no | yes |
+//! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
+//! | `RunFile(Discard)` | a run finished, a finished run found at launch, a CONTINUE that failed to rebuild | delete every run file, or blank `run.txt` | no | yes |
+//! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why, then as `Discard` | no | yes |
+//! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
+//!
+//! # Scoring at most once
+//!
+//! A finished run could reach the board twice: once when it ends, and again
+//! when a later launch finds its log on disk and scores it (DESIGN §9.6).
+//! Three rules, together, rule that out whatever moment the process dies,
+//! and `app/disk_tests.rs` checks them by killing a simulated process after
+//! every disk operation in turn:
+//!
+//! 1. **The run file goes first.** `RunFile::Discard` is queued before
+//!    `Store(Score)`, and effects are applied in order. A crash in between
+//!    loses the score; the other order would count it twice.
+//! 2. **Memory follows disk.** The entry joins `save.scores` only in
+//!    [`Game::stored`], once the write succeeded. Placed earlier, the next
+//!    settings write would carry it to disk while a kept run file (rule 3)
+//!    scored it again.
+//! 3. **A failed score keeps its log.** If the board cannot be written, the
+//!    finished run's line goes back as the saved run (`RunFile::Keep`), and a
+//!    later launch scores it through the same two rules.
+//!
+//! At launch the adapter moves the saved run aside before the core replays
+//! it, and puts it back (`RunFile::Restore`) only once it rebuilt. A log that
+//! crashes the sim is found still set aside at the next launch and abandoned
+//! ([`SavedRun::Interrupted`]), so it costs one crash rather than one per
+//! launch.
+//!
+//! # Where to change things
+//!
+//! * **A sound.** A [`Sound`] variant, its [`Sound::file`] name and a `.wav`
+//!   under `art/audio/`, then a `self.play(Sound::…)` where it happens. The
+//!   adapter indexes its players by `sound as usize`, so the variant goes in
+//!   [`Sound::ALL`] in declaration order.
+//! * **An action.** A variant of [`Action`]. If a `bind` line may name it:
+//!   [`Action::BINDABLE`], [`Action::token`] (a save-format name, never to be
+//!   renamed), [`input::default_binding`] and [`input::touch_label`]. Then
+//!   read it with `action_pressed` or `action_repeated` in the mode's handler
+//!   in `app/controls.rs`, placed with the take-once rule in mind: the first
+//!   action asked takes a shared key.
+//! * **A menu row.** `menu_row` in `render.rs` both draws the line and lays
+//!   out its touch button; the matching `action_pressed` goes in that mode's
+//!   arm of `handle_mode_input`.
+//! * **A setting.** A field on [`Save`] (`Option<T>` while "not chosen yet"
+//!   should follow a changing default, as `touch_aim` does), with its line in
+//!   `save_format`. Change it in the Controls arm followed by
+//!   `self.settings.touch()`, which debounces the write, and add it to
+//!   [`FrameState`] so a change redraws.
+//! * **A CLI flag.** A field and a parse line on [`DevArgs`], with a test in
+//!   `cli.rs`. Act on it in [`Game::start_dev`], keeping any state in `Dev`,
+//!   or in the node's `ready` if it needs the engine (`--salt-gallery`,
+//!   `--salt-shot`).
+//!
+//! # Tests
+//!
+//! The core is tested the way the node drives it. `app/tests.rs` builds a
+//! [`Game`], feeds it [`Intents`] frame by frame (a key down, a finger down
+//! and moved, a pad button) and asserts on the mode, the run and the effects
+//! returned. `render.rs` draws the result into a [`Canvas`](crate::raster::Canvas)
+//! and pins it with snapshots. `app/disk_tests.rs` goes one step further: a
+//! `FakeDisk` applies effects the way `game.rs` does, to files held in
+//! memory, and kills the process after every operation in turn, then
+//! launches again on what was left and checks that a run is scored at most
+//! once, an offered run is the one played, and a crash report survives.
 
 use salt_line_sim::ballistics::{End, Shot, Trace};
 use salt_line_sim::dmath;
@@ -84,22 +203,26 @@ use crate::save_format::{ArcHint, Entry, Save, TouchAim};
 use crate::touch::{Button, TouchPad};
 
 /// Long Lens zooms the buffer out one step vertically. DESIGN §5.1: it changes
-/// the internal buffer size, never the sprite scale.
+/// the internal buffer size, never the sprite scale. Buffer pixels, against
+/// the usual `SCREEN_H` of 180; the width is left as it was.
 pub const LONG_LENS_H: i32 = 216;
 
-/// How long a cleared screen is held before the run moves on.
+/// How long a cleared screen is held before the run moves on, in seconds.
+/// The camera pans across the world during it.
 pub const CLEAR_HOLD: f64 = 0.55;
-/// Topple time before the rubble sprite replaces the standing one.
+/// Topple time before the rubble sprite replaces the standing one, in
+/// seconds after the last shell lands.
 pub const TOPPLE_TIME: f64 = 0.22;
-/// Key repeat: delay before repeating, then interval.
+/// Hold-to-repeat, shared by keys, pad buttons, the stick and touch buttons:
+/// seconds held before the first repeat.
 pub const REPEAT_DELAY: f64 = 0.28;
-
+/// Seconds between repeats once they start (about 28 a second).
 pub const REPEAT_RATE: f64 = 0.035;
 
-/// How long a status line stays up.
+/// How long a status line stays up, in seconds.
 pub const STATUS_TIME: f64 = 2.4;
-/// How long a status line about a lost saved run stays up: long enough to
-/// read on a title screen the player may not be looking at yet.
+/// How long a status line about a lost saved run stays up, in seconds: long
+/// enough to read on a title screen the player may not be looking at yet.
 pub const STALE_STATUS_TIME: f64 = 6.0;
 
 /// Touch aiming until the player picks one in Controls. Undecided: buttons are
@@ -117,52 +240,91 @@ pub const DEFAULT_LAST_ARC: bool = true;
 /// menus.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
+    /// The title menu: daily run or CONTINUE, seed entry, controls, quit.
     Title,
+    /// Controls and audio: volume, toggles, the bindings in use.
     Controls,
+    /// Typing a seed, by keyboard, touch keypad or controller focus.
     SeedEntry,
+    /// A run on screen and taking input. The only mode that steps the replay
+    /// and runs at the uncapped frame rate.
     Playing,
+    /// A run on screen, frozen under the pause plate.
     Paused,
+    /// The run's result, with its seed to copy or play again.
     GameOver,
 }
 
 /// A shot being replayed to the player. The sim has already resolved it.
+///
+/// The sim resolves a shot the instant it is fired (`RunState::fire`), and
+/// the result is already in the run: craters, collapses, even a cleared
+/// screen. What the player watches is a playback of the recorded paths, so
+/// its speed, or a dropped frame, cannot change an outcome.
 pub struct Anim {
+    /// Every shell's recorded flight, primary first: one sample per sim step
+    /// of `DT` seconds, in world coordinates.
     pub traces: Vec<Trace>,
     /// The screen as it looked before the shot, so craters appear on impact
     /// rather than the instant the trigger is pulled.
     pub before: Screen,
     /// Sim seconds elapsed in the replay.
     pub t: f64,
+    /// The longest trace's flight time, in sim seconds: the replay is done
+    /// once `t` reaches it.
     pub longest: f64,
+    /// Indices into the screen's structures that this shot brought down.
     pub collapsed: Vec<usize>,
-    /// Time since the last shell landed.
+    /// Seconds since the last shell landed. Drives the topple, the shake and
+    /// the hold before the replay ends.
     pub settled: f64,
+    /// The landing sound has been asked for; played once per shot.
     pub impact_played: bool,
+    /// The collapse sound has been asked for; played once per shot.
     pub collapse_played: bool,
 }
 
 impl Anim {
+    /// Every shell has landed. The replay itself ends a little later, once
+    /// `settled` has covered the topple.
     pub fn done(&self) -> bool {
         self.t >= self.longest
     }
 }
 
 /// The game's sounds, one player each. The adapter owns the players.
+///
+/// The core names a sound and never touches audio; `Effect::Play` carries
+/// the name out. Asking for a sound already playing restarts it, since each
+/// has one player.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sound {
+    /// The trigger pulled.
     Fire,
+    /// The shell leaving, alongside `Fire`.
     Flight,
+    /// The primary shell landed in the ground.
     Terrain,
+    /// The primary shell hit a structure.
     Structure,
+    /// The primary shell bounced at least once before it ended.
     Ricochet,
+    /// The primary shell's fuse burst it in the air.
     Airburst,
+    /// A structure came down.
     Collapse,
+    /// A draft appeared or an offer was taken.
     Draft,
+    /// The first shot that leaves fewer than 10 shells, once a run.
     LowShell,
+    /// A menu choice.
     Ui,
 }
 
 impl Sound {
+    /// Every sound, in declaration order. The node creates one player per
+    /// entry in this order and finds a sound's player at `sound as usize`,
+    /// so the order here must match the enum's.
     pub const ALL: [Sound; 10] = [
         Self::Fire,
         Self::Flight,
@@ -214,9 +376,10 @@ pub enum Store {
     /// placed, and `entry` joins the board in memory only once that write
     /// succeeds, so it reaches disk exactly once, here or not at all. If the
     /// board does not reach disk, `keep` (the finished run's line) is written
-    /// back as the saved run (`RunFile::Keep`) so a later launch can score it. `announce`
-    /// says "LAST RUN SCORED" on success: a run scored at launch rather than
-    /// at its end.
+    /// back as the saved run (`RunFile::Keep`) so a later launch can score
+    /// it. `announce` says "LAST RUN SCORED" on success: a run scored at
+    /// launch rather than at its end. See "Scoring at most once" in the
+    /// module docs.
     Score {
         entry: Entry,
         keep: Option<String>,
@@ -224,9 +387,12 @@ pub enum Store {
     },
 }
 
-/// Something the engine must do for the core. See the module docs.
+/// Something the engine must do for the core: a command, recorded as data
+/// and carried out by the adapter in the order it was asked for. See the
+/// module docs for the catalogue.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Effect {
+    /// Play this sound from the start.
     Play(Sound),
     /// Set every sound player's volume, in dB.
     Volume(f32),
@@ -245,7 +411,9 @@ pub enum Effect {
     },
     /// How the window fits the buffer.
     Aspect(Aspect),
+    /// Put this text on the system clipboard: a seed, or a crash report.
     Clipboard(String),
+    /// Leave the game.
     Quit,
     /// Write the save as `Game::save_to_store` has it when the effect is
     /// applied (`save::store`), then report the outcome to `Game::stored`.
@@ -311,8 +479,8 @@ impl Effect {
 /// What the adapter found of a saved run at launch.
 #[derive(Clone, Debug)]
 pub enum SavedRun {
-    /// The copy a launch sets aside was still there: the last launch died rebuilding a
-    /// run.
+    /// The copy a launch sets aside was still there: the last launch died
+    /// rebuilding a run.
     Interrupted,
     /// The saved run's text, already set aside by the adapter so a log that
     /// brings the sim down costs one crash, not one every launch. The core
@@ -324,7 +492,13 @@ pub enum SavedRun {
 /// Longest seed entry takes, in characters.
 pub const SEED_MAX: usize = 20;
 
-/// See `Game::frame_state`.
+/// A fingerprint of what a frame shows, taken before and after each
+/// [`Game::tick`]; any difference asks for a redraw. See `Game::frame_state`.
+///
+/// This is the backstop of the dirty-flag redraw (`frame::Redraw`): code
+/// that changes something visible should still push `Effect::Redraw`, but a
+/// change that forgets to is caught here as long as its field is listed.
+/// Floats are compared by their bits, so a change of any size counts.
 #[derive(PartialEq, Debug)]
 pub struct FrameState {
     pub mode: Mode,
@@ -361,9 +535,13 @@ pub struct Game {
     pub(crate) settings: Debounce,
     /// Told the player this session that their save is from a newer build.
     pub(crate) future_noted: bool,
+    /// What has been typed in seed entry, at most `SEED_MAX` characters.
     pub(crate) seed_text: String,
+    /// The status line (`note`), shown while `status_time` is above zero.
     pub(crate) status: String,
+    /// Seconds the status line has left on screen.
     pub(crate) status_time: f64,
+    /// The F1 debug overlay is showing.
     pub(crate) debug: bool,
 
     pub(crate) display: Display,
@@ -389,7 +567,11 @@ pub(crate) struct Display {
     /// left and right edges, as the adapter last read them.
     pub(crate) window_size: (i32, i32),
     pub(crate) cutout: (i32, i32),
+    /// The internal buffer's width in buffer pixels: `pick_width`'s 320 to
+    /// 400, or a resumed run's recorded width.
     pub(crate) buffer_w: i32,
+    /// The internal buffer's height in buffer pixels: 180, or `LONG_LENS_H`
+    /// with Long Lens.
     pub(crate) buffer_h: i32,
     /// Buffer pixels of black kept clear on the left and right for a display
     /// cutout (a phone's camera hole in landscape). The game node is offset
@@ -402,22 +584,36 @@ pub(crate) struct Display {
 
 /// The run on screen and how it is being shown.
 pub(crate) struct Play {
+    /// The run, as the sim has it: already past any shot being replayed.
+    /// `None` before the first run of the session.
     pub(crate) run: Option<RunState>,
+    /// The last shot, while it is being played back.
     pub(crate) anim: Option<Anim>,
+    /// Seconds left holding a cleared screen before the run moves on; zero
+    /// when not holding. Counts down from `CLEAR_HOLD`.
     pub(crate) clear_hold: f64,
-    /// Aim inputs, in the sim's tick space.
+    /// Aim inputs, in the sim's tick space: integers, as the shot log records
+    /// them (DESIGN §9.2). Angle ticks run from 0 to `dmath::MAX_ANGLE_TICKS`;
+    /// the keys step them by the loadout's angle quantum.
     pub(crate) angle_ticks: i32,
+    /// Power ticks, 0 to `POWER_TICKS_MAX`; the keys step them by 5.
     pub(crate) power_ticks: i32,
     /// Camera x is an integer, not a rounded float. DESIGN §5.1 wants it
     /// quantized to whole pixels every frame; keeping the only camera state in
     /// `i32` means there is no float position to forget to round.
     pub(crate) cam_x: i32,
+    /// Where the camera is heading, in world pixels. Free to be fractional;
+    /// `cam_x` is this rounded and clamped each frame.
     pub(crate) cam_target: f64,
+    /// The run on screen is the daily (scored as such on the board).
     pub(crate) daily: bool,
+    /// The seed of the run on screen or last played, for COPY SEED and SAME
+    /// SEED AGAIN.
     pub(crate) last_seed: u64,
     /// The primary shell's path from the last shot. Drawn only while the sim
     /// still has a `last_apex`, so it goes when the screen does.
     pub(crate) last_arc: Vec<Vec2>,
+    /// The low-shell warning has sounded this run.
     pub(crate) low_shell_warned: bool,
     /// Bumped whenever the drag preview must be worked out afresh for a
     /// reason its key cannot see (a new loadout, a new run).
@@ -430,16 +626,22 @@ pub(crate) struct InputState {
     pub(crate) controls: Controls,
     /// The controller's place on the seed keypad.
     pub(crate) seed_focus: Focus,
+    /// The controller was the last device used: prompts name pad buttons.
+    /// On at a pad press or stick push, off at a key press.
     pub(crate) controller_active: bool,
+    /// Fingers, touch buttons held and the drag, fed by the frame's events.
     pub(crate) touch: TouchPad,
     /// Showing touch controls. On from the first touch, off again at the next
     /// key or button press, like `controller_active`.
     pub(crate) touch_active: bool,
     /// The platform's back gesture (Android), taken as the `back` action.
+    /// Cleared at the end of every frame, so it counts for that frame only.
     pub(crate) back_requested: bool,
-    /// The touch buttons on screen. See `set_buttons`.
+    /// The touch buttons on screen, in buffer pixels: last frame's layout,
+    /// which this frame's touches are hit-tested against. See `set_buttons`.
     pub(crate) buttons: Vec<Button>,
-    /// The aim a touch drag started from, put back if the pull is cancelled.
+    /// The aim (angle ticks, power ticks) a touch drag started from, put back
+    /// if the pull is cancelled.
     pub(crate) drag_from: Option<(i32, i32)>,
 }
 
@@ -466,6 +668,8 @@ pub(crate) struct Dev {
     /// and take every draft. Lets a build be watched, or captured, without a
     /// hand on the keyboard.
     pub(crate) auto: bool,
+    /// Seconds before the autopilot acts again, so each shot and pick can
+    /// be seen.
     pub(crate) auto_cooldown: f64,
     /// `--salt-miss`: throw the first shot of each screen away, so craters,
     /// chalk marks and the multi-shot path get exercised too.
@@ -614,9 +818,12 @@ impl Game {
         let delta = resume::frame_delta(delta);
         self.status_time = (self.status_time - delta).max(0.0);
         self.poll_display(intents.window, intents.cutout);
+        // Dirty-flag backstop: fingerprint what the frame shows now, and
+        // compare once input and the step have run.
         let before = self.frame_state();
         self.begin_input_frame(delta, intents);
         self.handle_mode_input(delta);
+        // The back gesture is a one-frame press, like a key's.
         self.input.back_requested = false;
         if self.dev.auto {
             self.autopilot(delta);
@@ -681,7 +888,8 @@ impl Game {
     }
 
     /// Something on screen is moving, so every frame draws. The adapter adds
-    /// what only it can see: a stick or key held.
+    /// what only it can see: a stick or key held. Feeds `frame::Redraw::due`,
+    /// the other half of the dirty-flag redraw.
     pub fn busy(&self) -> bool {
         self.play.anim.is_some()
             || self.play.clear_hold > 0.0
@@ -695,7 +903,9 @@ impl Game {
         self.crash.broken || self.mode != Mode::Playing
     }
 
-    /// Every sound player's volume, in dB.
+    /// Every sound player's volume, in dB: the save's percentage as an
+    /// amplitude ratio (`20·log10(v/100)`, so 50% is about -6 dB), and -80 dB,
+    /// the bottom of Godot's volume range, for muted or zero.
     pub fn volume_db(&self) -> f32 {
         if self.save.muted || self.save.volume == 0 {
             -80.0
@@ -710,6 +920,10 @@ impl Game {
 impl Game {
     /// The touch buttons the frame on screen drew, which the next touches are
     /// tested against. The node hands them over after every frame it draws.
+    ///
+    /// Immediate-mode UI: there is no widget tree, only the rectangles the
+    /// renderer declared while drawing. An undrawn frame keeps the last
+    /// list, which is still what the player sees.
     pub fn set_buttons(&mut self, buttons: &[Button]) {
         self.input.buttons.clear();
         self.input.buttons.extend_from_slice(buttons);
@@ -795,7 +1009,8 @@ impl Game {
     }
 
     /// The save as an `Effect::Store` for `why` writes it: as it is, with a
-    /// score's entry placed.
+    /// score's entry placed. Placed in a copy only: memory takes the entry in
+    /// `stored`, once the write has succeeded.
     pub fn save_to_store(&self, why: &Store) -> std::borrow::Cow<'_, Save> {
         match why {
             Store::Score { entry, .. } => {
@@ -1021,6 +1236,7 @@ impl Game {
         )
     }
 
+    /// The run holds Long Lens, so the buffer is `LONG_LENS_H` tall.
     pub(crate) fn long_lens(&self) -> bool {
         self.play
             .run
@@ -1029,6 +1245,8 @@ impl Game {
             .unwrap_or(false)
     }
 
+    /// The run's world width in pixels, or the buffer's with no run. Wider
+    /// than the buffer, the camera pans (`step`).
     pub(crate) fn world_width(&self) -> i32 {
         self.play
             .run
@@ -1058,6 +1276,8 @@ impl Game {
         }
     }
 
+    /// The camera for this frame: `cam_x` less the landing shake, and the
+    /// buffer's size. Whole pixels throughout (DESIGN §5.1).
     pub(crate) fn view(&self) -> View {
         let shake = self
             .play
@@ -1114,6 +1334,9 @@ impl Game {
             ),
         }
     }
+
+    // The settings below are `Option`s in the save, `None` until the player
+    // picks: these read them with the current default filled in.
 
     pub(crate) fn last_arc_on(&self) -> bool {
         self.save.last_arc.unwrap_or(DEFAULT_LAST_ARC)
