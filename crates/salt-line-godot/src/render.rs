@@ -406,7 +406,14 @@ impl Painter<'_> {
                     y += 7;
                 }
                 y += 4;
-                self.centred(y, "M / START  MUTE     R / Y  RESET", dim);
+                // Both the key and the button, whichever is in use.
+                let (mute_key, mute_pad) = self.g.action_binding(Action::Mute);
+                let (reset_key, reset_pad) = self.g.action_binding(Action::Replay);
+                self.centred(
+                    y,
+                    &format!("{mute_key} / {mute_pad}  MUTE     {reset_key} / {reset_pad}  RESET"),
+                    dim,
+                );
                 y += 7;
                 let on = if self.g.last_arc_on() { "ON" } else { "OFF" };
                 let toggle = format!("{}  LAST ARC: {on}", self.g.input_label(Action::LastArc));
@@ -460,15 +467,15 @@ impl Painter<'_> {
                     self.centred(y, &format!("SEED {}", format_seed(seed)), dim);
                     y += 14;
                 }
-                y = self.menu_row(
-                    y,
-                    Action::Replay,
-                    "R      SAME SEED AGAIN",
-                    "SAME SEED AGAIN",
-                    fg,
-                );
-                y = self.menu_row(y, Action::Copy, "C      COPY SEED", "COPY SEED", fg);
-                y = self.menu_row(y, Action::Confirm, "ENTER  TITLE", "TITLE", fg);
+                for (action, text) in [
+                    (Action::Replay, "SAME SEED AGAIN"),
+                    (Action::Copy, "COPY SEED"),
+                    (Action::Confirm, "TITLE"),
+                ] {
+                    // Labels padded to ENTER's width, so the texts line up.
+                    let keyed = format!("{:<5}  {text}", self.g.input_label(action));
+                    y = self.menu_row(y, action, &keyed, text, fg);
+                }
                 y += 4;
                 if self.g.status_time > 0.0 {
                     let text = self.g.status.clone();
@@ -1324,6 +1331,49 @@ mod tests {
                 !c.palette_text(&Palette::default()).contains('.'),
                 "screen {i} left pixels undrawn"
             );
+        }
+    }
+
+    #[test]
+    fn result_and_controls_prompts_follow_the_bindings() {
+        // Every action each screen names, moved to another key and button.
+        for (over, rebind) in [
+            (
+                true,
+                &[
+                    ("replay", "T", "LB"),
+                    ("copy", "K", "RB"),
+                    ("confirm", "SPACE", "B"),
+                ][..],
+            ),
+            (false, &[("replay", "T", "LB"), ("mute", "U", "BACK")][..]),
+        ] {
+            let mut g = game();
+            g.start_run(4242, false);
+            if over {
+                g.finish_run();
+            } else {
+                g.mode = Mode::Controls;
+            }
+            g.take_effects();
+            let default = draw(&g).0;
+            for &(action, key, pad) in rebind {
+                g.save
+                    .bindings
+                    .push((action.into(), key.into(), pad.into()));
+                let rebound = draw(&g).0;
+                assert_ne!(
+                    default.bytes(),
+                    rebound.bytes(),
+                    "over {over}: rebinding {action} changed nothing on screen"
+                );
+                g.save.bindings.clear();
+            }
+            if over {
+                // A controller is prompted with its own buttons.
+                g.input.controller_active = true;
+                assert_ne!(default.bytes(), draw(&g).0.bytes(), "controller labels");
+            }
         }
     }
 
