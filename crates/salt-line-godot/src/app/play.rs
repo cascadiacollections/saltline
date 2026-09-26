@@ -239,38 +239,47 @@ impl Game {
 
     /// The run is over: score it and show the result.
     pub(crate) fn finish_run(&mut self) {
-        // The run file goes before the score is recorded, never after: a
-        // crash in between costs this score, where the other order would
+        // The run file goes before the score is recorded, never after, and
+        // the score only if it is confirmed gone (`Store::Score`'s `clear`):
+        // a crash in between costs this score, where the other order would
         // record it twice (the next launch scores a finished log).
-        let line = self
-            .play
-            .run
-            .as_ref()
-            .filter(|_| self.run_file.run_persist)
-            .map(|r| resume::Saved::of(r, self.play.daily).to_line());
-        self.stop_persisting();
-        if let Some(run) = self.play.run.as_ref() {
-            let (screens, shells, shots) = run.score();
-            let entry = Entry {
-                seed: run.run_seed,
-                screens,
-                shells,
-                shots,
-                daily: self.play.daily,
-            };
-            self.record(entry, line, false);
-        }
+        let persisted = self.stop_persisting();
+        let Some(run) = self.play.run.as_ref() else {
+            if persisted {
+                self.fx.push(Effect::RunFile(RunFile::Discard));
+            }
+            self.mode = Mode::GameOver;
+            return;
+        };
+        let line = persisted.then(|| resume::Saved::of(run, self.play.daily).to_line());
+        let (screens, shells, shots) = run.score();
+        let entry = Entry {
+            seed: run.run_seed,
+            screens,
+            shells,
+            shots,
+            daily: self.play.daily,
+        };
+        self.record(entry, persisted.then(String::new), line, false);
         self.mode = Mode::GameOver;
     }
 
-    /// Ask for a finished run to go on the board; `keep` is its line, for a
-    /// later launch to score if the board does not reach disk. The entry is
-    /// only placed in memory once it is on disk (`stored`): placed first, a
-    /// later settings write would carry it to disk while the kept line
-    /// scored it again at the next launch.
-    pub(super) fn record(&mut self, entry: Entry, keep: Option<String>, announce: bool) {
+    /// Ask for a finished run to go on the board. `clear` is what the run
+    /// file must hold first (`""` for none), when it holds the finished log;
+    /// `keep` is that log's line, for a later launch to score if the board
+    /// does not reach disk. The entry is only placed in memory once it is on
+    /// disk (`stored`): placed first, a later settings write would carry it
+    /// to disk while the kept line scored it again at the next launch.
+    pub(super) fn record(
+        &mut self,
+        entry: Entry,
+        clear: Option<String>,
+        keep: Option<String>,
+        announce: bool,
+    ) {
         self.fx.push(Effect::Store(Store::Score {
             entry,
+            clear,
             keep,
             announce,
         }));

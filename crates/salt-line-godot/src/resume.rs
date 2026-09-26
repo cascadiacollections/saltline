@@ -19,9 +19,11 @@
 //! # The run files
 //!
 //! Three `user://` paths carry the run. The core asks for changes as
-//! `app::RunFile` effects; `game.rs` turns them into file operations through
-//! `save::write` (the atomic replace in `durable::write_atomic`),
-//! `save::rename` and `save::remove`.
+//! `app::RunFile` effects (and a score's `clear`); `game.rs` turns them into
+//! file operations through `save::write` (the atomic replace in
+//! `durable::write_atomic`), `save::rename` and `save::remove`, the
+//! multi-step ones by way of [`take_saved`], [`replace`] and [`discard`]
+//! below.
 //!
 //! ```text
 //! file              written by                       when
@@ -38,7 +40,9 @@
 //! ```
 //!
 //! `RunFile::Discard` deletes all three, and if a file will not go, writes
-//! an empty `run.txt`, which [`judge`] reads as no run.
+//! an empty `run.txt`, which [`judge`] reads as no run ([`discard`]). A
+//! finished run's score clears the files the same way ([`replace`]) before
+//! the board is written, and only goes ahead if that is confirmed.
 //!
 //! What a crash costs, step by step (crash / next launch finds / cost):
 //!
@@ -57,9 +61,13 @@
 //! after RunFile::Restore
 //!     finds  run.txt
 //!     cost   nothing
-//! a run ends: between its Discard and the Store of its score
-//!     finds  no run file
+//! a run ends: its Store clears the run file, then writes the board
+//!     finds  no run file, or run.txt blank, once the clear is done
 //!     cost   that score, never scored twice
+//! a run ends: the run file will not go (not deleted, not blanked)
+//!     finds  run.txt, the finished log
+//!     cost   nothing: the board was not written, so it is scored by the
+//!            first launch that can clear it
 //! a run ends: the Store fails (full disk, a newer build's save)
 //!     finds  run.txt, by way of RunFile::Keep
 //!     cost   nothing, unless the Keep write fails or a new run starts this
@@ -68,17 +76,16 @@
 //!
 //! Two properties fall out of that ordering:
 //!
-//! - **A run is scored at most once.** A finished log lives on disk only
-//!   until the `Discard` that the core always queues before the score's
-//!   `Store` (`app`'s "order is behaviour"), and effects are applied in
-//!   order. By the time a score can be on the board the log is gone, so no
-//!   launch can find it and score it again. A crash in between loses the
-//!   score instead. `Keep` rewrites the log only after a `Store` has failed.
-//!   This assumes the Discard took. If a file will not delete and the blank
-//!   write also fails, the log survives beside a scored board. Against a
-//!   power cut it also needs the deletes to be durable before the save's
-//!   rename: on Unix the directory fsync after that rename covers them (same
-//!   directory); on Windows nothing forces it.
+//! - **A run is scored at most once.** A score's `Store` clears the
+//!   finished log first ([`replace`]) and writes the board only once no copy
+//!   of it is left to read (`app`'s "order is behaviour"). By the time a
+//!   score can be on the board the log is gone, so no launch can find it
+//!   and score it again. A crash in between loses the score instead; a log
+//!   that will not go keeps its score off the board until a launch can
+//!   clear it. `Keep` rewrites the log only after a `Store` has failed.
+//!   Against a power cut it also needs the deletes to be durable before the
+//!   save's rename: on Unix the directory fsync after that rename covers
+//!   them (same directory); on Windows nothing forces it.
 //! - **A corrupt run file costs one crash, not every launch.** The file is
 //!   moved to `run-loading.txt` before it is parsed or replayed, and is put
 //!   back only once [`judge`] has returned. If the rebuild panics, the
@@ -93,9 +100,10 @@
 //! `app/disk_tests.rs` holds the first property, and the resumed run
 //! matching the run as played, end to end: it applies the core's effects to
 //! an in-memory disk, kills the process after every effect in turn, and
-//! launches again on what was left. It models each effect as one atomic
-//! step that cannot fail; that the steps really are atomic is `durable`'s
-//! job.
+//! launches again on what was left. It runs the functions below on its
+//! files, so a crash between any two of their steps is exercised, and so is
+//! a `run.txt` that will not go; that each write really is atomic is
+//! `durable`'s job.
 
 use salt_line_sim::replay::{decode_log, encode_log, Replay, DRAFT_MARK};
 use salt_line_sim::run::{LoggedShot, RunState};
@@ -349,6 +357,48 @@ pub fn take_saved(files: &mut impl RunFiles) -> Option<SavedRun> {
     };
     files.rename(path, RUN_LOADING_PATH);
     Some(SavedRun::Found(text))
+}
+
+/// Make the saved run exactly `text`, or no run at all for `""`: the set-aside
+/// copy and the temporary file go, and `run.txt` is written with `text` or
+/// deleted. If something is left that a launch could read as a run other
+/// than `text` (a file that would not delete, a write that did not land),
+/// `run.txt` is written once more with `text`, which for `""` is the empty
+/// file [`judge`] reads as no run.
+///
+/// Returns whether that is confirmed: afterwards neither `run.txt` nor
+/// `run.txt.new` holds anything but `text` or nothing. A score may only go
+/// on the board once its finished log is confirmed gone, or a later launch
+/// scores it again (`app`'s "Scoring at most once"). A set-aside copy that
+/// will not delete does not count against it: a launch that finds one
+/// throws it away unread.
+pub fn replace(files: &mut impl RunFiles, text: &str) -> bool {
+    if text.is_empty() {
+        files.remove(RUN_PATH);
+    } else {
+        files.write(RUN_PATH, RUN_TEMP_PATH, text);
+    }
+    files.remove(RUN_LOADING_PATH);
+    files.remove(RUN_TEMP_PATH);
+    if holds_only(files, text) {
+        return true;
+    }
+    files.write(RUN_PATH, RUN_TEMP_PATH, text);
+    holds_only(files, text)
+}
+
+/// Neither `run.txt` nor `run.txt.new` holds a run other than `text`.
+fn holds_only(files: &impl RunFiles, text: &str) -> bool {
+    [RUN_PATH, RUN_TEMP_PATH].into_iter().all(|path| {
+        files
+            .read(path)
+            .is_none_or(|t| t.trim().is_empty() || t == text)
+    })
+}
+
+/// Leave no run to resume or score: [`replace`] with nothing.
+pub fn discard(files: &mut impl RunFiles) -> bool {
+    replace(files, "")
 }
 
 /// Seconds of wall clock any one frame may advance animation and UI timers

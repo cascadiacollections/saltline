@@ -499,22 +499,21 @@ fn the_last_shell_ends_the_run_and_it_is_scored_exactly_once() {
     assert_eq!(count(&fx, is_score), 1);
     // Not on the board until the write says it is on disk.
     assert!(g.save.scores.is_empty());
-    // The run file goes first, then the board.
-    let discard = fx
-        .iter()
-        .position(|e| *e == Effect::RunFile(RunFile::Discard))
-        .unwrap();
+    // The run file goes first, as part of the score: nothing discards it
+    // unconfirmed ahead of it.
+    assert!(!fx.contains(&Effect::RunFile(RunFile::Discard)));
     let score = fx.iter().position(is_score).unwrap();
-    assert!(discard < score);
     // Scored with its line kept in case the board cannot be written.
     let Effect::Store(why) = fx[score].clone() else {
         unreachable!()
     };
+    assert_eq!(why.clear(), Some(""), "the finished log must go first");
     match &why {
         Store::Score {
             entry,
             keep,
             announce,
+            ..
         } => {
             assert_eq!(entry.seed, seed);
             assert!(keep.is_some());
@@ -565,6 +564,7 @@ fn a_board_that_cannot_be_written_keeps_the_run_and_says_so() {
     let fx = g.stored(
         Store::Score {
             entry: entry(1),
+            clear: Some(String::new()),
             keep: Some("line".into()),
             announce: false,
         },
@@ -935,10 +935,11 @@ fn a_saved_run_that_had_ended_is_scored_at_launch() {
     let line = Saved::of(&run, false).to_line();
     let mut g = game();
     let fx = g.saved_run(SavedRun::Found(line.clone()));
-    assert_eq!(fx[0], Effect::RunFile(RunFile::Discard));
-    let Effect::Store(why) = fx[1].clone() else {
-        panic!("{:?}", fx[1])
+    let Effect::Store(why) = fx[0].clone() else {
+        panic!("{:?}", fx[0])
     };
+    // The file goes before the score, confirmed.
+    assert_eq!(why.clear(), Some(""));
     match &why {
         Store::Score { keep, announce, .. } => {
             assert_eq!(keep.as_deref(), Some(line.as_str()));

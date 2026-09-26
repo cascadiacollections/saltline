@@ -21,14 +21,14 @@
 //! the rename (`durable`'s temp-and-rename, so the run file itself is either
 //! the old text or the new), and launch picks a copy and moves it aside
 //! with the node's own `resume::take_saved`. The save's write is one
-//! operation. `RunFile::Discard` is several deletes in the node and is
-//! modelled here as one; a crash part-way through it is not exercised. A
-//! crash part-way through a Discard is harmless anyway, since the score has
-//! not been written yet; a Discard that fails outright is not modelled.
+//! operation. Clearing the run file (`resume::replace`, for a score and for
+//! `RunFile::Discard`) is the node's several steps, each its own operation,
+//! so a crash part-way through one is exercised too. So is a `run.txt` that
+//! will not go at all (`stuck`): its score must stay off the board.
 //!
-//! The tests would fail if the core's effect order changed in a way that
-//! could score twice: for instance `RunFile::Discard` queued after
-//! `Store(Score)` rather than before it.
+//! The tests would fail if the core or the adapter could score twice: for
+//! instance a score written without its `clear`, or written although the
+//! clear failed.
 
 use super::*;
 use pretty_assertions::assert_eq;
@@ -76,6 +76,9 @@ struct FakeDisk {
     done: usize,
     /// Score writes still to fail, as a full disk would.
     fail_scores: usize,
+    /// `run.txt` can be neither replaced nor deleted, as a read-only or
+    /// failing file would be: a rename onto or off it, and its removal, fail.
+    stuck: bool,
 }
 
 impl FakeDisk {
@@ -100,13 +103,18 @@ impl FakeDisk {
             }
             match e {
                 Effect::Store(why) => {
+                    let cleared = why.clear().is_none_or(|text| resume::replace(self, text));
                     let fail = matches!(why, Store::Score { .. }) && self.fail_scores > 0;
-                    let ok = if fail {
+                    let ok = if !cleared {
+                        false
+                    } else if fail {
                         self.fail_scores -= 1;
                         false
-                    } else {
+                    } else if self.alive() {
                         self.save = Some(g.save_to_store(&why).serialize());
                         true
+                    } else {
+                        false
                     };
                     let more = g.stored(why, ok);
                     self.apply(g, more);
@@ -118,9 +126,7 @@ impl FakeDisk {
                     self.rename(RUN_LOADING_PATH, RUN_PATH);
                 }
                 Effect::RunFile(RunFile::Discard | RunFile::Abandon(_)) => {
-                    self.set_aside = None;
-                    self.temp = None;
-                    self.run = None;
+                    resume::discard(self);
                 }
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let Some(text) = self.crash_report.take() {
@@ -186,7 +192,7 @@ impl resume::RunFiles for FakeDisk {
     }
 
     fn rename(&mut self, from: &str, to: &str) -> bool {
-        if !self.alive() {
+        if !self.alive() || (self.stuck && (from == RUN_PATH || to == RUN_PATH)) {
             return false;
         }
         let Some(text) = self.file(from).take() else {
@@ -197,7 +203,7 @@ impl resume::RunFiles for FakeDisk {
     }
 
     fn remove(&mut self, path: &str) {
-        if self.alive() {
+        if self.alive() && !(self.stuck && path == RUN_PATH) {
             *self.file(path) = None;
         }
     }
@@ -331,6 +337,7 @@ fn crash_everywhere(start: FakeDisk, flow: fn(&mut FakeDisk) -> Played) {
         flow(&mut disk);
         disk.budget = None;
         disk.fail_scores = 0;
+        disk.stuck = false;
         let first = disk.launch();
         if let Some(saved) = first.run_file.resumable.as_ref() {
             assert_eq!(saved.seed, played.seed, "crash after {k}");
@@ -412,6 +419,59 @@ fn a_score_that_cannot_be_written_is_scored_once_later() {
 #[test]
 fn a_failed_score_survives_a_crash_anywhere() {
     crash_everywhere(FakeDisk::default(), score_write_fails);
+}
+
+/// Launch, start today's daily and throw every shell away, but from the
+/// last shot on `run.txt` will not go: the finished log it now holds can be
+/// neither deleted nor blanked, so the score must not be written either.
+fn finish_with_the_file_stuck(disk: &mut FakeDisk) -> Played {
+    let mut g = disk.launch();
+    tick(&mut g, disk, keys(&[Key::Enter]));
+    while g.mode != Mode::GameOver {
+        let run = g.play.run.as_ref().unwrap();
+        if run.phase == Phase::Drafting {
+            tick(&mut g, disk, keys(&[Key::Num1]));
+        } else {
+            let last = run.shells == 1;
+            g.play.angle_ticks = 1400;
+            g.play.power_ticks = 0;
+            // Firing grows the log, which is written this same frame.
+            tick(&mut g, disk, keys(&[Key::Space]));
+            if last {
+                disk.stuck = true;
+            }
+            until(&mut g, disk, |g| {
+                g.play.anim.is_none() && g.play.clear_hold <= 0.0
+            });
+        }
+        tick(&mut g, disk, idle());
+    }
+    let run = g.play.run.as_ref().unwrap();
+    Played {
+        seed: run.run_seed,
+        log: run.log.clone(),
+    }
+}
+
+#[test]
+fn a_run_file_that_will_not_go_keeps_its_score_for_later_not_twice() {
+    let mut disk = FakeDisk::default();
+    let played = finish_with_the_file_stuck(&mut disk);
+    assert!(disk.run.is_some(), "the finished log stayed");
+    assert!(disk.board().is_empty(), "scored beside a log that stayed");
+    // Once the file can go, the next launch scores it, once.
+    disk.stuck = false;
+    let g = disk.launch();
+    assert_eq!(g.status, "LAST RUN SCORED");
+    disk.launch();
+    let board = disk.board();
+    assert_eq!(board.len(), 1);
+    assert_eq!(board[0].seed, played.seed);
+}
+
+#[test]
+fn a_run_file_that_will_not_go_survives_a_crash_anywhere() {
+    crash_everywhere(FakeDisk::default(), finish_with_the_file_stuck);
 }
 
 // ----------------------------------------------------------- after a panic

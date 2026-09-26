@@ -15,7 +15,7 @@
 //!                                     │
 //!        quit to title: suspend_run ──┤ kept; CONTINUE offers it
 //!        new run:  confirm_discard ───┤ two presses, then replaced
-//!        run over: finish_run ────────┘ stop_persisting: Discard, then Score
+//!        run over: finish_run ────────┘ stop_persisting; Score clears it first
 //! ```
 
 use super::*;
@@ -195,13 +195,12 @@ impl Game {
         self.run_file.resumed = false;
     }
 
-    /// The run is over and on the board: nothing is left to resume.
-    pub(super) fn stop_persisting(&mut self) {
-        if self.run_file.run_persist {
-            self.fx.push(Effect::RunFile(RunFile::Discard));
-        }
-        self.run_file.run_persist = false;
+    /// The run is over: nothing is left to resume. Returns whether it was
+    /// being kept on disk, in which case its finished log is still there,
+    /// for the score to clear before it goes on the board (`finish_run`).
+    pub(super) fn stop_persisting(&mut self) -> bool {
         self.run_file.resumable = None;
+        std::mem::take(&mut self.run_file.run_persist)
     }
 
     /// A new run replaces the saved one, so over a saved run the first press

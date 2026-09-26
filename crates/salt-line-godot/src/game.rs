@@ -438,7 +438,18 @@ impl SaltLine {
                 }
                 Effect::Quit => self.base().get_tree().quit(),
                 Effect::Store(why) => {
-                    let ok = save::store(&self.g.save_to_store(&why));
+                    // A finished log goes before its score, and the score
+                    // only once the log is confirmed gone.
+                    let cleared = why.clear().is_none_or(|text| {
+                        let ok = resume::replace(&mut UserFiles, text);
+                        if !ok {
+                            godot_warn!(
+                                "salt-line: could not clear {RUN_PATH}; not scoring beside it"
+                            );
+                        }
+                        ok
+                    });
+                    let ok = cleared && save::store(&self.g.save_to_store(&why));
                     // The outcome goes straight back to the core, and what
                     // it asks for in reply is applied now, ahead of the rest
                     // of this list: a failed score's `RunFile::Keep` must
@@ -500,17 +511,10 @@ impl resume::RunFiles for UserFiles {
 }
 
 impl SaltLine {
-    /// Leave no run to resume or score: the copy set aside at launch, the
-    /// temporary file and the run file. If a file cannot be deleted, the run
-    /// file is overwritten with nothing, which `resume::judge` reads as no
-    /// run.
+    /// Leave no run to resume or score (`resume::discard`).
     fn discard_run_file() {
-        save::remove(RUN_LOADING_PATH);
-        save::remove(RUN_TEMP_PATH);
-        save::remove(RUN_PATH);
-        if save::read(RUN_PATH).is_some() || save::read(RUN_TEMP_PATH).is_some() {
-            godot_warn!("salt-line: could not delete {RUN_PATH}; blanking it");
-            save::write(RUN_PATH, RUN_TEMP_PATH, "");
+        if !resume::discard(&mut UserFiles) {
+            godot_warn!("salt-line: could not delete or blank {RUN_PATH}");
         }
     }
 }
