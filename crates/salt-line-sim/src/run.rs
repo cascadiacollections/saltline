@@ -145,7 +145,8 @@ impl StructureKind {
 /// a cosmetic one.
 ///
 /// Derived, never set directly: `resolve_state` recomputes it from
-/// [`Structure::integrity`] and [`Structure::support`] after every shot.
+/// [`Structure::integrity`] and [`Structure::support`] after every shot,
+/// until the structure collapses. Collapse is final.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum StructState {
@@ -156,7 +157,7 @@ pub enum StructState {
     /// screen is not cleared.
     Leaning = 1,
     /// Integrity at or below 0, or support at or below 0.3. A collapsed
-    /// structure takes no further blast damage.
+    /// structure takes no further blast damage and is never re-resolved.
     Collapsed = 2,
 }
 
@@ -193,7 +194,8 @@ pub struct Structure {
     /// multiplied by [`StructureKind::top_heaviness`] (above 1 for top-heavy
     /// kinds, below 1 for Silo and Pylon), clamped to 0..=1.
     pub support: f64,
-    /// Damage state, derived from `integrity` and `support`.
+    /// Damage state, derived from `integrity` and `support`; fixed once
+    /// `Collapsed`.
     pub state: StructState,
     /// -1 leaning left, 0 upright, +1 leaning right.
     pub lean: i8,
@@ -576,15 +578,22 @@ impl Screen {
         }
     }
 
-    /// Recompute support from the scar buffer and re-resolve every state.
-    /// Called once per shot, after every detonation (DESIGN §2.7 says after
-    /// each detonation; with Cluster this differs — see NOTES or the
-    /// follow-up issue).
+    /// Recompute support from the scar buffer and re-resolve the state of
+    /// every standing structure. Called once per shot, after every
+    /// detonation (DESIGN §2.7 says after each detonation; with Cluster this
+    /// differs — see NOTES or the follow-up issue).
+    ///
+    /// Collapse is permanent: a collapsed structure is skipped, so its
+    /// support, state and lean stay as they were when it fell, even if debris
+    /// later refills its footprint.
     ///
     /// Public because undermining can happen without a detonation of its own —
     /// debris landing, or a test excavating a footprint directly.
     pub fn resolve_structures(&mut self) {
         for s in self.structures.iter_mut() {
+            if s.is_down() {
+                continue;
+            }
             let raw = self
                 .field
                 .support_fraction(s.x0, s.kind.footprint(), s.original_mean);
@@ -592,19 +601,16 @@ impl Screen {
             // makes undermining the water tower legible.
             let loss = (1.0 - raw) * s.kind.top_heaviness();
             s.support = clamp(1.0 - loss, 0.0, 1.0);
-            let was_down = s.state == StructState::Collapsed;
             s.resolve_state();
-            if !was_down {
-                if s.state == StructState::Collapsed {
-                    if s.lean == 0 {
-                        s.lean = s.lean_direction(&self.field);
-                        if s.lean == 0 {
-                            s.lean = 1;
-                        }
-                    }
-                } else if s.state == StructState::Leaning {
+            if s.state == StructState::Collapsed {
+                if s.lean == 0 {
                     s.lean = s.lean_direction(&self.field);
+                    if s.lean == 0 {
+                        s.lean = 1;
+                    }
                 }
+            } else if s.state == StructState::Leaning {
+                s.lean = s.lean_direction(&self.field);
             }
         }
     }
@@ -1666,6 +1672,34 @@ mod tests {
             "integrity changed — that would be a direct hit, not undermining"
         );
         assert!(box_.y0 >= WORLD_FLOOR);
+    }
+
+    #[test]
+    fn collapse_is_permanent_when_the_footprint_is_refilled() {
+        // Debris can pile back over a felled structure's footprint. The
+        // wreck must stay down, or a cleared screen could un-clear.
+        let lo = Loadout::new();
+        let mut screen = generate_screen(SEED, 0, 320, &lo);
+        let st = screen.structures[0].clone();
+        for _ in 0..12 {
+            for i in st.x0..st.x0 + st.footprint() {
+                screen.field.crater(i as f64, 6.0);
+            }
+            screen.resolve_structures();
+            if screen.structures[0].is_down() {
+                break;
+            }
+        }
+        assert!(screen.structures[0].is_down(), "undermining never felled it");
+        let lean = screen.structures[0].lean;
+
+        screen
+            .field
+            .mound(st.centre_x(), st.footprint() as f64 * 2.0, 60.0);
+        screen.resolve_structures();
+        let s = &screen.structures[0];
+        assert_eq!(s.state, StructState::Collapsed, "support {}", s.support);
+        assert_eq!(s.lean, lean, "a wreck does not change the way it fell");
     }
 
     #[test]
