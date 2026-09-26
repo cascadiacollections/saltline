@@ -744,6 +744,15 @@ This follows the no-words direction (§5.6) and the touch menus.
   of a millisecond, so this is cheap. It needs a rule for a shot that was in
   flight when the app died. The likely answer: the shot is committed once it's
   in the log, and resuming replays its outcome.
+  **Built** (`crates/salt-line-godot/src/resume.rs`): `user://run.txt` holds
+  one line, `resume <epoch> <seed> <width> <daily> <log>`, rewritten
+  atomically whenever the log grows and deleted when the run ends. The title
+  screen offers CONTINUE when the epoch matches and the log reconstructs; a
+  shot in flight at the kill resumes resolved, and a log whose last shot ended
+  the run is scored instead. Another epoch, or a log that does not replay, is
+  discarded with a note. Quitting to title keeps the run; starting a new one
+  replaces it, after a second press. The resumed run keeps its recorded
+  width, letterboxed if the device's differs.
 - **Replays across epochs.** Old sims could be kept around to replay old runs
   (a versioned sim, or a pinned build). That's likely not worth it: the seed
   survives, and the seed is what players share.

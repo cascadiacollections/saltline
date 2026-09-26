@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, TryLockError};
 
+use salt_line_sim::replay::encode_log;
 use salt_line_sim::run::{format_seed, LoggedShot, RunState};
 
 /// The report file, beside the save.
@@ -50,6 +51,9 @@ pub struct RunContext {
     pub power_ticks: i32,
     /// DESIGN §3: the seed plus this rebuilds the run.
     pub log: Vec<LoggedShot>,
+    /// The run was rebuilt from `user://run.txt` after the app was killed,
+    /// rather than played from its first shot in this session.
+    pub resumed: bool,
 }
 
 static CONTEXT: Mutex<Context> = Mutex::new(Context {
@@ -71,7 +75,7 @@ static FILE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Bring the shared context up to date. Cheap enough for every frame: one
 /// uncontended lock, and new shots appended rather than the log copied.
-pub fn note(mode: &'static str, run: Option<&RunState>, aim: (i32, i32)) {
+pub fn note(mode: &'static str, run: Option<&RunState>, aim: (i32, i32), resumed: bool) {
     let mut ctx = CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
     ctx.mode = mode;
     let Some(run) = run else {
@@ -93,6 +97,7 @@ pub fn note(mode: &'static str, run: Option<&RunState>, aim: (i32, i32)) {
     rc.seed = run.run_seed;
     rc.width = run.width;
     rc.screen_index = run.screen_index;
+    rc.resumed = resumed;
     (rc.angle_ticks, rc.power_ticks) = aim;
     let have = rc.log.len();
     rc.log.extend_from_slice(&run.log[have..]);
@@ -152,17 +157,18 @@ pub fn format_report(r: &Report) -> String {
         "aim: angle {} power {}",
         run.angle_ticks, run.power_ticks
     );
-    // The log exactly as the sim keeps it, screen_index:angle:power per
-    // entry (draft picks included, under the sim's own marker), so it can be
-    // fed back to a replay unchanged. Eight to a line keeps a long run
-    // readable in an issue.
+    if run.resumed {
+        let _ = writeln!(s, "resumed: yes");
+    }
+    // The log in the replay text form (`replay::encode_log`, fuse and
+    // offset included), so it can be fed back to `decode_log` and a replay
+    // unchanged: line breaks and indentation are only whitespace to it. Ten
+    // tokens to a line keeps a long run readable in an issue.
     let _ = writeln!(s, "log: {}", run.log.len());
-    for chunk in run.log.chunks(8) {
-        let line: Vec<String> = chunk
-            .iter()
-            .map(|l| format!("{}:{}:{}", l.screen_index, l.angle_ticks, l.power_ticks))
-            .collect();
-        let _ = writeln!(s, "  {}", line.join(" "));
+    let text = encode_log(&run.log);
+    let tokens: Vec<&str> = text.split(' ').collect();
+    for chunk in tokens.chunks(10) {
+        let _ = writeln!(s, "  {}", chunk.join(" "));
     }
     s
 }
@@ -304,7 +310,7 @@ mod tests {
             screen_index,
             angle_ticks,
             power_ticks,
-            fuse_tenths: 0,
+            fuse_tenths: if angle_ticks < 0 { 0 } else { 120 },
             emplacement_offset: 0,
         }
     }
@@ -333,6 +339,7 @@ mod tests {
                 angle_ticks: 875,
                 power_ticks: 640,
                 log,
+                resumed: true,
             }),
         };
         insta::assert_snapshot!(sample(Some(&ctx)));
@@ -358,21 +365,22 @@ mod tests {
     #[test]
     fn note_appends_to_the_log_and_restarts_it_for_a_new_run() {
         let mut run = RunState::new(7, 320);
-        note("Playing", Some(&run), (900, 600));
+        note("Playing", Some(&run), (900, 600), false);
         run.log.push(shot(0, 900, 600));
         run.log.push(shot(0, 905, 600));
-        note("Playing", Some(&run), (905, 600));
+        note("Playing", Some(&run), (905, 600), false);
         let got = CONTEXT.lock().unwrap().run.clone().unwrap();
         assert_eq!(got.log, run.log);
         assert_eq!((got.angle_ticks, got.power_ticks), (905, 600));
 
         let fresh = RunState::new(8, 320);
-        note("Playing", Some(&fresh), (900, 600));
+        note("Playing", Some(&fresh), (900, 600), true);
         let got = CONTEXT.lock().unwrap().run.clone().unwrap();
         assert_eq!(got.seed, 8);
         assert!(got.log.is_empty());
+        assert!(got.resumed);
 
-        note("Title", None, (0, 0));
+        note("Title", None, (0, 0), false);
         assert_eq!(CONTEXT.lock().unwrap().run, None);
     }
 
@@ -461,7 +469,12 @@ mod tests {
         }
         let file = scratch_file("first");
         install(Some(file.clone()));
-        note("Playing", Some(&RunState::new(20260907, 320)), (900, 600));
+        note(
+            "Playing",
+            Some(&RunState::new(20260907, 320)),
+            (900, 600),
+            false,
+        );
         assert!(!panicked() && !report_ready() && report().is_none());
 
         let _ = std::panic::catch_unwind(|| panic!("the first one"));

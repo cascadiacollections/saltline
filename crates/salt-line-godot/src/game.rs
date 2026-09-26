@@ -6,9 +6,9 @@
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
-    AudioStream, AudioStreamPlayer, DisplayServer, Engine, INode2D, Image, ImageTexture, Input,
-    InputEvent, InputEventJoypadButton, InputEventJoypadMotion, InputEventKey,
-    InputEventMouseMotion, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os,
+    window::ContentScaleAspect, AudioStream, AudioStreamPlayer, DisplayServer, Engine, INode2D,
+    Image, ImageTexture, Input, InputEvent, InputEventJoypadButton, InputEventJoypadMotion,
+    InputEventKey, InputEventMouseMotion, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os,
     RenderingServer, ResourceLoader, Time,
 };
 use godot::global::{JoyAxis, JoyButton, Key};
@@ -34,6 +34,7 @@ use crate::presentation::{
     LEARN_SHELLS, LEARN_WIND,
 };
 use crate::raster::{self, Canvas, View};
+use crate::resume::{self, Found, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
 use crate::save::{self, Entry, Save};
 use crate::save_format::{ArcHint, TouchAim};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
@@ -319,6 +320,22 @@ pub struct SaltLine {
     future_noted: bool,
     /// Showing the error screen. See `broken_frame`.
     broken: bool,
+    /// The saved run CONTINUE would rebuild, already checked. See `resume`.
+    resumable: Option<resume::Saved>,
+    /// Log length last written to `user://run.txt`; `None` before the first
+    /// write of this run.
+    run_saved_len: Option<usize>,
+    /// This run is kept in `user://run.txt`. Off for a `--salt-screen` jump,
+    /// which its log cannot rebuild.
+    run_persist: bool,
+    /// This run was rebuilt by CONTINUE, for the crash report.
+    resumed: bool,
+    /// The buffer is at a resumed run's width, not the device's, and the
+    /// window letterboxes it (`set_run_width`).
+    kept_width: bool,
+    /// Which new-run action has been pressed once over a saved run and is
+    /// waiting for the second press. See `confirm_discard`.
+    discard_armed: Option<&'static str>,
 }
 
 #[godot_api]
@@ -393,6 +410,12 @@ impl INode2D for SaltLine {
             crash_copied: false,
             broken: false,
             future_noted: false,
+            resumable: None,
+            run_saved_len: None,
+            run_persist: false,
+            resumed: false,
+            kept_width: false,
+            discard_armed: None,
         }
     }
 
@@ -414,6 +437,7 @@ impl INode2D for SaltLine {
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
         self.save = save::load();
         self.find_last_crash();
+        self.find_saved_run();
         self.setup_audio();
         self.entitlement = store::entitlement(self.save.unlocked);
         self.project_fps = Engine::singleton().get_max_fps();
@@ -440,6 +464,8 @@ impl INode2D for SaltLine {
             if let Some(n) = Self::screen_arg() {
                 self.jump_to(n);
             }
+        } else if Self::cmdline_flag("--salt-continue") {
+            self.continue_run();
         }
         if !self.pal.sampled {
             godot_warn!("salt-line: palette not sampled from art; using the built-in fallback");
@@ -452,6 +478,11 @@ impl INode2D for SaltLine {
             return;
         }
         self.note_crash_context();
+        // Animation and timers never jump more than a tenth of a second, however
+        // long the app sat in the background. See `resume::frame_delta`. The
+        // dev clock (`--salt-shot-at`) runs on the same time, so a capture on
+        // a slow frame lands at the same point of an animation.
+        let delta = resume::frame_delta(delta);
         self.elapsed += delta;
         self.status_time = (self.status_time - delta).max(0.0);
         self.poll_display(delta);
@@ -461,6 +492,7 @@ impl INode2D for SaltLine {
             self.autopilot(delta);
         }
         self.step(delta);
+        self.persist_run();
         self.tick_settings(delta);
         let after = self.frame_state();
         if after != before {
@@ -574,6 +606,7 @@ impl INode2D for SaltLine {
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
                 self.touch.release_all();
+                self.auto_pause();
                 self.flush_settings();
                 self.redraw.mark();
             }
@@ -586,9 +619,13 @@ impl INode2D for SaltLine {
             }
             // Pending settings go to disk before the app can be killed: a
             // phone may never resume a paused app, and a close is final.
-            CanvasItemNotification::APPLICATION_PAUSED
-            | CanvasItemNotification::WM_CLOSE_REQUEST
-            | CanvasItemNotification::EXIT_TREE => self.flush_settings(),
+            CanvasItemNotification::APPLICATION_PAUSED => {
+                self.auto_pause();
+                self.flush_settings();
+            }
+            CanvasItemNotification::WM_CLOSE_REQUEST | CanvasItemNotification::EXIT_TREE => {
+                self.flush_settings()
+            }
             _ => {}
         }
     }
@@ -711,7 +748,12 @@ impl SaltLine {
             self.cutout = self.cutout_px();
         }
         let want_w = self.pick_width();
-        if self.run.is_none() && want_w != self.buffer_w {
+        let in_run = matches!(self.mode, Mode::Playing | Mode::Paused | Mode::Paywall);
+        if !in_run && self.kept_width {
+            // A resumed run's width is done with: back to the device's.
+            self.set_run_width(None);
+            self.apply_buffer_size();
+        } else if self.run.is_none() && want_w != self.buffer_w {
             self.buffer_w = want_w;
             self.apply_buffer_size();
         } else if self.letterbox_now() != self.letterbox {
@@ -741,11 +783,15 @@ impl SaltLine {
     /// under it.
     fn letterbox_now(&self) -> (i32, i32) {
         let (l, r) = self.cutout;
-        let win_h = self.window_size.y;
-        if win_h <= 0 || self.buffer_h <= 0 {
+        let win = self.window_size;
+        if win.y <= 0 || self.buffer_h <= 0 || self.buffer_w <= 0 {
             return (0, 0);
         }
-        let scale = win_h as f64 / self.buffer_h as f64;
+        // Buffer pixels per screen pixel: fitted by height, unless the buffer
+        // (with the insets beside it) is too wide for the window, as a resumed
+        // run from a wider device is, and is fitted by width instead.
+        let usable = (win.x - l - r).max(1) as f64;
+        let scale = (win.y as f64 / self.buffer_h as f64).min(usable / self.buffer_w as f64);
         (
             (l as f64 / scale).ceil() as i32,
             (r as f64 / scale).ceil() as i32,
@@ -753,6 +799,8 @@ impl SaltLine {
     }
 
     fn start_run(&mut self, seed: u64, daily: bool) {
+        // A new run is generated for the device, whatever a resumed one used.
+        self.set_run_width(None);
         // The world is as wide as the buffer, so the run is generated for it.
         let width = self.buffer_w as usize;
         let state = RunState::new(seed, width);
@@ -771,6 +819,7 @@ impl SaltLine {
         self.run = Some(state);
         self.mode = Mode::Playing;
         self.apply_buffer_size();
+        self.begin_persisting();
         self.note(format!("SEED {}", format_seed(seed)));
     }
 
@@ -781,6 +830,8 @@ impl SaltLine {
     fn jump_to(&mut self, index: u32) {
         let Some(run) = self.run.as_mut() else { return };
         run.screen_index = index;
+        // The log cannot rebuild a jump, so the run is not kept for resume.
+        self.run_persist = false;
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
         self.preview.clear();
         self.note(format!("SCREEN {}", index + 1));
@@ -870,6 +921,7 @@ impl SaltLine {
             "R" => Key::R,
             "S" => Key::S,
             "U" => Key::U,
+            "N" => Key::N,
             "V" => Key::V,
             "M" => Key::M,
             "L" => Key::L,
@@ -917,6 +969,9 @@ impl SaltLine {
             "mute" => ("M", "START"),
             "last_arc" => ("L", "X"),
             "seed" => ("S", "Y"),
+            // Only offered over a saved run, where confirm is CONTINUE and
+            // pad Y is already seed entry.
+            "new_run" => ("N", "RB"),
             "unlock" => ("U", "X"),
             "restore" => ("R", "Y"),
             _ => ("", ""),
@@ -1188,12 +1243,25 @@ impl SaltLine {
         }
         match self.mode {
             Mode::Title => {
-                if self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER) {
-                    let seed = daily_seed(Self::today());
-                    self.play_sound(Sound::Ui);
-                    self.start_run(seed, true);
+                let resumable = self.resumable.is_some();
+                let confirm = self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER);
+                let daily = if resumable {
+                    self.action_pressed(11, "new_run")
+                } else {
+                    confirm
+                };
+                if resumable && confirm {
+                    self.continue_run();
+                } else if daily {
+                    if self.confirm_discard("daily") {
+                        let seed = daily_seed(Self::today());
+                        self.play_sound(Sound::Ui);
+                        self.start_run(seed, true);
+                    }
                 } else if self.action_pressed(17, "seed") {
-                    self.open_seed_entry();
+                    if self.confirm_discard("seed") {
+                        self.open_seed_entry();
+                    }
                 } else if self.last_crash.is_some() && self.action_pressed(4, "copy") {
                     self.copy_last_crash();
                 } else if self.action_pressed(1, "controls") {
@@ -1201,6 +1269,9 @@ impl SaltLine {
                     self.mode = Mode::Controls;
                 } else if self.action_pressed(2, "back") {
                     self.base().get_tree().quit();
+                }
+                if self.mode != Mode::Title {
+                    self.discard_armed = None;
                 }
             }
             Mode::Controls => {
@@ -1245,6 +1316,7 @@ impl SaltLine {
                 } else if self.action_pressed(3, "replay") {
                     self.play_sound(Sound::Ui);
                     self.mode = Mode::Title;
+                    self.suspend_run();
                 }
             }
             Mode::SeedEntry => self.handle_seed_input(delta),
@@ -1647,6 +1719,15 @@ impl SaltLine {
     }
 
     fn finish_run(&mut self) {
+        // The run file goes before the score is recorded, never after: a
+        // crash in between costs this score, where the other order would
+        // record it twice (the next launch scores a finished log).
+        let line = self
+            .run
+            .as_ref()
+            .filter(|_| self.run_persist)
+            .map(|r| resume::Saved::of(r, self.daily).to_line());
+        self.stop_persisting();
         if let Some(run) = self.run.as_ref() {
             let (screens, shells, shots) = run.score();
             let entry = Entry {
@@ -1657,6 +1738,11 @@ impl SaltLine {
                 daily: self.daily,
             };
             if !save::record(&mut self.save, entry).saved {
+                // Not on the board (a save from a newer build, a full disk):
+                // keep the finished log, so a later launch can score it.
+                if let Some(line) = line {
+                    save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+                }
                 self.note_not_saved("SCORE NOT SAVED");
             }
         }
@@ -1986,19 +2072,44 @@ impl SaltLine {
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
                 let confirm = self.input_label("confirm");
-                y = self.menu_row(
-                    y,
-                    "confirm",
-                    &format!("{confirm}  DAILY RUN"),
-                    "DAILY RUN",
-                    fg,
-                );
+                // With a saved run, confirm continues it and a new run is a
+                // separate action that asks twice (`confirm_discard`).
+                let again = "PRESS AGAIN - SAVED RUN IS LOST";
+                if self.resumable.is_some() {
+                    y = self.menu_row(
+                        y,
+                        "confirm",
+                        &format!("{confirm}  CONTINUE"),
+                        "CONTINUE",
+                        alert,
+                    );
+                    let key = self.input_label("new_run");
+                    let text = if self.discard_armed == Some("daily") {
+                        again
+                    } else {
+                        "NEW DAILY RUN"
+                    };
+                    y = self.menu_row(y, "new_run", &format!("{key}      {text}"), text, fg);
+                } else {
+                    y = self.menu_row(
+                        y,
+                        "confirm",
+                        &format!("{confirm}  DAILY RUN"),
+                        "DAILY RUN",
+                        fg,
+                    );
+                }
                 let seed = self.input_label("seed");
+                let seed_text = if self.discard_armed == Some("seed") {
+                    again
+                } else {
+                    "SEED ENTRY"
+                };
                 y = self.menu_row(
                     y,
                     "seed",
-                    &format!("{seed}      SEED ENTRY"),
-                    "SEED ENTRY",
+                    &format!("{seed}      {seed_text}"),
+                    seed_text,
                     fg,
                 );
                 let controls = self.input_label("controls");
@@ -2021,6 +2132,11 @@ impl SaltLine {
                     y = self.menu_row(y, "copy", &format!("{copy}      {text}"), text, alert);
                 }
                 y += 6;
+                if self.status_time > 0.0 {
+                    let text = self.status.clone();
+                    self.centred(y, &text, alert);
+                    y += 10;
+                }
                 let best = self.save.best().copied();
                 if let Some(b) = best {
                     self.centred(
@@ -3112,6 +3228,7 @@ impl SaltLine {
             self.mode_name(),
             self.run.as_ref(),
             (self.angle_ticks, self.power_ticks),
+            self.resumed,
         );
     }
 
@@ -3228,5 +3345,238 @@ impl SaltLine {
         self.upload();
         self.maybe_screenshot();
         self.base_mut().queue_redraw();
+    }
+}
+
+// ------------------------------------------------------- lifecycle and resume
+
+impl SaltLine {
+    /// Focus lost, or the operating system paused the app: stop the clock on
+    /// a live screen, so a shot in the air or a clear in progress is still
+    /// there to watch on return. Not during a draft, where nothing moves and
+    /// the cards themselves say where the player was; a pause screen over
+    /// them would only cost a tap. Not for the dev autopilot or screenshots,
+    /// which nobody is watching with focus.
+    fn auto_pause(&mut self) {
+        if self.mode != Mode::Playing || self.auto || self.shot_path.is_some() {
+            return;
+        }
+        if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
+            return;
+        }
+        self.touch.cancel_drag();
+        self.mode = Mode::Paused;
+        // From a notification, outside the frame's before/after compare.
+        self.redraw.mark();
+    }
+
+    /// Size the buffer for a run: the recorded width for a resumed one, the
+    /// device's for anything else. A resumed run generated at another width
+    /// keeps it (DESIGN §9.2: a replay must use it), shown letterboxed
+    /// instead of stretched across the window.
+    fn set_run_width(&mut self, width: Option<usize>) {
+        let device = self.pick_width();
+        let want = width.map_or(device, |w| w as i32);
+        self.buffer_w = want;
+        self.kept_width = want != device;
+        let aspect = if want == device {
+            ContentScaleAspect::EXPAND
+        } else {
+            ContentScaleAspect::KEEP
+        };
+        if let Some(mut window) = self.base().get_window() {
+            window.set_content_scale_aspect(aspect);
+        }
+    }
+
+    /// A new run replaces whatever was saved: it is written on the next
+    /// frame, log and all (empty, at the start).
+    fn begin_persisting(&mut self) {
+        self.resumable = None;
+        self.discard_armed = None;
+        self.run_saved_len = None;
+        self.run_persist = true;
+        self.resumed = false;
+    }
+
+    /// The run is over and on the board: nothing is left to resume.
+    fn stop_persisting(&mut self) {
+        if self.run_persist {
+            self.discard_run_file();
+        }
+        self.run_persist = false;
+        self.resumable = None;
+    }
+
+    /// Make sure no run file is left to resume or score. If a file cannot be
+    /// deleted, the run file is overwritten with nothing, which `judge` reads
+    /// as no run: a finished log must never survive to be scored twice.
+    fn discard_run_file(&self) {
+        save::remove(RUN_TEMP_PATH);
+        save::remove(RUN_PATH);
+        if save::read(RUN_PATH).is_some() || save::read(RUN_TEMP_PATH).is_some() {
+            godot_warn!("salt-line: could not delete {RUN_PATH}; blanking it");
+            save::write(RUN_PATH, RUN_TEMP_PATH, "");
+        }
+    }
+
+    /// A new run replaces the saved one, so over a saved run the first press
+    /// of a new-run action only asks, and the second goes ahead. Returns
+    /// whether to go ahead.
+    fn confirm_discard(&mut self, what: &'static str) -> bool {
+        if self.resumable.is_none() || self.discard_armed == Some(what) {
+            self.discard_armed = None;
+            return true;
+        }
+        self.discard_armed = Some(what);
+        self.play_sound(Sound::Ui);
+        self.redraw.mark();
+        false
+    }
+
+    /// Write `user://run.txt` whenever the log has grown: a shot fired or a
+    /// draft taken (a reposition rides in the next shot's entry). Checked
+    /// every frame, written only on a change.
+    fn persist_run(&mut self) {
+        if !self.run_persist || crash::panicked() {
+            return;
+        }
+        let Some(run) = self.run.as_ref() else { return };
+        let len = run.log.len();
+        if self.run_saved_len == Some(len) {
+            return;
+        }
+        let line = resume::Saved::of(run, self.daily).to_line();
+        // Tried once per change: a failed write is logged by `save::write`,
+        // and the next shot tries again.
+        save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+        self.run_saved_len = Some(len);
+    }
+
+    /// Quit to title keeps the run. It is already on disk, so CONTINUE picks
+    /// it up this session exactly as it would after the app was killed; only
+    /// starting another run gives it up. Stepping away should not cost a run
+    /// the player only wanted a break from.
+    ///
+    /// A run that is already over (the last shell was in the air when the
+    /// player paused) is scored now instead, and shows its result: leaving it
+    /// on disk would let the next new run overwrite an unrecorded score.
+    fn suspend_run(&mut self) {
+        if self.run.as_ref().is_some_and(|r| r.is_over()) {
+            self.anim = None;
+            self.clear_hold = 0.0;
+            self.finish_run();
+            return;
+        }
+        if !self.run_persist {
+            return;
+        }
+        self.resumable = self.run.as_ref().map(|r| resume::Saved::of(r, self.daily));
+    }
+
+    /// At launch: offer the saved run, score one that had already ended, or
+    /// throw away one this build must not replay.
+    ///
+    /// The file is moved aside to `RUN_LOADING_PATH` while it is rebuilt and
+    /// only put back once the rebuild succeeds, so a log that brings the sim
+    /// down costs one crash, not one every launch.
+    fn find_saved_run(&mut self) {
+        if save::read(RUN_LOADING_PATH).is_some() {
+            // The last launch died rebuilding it.
+            godot_warn!("salt-line: discarding {RUN_LOADING_PATH}: a rebuild did not finish");
+            save::remove(RUN_LOADING_PATH);
+            self.discard_run_file();
+            self.note(resume::Stale::Diverged.note().into());
+            self.status_time = 6.0;
+            return;
+        }
+        let (path, text) = match save::read(RUN_PATH) {
+            Some(t) => (RUN_PATH, t),
+            None => match save::read(RUN_TEMP_PATH) {
+                Some(t) => (RUN_TEMP_PATH, t),
+                None => return,
+            },
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        save::rename(path, RUN_LOADING_PATH);
+        match resume::judge(Some(&text)) {
+            Found::Nothing => {
+                save::rename(RUN_LOADING_PATH, RUN_PATH);
+            }
+            Found::Continue(saved) => {
+                save::rename(RUN_LOADING_PATH, RUN_PATH);
+                self.resumable = Some(saved);
+            }
+            Found::Finished(saved, run) => {
+                // Gone before the score goes on the board, as in `finish_run`:
+                // a crash in between loses it rather than recording it twice.
+                save::remove(RUN_LOADING_PATH);
+                self.discard_run_file();
+                let (screens, shells, shots) = run.score();
+                let entry = Entry {
+                    seed: saved.seed,
+                    screens,
+                    shells,
+                    shots,
+                    daily: saved.daily,
+                };
+                if save::record(&mut self.save, entry).saved {
+                    self.note("LAST RUN SCORED".into());
+                } else {
+                    // Kept for a launch that can record it.
+                    save::write(RUN_PATH, RUN_TEMP_PATH, &text);
+                    self.note_not_saved("SCORE NOT SAVED");
+                }
+            }
+            Found::Discard(why) => {
+                godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}");
+                save::remove(RUN_LOADING_PATH);
+                self.discard_run_file();
+                self.note(why.note().into());
+                self.status_time = 6.0;
+            }
+        }
+    }
+
+    /// Rebuild the saved run and drop the player back in where it stood.
+    fn continue_run(&mut self) {
+        let Some(saved) = self.resumable.take() else {
+            return;
+        };
+        let Some(run) = saved.reconstruct() else {
+            self.discard_run_file();
+            self.note(resume::Stale::Diverged.note().into());
+            return;
+        };
+        self.set_run_width(Some(saved.width));
+        (self.angle_ticks, self.power_ticks) = saved.aim().unwrap_or((900, 600));
+        self.anim = None;
+        self.last_arc.clear();
+        self.clear_hold = 0.0;
+        self.cam_x = 0;
+        self.cam_target = 0.0;
+        self.daily = saved.daily;
+        self.last_seed = saved.seed;
+        self.low_shell_warned = run.shells < 10;
+        self.retire_last_crash();
+        let screen = run.screen_index;
+        // What is on disk is this run, as rebuilt.
+        self.run_saved_len = Some(run.log.len());
+        self.run_persist = true;
+        self.resumed = true;
+        self.run = Some(run);
+        self.mode = Mode::Playing;
+        self.preview.clear();
+        self.redraw.mark();
+        self.play_sound(Sound::Ui);
+        // Buffer size for the loadout, and the paywall gate if it is due.
+        self.after_screen_change();
+        self.note(format!(
+            "SCREEN {}  SEED {}",
+            screen + 1,
+            format_seed(saved.seed)
+        ));
     }
 }
