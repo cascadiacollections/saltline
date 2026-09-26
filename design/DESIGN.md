@@ -492,3 +492,151 @@ Confirm before any public build:
 - [ ] Zero code, data, or asset lineage from any prior artillery title
 - [ ] Palette and UI developed from reference photography, not from another game
 - [ ] Employer personal-project review submitted and cleared before publishing
+
+---
+
+## 8. Caches and seed rulesets
+
+**Status: proposed.** Nothing here is built yet. The numbers are starting
+points for the batch harness to tune (§6), not final values.
+
+A **cache** is a supply crate buried in the terrain. Players dig it out with
+ordinary shots: craters already persist (§2.6), so digging is a mechanic the
+player has from the first screen. It is a trade in the game's only currency.
+Shells spent digging now buy shells or a modifier later.
+
+Caches are off by default. They are switched on per run by a **ruleset** that
+travels with the seed, so a shared seed still means one exact run.
+
+### 8.1 Rulesets
+
+A run is identified by `(run_seed, rules)`. `rules` is a `u32` bitset, where
+bit 0 is `CACHE` and the other bits are reserved for future variants.
+
+**Text form:** `<seed>` or `<seed>+<RULE>[+<RULE>…]`, for example
+`20260907+CACHE`. `parse_seed` hashes any text into a seed (§2.2 sharing), so
+the rules must be split off first:
+
+1. Split the text on `+`.
+2. If every part after the first is a known rule token (case-insensitive),
+   those parts are the ruleset, and the first part is parsed as a seed exactly
+   as today.
+3. Otherwise the whole text is hashed as today. A seed someone already shared
+   keeps its meaning unless it happens to end in a rule token.
+
+The formatted seed is `<seed>` with `+<RULE>` for each bit set, in bit order,
+so every run has exactly one canonical text.
+
+**Rules are part of the run's identity everywhere a seed is:**
+
+| Place | Change |
+|---|---|
+| `RunState` | holds `rules`; generation and economy read it |
+| `Replay` | `(run_seed, width, rules, log)`; reconstruction starts from the same rules |
+| `state_hash` | includes `rules` |
+| Save board | a `run` line gains a sixth field, `rules`. Bump `VERSION`; a five-field line reads as `rules = 0`, so old boards load unchanged |
+| "Your best here" | keyed by `(seed, rules)` |
+| Daily run | always `rules = 0` at first (see §8.6) |
+
+### 8.2 Placement
+
+Each screen rolls for a cache independently, from its own stream:
+`cache_seed = splitmix64(screen_seed ^ CACHE_SALT)`. Because the stream is
+separate, **terrain, targets and wind are identical with or without `CACHE`**.
+The same seed plays the same screen and only gains buried crates. Existing
+screen digests do not change, and a test pins that.
+
+- **Chance:** 30% per screen, about 1.2 per band.
+- **Column:** in the approach, `x ∈ [muzzle + 30, nearest target − 45]`. The 45
+  keeps dig craters out of Salvage's 30-unit refund zone plus a crater radius,
+  so digging never doubles as a Salvage refund. If the gap is narrower than 10,
+  that screen has no cache.
+- **Footprint:** 3 columns. A cache never sits under a structure.
+- **Depth:** below the *original* surface, by tier:
+
+| Tier | Share | Depth | Layer | Centred hits to reach* | Contents |
+|---|---|---|---|---|---|
+| Shallow | 50% | 10–14 | Rock | 2 | +3 to +5 shells |
+| Deep | 35% | 18–26 | Rock | 3–4 | +5 to +8 shells |
+| Bedrock | 15% | 32–38 | Bedrock | 5–6 | A modifier offer: pick 1 of 2 from the draft pool, or +10 shells if the pool has nothing to offer |
+
+\* From the crater rule (§2.6) with `BASE_CRATER_RADIUS = 7`, a centred hit digs
+9.8 in sand, 7.0 in rock and 3.85 in bedrock. Expect about 1.5× the centred
+count in practice, since off-centre hits dig less.
+
+Contents are fixed by `cache_seed` but hidden until the cache is opened, so
+each cache is a gamble for the player and exactly the same for everyone who
+shares the seed.
+
+Supply screens (Scavenger Rites) have no targets, so they place a cache
+anywhere between the muzzle and the far edge, at the same odds.
+
+### 8.3 Claiming
+
+A cache is claimed on the shot whose crater lowers any of its columns to its
+depth, that is when `scar[i] ≥ depth` there. The check runs in the sim after
+craters are applied, alongside collapse. Claiming is derived entirely from
+the shots, so **caches add nothing to the shot log**, and replays reconstruct
+them for free.
+
+Shells are granted immediately and respect the reserve cap (Forced March). A
+modifier offer opens a small draft *after* the screen resolves, never
+mid-screen, so the draft stays the only place the loadout changes.
+
+### 8.4 The real cost, and who caches are for
+
+Digging shots are shots. They count toward the screen's shot total and so
+toward its refund tier (§1), and a dig resets a Standing Orders streak. For a
+player who would have cleared in one shot, a shallow cache really costs about
+3 dig shells plus the drop from a +3 refund to 0. That player should usually
+leave it. For a player already on their third shot, the lost refund is only 1,
+and a miss that digs is less wasted.
+
+That is the intended shape, and it gives each build its own economy:
+
+- **Precision** lives on refunds and mostly ignores caches.
+- **Demo** is described as shell-hungry (§4), and caches feed it. Auger tunnels
+  a layer before detonating and Cluster digs wide, so Demo should reach deep
+  caches for fewer shells. The harness measures how many fewer (§8.7). Caches
+  are Demo's economy pick.
+- **Sapper's Eye** also shows a cache's outline in the material banding. That
+  turns a guess into a costed decision.
+
+### 8.5 Presentation
+
+- **Tell:** a single `UI_FG` pixel on the surface above the cache, glinting for
+  one frame every two seconds. It uses no new colour: the alert accent stays
+  reserved (§5.2). Sapper's Eye adds the crate's 3-column outline in its band.
+- **Open:** the crate appears in the crater, drawn in the structure colours
+  (§5.2), for a beat. Then its contents fly to the shell plate as `+N`, or the
+  offer opens after the screen. No words.
+- **Seed entry:** `+CACHE` can be typed, and touch gets a toggle on the keypad.
+  The title screen and the run-over screen show the canonical seed text,
+  rules included.
+
+### 8.6 Open questions
+
+- **Daily runs.** Everyone shares the daily, so cache positions become community
+  knowledge. That's fun lore for custom seeds, but it flattens a leaderboard.
+  Start with dailies at `rules = 0`. Revisit with a weekly `+CACHE` daily if the
+  lore turns out to be a feature.
+- **Consumable power-ups** as a fourth tier (one-shot Auger, one-shot Airburst).
+  They would need a HUD slot and a rule for when they fire. Defer until the
+  shells-and-offers version has been tuned.
+- **More rules.** The bitset leaves room for `+CALM` (no wind), `+HARDPAN`
+  (thin sand), `+IRONMAN` (no refunds). Each must keep terrain generation
+  identical, or declare that it doesn't.
+
+### 8.7 Tuning targets
+
+Batch harness bots over the same seeds, compared by median run length (screens
+cleared):
+
+| Bot | Target vs never-dig |
+|---|---|
+| Never dig | baseline |
+| Dig only shallow caches, only after a miss | +0% to +15% |
+| Demo loadout (Auger + Cluster), dig everything reachable | +15% to +30% |
+| Always dig every cache | **worse** than baseline, so digging is never automatic |
+
+The levers, in order: chance per screen, tier shares, payouts, depths.
