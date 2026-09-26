@@ -1298,11 +1298,17 @@ impl RunState {
             self.one_shot_streak = 0;
         }
         self.grant(gain);
+        self.leave_screen();
+    }
 
-        // A draft fires at the end of each band (DESIGN §1). The offers come
-        // from the next screen's seed and the loadout, not from a running
-        // generator, so they are fixed by what the log already contains and
-        // a replay meets the same offers.
+    /// Leave a cleared screen: open the band-end draft if the next screen
+    /// starts a band, otherwise advance to it.
+    ///
+    /// A draft fires at the end of each band (DESIGN §1). The offers come
+    /// from the next screen's seed and the loadout, not from a running
+    /// generator, so they are fixed by what the log already contains and a
+    /// replay meets the same offers.
+    fn leave_screen(&mut self) {
         let next = self.screen_index + 1;
         if next.is_multiple_of(BAND_LEN) {
             let offers = draft_offers(screen_seed(self.run_seed, next), &self.loadout);
@@ -1371,11 +1377,12 @@ impl RunState {
         };
         // A supply screen has nothing to shoot at; walk straight through it.
         // It counts as cleared (DESIGN §4) and its +6 shells were granted on
-        // entry. Walking through bypasses `clear_screen`, so no refund is
-        // paid and the band-end draft check is not made for this step.
+        // entry. No refund is paid, but the band-end draft check is still
+        // made, so a supply screen just before a band start (15, 35, …)
+        // leaves the run drafting on it.
         if self.phase == Phase::Firing && self.screen.supply {
             self.screens_cleared += 1;
-            self.advance();
+            self.leave_screen();
         }
     }
 }
@@ -1966,6 +1973,26 @@ mod tests {
         assert!(!normal.supply);
         // And they do not appear without the modifier.
         assert!(!generate_screen(7, 5, 320, &Loadout::new()).supply);
+    }
+
+    /// Supply screens fall on multiples of 5, so 15, 35, … sit just before a
+    /// band start. Walking through one must still open that band's draft.
+    #[test]
+    fn supply_screens_before_a_band_start_still_open_its_draft() {
+        let mut state = RunState::new(0x5CA7, 320);
+        state.loadout.take(Modifier::ScavengerRites);
+        let mut drafts = Vec::new();
+        while state.screen_index < 40 {
+            assert!(!state.is_over(), "ran dry at screen {}", state.screen_index);
+            if state.phase == Phase::Drafting {
+                drafts.push(state.screen_index + 1);
+                state.take_offer(0);
+            } else {
+                clear_current_screen(&mut state, &Loadout::new());
+            }
+        }
+        let bands: Vec<u32> = (1..=10).map(|b| b * BAND_LEN).collect();
+        assert_eq!(drafts, bands, "every band start opens its draft");
     }
 
     #[test]
