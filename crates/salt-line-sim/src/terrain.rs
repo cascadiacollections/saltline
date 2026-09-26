@@ -5,11 +5,29 @@
 //! `art/scene_native_320x180.png`, so they are reproduced exactly rather than
 //! re-derived. The one change is orientation: the generator works in screen
 //! space (y down, `base_y = 128`), the sim works in world space (y up from the
-//! world floor), so `elevation = 180 - screen_y` and `BASE_ELEVATION = 52`.
+//! bottom of the screen buffer, y = 0), so `elevation = 180 - screen_y` and `BASE_ELEVATION = 52`.
 //!
 //! Buffers are `f64`, not `f32` as DESIGN §2.1 says: the brief's determinism
 //! constraint ("`f64` throughout the sim") is non-negotiable and outranks it.
 //! Quantization to integers still happens only at render time.
+//!
+//! The module covers steps 1–4 of the DESIGN §2.3 pipeline:
+//!
+//! ```text
+//! base_ridge   value-noise fBm, domain-warped                  (steps 1, 2)
+//! shape        template: damped relief plus added features,
+//!              clamped                                         (step 3)
+//! Heightfield  base + scar + material buffers                  (§2.1, step 4)
+//! ```
+//!
+//! Target placement and the solvability gate (steps 5 and 6) live in `run.rs`
+//! and [`crate::solver`], because they depend on the loadout.
+//!
+//! After generation only the scar buffer changes: [`Heightfield::crater`]
+//! digs and clamps at [`WORLD_FLOOR`]; [`Heightfield::mound`] piles debris
+//! and clamps at [`WORLD_CEIL`]. Both recompute the surface material from
+//! excavation depth. Keeping `base` untouched is what lets a
+//! replay rebuild a screen from its seed and re-apply the shots.
 
 use crate::dmath::{self, abs, clamp, smoothstep};
 use crate::rng::mix64;
@@ -18,12 +36,20 @@ use crate::{SCREEN_H, TERRAIN_STEP};
 // ----------------------------------------------------------------- materials
 
 /// Surface layer id. DESIGN §2.3 step 4.
+///
+/// Layers are defined by depth below the *generated* surface, so untouched
+/// ground is always Sand and deeper layers appear only as craters dig down.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Material {
+    /// Top [`SAND_DEPTH`] units. Craters widest (×1.4).
     Sand = 0,
+    /// From [`SAND_DEPTH`] to [`ROCK_DEPTH`].
     Rock = 1,
+    /// Below [`ROCK_DEPTH`]. Stops Auger.
     Bedrock = 2,
+    /// Structures. Never stored in the heightfield: the run uses it for a
+    /// direct hit on a structure.
     Steel = 3,
 }
 
@@ -43,7 +69,8 @@ impl Material {
         }
     }
 
-    /// Layer at `depth` below the original surface.
+    /// Layer at `depth` world units below the original surface. Never returns
+    /// Steel; zero and negative depths are Sand.
     pub fn at_depth(depth: f64) -> Material {
         if depth < SAND_DEPTH {
             Material::Sand
@@ -63,6 +90,11 @@ impl Material {
 // --------------------------------------------------------------------- noise
 
 /// 32-bit integer hash. Port of `gen_sprites.py::h1`.
+///
+/// Maps a lattice index to a pseudo-random value in `[0, 1]`. Xor-shift and
+/// multiply rounds, using the multipliers of MurmurHash3's 32-bit finaliser,
+/// scramble neighbouring indices into unrelated values. Only the low 32 bits
+/// of `n` take part.
 fn hash32(n: i64, seed: u32) -> f64 {
     let mut n = (n as i32 as u32) ^ seed;
     n = (n ^ (n >> 13)).wrapping_mul(0x85EB_CA6B);
@@ -74,6 +106,11 @@ fn hash32(n: i64, seed: u32) -> f64 {
 /// Value noise with smoothstep interpolation. Port of `gen_sprites.py::vnoise`.
 /// Value noise rather than Perlin per DESIGN §2.3 step 1 — the blockier
 /// character suits flat-colour art.
+///
+/// One-dimensional value noise: a random value at each integer lattice point
+/// (`hash32`), blended between neighbours with [`smoothstep`] so the curve
+/// is smooth where the lattice cells meet. Output is in `[0, 1]`. Perlin
+/// (gradient) noise would instead place random slopes at the lattice points.
 pub fn vnoise(x: f64, seed: u32) -> f64 {
     let i = dmath::floor(x);
     let f = smoothstep(x - i);
@@ -83,11 +120,18 @@ pub fn vnoise(x: f64, seed: u32) -> f64 {
 
 /// Octaves of value noise. DESIGN §2.3: 4 octaves, lacunarity 2.0, gain 0.5.
 pub const OCTAVES: u32 = 4;
+/// Frequency multiplier from one octave to the next.
 pub const LACUNARITY: f64 = 2.0;
+/// Amplitude multiplier from one octave to the next.
 pub const GAIN: f64 = 0.5;
 /// Per-octave seed stride, from `gen_sprites.py::fbm`.
 const OCTAVE_STRIDE: u32 = 7919;
 
+/// Fractal Brownian motion: [`OCTAVES`] layers of [`vnoise`], each at
+/// [`LACUNARITY`] times the frequency and [`GAIN`] times the amplitude of the
+/// last. Large, slow hills come from the first octave and detail from the
+/// later ones. Dividing by the summed amplitudes keeps the result in `[0, 1]`.
+/// Each octave gets its own seed so their lattices do not line up.
 pub fn fbm(x: f64, seed: u32) -> f64 {
     let mut amp = 1.0;
     let mut freq = 1.0;
@@ -108,11 +152,20 @@ pub fn fbm(x: f64, seed: u32) -> f64 {
 pub const BASE_ELEVATION: f64 = 52.0;
 /// Domain warp frequency and strength — DESIGN §2.3 step 2, "~15 units"
 /// offset either side of the sample point.
+///
+/// Frequencies are noise-lattice cells per world unit, so one lattice cell
+/// spans `1 / freq` pixels: about 170 for the warp field.
 pub const WARP_FREQ: f64 = 0.006;
+/// Full width of the warp offset. The warp noise is centred by subtracting
+/// 0.5 before scaling, so this gives up to ±15 units.
 pub const WARP_STRENGTH: f64 = 30.0;
+/// Frequency of the detail layer's first octave: cells about 70 px across.
 pub const DETAIL_FREQ: f64 = 0.014;
+/// Height range of the detail layer, in world units, before band amplitude.
 pub const DETAIL_AMP: f64 = 26.0;
+/// Frequency of the broad ridge layer's first octave: cells 250 px across.
 pub const RIDGE_FREQ: f64 = 0.004;
+/// Height range of the ridge layer, in world units, before band amplitude.
 pub const RIDGE_AMP: f64 = 20.0;
 
 /// Lowest surface elevation the world permits. Craters clamp here so the
@@ -128,12 +181,20 @@ fn field_seeds(screen_seed: u64) -> (u32, u32, u32) {
 }
 
 /// Steps 1 and 2 of DESIGN §2.3: base ridge plus domain warp. Returns
-/// elevation above the world floor, one sample per pixel column.
+/// elevation above y = 0, one sample per pixel column.
+///
+/// `amp` is the band's terrain amplitude multiplier (DESIGN §2.5, 1.0 rising
+/// to 2.2). Heights run from [`BASE_ELEVATION`] up to
+/// `BASE_ELEVATION + (DETAIL_AMP + RIDGE_AMP) * amp`; [`shape`] clamps them
+/// into the world afterwards.
 pub fn base_ridge(width: usize, screen_seed: u64, amp: f64) -> Vec<f64> {
     let (s_detail, s_warp, s_ridge) = field_seeds(screen_seed);
     let mut out = Vec::with_capacity(width);
     for i in 0..width {
         let x = i as f64 * TERRAIN_STEP;
+        // Domain warp: offset where the noise is sampled, not the height it
+        // returns. That bends hills sideways into lopsided shapes instead of
+        // just making them taller or shorter.
         let warp = (fbm(x * WARP_FREQ, s_warp) - 0.5) * WARP_STRENGTH;
         let n = fbm((x + warp) * DETAIL_FREQ, s_detail);
         let ridge = fbm((x + warp) * RIDGE_FREQ, s_ridge);
@@ -148,16 +209,25 @@ pub fn base_ridge(width: usize, screen_seed: u64, amp: f64) -> Vec<f64> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Template {
+    /// Gentle roll, target in the open. Keeps all the noise relief.
     Flat = 0,
+    /// One tall obstruction a little past mid-way to the target.
     Ridge = 1,
+    /// A gap in front of the target, which sits on a raised far lip.
     Chasm = 2,
+    /// Flat-topped plateau with the target on top.
     Mesa = 3,
+    /// Narrow columns between emplacement and target
+    /// ([`ShapeParams::spire_count`], at most three).
     Spires = 4,
+    /// A thin wall just in front of a sunken pocket holding the target.
     Overhang = 5,
+    /// Target down in a wide depression, with a rim on the near side.
     Basin = 6,
 }
 
 impl Template {
+    /// Every template, in discriminant order.
     pub const ALL: [Template; 7] = [
         Template::Flat,
         Template::Ridge,
@@ -186,6 +256,7 @@ impl Template {
         matches!(self, Template::Overhang)
     }
 
+    /// Display name, as used in logs and the batch report.
     pub const fn name(self) -> &'static str {
         match self {
             Template::Flat => "Flat",
@@ -204,11 +275,19 @@ impl Template {
 /// band-driven elevation delta (DESIGN §2.5).
 #[derive(Clone, Copy, Debug)]
 pub struct ShapeParams {
+    /// Screen width in columns.
     pub width: usize,
+    /// Terrain amplitude multiplier for the band; used by [`base_ridge`].
     pub amp: f64,
+    /// Emplacement x, world units.
     pub muzzle_x: f64,
+    /// Where the primary target wants to sit, world units. Templates build
+    /// their features relative to it.
     pub target_x: f64,
+    /// Signed height change, world units, blended in from the emplacement
+    /// to the target.
     pub elev_delta: f64,
+    /// Number of columns for [`Template::Spires`]; values above 3 act as 3.
     pub spire_count: u32,
 }
 
@@ -225,12 +304,15 @@ fn plateau(d: f64, half_width: f64, shoulder: f64) -> f64 {
 }
 
 /// Apply the shape template in place. Heights are elevations, y up.
+///
+/// Every column is clamped to `[WORLD_FLOOR, WORLD_CEIL]` on the way out.
 pub fn shape(heights: &mut [f64], template: Template, p: &ShapeParams) {
     let span = p.target_x - p.muzzle_x;
     let span = if abs(span) < 1.0 { 1.0 } else { span };
     for (i, h) in heights.iter_mut().enumerate() {
         let x = i as f64 * TERRAIN_STEP;
         let rel = *h - BASE_ELEVATION;
+        // 0 at the emplacement, 1 at the target, held at the ends.
         let u = clamp((x - p.muzzle_x) / span, 0.0, 1.0);
 
         // Templates keep a fraction of the noise relief and add their own
@@ -305,11 +387,12 @@ pub struct Heightfield {
     pub base: Vec<f64>,
     /// Accumulated subtraction. Negative entries are debris mounds (DESIGN §2.7).
     pub scar: Vec<f64>,
-    /// Layer id at the surface, recomputed from `base - scar`.
+    /// Layer id at the surface, recomputed from excavation depth (`scar`).
     pub material: Vec<Material>,
 }
 
 impl Heightfield {
+    /// A fresh field over generated heights: no scars, all Sand.
     pub fn from_base(base: Vec<f64>) -> Self {
         let n = base.len();
         Self {
@@ -319,17 +402,23 @@ impl Heightfield {
         }
     }
 
+    /// Number of columns.
     #[inline]
     pub fn len(&self) -> usize {
         self.base.len()
     }
 
+    /// True for a field with no columns.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.base.is_empty()
     }
 
     /// Surface elevation at a column index, clamped at the ends.
+    ///
+    /// # Panics
+    ///
+    /// If the field is empty.
     #[inline]
     pub fn surface(&self, i: usize) -> f64 {
         let i = i.min(self.len().saturating_sub(1));
@@ -341,6 +430,8 @@ impl Heightfield {
     /// DESIGN §2.1: the sim needs sub-pixel precision for collision even
     /// though the display has none. Rounding here makes shallow trajectories
     /// collide inconsistently.
+    ///
+    /// Outside the field the end columns extend flat; an empty field reads 0.
     pub fn surface_at(&self, x: f64) -> f64 {
         if self.is_empty() {
             return 0.0;
@@ -358,13 +449,21 @@ impl Heightfield {
         self.surface(i) * (1.0 - f) + self.surface(i + 1) * f
     }
 
-    /// Original (pre-damage) surface elevation.
+    /// Original (pre-damage) surface elevation, clamped at the ends like
+    /// [`Heightfield::surface`].
+    ///
+    /// # Panics
+    ///
+    /// If the field is empty.
     #[inline]
     pub fn original(&self, i: usize) -> f64 {
         self.base[i.min(self.len().saturating_sub(1))]
     }
 
     /// Surface layer at a column.
+    ///
+    /// Takes the nearest column rather than interpolating, clamped to the
+    /// field. An empty field reads Sand.
     #[inline]
     pub fn material_at(&self, x: f64) -> Material {
         if self.is_empty() {
@@ -375,6 +474,8 @@ impl Heightfield {
     }
 
     fn recompute_material(&mut self, from: usize, to: usize) {
+        // Excavation depth is the scar itself. Negative scar is a debris mound
+        // piled on top, which is loose material and reads as Sand.
         for i in from..to.min(self.len()) {
             let depth = self.scar[i];
             self.material[i] = if depth <= 0.0 {
@@ -390,6 +491,16 @@ impl Heightfield {
     ///
     /// Clamped so the surface can never be cut below the world floor — past
     /// that the heightfield inverts and collision breaks.
+    ///
+    /// `cx` and `radius` are in world units. Craters accumulate: a second
+    /// blast in the same place digs deeper. The profile is [`dmath::bump`]
+    /// scaled by the radius, so depth at the centre equals the radius and the
+    /// walls meet the ground with zero slope: a rounded bowl rather than a
+    /// V-shaped notch.
+    ///
+    /// The clamp is at [`WORLD_FLOOR`], not at bedrock: DESIGN §2.6 says to
+    /// "cap total scar depth at bedrock", but a column can be dug on into
+    /// bedrock, down to the floor.
     pub fn crater(&mut self, cx: f64, radius: f64) {
         if radius <= 0.0 || self.is_empty() {
             return;
@@ -413,6 +524,9 @@ impl Heightfield {
 
     /// Debris mound — a small positive addition where a structure fell.
     /// DESIGN §2.7: "terrain gets slightly higher where a structure fell".
+    ///
+    /// A [`dmath::bump`] of `height` units at `cx`, recorded as negative scar
+    /// and clamped at [`WORLD_CEIL`].
     pub fn mound(&mut self, cx: f64, radius: f64, height: f64) {
         if radius <= 0.0 || height <= 0.0 || self.is_empty() {
             return;
@@ -432,6 +546,13 @@ impl Heightfield {
 
     /// Highest surface across a footprint — seats a structure so no column of
     /// it floats. Port of `gen_sprites.py::seat`.
+    ///
+    /// Columns past the end are ignored; if none remain, falls back to the
+    /// clamped surface at `x0`.
+    ///
+    /// # Panics
+    ///
+    /// If the field is empty.
     pub fn seat(&self, x0: usize, footprint: usize) -> f64 {
         let mut m = f64::MIN;
         for i in x0..(x0 + footprint).min(self.len()) {
@@ -447,8 +568,14 @@ impl Heightfield {
         }
     }
 
-    /// Mean surface across a footprint, normalized to the original heights.
+    /// Mean surface across a footprint, normalised to the original heights.
     /// This is the support fraction of DESIGN §2.7.
+    ///
+    /// `original_mean` is the mean surface across the footprint when the
+    /// structure was placed. The result is clamped to `[0, 1]`, so debris
+    /// piled higher than the original ground never counts as extra support.
+    /// Degenerate inputs (an empty footprint, a non-positive mean, a
+    /// footprint entirely past the end) read as fully supported.
     pub fn support_fraction(&self, x0: usize, footprint: usize, original_mean: f64) -> f64 {
         if footprint == 0 || original_mean <= 0.0 {
             return 1.0;
@@ -475,8 +602,8 @@ pub fn generate(screen_seed: u64, template: Template, p: &ShapeParams) -> Height
     Heightfield::from_base(base)
 }
 
-/// Sanity bound used by tests and the Godot layer: nothing may sit outside the
-/// internal buffer.
+/// Sanity bound used by the tests: nothing may sit outside the internal
+/// buffer, `0..=SCREEN_H`.
 pub fn in_world(elev: f64) -> bool {
     elev >= 0.0 && elev <= SCREEN_H as f64
 }

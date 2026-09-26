@@ -11,6 +11,17 @@
 //! ```
 //!
 //! Exit status is non-zero if any screen failed to validate, so CI can gate on it.
+//!
+//! Flags: `--seeds N`, `--screens N` (per seed), `--width W`, `--build
+//! base|evolving|drift|demo|precision|risk` (default evolving), `--fast` (cap
+//! candidate counts at [`solver::GATE_CAP`], so the histogram saturates) and
+//! `-v` (print each failure as it happens).
+//!
+//! The report has three parts: surviving direct-aim candidates by band and
+//! by template, a solver-assisted economy model (see the comment above its
+//! printout), and totals. Screen generation tries eight seeds, then eight
+//! Flat seeds, then a terrain-free single-target fallback returned without
+//! gating; a failure here means that last fallback failed.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::screen_seed;
@@ -27,13 +38,18 @@ enum Build {
     Base,
     /// Takes a seeded offer every band, the way a run actually goes.
     Evolving,
+    /// Ballast, Anemometer, Vernier (DESIGN §4 build shapes).
     Drift,
+    /// Auger, Cluster, Thermal Lance.
     Demo,
+    /// Sabot, Rangefinder, Chalk Marks.
     Precision,
+    /// Featherweight, Dead Reckoning, Forced March.
     Risk,
 }
 
 impl Build {
+    /// The `--build` spelling.
     fn parse(s: &str) -> Option<Build> {
         Some(match s {
             "base" => Build::Base,
@@ -126,7 +142,7 @@ fn parse_args() -> Args {
     a
 }
 
-/// One bucket of the histogram.
+/// One row of the report: a band or a template.
 #[derive(Clone)]
 struct Bucket {
     screens: u64,
@@ -199,6 +215,10 @@ impl Bucket {
 }
 
 /// Loadout for a screen index under the chosen build.
+///
+/// Rebuilt from nothing for every screen rather than carried forward, so any
+/// screen can be checked on its own. Fixed builds gain one pick per
+/// completed band, in the listed order.
 fn loadout_for(build: Build, run_seed: u64, screen_index: u32) -> Loadout {
     let mut lo = Loadout::new();
     match build {
@@ -227,6 +247,7 @@ fn loadout_for(build: Build, run_seed: u64, screen_index: u32) -> Loadout {
     lo
 }
 
+/// A `#` bar of `width` characters, filled in proportion to `n / max`.
 fn bar(n: u64, max: u64, width: usize) -> String {
     if max == 0 {
         return String::new();
@@ -276,6 +297,7 @@ fn main() {
     let started = std::time::Instant::now();
 
     for s in 0..args.seeds {
+        // Well-spread run seeds, derived from the seed number alone.
         let run_seed =
             salt_line_sim::rng::mix64(0x5341_4C54 ^ s.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let mut reserve = START_SHELLS;
@@ -285,6 +307,8 @@ fn main() {
         let mut one_shot_streak = 0u32;
         for index in 0..args.screens {
             let lo = loadout_for(args.build, run_seed, index);
+            // Diff against the previous screen's loadout to find new picks
+            // and grant their instant shells, as taking them in a run would.
             for m in Modifier::all() {
                 if lo.has(m) {
                     modifier_screens[m.index()] += 1;
@@ -324,6 +348,9 @@ fn main() {
             let worst = report.worst;
             let direct = report.worst_direct;
 
+            // Economy model: one shell per target, then the refund and bonus
+            // a real clear would pay. The run ends when the reserve cannot
+            // cover the next screen; validation carries on regardless.
             if alive {
                 let shots = screen.structures.len() as i32;
                 if reserve < shots {
@@ -455,7 +482,9 @@ fn main() {
     // -------------------------------------------- deterministic play model
     // This is an ideal solver-assisted policy: one successful shot per target,
     // preferring a direct candidate. It provides a stable economy baseline;
-    // movement away from it after tuning is immediately visible.
+    // movement away from it after tuning is immediately visible. "Preferring"
+    // is only in the accounting: a target with no direct-aim candidate counts
+    // as an indirect shot, and costs the same one shell.
     println!("\nsolver-assisted run metrics");
     println!(
         "shell economy: spent {economy_spent}, clear refunds {economy_refunds}, \

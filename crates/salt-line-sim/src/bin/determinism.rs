@@ -12,19 +12,32 @@
 //! ```text
 //! cargo run --release -p salt-line-sim --bin determinism
 //! cargo run --release -p salt-line-sim --bin determinism -- --expect 0x...
+//! cargo run --release -p salt-line-sim --bin determinism -- --verbose
 //! ```
+//!
+//! Two checks in one: live play against its own replay catches state the
+//! shot log fails to capture, and the digest compared across machines catches
+//! floating-point or ordering differences between platforms. `--expect`
+//! pins the digest locally; `--verbose` prints each run's hash. Exit status
+//! is 1 on any divergence or digest mismatch, 2 on a bad flag.
 
 use salt_line_sim::ballistics::Shot;
 use salt_line_sim::replay::{state_hash, Hasher, Replay};
 use salt_line_sim::rng::Pcg32;
 use salt_line_sim::run::{Phase, RunState};
 
+/// Runs played, per DESIGN §6.
 const RUNS: u64 = 200;
+/// Cap on inputs (shots, clears, draft picks) per run.
 const DECISIONS: usize = 160;
+/// Buffer width, the DESIGN §2.5 reference.
 const WIDTH: usize = 320;
 
 /// Deterministic stand-in for a player. Not a good one — the point is to
 /// touch drafts, misses, hits, collapses and the reserve running dry.
+/// Its inputs come from a PCG32 seeded by the run seed, so the input
+/// sequence is as reproducible as the sim. Same input model as the `play`
+/// helper in `replay.rs`'s tests.
 fn play(run_seed: u64) -> RunState {
     let mut state = RunState::new(run_seed, WIDTH);
     let mut r = Pcg32::new(run_seed ^ 0xB0A7);
@@ -90,6 +103,8 @@ fn main() {
     let mut screens = 0u32;
 
     for n in 0..RUNS {
+        // Fixed, well-spread run seeds: a constant xored with the run number
+        // times the golden-ratio constant.
         let run_seed = 0x5A17_0000_0000_0000 ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let played = play(run_seed);
         let played_hash = state_hash(&played);
@@ -109,6 +124,8 @@ fn main() {
         }
         shots += played.log.len();
         screens += played.screens_cleared;
+        // The digest folds every run's hash in run order, so one line of
+        // output stands for all 200 final states.
         digest.write_u64(played_hash);
         if verbose {
             println!(
