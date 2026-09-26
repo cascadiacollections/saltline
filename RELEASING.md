@@ -303,8 +303,6 @@ Copy this into the release notes, trimmed to what is still true.
 
 **Open, tracked in `NOTES.md`**
 
-- `Vernier` and `Salvage` have no effect on their second stack. Both are listed
-  as `Stacks: 2` in DESIGN §4. This needs a design decision, not a patch.
 - Band 0 has no wind at all (`wind = band * 0.35`), so the opening four screens
   teach the arc with nothing to read on the HUD. May be deliberate.
 - `Overhang` is rare — about 4% of screens — because it needs both the unlock
