@@ -41,6 +41,10 @@ pub const IMPACT_TIME: f64 = 0.24;
 /// Seconds the alert border flashes after a structure collapses.
 pub const COLLAPSE_TIME: f64 = 0.34;
 
+/// The most activations [`RepeatState::tick`] returns for one frame, however
+/// long the frame was.
+pub const MAX_REPEATS: u32 = 20;
+
 /// Hold-to-repeat for one input: fires once on the press, again
 /// `delay + rate` later, then every `rate` while held — the same behaviour as
 /// a desktop keyboard's auto-repeat.
@@ -63,9 +67,11 @@ impl RepeatState {
     /// Returns 1 on the frame the input goes down, 0 while released, and
     /// otherwise the number of whole `rate` intervals accumulated. The first
     /// repeat therefore lands `delay + rate` seconds after the press. A long
-    /// frame can return several, capped at 20 per call. The cap does not
-    /// discard the excess: whatever is left on the clock carries over to the
-    /// following frames.
+    /// frame can return several, capped at [`MAX_REPEATS`] per call. Every
+    /// whole interval is taken off the clock either way, so the excess past
+    /// the cap is dropped: after a stall the repeat carries on at its rate
+    /// instead of firing a burst on each of the following frames. Only the
+    /// part-interval left over carries.
     ///
     /// `rate` must be positive.
     pub fn tick(&mut self, down: bool, delta: f64, delay: f64, rate: f64) -> u32 {
@@ -79,12 +85,18 @@ impl RepeatState {
             return 1;
         }
         self.clock += delta;
-        let mut count = 0;
-        while self.clock >= rate && count < 20 {
-            self.clock -= rate;
-            count += 1;
+        if self.clock < rate {
+            return 0;
         }
-        count
+        // Every whole interval at once, not one at a time: a delta of any
+        // size costs the same.
+        let whole = (self.clock / rate).floor();
+        self.clock -= whole * rate;
+        if !(0.0..rate).contains(&self.clock) {
+            // A clock too large to subtract from exactly.
+            self.clock = 0.0;
+        }
+        (whole as u64).min(u64::from(MAX_REPEATS)) as u32
     }
 
     /// `tick` for an input that also reports presses as events. A press seen
@@ -156,6 +168,27 @@ mod tests {
         assert_eq!(r.tick(true, 0.07, 0.28, 0.05), 1);
         assert_eq!(r.tick(false, 1.0, 0.28, 0.05), 0);
         assert_eq!(r.tick(true, 0.0, 0.28, 0.05), 1);
+    }
+
+    #[test]
+    fn a_stall_repeats_at_most_the_cap_once_and_then_carries_on_at_the_rate() {
+        let mut r = RepeatState::default();
+        assert_eq!(r.tick(true, 0.0, 0.28, 0.05), 1);
+        // A five-second hitch is a hundred intervals: capped, and the rest
+        // thrown away rather than paid out over the next frames.
+        assert_eq!(r.tick(true, 5.0 + 0.28, 0.28, 0.05), MAX_REPEATS);
+        assert_eq!(r.tick(true, 0.016, 0.28, 0.05), 0);
+        assert_eq!(r.tick(true, 0.016, 0.28, 0.05), 0);
+        assert_eq!(r.tick(true, 0.02, 0.28, 0.05), 1);
+    }
+
+    #[test]
+    fn any_delta_returns_at_once() {
+        let mut r = RepeatState::default();
+        r.tick(true, 0.0, 0.28, 0.05);
+        assert_eq!(r.tick(true, 1e15, 0.28, 0.05), MAX_REPEATS);
+        assert_eq!(r.tick(true, 0.016, 0.28, 0.05), 0);
+        assert_eq!(r.tick(true, f64::MAX, 0.28, 1e-300), MAX_REPEATS);
     }
 
     #[test]

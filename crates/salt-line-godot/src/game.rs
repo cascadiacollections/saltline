@@ -26,10 +26,12 @@
 //!     ├─ crash::panicked()? ──yes──► broken_frame: Game::broken_tick,
 //!     │                               file effects dropped, error screen
 //!     ├─ poll_display       window size every frame, cutout when due
+//!     ├─ watch_drift        disarm a stick axis held over, doing nothing, too long
 //!     ├─ gather_intents     events + keys/pads held + stick polled ──► Intents
 //!     ├─ Game::tick_with    events → crash::note (for the report) → timers
 //!     │                     → display → mode input → step → run file → settings
 //!     ├─ apply(effects)     in order; Store ──► save::store ──► Game::stored
+//!     ├─ pads.in_use        a stick held over that moved the aim is not drift
 //!     ├─ prune_pads         forget unplugged joypads, once a second
 //!     ├─ frame cap          idle menus at frame::IDLE_FPS
 //!     ├─ redraw.due(busy)?  dirty flag, or anything moving
@@ -70,7 +72,7 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, SavedRun, Sound};
+use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, Sound};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
@@ -79,7 +81,7 @@ use crate::pads::Pads;
 use crate::palette::Palette;
 use crate::raster::Canvas;
 use crate::render::{self, Art, Cache};
-use crate::resume::{RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
+use crate::resume::{self, RUN_LOADING_PATH, RUN_PATH};
 use crate::save;
 use crate::sprites::Sprites;
 use crate::touch::Button;
@@ -232,13 +234,15 @@ impl INode2D for SaltLine {
         // The dev clock (`--salt-shot-at`) runs on the capped time the core
         // animates by, so a capture on a slow frame lands at the same point
         // of an animation.
-        let capped = crate::resume::frame_delta(delta);
+        let capped = resume::frame_delta(delta);
         self.elapsed += capped;
         self.poll_display(capped);
+        self.watch_drift(capped);
         self.gather_intents();
         // Keep the crash hook's picture of the run current. Taken before this
         // frame's input is acted on, so a panic inside `fire` still reports
         // the aim it fired. The core gets the raw `delta` and caps it itself.
+        let aim = (self.g.play.angle_ticks, self.g.play.power_ticks);
         let fx = self.g.tick_with(delta, &self.intents, |g| {
             crash::note(
                 g.mode_name(),
@@ -248,6 +252,13 @@ impl INode2D for SaltLine {
             )
         });
         self.apply(fx);
+        // A stick held over that moved the aim this frame is a hand on it,
+        // however long it has been held: not drift (`Pads::in_use`).
+        if self.intents.stick.iter().any(|&held| held)
+            && aim != (self.g.play.angle_ticks, self.g.play.power_ticks)
+        {
+            self.pads.in_use();
+        }
         self.prune_pads(capped);
         self.apply_frame_cap();
         if self.redraw.due(self.busy()) {
@@ -436,32 +447,45 @@ impl SaltLine {
                 }
                 Effect::Quit => self.base().get_tree().quit(),
                 Effect::Store(why) => {
-                    let ok = save::store(&self.g.save_to_store(&why));
+                    // A finished log goes before its score, and the score
+                    // only once the log is confirmed gone.
+                    let cleared = why.clear().is_none_or(|text| {
+                        let ok = resume::replace(&mut UserFiles, text);
+                        if !ok {
+                            godot_warn!(
+                                "salt-line: could not clear {RUN_PATH}; not scoring beside it"
+                            );
+                        }
+                        ok
+                    });
+                    let ok = cleared && save::store(&self.g.save_to_store(&why));
                     // The outcome goes straight back to the core, and what
                     // it asks for in reply is applied now, ahead of the rest
-                    // of this list: a failed score's `RunFile::Keep` must
-                    // land before anything queued after the score.
+                    // of this list: a failed score's `RunFile::Write`, which
+                    // keeps its log, must land before anything queued after
+                    // the score.
                     let fx = self.g.stored(why, ok);
                     self.apply(fx);
                 }
-                Effect::RunFile(RunFile::Write(line) | RunFile::Keep(line)) => {
-                    save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+                Effect::RunFile(RunFile::Write(text)) => {
+                    resume::replace(&mut UserFiles, &text);
                 }
                 Effect::RunFile(RunFile::Restore) => {
                     save::rename(RUN_LOADING_PATH, RUN_PATH);
                 }
                 Effect::RunFile(RunFile::Discard) => Self::discard_run_file(),
-                Effect::RunFile(RunFile::Abandon(why)) => {
-                    match why {
-                        Abandoned::Interrupted => godot_warn!(
+                Effect::RunFile(RunFile::Abandon(why)) => match why {
+                    Abandoned::Interrupted => {
+                        godot_warn!(
                             "salt-line: discarding {RUN_LOADING_PATH}: a rebuild did not finish"
-                        ),
-                        Abandoned::Unreadable(why) => {
-                            godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}")
-                        }
+                        );
+                        resume::drop_set_aside(&mut UserFiles);
                     }
-                    Self::discard_run_file();
-                }
+                    Abandoned::Unreadable(why) => {
+                        godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}");
+                        Self::discard_run_file();
+                    }
+                },
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (
                         save::on_disk(crash::REPORT_PATH),
@@ -479,18 +503,32 @@ impl SaltLine {
 
 // ------------------------------------------------------------------ launch
 
+/// The run files on `user://`, through `save`, for `resume`'s rules.
+struct UserFiles;
+
+impl resume::RunFiles for UserFiles {
+    fn read(&self, path: &str) -> Option<String> {
+        save::read(path)
+    }
+    fn exists(&self, path: &str) -> bool {
+        save::exists(path)
+    }
+    fn write(&mut self, main: &str, temp: &str, text: &str) -> bool {
+        save::write(main, temp, text)
+    }
+    fn rename(&mut self, from: &str, to: &str) -> bool {
+        save::rename(from, to)
+    }
+    fn remove(&mut self, path: &str) {
+        save::remove(path);
+    }
+}
+
 impl SaltLine {
-    /// Leave no run to resume or score: the copy set aside at launch, the
-    /// temporary file and the run file. If a file cannot be deleted, the run
-    /// file is overwritten with nothing, which `resume::judge` reads as no
-    /// run.
+    /// Leave no run to resume or score (`resume::discard`).
     fn discard_run_file() {
-        save::remove(RUN_LOADING_PATH);
-        save::remove(RUN_TEMP_PATH);
-        save::remove(RUN_PATH);
-        if save::read(RUN_PATH).is_some() || save::read(RUN_TEMP_PATH).is_some() {
-            godot_warn!("salt-line: could not delete {RUN_PATH}; blanking it");
-            save::write(RUN_PATH, RUN_TEMP_PATH, "");
+        if !resume::discard(&mut UserFiles) {
+            godot_warn!("salt-line: could not delete or blank {RUN_PATH}");
         }
     }
 }
@@ -519,23 +557,11 @@ impl SaltLine {
     ///
     /// The file is moved aside to `RUN_LOADING_PATH` before the core rebuilds
     /// it, and only put back once the rebuild succeeds, so a log that brings
-    /// the sim down costs one crash, not one every launch.
+    /// the sim down costs one crash, not one every launch. Which copy, and
+    /// the move, are `resume::take_saved`.
     fn find_saved_run(&mut self) {
-        let found = if save::read(RUN_LOADING_PATH).is_some() {
-            SavedRun::Interrupted
-        } else {
-            let (path, text) = match save::read(RUN_PATH) {
-                Some(t) => (RUN_PATH, t),
-                None => match save::read(RUN_TEMP_PATH) {
-                    Some(t) => (RUN_TEMP_PATH, t),
-                    None => return,
-                },
-            };
-            if text.trim().is_empty() {
-                return;
-            }
-            save::rename(path, RUN_LOADING_PATH);
-            SavedRun::Found(text)
+        let Some(found) = resume::take_saved(&mut UserFiles) else {
+            return;
         };
         let fx = self.g.saved_run(found);
         self.apply(fx);
@@ -690,6 +716,20 @@ impl SaltLine {
         self.pads.retain_connected(&connected);
     }
 
+    /// Disarm a stick axis that has sat pushed too long to be a hand on it
+    /// (`Pads::tick`), before this frame reads the stick.
+    fn watch_drift(&mut self, delta: f64) {
+        let input = Input::singleton();
+        self.pads.tick(delta, |device, slot| {
+            let axis = if slot == 0 {
+                JoyAxis::LEFT_X
+            } else {
+                JoyAxis::LEFT_Y
+            };
+            input.get_joy_axis(device, axis)
+        });
+    }
+
     /// The stick is pushed past the threshold on any joypad whose stick has
     /// been seen at rest.
     fn stick_held(&self, axis: JoyAxis, sign: f32) -> bool {
@@ -698,7 +738,7 @@ impl SaltLine {
         self.pads
             .iter()
             .filter(|p| p.armed[slot])
-            .any(|p| input.get_joy_axis(p.device, axis) * sign > 0.45)
+            .any(|p| input.get_joy_axis(p.device, axis) * sign > crate::pads::PUSH)
     }
 
     /// Something on screen is moving or being held, so every frame draws.

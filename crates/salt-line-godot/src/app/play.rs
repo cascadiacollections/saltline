@@ -239,41 +239,74 @@ impl Game {
 
     /// The run is over: score it and show the result.
     pub(crate) fn finish_run(&mut self) {
-        // The run file goes before the score is recorded, never after: a
-        // crash in between costs this score, where the other order would
+        // The run file goes before the score is recorded, never after, and
+        // the score only if it is confirmed gone (`Store::Score`'s `clear`):
+        // a crash in between costs this score, where the other order would
         // record it twice (the next launch scores a finished log).
-        let line = self
-            .play
-            .run
-            .as_ref()
-            .filter(|_| self.run_file.run_persist)
-            .map(|r| resume::Saved::of(r, self.play.daily).to_line());
-        self.stop_persisting();
-        if let Some(run) = self.play.run.as_ref() {
-            let (screens, shells, shots) = run.score();
-            let entry = Entry {
-                seed: run.run_seed,
-                screens,
-                shells,
-                shots,
-                daily: self.play.daily,
-            };
-            self.record(entry, line, false);
+        let persisted = self.stop_persisting();
+        let Some(run) = self.play.run.as_ref() else {
+            if persisted {
+                self.fx.push(Effect::RunFile(RunFile::Discard));
+            }
+            self.mode = Mode::GameOver;
+            return;
+        };
+        let (screens, shells, shots) = run.score();
+        let entry = Entry {
+            seed: run.run_seed,
+            screens,
+            shells,
+            shots,
+            daily: self.play.daily,
+        };
+        if persisted {
+            // Scored with any earlier runs still waiting in the run file.
+            let line = resume::Saved::of(run, self.play.daily).to_line();
+            self.run_file.unscored.push(Unscored { entry, line });
+            self.score_unscored(false);
+        } else {
+            // Never in the run file (a `--salt-screen` jump): nothing to
+            // clear, and nothing kept if the board cannot be written.
+            self.fx.push(Effect::Store(Store::Score {
+                entries: vec![entry],
+                clear: None,
+                announce: false,
+            }));
         }
         self.mode = Mode::GameOver;
     }
 
-    /// Ask for a finished run to go on the board; `keep` is its line, for a
-    /// later launch to score if the board does not reach disk. The entry is
-    /// only placed in memory once it is on disk (`stored`): placed first, a
-    /// later settings write would carry it to disk while the kept line
-    /// scored it again at the next launch.
-    pub(super) fn record(&mut self, entry: Entry, keep: Option<String>, announce: bool) {
+    /// Ask for every run in `RunFileState::unscored` to go on the board,
+    /// once the run file holds only the run kept for CONTINUE, if any. The
+    /// entries are only placed in memory once they are on disk (`stored`):
+    /// placed first, a later settings write would carry them to disk while
+    /// their kept lines scored them again at the next launch.
+    ///
+    /// Over a save from a newer build, which this one never writes
+    /// (`save::store`), there is no attempt: the run file is not cleared
+    /// only to be written back, and the runs simply stay in it.
+    pub(super) fn score_unscored(&mut self, announce: bool) {
+        if self.save.from_the_future {
+            self.keep_unscored();
+            return;
+        }
         self.fx.push(Effect::Store(Store::Score {
-            entry,
-            keep,
+            entries: self.run_file.unscored.iter().map(|u| u.entry).collect(),
+            clear: Some(self.kept_line().unwrap_or_default()),
             announce,
         }));
+    }
+
+    /// The waiting runs did not reach the board (a save from a newer build,
+    /// a full disk, a finished log that would not go): keep their lines in
+    /// the run file, so a later score or launch can get them there, and say
+    /// so.
+    pub(super) fn keep_unscored(&mut self) {
+        if !self.run_file.unscored.is_empty() {
+            self.fx
+                .push(Effect::RunFile(RunFile::Write(self.run_file_text())));
+        }
+        self.note_not_saved("SCORE NOT SAVED");
     }
 
     /// Play the game for the camera: aim with the solver, take offer 1.

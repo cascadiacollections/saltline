@@ -499,33 +499,30 @@ fn the_last_shell_ends_the_run_and_it_is_scored_exactly_once() {
     assert_eq!(count(&fx, is_score), 1);
     // Not on the board until the write says it is on disk.
     assert!(g.save.scores.is_empty());
-    // The run file goes first, then the board.
-    let discard = fx
-        .iter()
-        .position(|e| *e == Effect::RunFile(RunFile::Discard))
-        .unwrap();
+    // The run file goes first, as part of the score: nothing discards it
+    // unconfirmed ahead of it.
+    assert!(!fx.contains(&Effect::RunFile(RunFile::Discard)));
     let score = fx.iter().position(is_score).unwrap();
-    assert!(discard < score);
     // Scored with its line kept in case the board cannot be written.
     let Effect::Store(why) = fx[score].clone() else {
         unreachable!()
     };
+    assert_eq!(why.clear(), Some(""), "the finished log must go first");
     match &why {
         Store::Score {
-            entry,
-            keep,
-            announce,
+            entries, announce, ..
         } => {
-            assert_eq!(entry.seed, seed);
-            assert!(keep.is_some());
+            assert_eq!(entries.iter().map(|e| e.seed).collect::<Vec<_>>(), [seed]);
             assert!(!announce);
         }
         other => panic!("{other:?}"),
     }
+    assert_eq!(g.run_file.unscored.len(), 1, "waiting until it is on disk");
     assert_eq!(g.save_to_store(&why).scores.len(), 1);
     assert!(g.stored(why, true).is_empty());
     assert_eq!(g.save.scores.len(), 1);
     assert_eq!(g.save.scores[0].seed, seed);
+    assert!(g.run_file.unscored.is_empty());
     assert!(fx.contains(&Effect::RecheckDisplay));
     let fx = frames(&mut g, 60);
     assert_eq!(count(&fx, is_score), 0);
@@ -562,15 +559,20 @@ fn quitting_a_run_that_already_ended_scores_it() {
 #[test]
 fn a_board_that_cannot_be_written_keeps_the_run_and_says_so() {
     let mut g = game();
+    g.run_file.unscored.push(Unscored {
+        entry: entry(1),
+        line: "line\n".into(),
+    });
     let fx = g.stored(
         Store::Score {
-            entry: entry(1),
-            keep: Some("line".into()),
+            entries: vec![entry(1)],
+            clear: Some(String::new()),
             announce: false,
         },
         false,
     );
-    assert_eq!(fx[0], Effect::RunFile(RunFile::Keep("line".into())));
+    assert_eq!(fx[0], Effect::RunFile(RunFile::Write("line\n".into())));
+    assert_eq!(g.run_file.unscored.len(), 1);
     assert_eq!(g.status, "SCORE NOT SAVED");
     assert!(
         g.save.scores.is_empty(),
@@ -935,21 +937,122 @@ fn a_saved_run_that_had_ended_is_scored_at_launch() {
     let line = Saved::of(&run, false).to_line();
     let mut g = game();
     let fx = g.saved_run(SavedRun::Found(line.clone()));
-    assert_eq!(fx[0], Effect::RunFile(RunFile::Discard));
+    // Put back first, so a clear that cannot be written leaves it in place.
+    assert_eq!(fx[0], Effect::RunFile(RunFile::Restore));
     let Effect::Store(why) = fx[1].clone() else {
         panic!("{:?}", fx[1])
     };
+    // The file goes before the score, confirmed.
+    assert_eq!(why.clear(), Some(""));
     match &why {
-        Store::Score { keep, announce, .. } => {
-            assert_eq!(keep.as_deref(), Some(line.as_str()));
-            assert!(announce);
-        }
+        Store::Score { announce, .. } => assert!(announce),
         other => panic!("{other:?}"),
     }
+    // Its line kept, in case this launch cannot write the board either.
+    let kept: Vec<&str> = g
+        .run_file
+        .unscored
+        .iter()
+        .map(|u| u.line.as_str())
+        .collect();
+    assert_eq!(kept, [line.as_str()]);
     assert!(g.run_file.resumable.is_none());
     g.stored(why, true);
     assert_eq!(g.save.scores.len(), 1);
     assert_eq!(g.status, "LAST RUN SCORED");
+}
+
+#[test]
+fn a_kept_score_beside_a_saved_run_is_scored_and_the_run_offered() {
+    let finished = Saved::of(&spent_run(3), false).to_line();
+    let mut live = RunState::new(42, 320);
+    live.fire(Shot::new(1400, 330), false);
+    let live = Saved::of(&live, false).to_line();
+    let mut g = game();
+    let fx = g.saved_run(SavedRun::Found(format!("{finished}{live}")));
+    assert_eq!(fx[0], Effect::RunFile(RunFile::Restore));
+    let Effect::Store(why) = fx[1].clone() else {
+        panic!("{:?}", fx[1])
+    };
+    // The finished line goes, the live one stays, before the board.
+    assert_eq!(why.clear(), Some(live.as_str()));
+    assert_eq!(g.run_file.resumable.as_ref().map(|s| s.seed), Some(42));
+    // Not written: kept, with the run to continue after it.
+    let fx = g.stored(why, false);
+    assert_eq!(
+        fx[0],
+        Effect::RunFile(RunFile::Write(format!("{finished}{live}")))
+    );
+
+    // A line gone bad beside a good run: the run is kept, alone.
+    let mut g = game();
+    let fx = g.saved_run(SavedRun::Found(format!("resume junk\n{live}")));
+    assert_eq!(fx[0], Effect::RunFile(RunFile::Restore));
+    assert_eq!(fx[1], Effect::RunFile(RunFile::Write(live.clone())));
+    assert_eq!(g.status_time, STALE_STATUS_TIME);
+    assert!(g.run_file.resumable.is_some());
+}
+
+#[test]
+fn a_save_from_a_newer_build_scores_nothing_and_leaves_the_run_file_alone() {
+    let mut g = playing(9);
+    g.save.from_the_future = true;
+    *g.play.run.as_mut().unwrap() = spent_run(9);
+    g.take_effects();
+    g.finish_run();
+    let fx = g.take_effects();
+    // No clear and no save write, which would only be refused: the finished
+    // run is written back as it is, for a build that can score it.
+    assert_eq!(count(&fx, is_score), 0);
+    let line = Saved::of(&spent_run(9), false).to_line();
+    assert!(fx.contains(&Effect::RunFile(RunFile::Write(line.clone()))));
+    assert_eq!(g.status, "SAVE IS FROM A NEWER VERSION");
+    assert_eq!(g.run_file.unscored.len(), 1);
+
+    // At launch too: the file is only put back.
+    let mut g = game();
+    g.save.from_the_future = true;
+    let fx = g.saved_run(SavedRun::Found(line.clone()));
+    assert_eq!(count(&fx, is_score), 0);
+    assert_eq!(fx[0], Effect::RunFile(RunFile::Restore));
+    assert!(!fx.contains(&Effect::RunFile(RunFile::Discard)));
+}
+
+#[test]
+fn a_score_that_never_touched_the_run_file_leaves_the_waiting_ones_waiting() {
+    let mut g = game();
+    g.run_file.unscored.push(Unscored {
+        entry: entry(1),
+        line: "line\n".into(),
+    });
+    // A `--salt-screen` run with exactly the same entry.
+    g.stored(
+        Store::Score {
+            entries: vec![entry(1)],
+            clear: None,
+            announce: false,
+        },
+        true,
+    );
+    assert_eq!(g.run_file.unscored.len(), 1);
+    assert_eq!(g.save.scores.len(), 1);
+}
+
+#[test]
+fn a_score_at_launch_does_not_hide_a_line_gone_bad() {
+    let finished = Saved::of(&spent_run(3), false).to_line();
+    let mut g = game();
+    let fx = g.saved_run(SavedRun::Found(format!("resume junk\n{finished}")));
+    let Some(Effect::Store(why)) = fx.into_iter().find(is_score) else {
+        panic!("no score")
+    };
+    g.stored(why, true);
+    assert!(g.status.contains("LAST RUN SCORED"), "{}", g.status);
+    assert!(
+        g.status.contains(resume::Stale::Damaged.note()),
+        "{}",
+        g.status
+    );
 }
 
 #[test]

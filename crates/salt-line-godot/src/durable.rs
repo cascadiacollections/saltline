@@ -30,8 +30,8 @@
 //! delayed allocation (ext4) may commit the rename's metadata before the
 //! file's data; power lost in between leaves a file of the right length full
 //! of zeros, or an empty one. That is what the NUL and `version`-line tests
-//! in [`pick`] catch. The run files (`resume`) do not use `pick`: `run.txt`
-//! wins whenever it exists.
+//! in [`pick`] catch. The run files (`resume`) make the same choice through
+//! [`pick_by`], with their own test of a sound copy (`resume::sound`).
 //!
 //! # The read: which copy to trust
 //!
@@ -123,13 +123,18 @@ pub enum Pick {
 /// format had a header (`save_format` reads versionless as version 1) land
 /// here, and load as they always did.
 pub fn pick(main: Option<&str>, temp: Option<&str>) -> Pick {
-    let sound = |t: Option<&str>| {
-        t.is_some_and(|t| {
-            !t.contains('\0')
-                && t.lines()
-                    .any(|l| l.split_whitespace().next() == Some("version"))
-        })
-    };
+    pick_by(main, temp, |t| {
+        !t.contains('\0')
+            && t.lines()
+                .any(|l| l.split_whitespace().next() == Some("version"))
+    })
+}
+
+/// [`pick`]'s order with another file's test of soundness: a sound main, a
+/// sound temp, a legible main, a legible temp, or neither. The run files use
+/// it with `resume::sound`.
+pub fn pick_by(main: Option<&str>, temp: Option<&str>, sound: impl Fn(&str) -> bool) -> Pick {
+    let sound = |t: Option<&str>| t.is_some_and(&sound);
     let legible =
         |t: Option<&str>| t.is_some_and(|t| t.chars().any(|c| c != '\0' && !c.is_whitespace()));
     if sound(main) {

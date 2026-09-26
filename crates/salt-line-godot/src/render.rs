@@ -406,7 +406,14 @@ impl Painter<'_> {
                     y += 7;
                 }
                 y += 4;
-                self.centred(y, "M / START  MUTE     R / Y  RESET", dim);
+                // Both the key and the button, whichever is in use.
+                let (mute_key, mute_pad) = self.g.action_binding(Action::Mute);
+                let (reset_key, reset_pad) = self.g.action_binding(Action::Replay);
+                self.centred(
+                    y,
+                    &format!("{mute_key} / {mute_pad}  MUTE     {reset_key} / {reset_pad}  RESET"),
+                    dim,
+                );
                 y += 7;
                 let on = if self.g.last_arc_on() { "ON" } else { "OFF" };
                 let toggle = format!("{}  LAST ARC: {on}", self.g.input_label(Action::LastArc));
@@ -460,15 +467,18 @@ impl Painter<'_> {
                     self.centred(y, &format!("SEED {}", format_seed(seed)), dim);
                     y += 14;
                 }
-                y = self.menu_row(
-                    y,
-                    Action::Replay,
-                    "R      SAME SEED AGAIN",
-                    "SAME SEED AGAIN",
-                    fg,
-                );
-                y = self.menu_row(y, Action::Copy, "C      COPY SEED", "COPY SEED", fg);
-                y = self.menu_row(y, Action::Confirm, "ENTER  TITLE", "TITLE", fg);
+                let rows = [
+                    (Action::Replay, "SAME SEED AGAIN"),
+                    (Action::Copy, "COPY SEED"),
+                    (Action::Confirm, "TITLE"),
+                ];
+                let labels: Vec<(String, &str)> = rows
+                    .iter()
+                    .map(|&(action, text)| (self.g.input_label(action), text))
+                    .collect();
+                for (&(action, text), keyed) in rows.iter().zip(keyed_rows(&labels)) {
+                    y = self.menu_row(y, action, &keyed, text, fg);
+                }
                 y += 4;
                 if self.g.status_time > 0.0 {
                     let text = self.g.status.clone();
@@ -809,8 +819,10 @@ impl Painter<'_> {
                 st.base
             };
             if state == StructState::Collapsed && !faithful {
-                // No collapsed drawing for this silhouette yet: a rubble mound
-                // the width of its own footprint beats a water tower's.
+                // The collapsed drawing did not load (every silhouette has
+                // one; see `Sprites::structure`), so `sprite` is the intact
+                // one: a rubble mound the width of its footprint reads as
+                // wreckage where a standing silhouette would not.
                 raster::draw_rubble(self.canvas, view, st.x0 as f64, footprint, ground, pal);
                 continue;
             }
@@ -1072,7 +1084,6 @@ impl Painter<'_> {
         // Only once the shell has actually landed: the sim resolves the clear
         // the instant the trigger is pulled, and announcing it while the shot
         // is still visibly in the air gives the result away.
-        let _ = phase;
         if self.g.play.clear_hold > 0.0 {
             let text = "SCREEN CLEAR";
             let x = (w - crate::font::small_width(text) as i32) / 2;
@@ -1204,6 +1215,21 @@ impl Painter<'_> {
     }
 }
 
+/// Menu lines reading "KEY  TEXT", each label padded to the widest of them
+/// and never narrower than ENTER, so the default rows keep their spacing and
+/// a longer rebound name (DPAD_LEFT) widens them all alike.
+fn keyed_rows(rows: &[(String, &str)]) -> Vec<String> {
+    let width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(5);
+    rows.iter()
+        .map(|(label, text)| format!("{label:<width$}  {text}"))
+        .collect()
+}
+
 /// The drag preview's flight, and how much of it the arc hint shows.
 fn preview_path(
     screen: &Screen,
@@ -1324,6 +1350,62 @@ mod tests {
                 "screen {i} left pixels undrawn"
             );
         }
+    }
+
+    #[test]
+    fn result_and_controls_prompts_follow_the_bindings() {
+        // Every action each screen names, moved to another key and button.
+        for (over, rebind) in [
+            (
+                true,
+                &[
+                    ("replay", "T", "LB"),
+                    ("copy", "K", "RB"),
+                    ("confirm", "SPACE", "B"),
+                ][..],
+            ),
+            (false, &[("replay", "T", "LB"), ("mute", "U", "BACK")][..]),
+        ] {
+            let mut g = game();
+            g.start_run(4242, false);
+            if over {
+                g.finish_run();
+            } else {
+                g.mode = Mode::Controls;
+            }
+            g.take_effects();
+            let default = draw(&g).0;
+            for &(action, key, pad) in rebind {
+                g.save
+                    .bindings
+                    .push((action.into(), key.into(), pad.into()));
+                let rebound = draw(&g).0;
+                assert_ne!(
+                    default.bytes(),
+                    rebound.bytes(),
+                    "over {over}: rebinding {action} changed nothing on screen"
+                );
+                g.save.bindings.clear();
+            }
+            if over {
+                // A controller is prompted with its own buttons.
+                g.input.controller_active = true;
+                assert_ne!(default.bytes(), draw(&g).0.bytes(), "controller labels");
+            }
+        }
+    }
+
+    #[test]
+    fn keyed_rows_pad_every_label_to_the_widest() {
+        let rows =
+            |labels: [&str; 2]| keyed_rows(&[(labels[0].into(), "ONE"), (labels[1].into(), "TWO")]);
+        // The defaults, as they always read.
+        assert_eq!(rows(["R", "ENTER"]), ["R      ONE", "ENTER  TWO"]);
+        // A longer name widens the column for every row.
+        assert_eq!(
+            rows(["DPAD_LEFT", "A"]),
+            ["DPAD_LEFT  ONE", "A          TWO"]
+        );
     }
 
     #[test]

@@ -92,9 +92,9 @@ pub fn small_glyph(c: char) -> Option<[&'static str; SMALL_H]> {
         '<' => ["001", "011", "111", "011", "001"],
         '(' => ["010", "100", "100", "100", "010"],
         ')' => ["010", "001", "001", "001", "010"],
-        // A small multiplication sign. Only `*` reaches this arm: `x` is
-        // upper-cased above and matches the letter `X`.
-        'x' | '*' => ["000", "101", "010", "101", "000"],
+        // A small multiplication sign. A lower-case `x` never gets here: it
+        // is upper-cased above and draws as the letter `X`.
+        '*' => ["000", "101", "010", "101", "000"],
         ' ' => ["000", "000", "000", "000", "000"],
         _ => return None,
     })

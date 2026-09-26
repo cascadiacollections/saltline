@@ -6,6 +6,12 @@
 //! every time the log grows. On launch the line is rebuilt with
 //! `Replay::reconstruct` and the title screen offers CONTINUE.
 //!
+//! The file may also start with the lines of finished runs whose score did
+//! not reach the board (a full disk, a save from a newer build): one line a
+//! run, the same format, kept until a score or a launch gets them there
+//! (`app::RunFileState::unscored`). [`judge`] reads one line; the core
+//! splits the file.
+//!
 //! Engine-free: the file format and the decision (offer it, score it, or
 //! throw it away) live here, where they can be tested headless. `game` does
 //! the reading, writing and the menu.
@@ -19,34 +25,38 @@
 //! # The run files
 //!
 //! Three `user://` paths carry the run. The core asks for changes as
-//! `app::RunFile` effects; `game.rs` turns them into file operations through
-//! `save::write` (the atomic replace in `durable::write_atomic`),
-//! `save::rename` and `save::remove`.
+//! `app::RunFile` effects (and a score's `clear`); `game.rs` turns them into
+//! file operations through `save::write` (the atomic replace in
+//! `durable::write_atomic`), `save::rename` and `save::remove`, the
+//! multi-step ones by way of [`take_saved`], [`replace`] and [`discard`]
+//! below.
 //!
 //! ```text
 //! file              written by                       when
 //! run.txt.new       save::write, step 1-2 of the     every RunFile::Write (the log
-//!                   atomic replace                   grew) and RunFile::Keep (a
-//!                                                    finished run's score did not
-//!                                                    reach disk)
+//!                   atomic replace                   grew, or a finished run's
+//!                                                    score did not reach disk)
 //! run.txt           the rename at step 3 of the      straight after run.txt.new;
 //!                   same replace; RunFile::Restore   Restore once a launch has
 //!                                                    rebuilt the run
-//! run-loading.txt   game.rs moving run.txt (or, if   at launch, before the text
-//!                   that is missing, run.txt.new)    reaches the core, so before
-//!                   aside                            any rebuild
+//! run-loading.txt   take_saved moving run.txt (or   at launch, before the text
+//!                   run.txt.new, if run.txt is       reaches the core, so before
+//!                   missing or damaged) aside        any rebuild
 //! ```
 //!
 //! `RunFile::Discard` deletes all three, and if a file will not go, writes
-//! an empty `run.txt`, which [`judge`] reads as no run.
+//! an empty `run.txt`, which [`judge`] reads as no run ([`discard`]). A
+//! finished run's score clears the files the same way ([`replace`]) before
+//! the board is written, and only goes ahead if that is confirmed.
 //!
 //! What a crash costs, step by step (crash / next launch finds / cost):
 //!
 //! ```text
 //! writing run.txt.new
-//!     finds  the previous line in run.txt; with no run.txt, run.txt.new itself
-//!     cost   one entry behind; a torn run.txt.new fails `judge` and is
-//!            discarded with a note
+//!     finds  the previous line in run.txt; with no run.txt, or a damaged
+//!            one, run.txt.new itself if it is whole (`take_saved`)
+//!     cost   one entry behind; a torn run.txt.new with nothing better
+//!            beside it fails `judge` and is discarded with a note
 //! after the rename
 //!     finds  the new line
 //!     cost   nothing
@@ -56,35 +66,40 @@
 //! after RunFile::Restore
 //!     finds  run.txt
 //!     cost   nothing
-//! a run ends: between its Discard and the Store of its score
-//!     finds  no run file
+//! a run ends: its Store clears the run file, then writes the board
+//!     finds  no run file, or run.txt blank, once the clear is done
 //!     cost   that score, never scored twice
+//! a run ends: the run file will not go (not deleted, not blanked)
+//!     finds  run.txt, the finished log
+//!     cost   nothing: the board was not written, so it is scored by the
+//!            first launch that can clear it
 //! a run ends: the Store fails (full disk, a newer build's save)
-//!     finds  run.txt, by way of RunFile::Keep
-//!     cost   nothing, unless the Keep write fails or a new run starts this
-//!            session: its first Write replaces the kept line
+//!     finds  run.txt, its line kept by a RunFile::Write, and carried at
+//!            the top of every later Write this session
+//!     cost   nothing, unless that write fails too
 //! ```
 //!
 //! Two properties fall out of that ordering:
 //!
-//! - **A run is scored at most once.** A finished log lives on disk only
-//!   until the `Discard` that the core always queues before the score's
-//!   `Store` (`app`'s "order is behaviour"), and effects are applied in
-//!   order. By the time a score can be on the board the log is gone, so no
-//!   launch can find it and score it again. A crash in between loses the
-//!   score instead. `Keep` rewrites the log only after a `Store` has failed.
-//!   This assumes the Discard took. If a file will not delete and the blank
-//!   write also fails, the log survives beside a scored board. Against a
-//!   power cut it also needs the deletes to be durable before the save's
-//!   rename: on Unix the directory fsync after that rename covers them (same
-//!   directory); on Windows nothing forces it.
+//! - **A run is scored at most once.** A score's `Store` clears the
+//!   finished log first ([`replace`]) and writes the board only once no copy
+//!   of it is left to read (`app`'s "order is behaviour"). By the time a
+//!   score can be on the board the log is gone, so no launch can find it
+//!   and score it again. A crash in between loses the score instead; a log
+//!   that will not go keeps its score off the board until a launch can
+//!   clear it. A finished log is written back only after its `Store` has
+//!   failed, so never beside a board that holds it.
+//!   Against a power cut it also needs the deletes to be durable before the
+//!   save's rename: on Unix the directory fsync after that rename covers
+//!   them (same directory); on Windows nothing forces it.
 //! - **A corrupt run file costs one crash, not every launch.** The file is
 //!   moved to `run-loading.txt` before it is parsed or replayed, and is put
 //!   back only once [`judge`] has returned. If the rebuild panics, the
 //!   `Restore` is never applied (no file effect survives a panic, see
 //!   `app::Effect::survives_panic`); the next launch sees
 //!   `run-loading.txt`, never replays it, and throws it away
-//!   (`app::Abandoned::Interrupted`). Text that merely fails to parse or
+//!   (`app::Abandoned::Interrupted`, [`drop_set_aside`]), leaving any
+//!   `run.txt` beside it for the launch after. Text that merely fails to parse or
 //!   replay is caught by [`judge`] as [`Stale`] and discarded with a note,
 //!   without a crash at all. If the move aside at launch fails, the
 //!   one-crash guard is lost for that launch.
@@ -92,13 +107,17 @@
 //! `app/disk_tests.rs` holds the first property, and the resumed run
 //! matching the run as played, end to end: it applies the core's effects to
 //! an in-memory disk, kills the process after every effect in turn, and
-//! launches again on what was left. It models each effect as one atomic
-//! step that cannot fail; that the steps really are atomic is `durable`'s
-//! job.
+//! launches again on what was left. It runs the functions below on its
+//! files, so a crash between any two of their steps is exercised, and so is
+//! a `run.txt` that will not go; that each write really is atomic is
+//! `durable`'s job.
 
 use salt_line_sim::replay::{decode_log, encode_log, Replay, DRAFT_MARK};
 use salt_line_sim::run::{LoggedShot, RunState};
 use salt_line_sim::{SCREEN_W_MAX, SCREEN_W_MIN, SIM_EPOCH};
+
+use crate::app::SavedRun;
+use crate::durable::{self, Pick};
 
 pub const RUN_PATH: &str = "user://run.txt";
 /// Written in full, then moved over `RUN_PATH`.
@@ -272,7 +291,7 @@ pub enum Found {
     Discard(Stale),
 }
 
-/// Decide what a saved run's text is worth. `None` is no file.
+/// Decide what one line of the run file is worth. `None` is no file.
 pub fn judge(text: Option<&str>) -> Found {
     let Some(text) = text.filter(|t| !t.trim().is_empty()) else {
         return Found::Nothing;
@@ -286,6 +305,125 @@ pub fn judge(text: Option<&str>) -> Found {
         Some(run) if run.is_over() => Found::Finished(saved, Box::new(run)),
         Some(_) => Found::Continue(saved),
     }
+}
+
+// ------------------------------------------------------------ the run files
+
+/// The file operations the run files need. `game.rs` carries them out on
+/// `user://` through `save`; `app/disk_tests.rs` on files held in memory,
+/// with the process killed between any two. Both go through the functions
+/// below, so the rules the crash tests check are the ones the game runs.
+pub trait RunFiles {
+    /// A file's text; `None` if it is missing or unreadable.
+    fn read(&self, path: &str) -> Option<String>;
+    /// Whether a file is there, readable or not.
+    fn exists(&self, path: &str) -> bool;
+    /// Replace `main` with `text` by way of `temp` (`save::write`). Returns
+    /// whether it reached disk; on failure `main` is left as it was.
+    fn write(&mut self, main: &str, temp: &str, text: &str) -> bool;
+    /// Move `from` to `to`, replacing `to`. Returns whether it moved.
+    fn rename(&mut self, from: &str, to: &str) -> bool;
+    /// Delete a file if it is there.
+    fn remove(&mut self, path: &str);
+}
+
+/// Whether a run file's text is a whole copy: no NUL bytes (what a crash
+/// leaves where data was not committed), and a well-formed `resume` line.
+/// A line from another epoch counts: it is whole, only not this build's to
+/// replay, and [`judge`] says so with its own note.
+pub fn sound(text: &str) -> bool {
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty()).peekable();
+    !text.contains('\0')
+        && lines.peek().is_some()
+        && lines.all(|l| {
+            matches!(
+                Saved::parse(l),
+                Ok(_) | Err(Stale::OlderVersion | Stale::NewerVersion)
+            )
+        })
+}
+
+/// At launch: find the saved run and move it aside to [`RUN_LOADING_PATH`]
+/// before the core parses or replays it (see "A corrupt run file costs one
+/// crash" above). `None` is no run.
+///
+/// Of `run.txt` and `run.txt.new` the copy is chosen as the save's is
+/// (`durable::pick_by`, with [`sound`]): a whole `run.txt`, else a whole
+/// `run.txt.new` (a write that died before its rename, beside a damaged or
+/// missing `run.txt`), else whichever is legible, to be judged and
+/// discarded with a note. A blank `run.txt` is what a discard that could not
+/// delete leaves: no run, unless a whole `run.txt.new` was written since.
+pub fn take_saved(files: &mut impl RunFiles) -> Option<SavedRun> {
+    if files.read(RUN_LOADING_PATH).is_some() {
+        return Some(SavedRun::Interrupted);
+    }
+    let main = files.read(RUN_PATH);
+    let temp = files.read(RUN_TEMP_PATH);
+    let (path, text) = match durable::pick_by(main.as_deref(), temp.as_deref(), sound) {
+        Pick::Main => (RUN_PATH, main?),
+        Pick::Temp => (RUN_TEMP_PATH, temp?),
+        Pick::Empty => return None,
+    };
+    files.rename(path, RUN_LOADING_PATH);
+    Some(SavedRun::Found(text))
+}
+
+/// Make the saved run exactly `text`, or no run at all for `""`: `run.txt`
+/// is written with `text` (or deleted, or failing that blanked), and only
+/// once that has worked do the set-aside copy and the temporary file go. A
+/// write that fails (a full disk) therefore leaves every copy where it was,
+/// never the only one deleted. If something is still left that a launch
+/// could read as a run other than `text` (a file that would not delete),
+/// `run.txt` is written once more with `text`, which for `""` is the empty
+/// file [`judge`] reads as no run.
+///
+/// Returns whether that is confirmed: `text` is in place, and neither
+/// `run.txt` nor `run.txt.new` holds anything but `text` or nothing; a file
+/// that is there but cannot be read counts as holding something else. A
+/// score may only go on the board once its finished log is confirmed gone,
+/// or a later launch scores it again (`app`'s "Scoring at most once"). A
+/// set-aside copy that will not delete does not count against it: a launch
+/// that finds one throws it away unread.
+pub fn replace(files: &mut impl RunFiles, text: &str) -> bool {
+    let placed = if text.is_empty() {
+        files.remove(RUN_PATH);
+        !files.exists(RUN_PATH) || files.write(RUN_PATH, RUN_TEMP_PATH, "")
+    } else {
+        files.write(RUN_PATH, RUN_TEMP_PATH, text)
+    };
+    if !placed {
+        return false;
+    }
+    files.remove(RUN_LOADING_PATH);
+    files.remove(RUN_TEMP_PATH);
+    if holds_only(files, text) {
+        return true;
+    }
+    files.write(RUN_PATH, RUN_TEMP_PATH, text) && holds_only(files, text)
+}
+
+/// Neither `run.txt` nor `run.txt.new` holds a run other than `text`. A
+/// file there that cannot be read may hold anything.
+fn holds_only(files: &impl RunFiles, text: &str) -> bool {
+    [RUN_PATH, RUN_TEMP_PATH]
+        .into_iter()
+        .all(|path| match files.read(path) {
+            Some(t) => t.trim().is_empty() || t == text,
+            None => !files.exists(path),
+        })
+}
+
+/// At launch, over a copy left set aside by a launch that died rebuilding
+/// it: throw that copy away, unread, and nothing else. A `run.txt` beside it
+/// was written after the copy was set aside (the live run put back), so it
+/// is kept for the next launch.
+pub fn drop_set_aside(files: &mut impl RunFiles) {
+    files.remove(RUN_LOADING_PATH);
+}
+
+/// Leave no run to resume or score: [`replace`] with nothing.
+pub fn discard(files: &mut impl RunFiles) -> bool {
+    replace(files, "")
 }
 
 /// Seconds of wall clock any one frame may advance animation and UI timers
@@ -459,6 +597,123 @@ mod tests {
         // two lines, not for a stale epoch on its second.
         let text = text.replace("resume 2 ", &format!("resume {SIM_EPOCH} "));
         assert!(matches!(judge(Some(&text)), Found::Discard(Stale::Damaged)));
+    }
+
+    /// The run files in memory, for `take_saved` and `replace`. Files named
+    /// in `stuck` can be neither replaced nor deleted; those in `unreadable`
+    /// are there but read as `None`, as `save::read` reports any error.
+    #[derive(Default)]
+    struct Mem(
+        std::collections::BTreeMap<String, String>,
+        std::collections::BTreeSet<&'static str>,
+        std::collections::BTreeSet<&'static str>,
+    );
+
+    impl RunFiles for Mem {
+        fn read(&self, path: &str) -> Option<String> {
+            if self.2.contains(path) {
+                return None;
+            }
+            self.0.get(path).cloned()
+        }
+        fn exists(&self, path: &str) -> bool {
+            self.0.contains_key(path)
+        }
+        fn write(&mut self, main: &str, _temp: &str, text: &str) -> bool {
+            if self.1.contains(main) {
+                return false;
+            }
+            self.0.insert(main.into(), text.into());
+            true
+        }
+        fn rename(&mut self, from: &str, to: &str) -> bool {
+            if self.1.contains(from) || self.1.contains(to) {
+                return false;
+            }
+            let Some(text) = self.0.remove(from) else {
+                return false;
+            };
+            self.0.insert(to.into(), text);
+            true
+        }
+        fn remove(&mut self, path: &str) {
+            if !self.1.contains(path) {
+                self.0.remove(path);
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_file_that_is_there_but_unreadable_is_not_cleared() {
+        let finished = Saved::of(&played(7, 320, 2), false).to_line();
+        let mut m = files(Some(&finished), None);
+        m.1.insert(RUN_PATH);
+        m.2.insert(RUN_PATH);
+        assert!(
+            !discard(&mut m),
+            "a file that could not be read is not gone"
+        );
+        assert!(!replace(&mut m, "resume x\n"));
+        // Readable again, and able to go: cleared.
+        m.1.clear();
+        m.2.clear();
+        assert!(discard(&mut m));
+    }
+
+    fn files(main: Option<&str>, temp: Option<&str>) -> Mem {
+        let mut m = Mem::default();
+        for (path, text) in [(RUN_PATH, main), (RUN_TEMP_PATH, temp)] {
+            if let Some(t) = text {
+                m.0.insert(path.into(), t.into());
+            }
+        }
+        m
+    }
+
+    fn found(files: &mut Mem) -> Option<String> {
+        match take_saved(files) {
+            Some(crate::app::SavedRun::Found(text)) => Some(text),
+            Some(crate::app::SavedRun::Interrupted) => Some("interrupted".into()),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn launch_prefers_a_sound_copy_as_the_save_does() {
+        let good = Saved::of(&played(7, 320, 2), false).to_line();
+        let newer = Saved::of(&played(7, 320, 3), false).to_line();
+        // Cut inside the header, so it cannot pass for a shorter log.
+        let torn = &good[..10];
+        let zeros = "\0".repeat(good.len());
+        // A damaged run.txt loses to a whole run.txt.new, which is moved
+        // aside in its place.
+        for damaged in [torn, zeros.as_str()] {
+            let mut m = files(Some(damaged), Some(&good));
+            assert_eq!(found(&mut m).as_deref(), Some(good.as_str()));
+            assert_eq!(m.read(RUN_LOADING_PATH).as_deref(), Some(good.as_str()));
+            assert_eq!(m.read(RUN_TEMP_PATH), None);
+        }
+        // A whole run.txt beats a newer run.txt.new: that write never landed.
+        let mut m = files(Some(&good), Some(&newer));
+        assert_eq!(found(&mut m).as_deref(), Some(good.as_str()));
+        // A damaged copy alone is still handed over, to be judged and
+        // discarded with a note.
+        let mut m = files(Some(torn), None);
+        assert_eq!(found(&mut m).as_deref(), Some(torn));
+        // Blank is no run; so is nothing.
+        assert_eq!(found(&mut files(Some(""), None)), None);
+        assert_eq!(found(&mut files(None, None)), None);
+        // A run from another epoch is a whole copy, to be discarded with
+        // its own note rather than passed over for an older temp.
+        let mut other = Saved::of(&played(7, 320, 2), false);
+        other.epoch = SIM_EPOCH + 1;
+        let other = other.to_line();
+        let mut m = files(Some(&other), Some(&good));
+        assert_eq!(found(&mut m).as_deref(), Some(other.as_str()));
+        // Left set aside by a launch that died: never replayed.
+        let mut m = files(Some(&good), None);
+        m.0.insert(RUN_LOADING_PATH.into(), good.clone());
+        assert_eq!(found(&mut m).as_deref(), Some("interrupted"));
     }
 
     #[test]

@@ -772,7 +772,12 @@ This follows the no-words direction (§5.6) and the touch menus.
   in the log, and resuming replays its outcome.
   **Built** (`crates/salt-line-godot/src/resume.rs`): `user://run.txt` holds
   one line, `resume <epoch> <seed> <width> <daily> <log>`, rewritten
-  atomically whenever the log grows and deleted when the run ends. The title
+  atomically whenever the log grows and deleted when the run ends (before its
+  score is written, and only if that is confirmed). A finished run whose score
+  could not be written keeps its line at the top of the file, ahead of any
+  later run, until a score or a launch gets it on the board. A build older
+  than that reads such a file as damaged and discards it, the live run and
+  the waiting scores with it: a downgrade after a failed score costs them. The title
   screen offers CONTINUE when the epoch matches and the log reconstructs; a
   shot in flight at the kill resumes resolved, and a log whose last shot ended
   the run is scored instead. Another epoch, or a log that does not replay, is

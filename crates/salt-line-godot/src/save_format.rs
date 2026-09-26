@@ -161,8 +161,9 @@ pub struct Save {
     /// The leaderboard, best first, at most [`KEEP`] entries once sorted.
     pub scores: Vec<Entry>,
     /// Master effects volume, as an integer percentage for a stable text
-    /// representation. `0..=100`: on read, values 101–255 are capped to 100;
-    /// anything that is not a `u8` is ignored.
+    /// representation. `0..=100`: on read, any whole number over 100 is
+    /// capped to 100; anything else that is not a `u8` (a negative, a
+    /// fraction, a word) is ignored and the default stands.
     pub volume: u8,
     /// Effects muted. Independent of `volume`.
     pub muted: bool,
@@ -227,8 +228,15 @@ impl Save {
                     }
                 }
                 Some("volume") => {
-                    if let Some(v) = it.next().and_then(|s| s.parse::<u8>().ok()) {
-                        save.volume = v.min(100);
+                    // Any whole number past 100 is full volume, however far
+                    // past (not only up to 255, which is all a `u8` holds);
+                    // anything else leaves the default.
+                    match it.next().map(str::parse::<u8>) {
+                        Some(Ok(v)) => save.volume = v.min(100),
+                        Some(Err(e)) if *e.kind() == core::num::IntErrorKind::PosOverflow => {
+                            save.volume = 100;
+                        }
+                        _ => {}
                     }
                 }
                 Some("muted") => save.muted = it.next() == Some("1"),
@@ -534,6 +542,12 @@ mod tests {
                     bind fire F X\nbind bad-token ! A\n";
         let s = Save::parse(text);
         assert_eq!(s.volume, 100);
+        for (line, want) in [("volume 256", 100), ("volume 99999999999999999999", 100)] {
+            assert_eq!(Save::parse(line).volume, want, "{line}");
+        }
+        for line in ["volume -1", "volume loud", "volume 1.5"] {
+            assert_eq!(Save::parse(line).volume, 75, "{line}");
+        }
         assert!(s.muted);
         assert_eq!(s.learned, 37);
         assert_eq!(s.bindings, vec![("fire".into(), "F".into(), "X".into())]);
@@ -647,6 +661,14 @@ mod tests {
                 lines in prop::collection::vec("(version|unlocked|volume|muted|learned|touch_aim|arc_hint|last_arc|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
             ) {
                 let _ = Save::parse(&lines.join("\n"));
+            }
+
+            #[test]
+            fn any_too_loud_volume_caps_at_full(v in 101u128..) {
+                // However far past 100 a hand edit goes, it is full volume,
+                // not a reset to the default.
+                let s = Save::parse(&format!("version 2\nvolume {v}\n"));
+                prop_assert_eq!(s.volume, 100);
             }
 
             #[test]

@@ -7,7 +7,9 @@
 //! --salt-shot-at 0.5`.
 //!
 //! A flag with a value takes it as the next argument or after `=`
-//! (`--salt-seed 42`, `--salt-seed=42`). The first occurrence wins.
+//! (`--salt-seed 42`, `--salt-seed=42`). The first occurrence wins. A next
+//! argument that starts `--` is another flag, not the value: the flag is
+//! read as having none.
 //!
 //! Parsing is kept apart from acting: [`DevArgs`] is plain data, tested here
 //! without an engine, and `Game::start_dev` (in the core) or the node's
@@ -75,13 +77,15 @@ fn flag(args: &[String], flag: &str) -> bool {
 }
 
 /// The value of the first occurrence of `flag`: the argument after it, or
-/// the text after `flag=`. `None` if the flag is absent or last. The next
-/// argument is taken whatever it is, even another flag.
+/// the text after `flag=`. `None` if the flag is absent, last, or followed
+/// by another flag (anything starting `--`): `--salt-shot --salt-auto` is a
+/// shot with no path, not a screenshot saved as `--salt-auto`. A value that
+/// really starts `--` can still be given after `=`.
 fn value(args: &[String], flag: &str) -> Option<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == flag {
-            return it.next().cloned();
+            return it.next().filter(|v| !v.starts_with("--")).cloned();
         }
         if let Some(rest) = a.strip_prefix(&format!("{flag}=")) {
             return Some(rest.to_string());
@@ -146,6 +150,16 @@ mod tests {
         assert_eq!(a.screen, None);
         assert_eq!(a.shot_at, DEFAULT_SHOT_AT);
         assert_eq!(a.shot, None);
+    }
+
+    #[test]
+    fn a_flag_is_not_taken_as_the_value_before_it() {
+        // `--salt-shot` given no path must not save to a file named
+        // `--salt-auto`, and `--salt-auto` must still count.
+        let a = DevArgs::parse(&args("--salt-shot --salt-auto --salt-seed --salt-miss"));
+        assert_eq!(a.shot, None);
+        assert_eq!(a.seed, None);
+        assert!(a.auto && a.miss);
     }
 
     #[test]
