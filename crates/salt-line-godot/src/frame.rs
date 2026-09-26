@@ -5,14 +5,44 @@
 //! The frame is one software-rasterised buffer uploaded whole (DESIGN §5.1),
 //! so an unchanged frame is pure waste on a phone: a full raster pass and a
 //! texture upload for pixels already on screen.
+//!
+//! # Dirty flag plus busy
+//!
+//! [`Redraw`] is the usual dirty-flag pattern with one addition. Two things
+//! make a frame due:
+//!
+//! - *dirty*: something marked it. The core returns `app::Effect::Redraw`
+//!   when what it shows changed, and `game.rs` marks every input event
+//!   (except mouse and stick motion), the back gesture and focus returning.
+//! - *busy*: something moves on its own, so every frame differs. That is
+//!   `app::Game::busy` (a shell in flight, a clear being held, a note
+//!   counting down, a finger on the screen, the developer autopilot) plus
+//!   what only the node can see: a key or button held, or a trusted stick
+//!   pushed (`pads`).
+//!
+//! The addition is one frame more after busy ends. The last busy frame drew
+//! the effect in its final state; the one after it draws the scene without
+//! it, so nothing that ran out is left frozen on screen.
+//!
+//! ```text
+//! frame     1     2     3     4     5     6
+//! busy      -     -     yes   yes   -     -
+//! marked    yes   -     -     -     -     -
+//! drawn     yes   -     yes   yes   yes   -
+//! ```
+//!
+//! Skipping the draw is only half the saving. Menus also lower the engine's
+//! frame cap to [`IDLE_FPS`] ([`frame_cap`]), so the engine's own loop wakes
+//! less often; play keeps the project's cap, because a shell in flight
+//! should be smooth.
 
-/// Menus and overlays run at this rate at most. Nothing on them moves on its
+/// Menus and overlays run at this rate at most, in frames per second. Nothing on them moves on its
 /// own, and a highlight or a typed character a frame later at 30 fps is not
 /// something a thumb can feel.
 pub const IDLE_FPS: i32 = 30;
 
-/// How often the display's safe area is asked again when nothing else has
-/// prompted it: a phone turned end over end keeps its window size, but the
+/// How often, in seconds, the display's safe area is asked again when
+/// nothing else has prompted it: a phone turned end over end keeps its window size, but the
 /// camera hole moves to the other side.
 pub const DISPLAY_RECHECK: f64 = 1.0;
 
@@ -23,7 +53,9 @@ pub const DISPLAY_RECHECK: f64 = 1.0;
 /// effect or a note that runs out is cleared rather than left on screen.
 #[derive(Debug)]
 pub struct Redraw {
+    /// Marked since the last frame.
     dirty: bool,
+    /// The last frame was busy, so this one is due even if it is not.
     was_busy: bool,
 }
 
@@ -93,7 +125,10 @@ impl DisplayPoll {
     }
 }
 
-/// One cached result and the key it was computed for.
+/// One cached result and the key it was computed for: memoisation with a
+/// cache of one, which is all a per-frame computation needs when its inputs
+/// rarely change. `render` keeps the drag preview's trajectory, a whole
+/// ballistic flight, in one.
 #[derive(Debug)]
 pub struct Memo<K, V> {
     entry: Option<(K, V)>,

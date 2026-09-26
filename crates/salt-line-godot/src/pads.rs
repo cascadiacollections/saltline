@@ -5,10 +5,21 @@
 //! controller in a hand: a drifting stick, a trigger mapped onto a stick axis
 //! or a motion sensor can rest past the push threshold forever. Read as held,
 //! that would claim the controller every frame, repeat input nobody gave and
-//! keep every frame drawing. So a device counts once it presses a button, and
-//! a stick axis only once it has been seen near centre.
+//! keep every frame drawing. So a device counts once it presses a button or
+//! rests a stick near centre, and a stick axis is trusted only once it has
+//! been seen near centre.
+//!
+//! This is arming, as in a trigger: an axis starts unarmed, and one reading
+//! within [`REST`] of centre arms it for as long as the device stays
+//! connected. A real stick passes near centre as soon as it is nudged or
+//! let go, so it arms almost at once; a drifting stick or a trigger resting
+//! at one end never does, and is ignored rather than read as held. Once
+//! armed, `game.rs` reads an axis as pushed past 0.45 of full deflection.
+//! Button presses are taken from any pad (a press is what makes it count);
+//! buttons held down are read only from pads that count.
 
-/// A stick axis this close to centre is at rest, and may be trusted from then.
+/// A stick axis this close to centre (as a fraction of full deflection, -1
+/// to 1) is at rest, and may be trusted from then.
 pub const REST: f32 = 0.2;
 
 /// The stick axes the game reads: left X, left Y.
@@ -16,11 +27,13 @@ pub const STICK_AXES: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pad {
+    /// Godot's joypad device index.
     pub device: i32,
     /// Per stick axis: seen at rest, so a push past the threshold is a push.
     pub armed: [bool; STICK_AXES],
 }
 
+/// The joypads that count, in the order they first did.
 #[derive(Debug, Default)]
 pub struct Pads {
     pads: Vec<Pad>,
