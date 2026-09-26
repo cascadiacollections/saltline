@@ -67,6 +67,16 @@ android-log:
 deny:
     cargo deny check
 
+# Spelling, workflow security and unused dependencies (typos, zizmor, cargo-machete), as CI runs them.
+hygiene:
+    typos
+    zizmor .
+    cargo machete
+
+# Line coverage summary (cargo-llvm-cov + cargo-nextest, llvm-tools-preview).
+cov:
+    cargo llvm-cov nextest --workspace --summary-only --ignore-filename-regex '/bin/'
+
 # Run the pure modules under Miri, which fails on undefined behaviour (nightly + miri component).
 miri:
     PROPTEST_CASES=4 MIRIFLAGS=-Zmiri-disable-isolation rustup run nightly cargo miri test -p salt-line-sim --lib -- dmath:: rng::
