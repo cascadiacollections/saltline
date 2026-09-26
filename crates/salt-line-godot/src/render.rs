@@ -7,10 +7,10 @@
 //! sprites the node loaded, and [`Cache`], work kept between frames because
 //! it is dear (the drag preview's flight).
 //!
-//! While drawing, each on-screen control is laid out as a
-//! [`Button`](crate::touch::Button) for the next frame's touches to be
-//! tested against (`touch`'s immediate-mode layout). The node keeps the list
-//! and hands it back to `Game::finger_down`.
+//! While drawing, each on-screen control is laid out as a [`Button`] for the
+//! next frame's touches to be tested against (`touch`'s immediate-mode
+//! layout). The node keeps the list and hands it back to
+//! `Game::finger_down`.
 //!
 //! Because nothing here needs the engine, a frame can be drawn under
 //! `cargo test` and compared pixel for pixel; see the tests at the end.

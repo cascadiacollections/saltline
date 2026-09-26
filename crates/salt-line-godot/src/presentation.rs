@@ -12,8 +12,8 @@
 //!
 //! The `LEARN_*` constants are one bit each in the save file's `learned`
 //! field ([`Save::learned`](crate::save_format::Save::learned)). A bit is set
-//! the first time the player demonstrates the thing. `game.rs`'s
-//! `onboarding_prompt` shows the first unset of angle, power, fire, crater,
+//! the first time the player demonstrates the thing.
+//! `app::Game::onboarding_prompt` shows the first unset of angle, power, fire, crater,
 //! wind, shells; the draft lesson is prompted whenever a draft is open, until
 //! learned. Bits are persisted, so they must never be renumbered; new lessons
 //! take the next free bit.
@@ -45,9 +45,9 @@ pub const COLLAPSE_TIME: f64 = 0.34;
 /// `delay + rate` later, then every `rate` while held — the same behaviour as
 /// a desktop keyboard's auto-repeat.
 ///
-/// Used by the gamepad and on-screen buttons. The keyboard path in `game.rs`
-/// repeats the same logic inline with the same `REPEAT_DELAY`/`REPEAT_RATE`.
-/// `Default` is the released state.
+/// Used by the keyboard, the gamepad and on-screen buttons
+/// (`input::Controls`, `touch`), all with the core's `REPEAT_DELAY` and
+/// `REPEAT_RATE`. `Default` is the released state.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RepeatState {
     down: bool,

@@ -71,7 +71,7 @@ pub fn store(save: &Save) -> bool {
     }
     if crate::crash::panicked() {
         // After a panic the state in memory is not trusted enough to replace
-        // the last good save with. `record` goes through here too.
+        // the last good save with, a finished run's score included.
         return false;
     }
     write(SAVE_PATH, TEMP_PATH, &save.serialize())
@@ -157,28 +157,4 @@ fn write_via_engine(main: &str, temp: &str, text: &str) -> bool {
         return false;
     }
     true
-}
-
-/// What happened to a finished run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Recorded {
-    /// Its position on the board, or `None` if it did not make the cut.
-    pub place: Option<usize>,
-    /// Whether the board reached disk. The player is told when it did not.
-    pub saved: bool,
-}
-
-/// Record a finished run and persist.
-pub fn record(save: &mut Save, entry: Entry) -> Recorded {
-    if crate::crash::panicked() {
-        // A score from a run that panicked is not one to put on the board,
-        // even in memory.
-        return Recorded {
-            place: None,
-            saved: false,
-        };
-    }
-    let place = save.place(entry);
-    let saved = store(save);
-    Recorded { place, saved }
 }
