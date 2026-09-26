@@ -94,7 +94,9 @@ reference scene seats that chassis two rows into the ground.
   presentation layer needs the collapse to animate on the screen that was
   cleared. Headless callers call it straight away.
 - **Auger's budget** is the remaining thickness of the layer it entered (8
-  units in sand, 22 in rock). Bedrock stops it, per §4.
+  units in sand, 22 in rock). Bedrock stops it, per §4, at the shell's own
+  depth below the original surface, so a shell entering Rock near bedrock
+  stops there with budget left.
 - **Airburst's fuse** is horizontal distance from the muzzle, which is the
   number Rangefinder displays.
 - **Storm Front** resamples the wind at the trajectory apex — one resample per
@@ -194,3 +196,16 @@ with guessed values.
   screen digests did not move — but every run's final hash did, and the
   determinism bin's digest changed from `0xe58dfc4036186a6a` to
   `0x6d19f4bc6cd194fa`. Epoch digest: `0xce60de848487e4a5`.
+- **Epoch 3:** three rule fixes. A Scavenger Rites supply screen just
+  before a band start (15, 35, …) was walked through without the band-end
+  draft check, so the drafts at 16 and 36 never opened; they now open, with
+  the run drafting on the supply screen. A collapsed structure is no longer
+  re-resolved, so debris refilling its footprint cannot stand it back up
+  (DESIGN §2.7). Auger's bedrock check reads the layer at the shell's depth,
+  not the column's surface, so bedrock stops a tunnelling shell wherever it
+  reaches it (DESIGN §4). Screen generation is unchanged — the pinned screen
+  digests did not move — but a log that crosses a band start after a supply
+  screen, tunnels with Auger, or piles debris over a wreck replays
+  differently. The determinism bin's digest changed from
+  `0x6d19f4bc6cd194fa` to `0x8e29ed6154deaf03`. Epoch digest:
+  `0x64713d327a31a792`.
