@@ -3,7 +3,15 @@
 //! out of order, negative angles, a fuse out of range, an emplacement moved
 //! without Enfilade or after the first shot), into a clean `Err` rather than a
 //! panic. A log that does replay must replay to the same state every time, and
-//! its text form must parse back to the same log.
+//! the rebuilt run's log must survive the text form's round trip.
+//!
+//! The round trip is checked on `state.log`, not on the input: `fire`
+//! quantizes and clamps what it records, so an input angle of -5 is logged
+//! as 0, and only the recorded log is promised to be canonical.
+//!
+//! Fuzzing complements the property tests: libFuzzer mutates raw bytes
+//! guided by coverage, so it reaches malformed combinations no hand-written
+//! strategy would produce. It runs weekly rather than on every push.
 #![no_main]
 
 use arbitrary::Arbitrary;
