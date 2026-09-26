@@ -12,6 +12,7 @@ use godot::prelude::*;
 pub mod aim;
 pub mod font;
 pub mod game;
+pub mod icons;
 pub mod palette;
 pub mod presentation;
 pub mod raster;

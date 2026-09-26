@@ -164,9 +164,11 @@ x≈30 and the far edge is x≈310. The distance cap keeps the target on screen 
 base zoom without Long Lens. If you raise the internal resolution later, scale
 this whole table by the same factor rather than retuning by feel.
 
-Wind is **resampled per screen** and displayed as a signed number, not an arrow.
-Reading a number and converting it to a correction is the core skill; an arrow
-does that work for the player.
+Wind is **resampled per screen** and displayed as a windsock that flies the way
+the wind blows, beside its strength as a number. The sock is the same size at any
+strength and hangs limp when there is no wind to show. Reading a number and
+converting it to a correction is the core skill; an arrow sized by strength
+would do that work for the player.
 
 Past band 20, stop ramping magnitude and start ramping template weight toward
 `Spires` / `Overhang` / `Basin`. Infinite numeric scaling turns into noise;
