@@ -23,6 +23,10 @@ use salt_line_sim::{SCREEN_W_MAX, SCREEN_W_MIN, SIM_EPOCH};
 pub const RUN_PATH: &str = "user://run.txt";
 /// Written in full, then moved over `RUN_PATH`.
 pub const RUN_TEMP_PATH: &str = "user://run.txt.new";
+/// Where the run file is moved while it is being rebuilt at launch. If the
+/// rebuild brings the game down, the next launch finds the file here rather
+/// than at `RUN_PATH`, and throws it away instead of crashing again.
+pub const RUN_LOADING_PATH: &str = "user://run-loading.txt";
 
 /// First token of the line. Not `run`, which DESIGN §9.2 gives the finished
 /// run history's lines, so neither file can be mistaken for the other.

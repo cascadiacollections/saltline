@@ -94,6 +94,26 @@ pub fn write(main: &str, temp: &str, text: &str) -> bool {
     write_via_engine(main, temp, text)
 }
 
+/// Move a `user://` file, replacing any file at `to`. Returns whether it
+/// moved; a missing `from` is not worth a warning.
+pub fn rename(from: &str, to: &str) -> bool {
+    if let (Some(f), Some(t)) = (on_disk(from), on_disk(to)) {
+        return match std::fs::rename(&f, &t) {
+            Ok(()) => true,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    godot_warn!("salt-line: could not move {from} to {to} ({e})");
+                }
+                false
+            }
+        };
+    }
+    let Some(mut dir) = DirAccess::open("user://") else {
+        return false;
+    };
+    FileAccess::file_exists(from) && dir.rename(from, to) == godot::global::Error::OK
+}
+
 /// Delete a `user://` file if it is there.
 pub fn remove(user_path: &str) {
     match on_disk(user_path) {

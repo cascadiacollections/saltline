@@ -751,8 +751,8 @@ This follows the no-words direction (§5.6) and the touch menus.
   shot in flight at the kill resumes resolved, and a log whose last shot ended
   the run is scored instead. Another epoch, or a log that does not replay, is
   discarded with a note. Quitting to title keeps the run; starting a new one
-  replaces it. The resumed run keeps its recorded width, letterboxed if the
-  device's differs.
+  replaces it, after a second press. The resumed run keeps its recorded
+  width, letterboxed if the device's differs.
 - **Replays across epochs.** Old sims could be kept around to replay old runs
   (a versioned sim, or a pinned build). That's likely not worth it: the seed
   survives, and the seed is what players share.
