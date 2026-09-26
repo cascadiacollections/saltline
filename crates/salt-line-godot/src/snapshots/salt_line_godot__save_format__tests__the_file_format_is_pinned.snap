@@ -3,7 +3,6 @@ source: crates/salt-line-godot/src/save_format.rs
 expression: save.serialize()
 ---
 version 2
-unlocked 1
 volume 65
 muted 0
 learned 11

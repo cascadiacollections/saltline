@@ -19,7 +19,6 @@ use salt_line_sim::dmath;
 use salt_line_sim::modifiers::{flags, Loadout, Modifier};
 use salt_line_sim::run::{
     self, buffer_width, daily_seed, format_seed, parse_seed, Phase, RunState, Screen, StructState,
-    FREE_SCREENS,
 };
 use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_MIN};
 
@@ -38,7 +37,6 @@ use crate::resume::{self, Found, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
 use crate::save::{self, Entry, Save};
 use crate::save_format::{ArcHint, TouchAim};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
-use crate::store::{self, Entitlement};
 use crate::touch::{Button, Rect, TouchPad};
 
 const PALETTE_PATH: &str = "res://art/palette_16.png";
@@ -75,7 +73,6 @@ enum Mode {
     SeedEntry,
     Playing,
     Paused,
-    Paywall,
     GameOver,
 }
 
@@ -233,9 +230,6 @@ pub struct SaltLine {
     power_ticks: i32,
 
     save: Save,
-    /// What the platform says this player owns. Asked once at startup; the
-    /// save file's `unlocked` flag is a cache, never the authority.
-    entitlement: Entitlement,
     seed_text: String,
     daily: bool,
     last_seed: u64,
@@ -368,7 +362,6 @@ impl INode2D for SaltLine {
             angle_ticks: 900,
             power_ticks: 600,
             save: Save::default(),
-            entitlement: Entitlement::Free,
             seed_text: String::new(),
             daily: true,
             last_seed: 0,
@@ -439,7 +432,6 @@ impl INode2D for SaltLine {
         self.find_last_crash();
         self.find_saved_run();
         self.setup_audio();
-        self.entitlement = store::entitlement(self.save.unlocked);
         self.project_fps = Engine::singleton().get_max_fps();
         self.fps_cap = self.project_fps;
         self.read_display();
@@ -748,7 +740,7 @@ impl SaltLine {
             self.cutout = self.cutout_px();
         }
         let want_w = self.pick_width();
-        let in_run = matches!(self.mode, Mode::Playing | Mode::Paused | Mode::Paywall);
+        let in_run = matches!(self.mode, Mode::Playing | Mode::Paused);
         if !in_run && self.kept_width {
             // A resumed run's width is done with: back to the device's.
             self.set_run_width(None);
@@ -826,7 +818,6 @@ impl SaltLine {
     /// Level inspector: drop straight onto a screen index without playing the
     /// ones before it. DESIGN §2.2 is what makes this possible — each screen
     /// generates from its own seed, so screen 400 costs the same as screen 1.
-    /// It is still a way onto a screen, so the paywall gate applies to it.
     fn jump_to(&mut self, index: u32) {
         let Some(run) = self.run.as_mut() else { return };
         run.screen_index = index;
@@ -835,7 +826,6 @@ impl SaltLine {
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
         self.preview.clear();
         self.note(format!("SCREEN {}", index + 1));
-        self.paywall_gate();
     }
 
     fn note(&mut self, text: String) {
@@ -972,8 +962,6 @@ impl SaltLine {
             // Only offered over a saved run, where confirm is CONTINUE and
             // pad Y is already seed entry.
             "new_run" => ("N", "RB"),
-            "unlock" => ("U", "X"),
-            "restore" => ("R", "Y"),
             _ => ("", ""),
         };
         self.binding(action, defaults.0, defaults.1)
@@ -1320,17 +1308,6 @@ impl SaltLine {
                 }
             }
             Mode::SeedEntry => self.handle_seed_input(delta),
-            Mode::Paywall => {
-                // Keyboard U / R / Enter / Escape as ever; X / Y / B on a
-                // controller; the rows themselves on a touchscreen.
-                if self.action_pressed(18, "unlock") {
-                    self.unlock(false);
-                } else if self.action_pressed(19, "restore") {
-                    self.unlock(true);
-                } else if self.action_pressed(2, "back") || self.pressed(Key::ENTER) {
-                    self.finish_run();
-                }
-            }
             Mode::GameOver => {
                 if self.action_pressed(4, "copy") {
                     // Seed sharing: the seed is the whole run, so the
@@ -1683,39 +1660,6 @@ impl SaltLine {
         if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
             self.play_sound(Sound::Draft);
         }
-        self.paywall_gate();
-    }
-
-    /// The paywall gate. Brief M6: free to play through screen 15.
-    fn paywall_gate(&mut self) {
-        let index = self.run.as_ref().map(|r| r.screen_index).unwrap_or(0);
-        if self.entitlement == Entitlement::Free && index >= FREE_SCREENS {
-            self.mode = Mode::Paywall;
-        }
-    }
-
-    /// Ask the platform to sell or restore the unlock. This is the only path
-    /// that may grant it; there is deliberately no local override, because a
-    /// key that unlocks a paid build is a key that ships in the paid build.
-    fn unlock(&mut self, restore: bool) {
-        let outcome = if restore {
-            store::restore()
-        } else {
-            store::purchase()
-        };
-        match outcome {
-            store::Outcome::Granted => {
-                // Cache it so the title screen is right before the next
-                // platform round trip answers.
-                self.save.unlocked = true;
-                save::store(&self.save);
-                self.entitlement = Entitlement::Full;
-                self.mode = Mode::Playing;
-                self.note("UNLOCKED".into());
-            }
-            store::Outcome::Cancelled => self.note("CANCELLED".into()),
-            store::Outcome::Unavailable(why) => self.note(why.into()),
-        }
     }
 
     fn finish_run(&mut self) {
@@ -1782,7 +1726,7 @@ impl SaltLine {
     fn render(&mut self) {
         self.touch_buttons.clear();
         match self.mode {
-            Mode::Playing | Mode::Paused | Mode::Paywall => self.render_play(),
+            Mode::Playing | Mode::Paused => self.render_play(),
             _ => self.render_menu(),
         }
         self.upload();
@@ -2146,15 +2090,10 @@ impl SaltLine {
                     );
                     y += 10;
                 }
-                if !store::MONETIZED {
-                    // The build is not selling anything, and says so where a
-                    // player will see it before they start a run.
-                    self.centred(y, "DEVELOPMENT PREVIEW - NOT FOR SALE", alert);
-                    y += 8;
-                } else if self.entitlement == Entitlement::Free {
-                    self.centred(y, &format!("FREE THROUGH SCREEN {FREE_SCREENS}"), dim);
-                    y += 8;
-                }
+                // The build is not selling anything, and says so where a
+                // player will see it before they start a run.
+                self.centred(y, "DEVELOPMENT PREVIEW - NOT FOR SALE", alert);
+                y += 8;
                 let room = ((self.canvas.h - y - 12) / 7).max(0) as usize;
                 let n = self.save.scores.len().min(5).min(room);
                 if n > 0 {
@@ -2533,9 +2472,7 @@ impl SaltLine {
         if phase == Phase::Drafting {
             self.render_draft(&offers, &loadout);
         }
-        if self.mode == Mode::Paywall {
-            self.render_paywall();
-        } else if self.mode == Mode::Paused {
+        if self.mode == Mode::Paused {
             self.render_pause();
         }
     }
@@ -3053,46 +2990,6 @@ impl SaltLine {
         self.canvas.text_small(hx, top + card_h + 6, hint, fg);
     }
 
-    fn render_paywall(&mut self) {
-        let pal = self.pal.clone();
-        let fg = pal.get(slot::UI_FG);
-        let dim = pal.get(slot::SKY_LO);
-        let alert = pal.get(slot::ALERT);
-        let (w, h) = (self.canvas.w, self.canvas.h);
-        let bw = (w - 40).max(120);
-        // Touch rows are spaced for a finger, so the box grows to hold them.
-        let bh = if self.touch_active { 94 } else { 80 };
-        let x = (w - bw) / 2;
-        let y = (h - bh) / 2;
-        self.canvas.plate(x, y, bw, bh, &pal);
-        let mut cy = y + 8;
-        self.centred(cy, &format!("SCREENS 1-{FREE_SCREENS} ARE FREE"), fg);
-        cy += 12;
-        self.centred(cy, "UNLOCK THE FULL RUN", alert);
-        cy += 12;
-        self.centred(cy, "ONE PURCHASE, NO ADS, NO TIMERS", dim);
-        cy += 14;
-        // The keyboard's Enter also ends the run, as it always has.
-        let end = if self.controller_active {
-            self.input_label("back")
-        } else {
-            "ENTER".into()
-        };
-        let rows = [
-            ("unlock", self.input_label("unlock"), "UNLOCK", fg),
-            (
-                "restore",
-                self.input_label("restore"),
-                "RESTORE PURCHASE",
-                fg,
-            ),
-            ("back", end, "END THE RUN", dim),
-        ];
-        for (action, key, text, c) in rows {
-            cy = self.menu_row(cy, action, &format!("{key:<7}{text}"), text, c);
-        }
-    }
-
     fn render_pause(&mut self) {
         let pal = self.pal.clone();
         let fg = pal.get(slot::UI_FG);
@@ -3216,7 +3113,6 @@ impl SaltLine {
             Mode::SeedEntry => "SeedEntry",
             Mode::Playing => "Playing",
             Mode::Paused => "Paused",
-            Mode::Paywall => "Paywall",
             Mode::GameOver => "GameOver",
         }
     }
@@ -3571,7 +3467,7 @@ impl SaltLine {
         self.preview.clear();
         self.redraw.mark();
         self.play_sound(Sound::Ui);
-        // Buffer size for the loadout, and the paywall gate if it is due.
+        // Buffer size for the loadout.
         self.after_screen_change();
         self.note(format!(
             "SCREEN {}  SEED {}",

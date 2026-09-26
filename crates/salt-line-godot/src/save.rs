@@ -1,4 +1,4 @@
-//! Local persistence: the unlock flag and the leaderboard. Brief M6.
+//! Local persistence: settings, bindings and the leaderboard. Brief M6.
 //!
 //! This file is the engine side only — finding `user://` on disk. The format
 //! lives in `save_format` and the write/recovery rules in `durable`, with no
