@@ -391,9 +391,9 @@ impl Event {
     }
 }
 
-/// One frame of input, as the node saw it: the only way player input and
-/// the outside world (window, date) reach the core. Built fresh each frame
-/// by the node, or by hand in a test.
+/// One frame of input, as the node saw it: how player input and the
+/// outside world (window, date) reach [`Game::tick`](crate::app::Game::tick).
+/// Filled by the node each frame, or by hand in a test.
 #[derive(Clone, Debug, Default)]
 pub struct Intents {
     /// Everything the player did since the last frame, oldest first.
