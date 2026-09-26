@@ -22,6 +22,8 @@ use salt_line_sim::run::{
 };
 use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_MIN};
 
+use crate::crash;
+use crate::durable::Debounce;
 use crate::palette::{slot, Palette};
 use crate::presentation::{
     self, RepeatState, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER,
@@ -234,6 +236,15 @@ pub struct SaltLine {
     /// `--salt-hold-draft`: leave the draft on screen instead of taking an
     /// offer, so the cards can be looked at.
     auto_hold_draft: bool,
+
+    /// Settings changed but not yet written. See `durable::Debounce`.
+    settings: Debounce,
+    /// Last session's crash report, if it left one (`user://crash.txt`).
+    last_crash: Option<String>,
+    /// The player has copied `last_crash` this session.
+    crash_copied: bool,
+    /// Showing the error screen. See `broken_frame`.
+    broken: bool,
 }
 
 #[godot_api]
@@ -286,6 +297,10 @@ impl INode2D for SaltLine {
             auto_cooldown: 0.0,
             auto_miss: false,
             auto_hold_draft: false,
+            settings: Debounce::default(),
+            last_crash: None,
+            crash_copied: false,
+            broken: false,
         }
     }
 
@@ -306,6 +321,7 @@ impl INode2D for SaltLine {
         self.pal = Palette::load(PALETTE_PATH);
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
         self.save = save::load();
+        self.find_last_crash();
         self.setup_audio();
         self.entitlement = store::entitlement(self.save.unlocked);
         self.buffer_w = self.pick_width();
@@ -333,6 +349,11 @@ impl INode2D for SaltLine {
     }
 
     fn process(&mut self, delta: f64) {
+        if crash::panicked() {
+            self.broken_frame(delta);
+            return;
+        }
+        self.note_crash_context();
         self.elapsed += delta;
         self.status_time = (self.status_time - delta).max(0.0);
         self.handle_input(delta);
@@ -340,6 +361,7 @@ impl INode2D for SaltLine {
             self.autopilot(delta);
         }
         self.step(delta);
+        self.tick_settings(delta);
         self.render();
         self.base_mut().queue_redraw();
     }
@@ -393,7 +415,15 @@ impl INode2D for SaltLine {
         match what {
             CanvasItemNotification::WM_GO_BACK_REQUEST => self.back_requested = true,
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
-            | CanvasItemNotification::APPLICATION_FOCUS_OUT => self.touch.release_all(),
+            | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
+                self.touch.release_all();
+                self.flush_settings();
+            }
+            // Pending settings go to disk before the app can be killed: a
+            // phone may never resume a paused app, and a close is final.
+            CanvasItemNotification::APPLICATION_PAUSED
+            | CanvasItemNotification::WM_CLOSE_REQUEST
+            | CanvasItemNotification::EXIT_TREE => self.flush_settings(),
             _ => {}
         }
     }
@@ -533,6 +563,7 @@ impl SaltLine {
         self.daily = daily;
         self.low_shell_warned = false;
         self.last_seed = seed;
+        self.retire_last_crash();
         self.run = Some(state);
         self.mode = Mode::Playing;
         self.apply_buffer_size();
@@ -823,7 +854,7 @@ impl SaltLine {
         if self.action_pressed(15, "mute") {
             self.save.muted = !self.save.muted;
             self.apply_volume();
-            save::store(&self.save);
+            self.settings.touch();
             self.note(if self.save.muted {
                 "SOUND MUTED".into()
             } else {
@@ -839,6 +870,8 @@ impl SaltLine {
                 } else if self.pressed(Key::S) || self.touch.pressed("seed") {
                     self.seed_text.clear();
                     self.mode = Mode::SeedEntry;
+                } else if self.last_crash.is_some() && self.action_pressed(4, "copy") {
+                    self.copy_last_crash();
                 } else if self.action_pressed(1, "controls") {
                     self.play_sound(Sound::Ui);
                     self.mode = Mode::Controls;
@@ -855,26 +888,26 @@ impl SaltLine {
                     self.save.volume = volume as u8;
                     self.save.muted = false;
                     self.apply_volume();
-                    save::store(&self.save);
+                    self.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
                 if self.touch.pressed("aim_mode") {
                     self.save.touch_aim = Some(self.touch_aim().next());
-                    save::store(&self.save);
+                    self.settings.touch();
                     self.play_sound(Sound::Ui);
                 } else if self.touch.pressed("arc_hint") {
                     self.save.arc_hint = Some(self.arc_hint().next());
-                    save::store(&self.save);
+                    self.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
                 if self.action_pressed(16, "last_arc") {
                     self.save.last_arc = Some(!self.last_arc_on());
-                    save::store(&self.save);
+                    self.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
                 if self.action_pressed(3, "replay") {
                     self.save.bindings.clear();
-                    save::store(&self.save);
+                    self.settings.touch();
                     self.note("DEFAULT BINDINGS RESTORED".into());
                 } else if self.action_pressed(2, "back") {
                     self.play_sound(Sound::Ui);
@@ -1268,7 +1301,9 @@ impl SaltLine {
                 shots,
                 daily: self.daily,
             };
-            save::record(&mut self.save, entry);
+            if !save::record(&mut self.save, entry).saved {
+                self.note("SCORE NOT SAVED".into());
+            }
         }
         self.mode = Mode::GameOver;
     }
@@ -1614,6 +1649,15 @@ impl SaltLine {
                 );
                 let back = self.input_label("back");
                 y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", dim);
+                if self.last_crash.is_some() {
+                    let text = if self.crash_copied {
+                        "CRASH REPORT COPIED"
+                    } else {
+                        "COPY LAST CRASH REPORT"
+                    };
+                    let copy = self.input_label("copy");
+                    y = self.menu_row(y, "copy", &format!("{copy}      {text}"), text, alert);
+                }
                 y += 6;
                 let best = self.save.best().copied();
                 if let Some(b) = best {
@@ -2570,5 +2614,166 @@ fn touch_label(action: &str) -> &'static str {
         "reposition_right" => "E>",
         "draft_1" | "draft_2" | "draft_3" => "TAP",
         _ => "",
+    }
+}
+
+// ------------------------------------------------- settings and crash reports
+
+impl SaltLine {
+    /// Write pending settings once they settle, or as soon as the player
+    /// leaves Controls. Not every volume repeat: see `durable::Debounce`.
+    fn tick_settings(&mut self, delta: f64) {
+        if self.settings.tick(delta, self.mode == Mode::Controls) {
+            self.write_settings();
+        }
+    }
+
+    /// Write pending settings now, if there are any: focus loss, pause, close.
+    fn flush_settings(&mut self) {
+        if self.settings.take() {
+            self.write_settings();
+        }
+    }
+
+    fn write_settings(&mut self) {
+        // After a panic nothing in memory is trusted enough to write.
+        if crash::panicked() {
+            return;
+        }
+        if !save::store(&self.save) {
+            self.note("SETTINGS NOT SAVED".into());
+        }
+    }
+
+    fn mode_name(&self) -> &'static str {
+        match self.mode {
+            Mode::Title => "Title",
+            Mode::Controls => "Controls",
+            Mode::SeedEntry => "SeedEntry",
+            Mode::Playing => "Playing",
+            Mode::Paused => "Paused",
+            Mode::Paywall => "Paywall",
+            Mode::GameOver => "GameOver",
+        }
+    }
+
+    /// Keep the crash hook's picture of the run current. Taken before this
+    /// frame's input, so a panic inside `fire` still reports the aim it fired.
+    fn note_crash_context(&self) {
+        crash::note(
+            self.mode_name(),
+            self.run.as_ref(),
+            (self.angle_ticks, self.power_ticks),
+        );
+    }
+
+    /// Pick up a report the last session left, for the title screen to offer.
+    fn find_last_crash(&mut self) {
+        let Some(path) = save::on_disk(crash::REPORT_PATH) else {
+            return;
+        };
+        crash::set_report_file(path.clone());
+        self.last_crash = std::fs::read_to_string(path)
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+    }
+
+    fn copy_last_crash(&mut self) {
+        let Some(text) = self.last_crash.clone() else {
+            return;
+        };
+        DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
+        self.play_sound(Sound::Ui);
+        if !self.crash_copied {
+            self.crash_copied = true;
+            self.retire_crash_file();
+        }
+    }
+
+    /// The player has moved on from last session's report (started a run):
+    /// stop offering it. The file is kept as `crash-old.txt`, not deleted.
+    fn retire_last_crash(&mut self) {
+        if self.last_crash.take().is_some() && !self.crash_copied {
+            self.retire_crash_file();
+        }
+    }
+
+    fn retire_crash_file(&self) {
+        if let (Some(from), Some(to)) = (
+            save::on_disk(crash::REPORT_PATH),
+            save::on_disk(crash::OLD_REPORT_PATH),
+        ) {
+            if let Err(e) = std::fs::rename(&from, &to) {
+                godot_warn!("salt-line: could not move {}: {e}", crash::REPORT_PATH);
+            }
+        }
+    }
+
+    /// A panic has happened somewhere in the Rust side. gdext caught it, but
+    /// the state it left is not to be trusted, so the game stops here: no sim
+    /// steps, no saves (`write_settings` checks too), just the report and a
+    /// way out.
+    fn broken_frame(&mut self, delta: f64) {
+        // Wall clock still runs, for `--salt-shot-at` captures of this screen.
+        self.elapsed += delta;
+        if !self.broken {
+            // Whatever the game last said no longer applies.
+            self.broken = true;
+            self.status_time = 0.0;
+        }
+        self.status_time = (self.status_time - delta).max(0.0);
+        self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        if self.action_pressed(4, "copy") {
+            let text = crash::report()
+                .or_else(|| {
+                    save::on_disk(crash::REPORT_PATH).and_then(|p| std::fs::read_to_string(p).ok())
+                })
+                .unwrap_or_else(|| "SALT LINE CRASH REPORT\n(report unavailable)\n".into());
+            DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
+            self.note("REPORT COPIED".into());
+        } else if self.action_pressed(2, "back") {
+            self.base().get_tree().quit();
+        }
+        self.back_requested = false;
+
+        self.touch_buttons.clear();
+        let pal = self.pal.clone();
+        self.canvas.fill(pal.get(slot::UI_BG));
+        let (fg, dim, alert) = (
+            pal.get(slot::UI_FG),
+            pal.get(slot::SKY_LO),
+            pal.get(slot::ALERT),
+        );
+        let mut y = 30;
+        self.centred(y, "SOMETHING BROKE", alert);
+        y += 14;
+        self.centred(y, "THE GAME STOPPED RATHER THAN CARRY ON WRONG.", fg);
+        y += 8;
+        self.centred(
+            y,
+            "A REPORT WAS SAVED ON THIS DEVICE. NOTHING WAS SENT.",
+            dim,
+        );
+        y += 8;
+        self.centred(y, "PASTE IT INTO A BUG REPORT ON GITHUB.", dim);
+        y += 16;
+        let copy = self.input_label("copy");
+        y = self.menu_row(
+            y,
+            "copy",
+            &format!("{copy}      COPY REPORT"),
+            "COPY REPORT",
+            fg,
+        );
+        let back = self.input_label("back");
+        y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", fg);
+        y += 4;
+        if self.status_time > 0.0 {
+            let text = self.status.clone();
+            self.centred(y, &text, alert);
+        }
+        self.upload();
+        self.maybe_screenshot();
+        self.base_mut().queue_redraw();
     }
 }

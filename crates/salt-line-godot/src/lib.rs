@@ -10,6 +10,8 @@
 use godot::prelude::*;
 
 pub mod aim;
+pub mod crash;
+pub mod durable;
 pub mod font;
 pub mod game;
 pub mod icons;
@@ -25,4 +27,13 @@ pub mod touch;
 struct SaltLineExtension;
 
 #[gdextension]
-unsafe impl ExtensionLibrary for SaltLineExtension {}
+unsafe impl ExtensionLibrary for SaltLineExtension {
+    fn on_stage_init(stage: InitStage) {
+        // Scene is the first stage the node's classes, and `ProjectSettings`
+        // for finding `user://`, can be relied on. gdext installed its own
+        // panic hook before this runs; `crash::install` chains it.
+        if stage == InitStage::Scene {
+            crash::install(save::on_disk(crash::REPORT_PATH));
+        }
+    }
+}
