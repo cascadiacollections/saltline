@@ -73,9 +73,9 @@ settings. Phones use the Compatibility renderer; the desktop keeps Forward+.
 
 | Keyboard | Controller | Touch | Action |
 |---|---|---|---|
-| Left / Right | D-pad or left stick | `<` `>` | Angle, one quantization step (Shift: ten) |
-| Up / Down | D-pad or left stick | `-` `+` | Power (Shift: ten steps) |
-| Space | A | FIRE | Fire |
+| Left / Right | D-pad or left stick | `<` `>`, or drag | Angle, one quantization step (Shift: ten) |
+| Up / Down | D-pad or left stick | `-` `+`, or drag | Power (Shift: ten steps) |
+| Space | A | FIRE, or let go of a drag | Fire |
 | `[` `]` | LB / RB | `F-` `F+` | Airburst fuse distance (with Airburst) |
 | `,` `.` | X / Y | `E<` `E>` | Reposition the emplacement (needs Enfilade) |
 | 1 / 2 / 3 | X / A / B | Tap a card | Take a draft offer |
@@ -93,6 +93,21 @@ and sit along the bottom edge, which is always solid ground. Phones start with
 them showing; elsewhere they appear on the first touch. Any key or controller
 press switches back, and a tap switches to touch again. Holding a button
 repeats like holding a key.
+
+Touch aiming has two modes, chosen with AIM on the CONTROLS / AUDIO screen:
+
+- **Buttons**: the `<` `>` `-` `+` and FIRE buttons.
+- **Drag**: put a finger down on open ground and pull back, like a slingshot.
+  The direction of the pull sets the angle and its length sets the power, both
+  on the same grid as the keys. Let go to fire, or pull back to where you
+  started to cancel. ARC chooses the preview shown while you pull. **Short**
+  shows only the first stretch of flight, never the landing. **Full** shows the
+  whole arc without wind. **Full + wind** adds the wind the HUD shows, which is
+  none under Dead Reckoning. Short is the default: reading wind stays the
+  player's job (DESIGN §2.5).
+
+Until a player picks one, the defaults are `DEFAULT_TOUCH_AIM` and
+`DEFAULT_ARC_HINT` in `game.rs`.
 
 The game automatically changes onboarding labels after the most recent
 keyboard, controller or touch input. Stick aiming uses a 0.45 dead zone and the same

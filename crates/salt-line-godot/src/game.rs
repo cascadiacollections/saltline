@@ -7,12 +7,13 @@
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
     AudioStream, AudioStreamPlayer, DisplayServer, INode2D, Image, ImageTexture, Input, InputEvent,
-    InputEventKey, InputEventScreenTouch, Node2D, Os, RenderingServer, ResourceLoader, Time,
+    InputEventKey, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os, RenderingServer,
+    ResourceLoader, Time,
 };
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use salt_line_sim::ballistics::{End, Shot, Trace};
+use salt_line_sim::ballistics::{self, End, FireOptions, Shot, Trace};
 use salt_line_sim::dmath;
 use salt_line_sim::modifiers::{flags, Loadout, Modifier};
 use salt_line_sim::run::{
@@ -28,6 +29,7 @@ use crate::presentation::{
 };
 use crate::raster::{self, Canvas, View};
 use crate::save::{self, Entry, Save};
+use crate::save_format::{ArcHint, TouchAim};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
 use crate::store::{self, Entitlement};
 use crate::touch::{Button, Rect, TouchPad};
@@ -52,6 +54,15 @@ const SEED_KEYS: [&str; 36] = [
     "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 ];
 const REPEAT_RATE: f64 = 0.035;
+
+/// Touch aiming until the player picks one in Controls. Undecided: buttons are
+/// the conservative choice while drag aiming is new.
+const DEFAULT_TOUCH_AIM: TouchAim = TouchAim::Buttons;
+/// The drag arc preview until the player picks one. Short keeps reading the
+/// wind the player's job (DESIGN §2.5).
+const DEFAULT_ARC_HINT: ArcHint = ArcHint::Short;
+/// Seconds of flight the Short preview shows, so its length reads as power.
+const SHORT_ARC_SECONDS: f64 = 0.3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -178,6 +189,8 @@ pub struct SaltLine {
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
     touch: TouchPad,
+    /// The aim a touch drag started from, put back if the pull is cancelled.
+    drag_from: Option<(i32, i32)>,
     /// Showing touch controls. On from the first touch, off again at the next
     /// key or button press, like `controller_active`.
     touch_active: bool,
@@ -251,6 +264,7 @@ impl INode2D for SaltLine {
             controller_active: false,
             touch_buttons: Vec::new(),
             touch: TouchPad::default(),
+            drag_from: None,
             touch_active: false,
             back_requested: false,
             mobile: false,
@@ -334,6 +348,20 @@ impl INode2D for SaltLine {
     }
 
     fn input(&mut self, event: Gd<InputEvent>) {
+        let event = match event.try_cast::<InputEventScreenDrag>() {
+            Ok(drag) => {
+                let local = self
+                    .base()
+                    .make_input_local(&drag.clone().upcast::<InputEvent>());
+                let pos = local
+                    .try_cast::<InputEventScreenDrag>()
+                    .map(|d| d.get_position())
+                    .unwrap_or_else(|_| drag.get_position());
+                self.touch.finger_moved(drag.get_index(), pos.x, pos.y);
+                return;
+            }
+            Err(event) => event,
+        };
         let Ok(touch) = event.try_cast::<InputEventScreenTouch>() else {
             return;
         };
@@ -821,6 +849,15 @@ impl SaltLine {
                     save::store(&self.save);
                     self.play_sound(Sound::Ui);
                 }
+                if self.touch.pressed("aim_mode") {
+                    self.save.touch_aim = Some(self.touch_aim().next());
+                    save::store(&self.save);
+                    self.play_sound(Sound::Ui);
+                } else if self.touch.pressed("arc_hint") {
+                    self.save.arc_hint = Some(self.arc_hint().next());
+                    save::store(&self.save);
+                    self.play_sound(Sound::Ui);
+                }
                 if self.action_pressed(3, "replay") {
                     self.save.bindings.clear();
                     save::store(&self.save);
@@ -884,11 +921,18 @@ impl SaltLine {
 
     fn handle_play_input(&mut self, delta: f64) {
         if self.action_pressed(2, "back") {
+            self.touch.cancel_drag();
             self.mode = Mode::Paused;
             return;
         }
         let phase = self.run.as_ref().map(|r| r.phase);
         let Some(phase) = phase else { return };
+
+        // A drag only aims on the screen it started on: drafting or a shot in
+        // the air forgets it, so it can never drop into a later shot.
+        if phase != Phase::Firing || self.anim.is_some() || self.clear_hold > 0.0 {
+            self.touch.cancel_drag();
+        }
 
         if phase == Phase::Drafting {
             for (i, action) in ["draft_1", "draft_2", "draft_3"].into_iter().enumerate() {
@@ -963,6 +1007,55 @@ impl SaltLine {
         if self.action_pressed(10, "fire") || self.pressed(Key::ENTER) {
             self.fire();
         }
+
+        if self.drag_aiming() {
+            self.handle_drag_aim(quantum);
+        }
+    }
+
+    /// Pull back to aim, let go to fire. The aim follows the finger live, so
+    /// the readouts and barrel show exactly what a release would fire; pulling
+    /// back inside the dead zone puts the old aim back and cancels.
+    fn handle_drag_aim(&mut self, quantum: i32) {
+        let dropped = self.touch.dropped();
+        let Some((start, end)) = dropped.or(self.touch.drag()) else {
+            // Abandoned (paused, focus lost): put the old aim back.
+            if let Some(before) = self.drag_from.take() {
+                (self.angle_ticks, self.power_ticks) = before;
+            }
+            return;
+        };
+        let before = *self
+            .drag_from
+            .get_or_insert((self.angle_ticks, self.power_ticks));
+        let aim = crate::aim::pull_to_aim(start, end, quantum);
+        match aim {
+            Some((angle, power)) => {
+                self.learn(LEARN_ANGLE);
+                self.learn(LEARN_POWER);
+                (self.angle_ticks, self.power_ticks) = (angle, power);
+            }
+            None => (self.angle_ticks, self.power_ticks) = before,
+        }
+        if dropped.is_some() {
+            self.drag_from = None;
+            if aim.is_some() {
+                self.fire();
+            }
+        }
+    }
+
+    fn touch_aim(&self) -> TouchAim {
+        self.save.touch_aim.unwrap_or(DEFAULT_TOUCH_AIM)
+    }
+
+    fn arc_hint(&self) -> ArcHint {
+        self.save.arc_hint.unwrap_or(DEFAULT_ARC_HINT)
+    }
+
+    /// Touch aiming is by dragging rather than the angle and power buttons.
+    fn drag_aiming(&self) -> bool {
+        self.touch_active && self.touch_aim() == TouchAim::Drag
     }
 
     // ------------------------------------------------------------- run steps
@@ -1550,8 +1643,24 @@ impl SaltLine {
                 y += 20;
                 let mute = if self.save.muted { "UNMUTE" } else { "MUTE" };
                 y = self.menu_row(y, "mute", "", mute, fg);
-                y += 4;
-                self.centred(y, "IN PLAY: < > ANGLE   - + POWER", dim);
+                let aim = match self.touch_aim() {
+                    TouchAim::Buttons => "AIM: BUTTONS",
+                    TouchAim::Drag => "AIM: DRAG",
+                };
+                y = self.menu_row(y, "aim_mode", "", aim, fg);
+                if self.touch_aim() == TouchAim::Drag {
+                    let arc = match self.arc_hint() {
+                        ArcHint::Short => "ARC: SHORT",
+                        ArcHint::Full => "ARC: FULL",
+                        ArcHint::Wind => "ARC: FULL + WIND",
+                    };
+                    y = self.menu_row(y, "arc_hint", "", arc, fg);
+                    y += 4;
+                    self.centred(y, "IN PLAY: PULL BACK, LET GO TO FIRE", fg);
+                } else {
+                    y += 4;
+                    self.centred(y, "IN PLAY: < > ANGLE   - + POWER", fg);
+                }
                 y += 12;
                 self.menu_row(y, "back", "", "BACK", fg);
             }
@@ -1747,14 +1856,19 @@ impl SaltLine {
         let y = h - bh - 3 - ey;
         // Right of the ANG/PWR readouts in the bottom-left corner.
         let x0 = 44 + ex;
-        self.draw_touch_button(x0, y, bw, bh, "<", "left");
-        self.draw_touch_button(x0 + bw + 3, y, bw, bh, ">", "right");
-        self.draw_touch_button(x0 + 2 * bw + 12, y, bw, bh, "-", "down");
-        self.draw_touch_button(x0 + 3 * bw + 15, y, bw, bh, "+", "up");
-        // Left of the screen index in the bottom-right corner.
-        self.draw_touch_button(w - 16 - 40 - ex, y, 40, bh, "FIRE", "fire");
-
-        let y2 = y - bh - 3;
+        // Drag aiming: the open screen is the control, so only the modifier
+        // buttons stay, dropped to the bottom row.
+        let y2 = if self.drag_aiming() {
+            y
+        } else {
+            self.draw_touch_button(x0, y, bw, bh, "<", "left");
+            self.draw_touch_button(x0 + bw + 3, y, bw, bh, ">", "right");
+            self.draw_touch_button(x0 + 2 * bw + 12, y, bw, bh, "-", "down");
+            self.draw_touch_button(x0 + 3 * bw + 15, y, bw, bh, "+", "up");
+            // Left of the screen index in the bottom-right corner.
+            self.draw_touch_button(w - 16 - 40 - ex, y, 40, bh, "FIRE", "fire");
+            y - bh - 3
+        };
         if loadout.airburst() {
             self.draw_touch_button(x0, y2, bw, bh, "F-", "fuse_down");
             self.draw_touch_button(x0 + bw + 3, y2, bw, bh, "F+", "fuse_up");
@@ -1815,6 +1929,9 @@ impl SaltLine {
             }
         }
         self.draw_shot_effects(&view);
+        if self.anim.is_none() && phase == Phase::Firing && self.mode == Mode::Playing {
+            self.draw_drag_preview(&screen, &loadout, wind_shown, &view);
+        }
 
         self.render_hud(
             shells, index, wind_shown, range, fuse, &loadout, &screen, phase,
@@ -1831,6 +1948,72 @@ impl SaltLine {
         } else if self.mode == Mode::Paused {
             self.render_pause();
         }
+    }
+
+    /// While a drag aims: the band from where the finger went down to where it
+    /// is, and the arc the player chose to see. The wind in a Wind preview is
+    /// the wind the HUD shows, so it never tells more than Dead Reckoning does.
+    fn draw_drag_preview(
+        &mut self,
+        screen: &Screen,
+        loadout: &Loadout,
+        wind_shown: Option<f64>,
+        view: &View,
+    ) {
+        if !self.drag_aiming() {
+            return;
+        }
+        let Some((start, now)) = self.touch.drag() else {
+            return;
+        };
+        let pal = self.pal.clone();
+        let (sx, sy) = (start.0 as i32, start.1 as i32);
+        let (nx, ny) = (now.0 as i32, now.1 as i32);
+        let steps = (nx - sx).abs().max((ny - sy).abs()).max(1);
+        for i in (0..=steps).step_by(3) {
+            let x = sx + (nx - sx) * i / steps;
+            let y = sy + (ny - sy) * i / steps;
+            self.canvas.put(x, y, pal.get(slot::SKY_LO));
+        }
+        self.canvas
+            .rect(sx - 1, sy - 1, 3, 3, pal.get(slot::SKY_LO));
+        if self.drag_from.is_none()
+            || crate::aim::pull_to_aim(start, now, loadout.angle_quantum_ticks).is_none()
+        {
+            return;
+        }
+
+        let hint = self.arc_hint();
+        let boxes = screen.target_boxes();
+        let mut world = screen.world(&boxes);
+        world.wind = match hint {
+            ArcHint::Wind => wind_shown.unwrap_or(0.0),
+            ArcHint::Short | ArcHint::Full => 0.0,
+        };
+        let opts = FireOptions {
+            record_path: true,
+            ..FireOptions::default()
+        };
+        let shot = Shot::new(self.angle_ticks, self.power_ticks);
+        let traces = ballistics::fire(&world, screen.muzzle(), shot, loadout, &opts);
+        let Some(path) = traces.first().map(|t| &t.path) else {
+            return;
+        };
+        let upto = match hint {
+            // Never past the apex, so it shows where the shell is going and
+            // how hard, never where it lands.
+            ArcHint::Short => {
+                let apex = path
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
+                    .map_or(0, |(i, _)| i);
+                let window = (SHORT_ARC_SECONDS / DT) as usize;
+                window.min(apex.max(window / 3))
+            }
+            ArcHint::Full | ArcHint::Wind => path.len(),
+        };
+        raster::draw_trajectory(&mut self.canvas, view, path, upto, &pal);
     }
 
     fn draw_structures(&mut self, screen: &Screen, view: &View) {
@@ -2006,6 +2189,16 @@ impl SaltLine {
             ));
         }
         let learned = self.save.learned;
+        if self.drag_aiming()
+            && learned & (LEARN_ANGLE | LEARN_POWER | LEARN_FIRE)
+                != LEARN_ANGLE | LEARN_POWER | LEARN_FIRE
+        {
+            return Some(if self.touch.drag().is_some() {
+                "LET GO TO FIRE  PULL BACK TO CANCEL".into()
+            } else {
+                "DRAG BACK FROM OPEN GROUND TO AIM".into()
+            });
+        }
         if learned & LEARN_ANGLE == 0 {
             Some(format!(
                 "{} / {}  SET ANGLE",
