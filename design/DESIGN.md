@@ -113,7 +113,8 @@ feeds generation.
 
 6. **Solvability validation.** See §2.4. Reject and regenerate with
    `screen_seed + 1` on failure. Cap at 8 attempts, then fall back to a `Flat`
-   template — a boring screen is better than a hang.
+   template — a boring screen is better than a hang. The fallbacks are
+   validated as well; see the ladder in §2.4.
 
 ### 2.4 Solvability
 
@@ -145,6 +146,24 @@ difficulty and worth graphing over a 200-screen batch.
 `Overhang` screens intentionally fail the direct check and are only offered once
 the player holds a modifier that unlocks them (ricochet, airburst, or
 tunneling). Gate template availability on the loadout, not just the band.
+
+**Fallbacks are validated too.** When the drawn templates run out (§2.3 step 6)
+generation steps down a ladder, and every rung goes through the same gate:
+
+1. Eight drawn templates, each on the next seed.
+2. Eight `Flat` screens on a separate run of seeds.
+3. No template: the base ridge flattened to a gentle roll, one target.
+4. Level ground, no wind before or after the apex, one Pylon at half the
+   loadout's flat-ground range (or the band's distance, if nearer).
+
+Rung 4 is solvable by construction for any loadout the game can hold: nothing
+stands in the way, nothing blows the shell off line, and half range leaves a
+low and a high answer across a wide band of power, whatever Featherweight,
+Ballast or Sabot have done to the range and however coarse the angle quantum.
+It is still validated, to prove the construction rather than trust it. If it
+ever failed, a debug or test build would panic rather than show the screen, and
+the batch harness would fail. A supply screen (Scavenger Rites) has no targets,
+so there is nothing to prove; it is exempt by nature, not by oversight.
 
 ### 2.5 Difficulty curve
 
