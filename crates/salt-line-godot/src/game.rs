@@ -748,12 +748,14 @@ impl SaltLine {
     /// Level inspector: drop straight onto a screen index without playing the
     /// ones before it. DESIGN §2.2 is what makes this possible — each screen
     /// generates from its own seed, so screen 400 costs the same as screen 1.
+    /// It is still a way onto a screen, so the paywall gate applies to it.
     fn jump_to(&mut self, index: u32) {
         let Some(run) = self.run.as_mut() else { return };
         run.screen_index = index;
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
         self.preview.clear();
         self.note(format!("SCREEN {}", index + 1));
+        self.paywall_gate();
     }
 
     fn note(&mut self, text: String) {
@@ -838,6 +840,7 @@ impl SaltLine {
             "C" => Key::C,
             "R" => Key::R,
             "S" => Key::S,
+            "U" => Key::U,
             "V" => Key::V,
             "M" => Key::M,
             "L" => Key::L,
@@ -885,6 +888,8 @@ impl SaltLine {
             "mute" => ("M", "START"),
             "last_arc" => ("L", "X"),
             "seed" => ("S", "Y"),
+            "unlock" => ("U", "X"),
+            "restore" => ("R", "Y"),
             _ => ("", ""),
         };
         self.binding(action, defaults.0, defaults.1)
@@ -1182,11 +1187,13 @@ impl SaltLine {
             }
             Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::Paywall => {
-                if self.pressed(Key::U) {
+                // Keyboard U / R / Enter / Escape as ever; X / Y / B on a
+                // controller; the rows themselves on a touchscreen.
+                if self.action_pressed(18, "unlock") {
                     self.unlock(false);
-                } else if self.pressed(Key::R) {
+                } else if self.action_pressed(19, "restore") {
                     self.unlock(true);
-                } else if self.pressed(Key::ENTER) || self.pressed(Key::ESCAPE) {
+                } else if self.action_pressed(2, "back") || self.pressed(Key::ENTER) {
                     self.finish_run();
                 }
             }
@@ -1542,7 +1549,11 @@ impl SaltLine {
         if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
             self.play_sound(Sound::Draft);
         }
-        // The paywall gate. Brief M6: free to play through screen 15.
+        self.paywall_gate();
+    }
+
+    /// The paywall gate. Brief M6: free to play through screen 15.
+    fn paywall_gate(&mut self) {
         let index = self.run.as_ref().map(|r| r.screen_index).unwrap_or(0);
         if self.entitlement == Entitlement::Free && index >= FREE_SCREENS {
             self.mode = Mode::Paywall;
@@ -2871,7 +2882,8 @@ impl SaltLine {
         let alert = pal.get(slot::ALERT);
         let (w, h) = (self.canvas.w, self.canvas.h);
         let bw = (w - 40).max(120);
-        let bh = 80;
+        // Touch rows are spaced for a finger, so the box grows to hold them.
+        let bh = if self.touch_active { 94 } else { 80 };
         let x = (w - bw) / 2;
         let y = (h - bh) / 2;
         self.canvas.plate(x, y, bw, bh, &pal);
@@ -2882,11 +2894,25 @@ impl SaltLine {
         cy += 12;
         self.centred(cy, "ONE PURCHASE, NO ADS, NO TIMERS", dim);
         cy += 14;
-        self.centred(cy, "U      UNLOCK", fg);
-        cy += 8;
-        self.centred(cy, "R      RESTORE PURCHASE", fg);
-        cy += 8;
-        self.centred(cy, "ENTER  END THE RUN", dim);
+        // The keyboard's Enter also ends the run, as it always has.
+        let end = if self.controller_active {
+            self.input_label("back")
+        } else {
+            "ENTER".into()
+        };
+        let rows = [
+            ("unlock", self.input_label("unlock"), "UNLOCK", fg),
+            (
+                "restore",
+                self.input_label("restore"),
+                "RESTORE PURCHASE",
+                fg,
+            ),
+            ("back", end, "END THE RUN", dim),
+        ];
+        for (action, key, text, c) in rows {
+            cy = self.menu_row(cy, action, &format!("{key:<7}{text}"), text, c);
+        }
     }
 
     fn render_pause(&mut self) {
