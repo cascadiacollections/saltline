@@ -25,7 +25,7 @@ failing loudly.
 |---|---|
 | `design/DESIGN.md` | Full specification — mechanics, terrain, modifiers, art |
 | `IMPLEMENTATION_PROMPT.md` | The brief this build was written against |
-| `crates/salt-line-sim` | The whole game. No Godot dependency, no dependencies at all |
+| `crates/salt-line-sim` | The whole game. No Godot dependency, no runtime dependencies at all |
 | `crates/salt-line-godot` | Rendering, input, UI. Draws what the sim says is true |
 | `art/` | Native-resolution sprites, 16-colour palette, reference scene |
 | `tools/gen_sprites.py` | Regenerates all art; working reference for the terrain math |
@@ -138,6 +138,15 @@ instrument rather than a stat.
 
 Everything here runs headless. None of it needs a human at the keyboard.
 
+`cargo test` includes property tests (proptest). They check invariants
+across random inputs: any recorded run replays to the same state, any save
+reads back as written, and drag aim never leaves the grid. On a failure,
+proptest shrinks the input to a minimal case and records it under
+`proptest-regressions/`; commit that file so the case stays covered.
+`just deny` (cargo-deny, `deny.toml`) checks the dependency tree for security
+advisories, disallowed licences and unknown sources. CI runs it on every pull
+request.
+
 ```sh
 # Solvability: 5,000 screens across 50 seeds, and the candidate histogram that
 # DESIGN §2.5 is tuned against. Non-zero exit if any screen fails the gate.
@@ -210,7 +219,9 @@ to be hardcoded while the repo is internal.
 ## The three things that matter
 
 1. **`salt-line-sim` never depends on Godot.** It builds headless, and it has
-   no dependencies at all — not even `rand`.
+   no runtime dependencies at all — not even `rand`. Tests may use
+   dev-dependencies (proptest), which never reach a build of the game; CI
+   fails if a normal dependency appears.
 2. **Wind is an acceleration, not a velocity offset.** Drift grows with the
    square of flight time. Most of the difficulty curve falls out of this.
 3. **Every screen is proven solvable before it is shown** — three or more

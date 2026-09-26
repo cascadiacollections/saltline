@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "salt-line-sim"
 version.workspace = true
 edition.workspace = true
@@ -10,3 +11,6 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
+# Test-only: property tests (tests/properties.rs). The sim itself still has no
+# dependencies, so nothing here reaches a build of the game.
+proptest = { version = "1", default-features = false, features = ["std"] }
