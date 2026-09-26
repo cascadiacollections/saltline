@@ -6,9 +6,10 @@
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
-    AudioStream, AudioStreamPlayer, DisplayServer, INode2D, Image, ImageTexture, Input, InputEvent,
-    InputEventKey, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os, RenderingServer,
-    ResourceLoader, Time,
+    AudioStream, AudioStreamPlayer, DisplayServer, Engine, INode2D, Image, ImageTexture, Input,
+    InputEvent, InputEventJoypadButton, InputEventJoypadMotion, InputEventKey,
+    InputEventMouseMotion, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os,
+    RenderingServer, ResourceLoader, Time,
 };
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
@@ -24,6 +25,9 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_
 
 use crate::crash;
 use crate::durable::Debounce;
+use crate::frame::{self, DisplayPoll, Memo, Redraw};
+use crate::keypad::{self, Focus};
+use crate::pads::Pads;
 use crate::palette::{slot, Palette};
 use crate::presentation::{
     self, RepeatState, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER,
@@ -50,11 +54,6 @@ const TOPPLE_TIME: f64 = 0.22;
 /// Key repeat: delay before repeating, then interval.
 const REPEAT_DELAY: f64 = 0.28;
 
-/// The on-screen seed keypad. Each key's label is also its touch action.
-const SEED_KEYS: [&str; 36] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-];
 const REPEAT_RATE: f64 = 0.035;
 
 /// Touch aiming until the player picks one in Controls. Undecided: buttons are
@@ -145,6 +144,46 @@ impl Anim {
     }
 }
 
+/// Everything the drag preview's trajectory depends on. The terrain and the
+/// targets only change when a shot lands (`shots`) or the screen does
+/// (`seed`, `index`); the muzzle moves with Enfilade (`offset`).
+#[derive(PartialEq, Debug)]
+struct PreviewKey {
+    angle: i32,
+    power: i32,
+    hint: ArcHint,
+    /// Bits of the wind the preview flies in, which is the HUD's wind.
+    wind: u64,
+    seed: u64,
+    index: u32,
+    shots: u32,
+    offset: u64,
+}
+
+/// A cached preview: the primary shell's path and how much of it to draw.
+type Preview = (Vec<Vec2>, usize);
+
+/// See `SaltLine::frame_state`.
+#[derive(PartialEq)]
+struct FrameState {
+    mode: Mode,
+    aim: (i32, i32),
+    cam_x: i32,
+    buffer: (i32, i32, (i32, i32)),
+    devices: (bool, bool),
+    run: Option<(u32, Phase, i32, u32, u64, u64)>,
+    seed: (usize, Focus),
+    settings: (
+        u8,
+        bool,
+        Option<bool>,
+        Option<TouchAim>,
+        Option<ArcHint>,
+        u32,
+    ),
+    misc: (bool, bool, bool),
+}
+
 #[derive(GodotClass)]
 #[class(base = Node2D)]
 pub struct SaltLine {
@@ -156,7 +195,25 @@ pub struct SaltLine {
     /// resolution. DESIGN §5.1 — "UI renders in the same buffer at the same
     /// resolution".
     canvas: Canvas,
+    /// The frame's image and texture live as long as the buffer keeps its
+    /// size: each frame is copied into one of `upload_bufs` and handed to the
+    /// image, which shares rather than copies it. Two buffers, so the one
+    /// being written is never the one the image still holds.
+    image: Option<Gd<Image>>,
     texture: Option<Gd<ImageTexture>>,
+    upload_bufs: [PackedByteArray; 2],
+    upload_flip: usize,
+    /// Whether this frame needs drawing at all. See `frame::Redraw`.
+    redraw: Redraw,
+    /// The engine's frame cap as the project set it, restored in play.
+    project_fps: i32,
+    fps_cap: i32,
+    /// When to read the display's safe area again, and what it last said.
+    display: DisplayPoll,
+    window_size: Vector2i,
+    cutout: (i32, i32),
+    /// The drag preview's trajectory, recomputed only when its inputs change.
+    preview: Memo<PreviewKey, Preview>,
 
     buffer_w: i32,
     buffer_h: i32,
@@ -185,10 +242,25 @@ pub struct SaltLine {
     status_time: f64,
     debug: bool,
 
-    /// Key edge/repeat state: (key, was_down, timer).
-    keys: Vec<(Key, bool, f64)>,
-    pad_edges: Vec<(JoyButton, bool)>,
+    /// Key hold-to-repeat state.
+    keys: Vec<(Key, RepeatState)>,
+    /// Key and button presses as events arrive, and the ones this frame
+    /// reads. Polling alone loses a press and release inside one frame.
+    key_queue: Vec<Key>,
+    key_presses: Vec<Key>,
+    pad_queue: Vec<JoyButton>,
+    pad_presses: Vec<JoyButton>,
+    /// The joypads that drive the game: any that has pressed a button or
+    /// shown a stick at rest. See `pads::Pads`.
+    pads: Pads,
+    /// Seconds until the joypad list is checked against the connected ones.
+    pad_prune: f64,
+    /// Hold-to-repeat per pad button, shared by every action bound to it.
+    pad_keys: Vec<(JoyButton, RepeatState)>,
+    /// Hold-to-repeat for the left stick, per action slot.
     pad_repeat: [RepeatState; 8],
+    /// The controller's place on the seed keypad.
+    seed_focus: Focus,
     controller_active: bool,
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
@@ -257,7 +329,17 @@ impl INode2D for SaltLine {
             pal: Palette::default(),
             sprites: None,
             canvas: Canvas::new(320, 180),
+            image: None,
             texture: None,
+            upload_bufs: [PackedByteArray::new(), PackedByteArray::new()],
+            upload_flip: 0,
+            redraw: Redraw::default(),
+            project_fps: 0,
+            fps_cap: 0,
+            display: DisplayPoll::default(),
+            window_size: Vector2i::ZERO,
+            cutout: (0, 0),
+            preview: Memo::default(),
             buffer_w: 320,
             buffer_h: SCREEN_H as i32,
             cam_x: 0,
@@ -277,8 +359,15 @@ impl INode2D for SaltLine {
             status_time: 0.0,
             debug: false,
             keys: Vec::new(),
-            pad_edges: Vec::new(),
+            key_queue: Vec::new(),
+            key_presses: Vec::new(),
+            pad_queue: Vec::new(),
+            pad_presses: Vec::new(),
+            pads: Pads::default(),
+            pad_prune: 0.0,
+            pad_keys: Vec::new(),
             pad_repeat: [RepeatState::default(); 8],
+            seed_focus: Focus::default(),
             controller_active: false,
             touch_buttons: Vec::new(),
             touch: TouchPad::default(),
@@ -327,6 +416,12 @@ impl INode2D for SaltLine {
         self.find_last_crash();
         self.setup_audio();
         self.entitlement = store::entitlement(self.save.unlocked);
+        self.project_fps = Engine::singleton().get_max_fps();
+        self.fps_cap = self.project_fps;
+        self.read_display();
+        // And again on the first frame: on a phone the safe area may not be
+        // settled yet while the scene is still coming up.
+        self.display.invalidate();
         self.buffer_w = self.pick_width();
         self.apply_buffer_size();
         if let Some(dir) = Self::cmdline_value("--salt-gallery") {
@@ -359,14 +454,30 @@ impl INode2D for SaltLine {
         self.note_crash_context();
         self.elapsed += delta;
         self.status_time = (self.status_time - delta).max(0.0);
+        self.poll_display(delta);
+        let before = self.frame_state();
         self.handle_input(delta);
         if self.auto {
             self.autopilot(delta);
         }
         self.step(delta);
         self.tick_settings(delta);
-        self.render();
-        self.base_mut().queue_redraw();
+        let after = self.frame_state();
+        if after != before {
+            self.redraw.mark();
+            // Between runs the buffer may take a new width: look at the
+            // display afresh rather than wait for the next scheduled read.
+            if after.mode != before.mode && matches!(after.mode, Mode::Title | Mode::GameOver) {
+                self.display.invalidate();
+            }
+        }
+        self.prune_pads(delta);
+        self.apply_frame_cap();
+        if self.redraw.due(self.busy()) {
+            self.render();
+        }
+        // Every frame, drawn or not: an undrawn frame is the last one drawn.
+        self.maybe_screenshot();
     }
 
     fn draw(&mut self) {
@@ -379,6 +490,46 @@ impl INode2D for SaltLine {
     }
 
     fn input(&mut self, event: Gd<InputEvent>) {
+        let event = match event.try_cast::<InputEventMouseMotion>() {
+            // Nothing follows the mouse.
+            Ok(_) => return,
+            Err(event) => event,
+        };
+        let event = match event.try_cast::<InputEventJoypadMotion>() {
+            // Stick deflection is polled; `busy` keeps frames coming while
+            // one is held over.
+            Ok(motion) => {
+                let axis = match motion.get_axis() {
+                    JoyAxis::LEFT_X => 0,
+                    JoyAxis::LEFT_Y => 1,
+                    _ => usize::MAX,
+                };
+                self.pads
+                    .motion(motion.get_device(), axis, motion.get_axis_value());
+                return;
+            }
+            Err(event) => event,
+        };
+        self.redraw.mark();
+        let event = match event.try_cast::<InputEventKey>() {
+            Ok(key) => {
+                if key.is_pressed() && !key.is_echo() {
+                    self.key_queue.push(key.get_keycode());
+                }
+                return;
+            }
+            Err(event) => event,
+        };
+        let event = match event.try_cast::<InputEventJoypadButton>() {
+            Ok(button) => {
+                if button.is_pressed() {
+                    self.pads.button(button.get_device());
+                    self.pad_queue.push(button.get_button_index());
+                }
+                return;
+            }
+            Err(event) => event,
+        };
         let event = match event.try_cast::<InputEventScreenDrag>() {
             Ok(drag) => {
                 let local = self
@@ -416,11 +567,22 @@ impl INode2D for SaltLine {
 
     fn on_notification(&mut self, what: CanvasItemNotification) {
         match what {
-            CanvasItemNotification::WM_GO_BACK_REQUEST => self.back_requested = true,
+            CanvasItemNotification::WM_GO_BACK_REQUEST => {
+                self.back_requested = true;
+                self.redraw.mark();
+            }
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
                 self.touch.release_all();
                 self.flush_settings();
+                self.redraw.mark();
+            }
+            // The display may have turned, or grown a cutout, while away.
+            CanvasItemNotification::WM_WINDOW_FOCUS_IN
+            | CanvasItemNotification::APPLICATION_FOCUS_IN
+            | CanvasItemNotification::APPLICATION_RESUMED => {
+                self.display.invalidate();
+                self.redraw.mark();
             }
             // Pending settings go to disk before the app can be killed: a
             // phone may never resume a paused app, and a close is final.
@@ -442,18 +604,24 @@ impl INode2D for SaltLine {
             return;
         }
         let unicode = key.get_unicode();
-        match key.get_keycode() {
+        let keycode = key.get_keycode();
+        match keycode {
             Key::BACKSPACE => {
                 self.seed_text.pop();
             }
             Key::ENTER | Key::KP_ENTER => self.start_seeded_run(),
             Key::ESCAPE => self.leave_seed_entry(),
-            _ => {
-                if (32..127).contains(&unicode) && self.seed_text.chars().count() < 20 {
+            _ if (32..127).contains(&unicode) => {
+                if self.seed_text.chars().count() < 20 {
                     self.seed_text.push(unicode as u8 as char);
                 }
             }
+            // Arrows and the like fall through to move the keypad focus.
+            _ => return,
         }
+        // Typed, not pressed: an M in a seed must not also mute, nor the
+        // Enter that starts the run fire its first shot.
+        self.key_queue.retain(|k| *k != keycode);
     }
 }
 
@@ -475,6 +643,12 @@ impl SaltLine {
         self.mode = Mode::Title;
     }
 
+    fn open_seed_entry(&mut self) {
+        self.seed_text.clear();
+        self.seed_focus = Focus::default();
+        self.mode = Mode::SeedEntry;
+    }
+
     fn today() -> u64 {
         let secs = Time::singleton().get_unix_time_from_system();
         (secs / 86400.0).floor().max(0.0) as u64
@@ -483,8 +657,8 @@ impl SaltLine {
     /// Internal buffer width. DESIGN §5.1: fix the height at 180, let the
     /// width float 320..400 by device aspect, and generate terrain to fill it.
     fn pick_width(&self) -> i32 {
-        let size = DisplayServer::singleton().window_get_size();
-        let (l, r) = self.cutout_px();
+        let size = self.window_size;
+        let (l, r) = self.cutout;
         let usable = size.x - l - r;
         let aspect = if size.y > 0 {
             usable as f64 / size.y as f64
@@ -516,6 +690,33 @@ impl SaltLine {
             window.set_content_scale_size(Vector2i::new(self.buffer_w + l + r, h));
         }
         self.base_mut().set_position(Vector2::new(l as f32, 0.0));
+        self.redraw.mark();
+    }
+
+    /// Read the window size and the cutout it leaves, for `pick_width` and
+    /// `letterbox_now`. Not every frame: see `poll_display`.
+    fn read_display(&mut self) {
+        self.window_size = DisplayServer::singleton().window_get_size();
+        self.cutout = self.cutout_px();
+    }
+
+    /// Follow the display every frame from the window size, which is cheap,
+    /// and the cutout, which is re-read only when the size changes, focus
+    /// comes back, a run ends or a second has passed: the safe area is a
+    /// platform round trip on a phone.
+    fn poll_display(&mut self, delta: f64) {
+        let size = DisplayServer::singleton().window_get_size();
+        self.window_size = size;
+        if self.display.check((size.x, size.y), delta) {
+            self.cutout = self.cutout_px();
+        }
+        let want_w = self.pick_width();
+        if self.run.is_none() && want_w != self.buffer_w {
+            self.buffer_w = want_w;
+            self.apply_buffer_size();
+        } else if self.letterbox_now() != self.letterbox {
+            self.apply_buffer_size();
+        }
     }
 
     /// Screen pixels a display cutout takes from the left and right edges: a
@@ -526,9 +727,8 @@ impl SaltLine {
         if !self.mobile {
             return (0, 0);
         }
-        let ds = DisplayServer::singleton();
-        let win = ds.window_get_size();
-        let safe = ds.get_display_safe_area();
+        let win = self.window_size;
+        let safe = DisplayServer::singleton().get_display_safe_area();
         if safe.size.x <= 0 || safe.size.y <= 0 {
             return (0, 0);
         }
@@ -540,8 +740,8 @@ impl SaltLine {
     /// The cutout in buffer pixels, rounded up so the playfield never reaches
     /// under it.
     fn letterbox_now(&self) -> (i32, i32) {
-        let (l, r) = self.cutout_px();
-        let win_h = DisplayServer::singleton().window_get_size().y;
+        let (l, r) = self.cutout;
+        let win_h = self.window_size.y;
         if win_h <= 0 || self.buffer_h <= 0 {
             return (0, 0);
         }
@@ -560,6 +760,7 @@ impl SaltLine {
         self.power_ticks = 600;
         self.anim = None;
         self.last_arc.clear();
+        self.preview.clear();
         self.clear_hold = 0.0;
         self.cam_x = 0;
         self.cam_target = 0.0;
@@ -576,16 +777,20 @@ impl SaltLine {
     /// Level inspector: drop straight onto a screen index without playing the
     /// ones before it. DESIGN §2.2 is what makes this possible — each screen
     /// generates from its own seed, so screen 400 costs the same as screen 1.
+    /// It is still a way onto a screen, so the paywall gate applies to it.
     fn jump_to(&mut self, index: u32) {
         let Some(run) = self.run.as_mut() else { return };
         run.screen_index = index;
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
+        self.preview.clear();
         self.note(format!("SCREEN {}", index + 1));
+        self.paywall_gate();
     }
 
     fn note(&mut self, text: String) {
         self.status = text;
         self.status_time = 2.4;
+        self.redraw.mark();
     }
 
     // ----------------------------------------------------------------- input
@@ -664,6 +869,7 @@ impl SaltLine {
             "C" => Key::C,
             "R" => Key::R,
             "S" => Key::S,
+            "U" => Key::U,
             "V" => Key::V,
             "M" => Key::M,
             "L" => Key::L,
@@ -710,30 +916,71 @@ impl SaltLine {
             "controls" => ("V", "BACK"),
             "mute" => ("M", "START"),
             "last_arc" => ("L", "X"),
+            "seed" => ("S", "Y"),
+            "unlock" => ("U", "X"),
+            "restore" => ("R", "Y"),
             _ => ("", ""),
         };
         self.binding(action, defaults.0, defaults.1)
     }
 
-    fn pad_pressed(&mut self, button: JoyButton) -> bool {
-        let slot = if let Some(i) = self.pad_edges.iter().position(|(b, _)| *b == button) {
-            i
-        } else {
-            self.pad_edges.push((button, false));
-            self.pad_edges.len() - 1
+    /// Once a second, forget joypads that have been unplugged.
+    fn prune_pads(&mut self, delta: f64) {
+        self.pad_prune -= delta;
+        if self.pad_prune > 0.0 {
+            return;
+        }
+        self.pad_prune = 1.0;
+        let connected: Vec<i32> = Input::singleton()
+            .get_connected_joypads()
+            .iter_shared()
+            .map(|d| d as i32)
+            .collect();
+        self.pads.retain_connected(&connected);
+    }
+
+    /// The button is held on any joypad.
+    fn pad_held(&self, button: JoyButton) -> bool {
+        let input = Input::singleton();
+        self.pads
+            .iter()
+            .any(|p| input.is_joy_button_pressed(p.device, button))
+    }
+
+    /// The stick is pushed past the threshold on any joypad whose stick has
+    /// been seen at rest.
+    fn stick_held(&self, axis: JoyAxis, sign: f32) -> bool {
+        let slot = if axis == JoyAxis::LEFT_X { 0 } else { 1 };
+        let input = Input::singleton();
+        self.pads
+            .iter()
+            .filter(|p| p.armed[slot])
+            .any(|p| input.get_joy_axis(p.device, axis) * sign > 0.45)
+    }
+
+    /// Take this frame's press of a pad button, if it had one. Taken, so a
+    /// second action bound to the same button in the same mode does not
+    /// fire as well: the first one asked wins.
+    fn take_pad_press(&mut self, button: JoyButton) -> bool {
+        let Some(i) = self.pad_presses.iter().position(|b| *b == button) else {
+            return false;
         };
-        let down = Input::singleton().is_joy_button_pressed(0, button);
-        let was = self.pad_edges[slot].1;
-        self.pad_edges[slot].1 = down;
+        self.pad_presses.swap_remove(i);
+        true
+    }
+
+    /// True on the frame the button went down on any joypad.
+    fn pad_pressed(&mut self, button: JoyButton) -> bool {
+        let down = self.take_pad_press(button);
         if down {
             self.controller_active = true;
             self.touch_active = false;
         }
-        down && !was
+        down
     }
 
     fn action_pressed(&mut self, _slot: usize, action: &str) -> bool {
-        let (key, pad) = self.action_binding(action);
+        let (key, _) = self.action_binding(action);
         let key_down = Self::key_token(&key)
             .map(|k| self.pressed(k))
             .unwrap_or(false);
@@ -741,11 +988,17 @@ impl SaltLine {
             self.controller_active = false;
             self.touch_active = false;
         }
-        let pad_down = Self::pad_token(&pad)
-            .map(|b| self.pad_pressed(b))
-            .unwrap_or(false);
+        let pad_down = self.pad_action_pressed(action);
         let touch_down = self.touch.pressed(action) || (action == "back" && self.back_requested);
         key_down || pad_down || touch_down
+    }
+
+    /// `action_pressed` for the controller alone.
+    fn pad_action_pressed(&mut self, action: &str) -> bool {
+        let (_, pad) = self.action_binding(action);
+        Self::pad_token(&pad)
+            .map(|b| self.pad_pressed(b))
+            .unwrap_or(false)
     }
 
     fn action_repeated(&mut self, slot: usize, action: &str, delta: f64) -> u32 {
@@ -753,9 +1006,23 @@ impl SaltLine {
         let keyboard = Self::key_token(&key)
             .map(|k| self.repeated(k, delta))
             .unwrap_or(0);
-        let mut pad_down = Self::pad_token(&pad)
-            .map(|b| Input::singleton().is_joy_button_pressed(0, b))
-            .unwrap_or(false);
+        let buttons = match Self::pad_token(&pad) {
+            Some(b) => {
+                let press = self.take_pad_press(b);
+                let down = self.pad_held(b);
+                let i = match self.pad_keys.iter().position(|(k, _)| *k == b) {
+                    Some(i) => i,
+                    None => {
+                        self.pad_keys.push((b, RepeatState::default()));
+                        self.pad_keys.len() - 1
+                    }
+                };
+                self.pad_keys[i]
+                    .1
+                    .tick_pressed(press, down, delta, REPEAT_DELAY, REPEAT_RATE)
+            }
+            None => 0,
+        };
         // Left stick is always available in addition to remappable D-pad.
         let axis = match action {
             "left" => Some((JoyAxis::LEFT_X, -1.0)),
@@ -764,20 +1031,17 @@ impl SaltLine {
             "down" => Some((JoyAxis::LEFT_Y, 1.0)),
             _ => None,
         };
-        if let Some((axis, sign)) = axis {
-            pad_down |= Input::singleton().get_joy_axis(0, axis) * sign > 0.45;
-        }
+        let stick_down = axis.is_some_and(|(axis, sign)| self.stick_held(axis, sign));
+        let stick = self.pad_repeat[slot].tick(stick_down, delta, REPEAT_DELAY, REPEAT_RATE);
         if keyboard > 0 {
             self.controller_active = false;
             self.touch_active = false;
         }
-        if pad_down {
+        if buttons > 0 || stick_down {
             self.controller_active = true;
             self.touch_active = false;
         }
-        keyboard
-            + self.pad_repeat[slot].tick(pad_down, delta, REPEAT_DELAY, REPEAT_RATE)
-            + self.touch.repeated(action)
+        keyboard + buttons + stick + self.touch.repeated(action)
     }
 
     fn input_label(&self, action: &str) -> String {
@@ -793,50 +1057,34 @@ impl SaltLine {
     }
 
     fn key_slot(&mut self, key: Key) -> usize {
-        if let Some(i) = self.keys.iter().position(|(k, _, _)| *k == key) {
+        if let Some(i) = self.keys.iter().position(|(k, _)| *k == key) {
             i
         } else {
-            self.keys.push((key, false, 0.0));
+            self.keys.push((key, RepeatState::default()));
             self.keys.len() - 1
         }
     }
 
-    /// True on the frame a key goes down.
+    /// True on the frame a key goes down, even if it came up again before
+    /// the frame began. The press is taken, so of two actions bound to the
+    /// same key only the first one asked fires.
     fn pressed(&mut self, key: Key) -> bool {
-        let down = Input::singleton().is_key_pressed(key);
-        let i = self.key_slot(key);
-        let was = self.keys[i].1;
-        self.keys[i].1 = down;
-        if !down {
-            self.keys[i].2 = 0.0;
-        }
-        down && !was
+        let Some(i) = self.key_presses.iter().position(|k| *k == key) else {
+            return false;
+        };
+        self.key_presses.swap_remove(i);
+        true
     }
 
-    /// Number of activations this frame, with hold-to-repeat.
+    /// Number of activations this frame, with hold-to-repeat. The repeat
+    /// state is per key, so actions sharing a key share its repeats.
     fn repeated(&mut self, key: Key, delta: f64) -> u32 {
+        let pressed = self.pressed(key);
         let down = Input::singleton().is_key_pressed(key);
         let i = self.key_slot(key);
-        let was = self.keys[i].1;
-        self.keys[i].1 = down;
-        if !down {
-            self.keys[i].2 = 0.0;
-            return 0;
-        }
-        if !was {
-            self.keys[i].2 = -REPEAT_DELAY;
-            return 1;
-        }
-        self.keys[i].2 += delta;
-        let mut n = 0;
-        while self.keys[i].2 >= REPEAT_RATE {
-            self.keys[i].2 -= REPEAT_RATE;
-            n += 1;
-            if n > 20 {
-                break;
-            }
-        }
-        n
+        self.keys[i]
+            .1
+            .tick_pressed(pressed, down, delta, REPEAT_DELAY, REPEAT_RATE)
     }
 
     fn shift_held(&self) -> bool {
@@ -844,10 +1092,84 @@ impl SaltLine {
         input.is_key_pressed(Key::SHIFT)
     }
 
-    fn handle_input(&mut self, delta: f64) {
+    /// Once per frame, before any action is read: this frame's presses are
+    /// the ones queued since the last.
+    fn begin_input_frame(&mut self, delta: f64) {
+        std::mem::swap(&mut self.key_presses, &mut self.key_queue);
+        self.key_queue.clear();
+        std::mem::swap(&mut self.pad_presses, &mut self.pad_queue);
+        self.pad_queue.clear();
         self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+    }
+
+    fn handle_input(&mut self, delta: f64) {
+        self.begin_input_frame(delta);
         self.handle_mode_input(delta);
         self.back_requested = false;
+    }
+
+    /// Something on screen is moving or being held, so every frame draws.
+    fn busy(&self) -> bool {
+        let stick = [
+            (JoyAxis::LEFT_X, -1.0),
+            (JoyAxis::LEFT_X, 1.0),
+            (JoyAxis::LEFT_Y, -1.0),
+            (JoyAxis::LEFT_Y, 1.0),
+        ]
+        .into_iter()
+        .any(|(axis, sign)| self.stick_held(axis, sign));
+        self.anim.is_some()
+            || self.clear_hold > 0.0
+            || self.status_time > 0.0
+            || self.auto
+            || self.touch.active()
+            || stick
+            || Input::singleton().is_anything_pressed()
+    }
+
+    /// What a frame shows that input or a step can change, compared across
+    /// the frame as a second line of defence behind the explicit marks.
+    fn frame_state(&self) -> FrameState {
+        FrameState {
+            mode: self.mode,
+            aim: (self.angle_ticks, self.power_ticks),
+            cam_x: self.cam_x,
+            buffer: (self.buffer_w, self.buffer_h, self.letterbox),
+            devices: (self.touch_active, self.controller_active),
+            run: self.run.as_ref().map(|r| {
+                (
+                    r.screen_index,
+                    r.phase,
+                    r.shells,
+                    r.shots_on_screen,
+                    r.fuse.to_bits(),
+                    r.emplacement_offset.to_bits(),
+                )
+            }),
+            seed: (self.seed_text.len(), self.seed_focus),
+            settings: (
+                self.save.volume,
+                self.save.muted,
+                self.save.last_arc,
+                self.save.touch_aim,
+                self.save.arc_hint,
+                self.save.learned,
+            ),
+            misc: (self.debug, self.crash_copied, self.last_crash.is_some()),
+        }
+    }
+
+    /// Menus, overlays and the error screen run at `frame::IDLE_FPS`; play
+    /// runs uncapped, or at whatever the project asked for. `Engine` max FPS
+    /// rather than low-processor mode, which would also throttle play and
+    /// the shot replay.
+    fn apply_frame_cap(&mut self) {
+        let idle = self.broken || self.mode != Mode::Playing;
+        let cap = frame::frame_cap(idle, self.project_fps);
+        if cap != self.fps_cap {
+            self.fps_cap = cap;
+            Engine::singleton().set_max_fps(cap);
+        }
     }
 
     fn handle_mode_input(&mut self, delta: f64) {
@@ -870,9 +1192,8 @@ impl SaltLine {
                     let seed = daily_seed(Self::today());
                     self.play_sound(Sound::Ui);
                     self.start_run(seed, true);
-                } else if self.pressed(Key::S) || self.touch.pressed("seed") {
-                    self.seed_text.clear();
-                    self.mode = Mode::SeedEntry;
+                } else if self.action_pressed(17, "seed") {
+                    self.open_seed_entry();
                 } else if self.last_crash.is_some() && self.action_pressed(4, "copy") {
                     self.copy_last_crash();
                 } else if self.action_pressed(1, "controls") {
@@ -926,27 +1247,15 @@ impl SaltLine {
                     self.mode = Mode::Title;
                 }
             }
-            Mode::SeedEntry => {
-                // Keyboard text comes in through `unhandled_input`; these are
-                // the touch buttons and the on-screen keypad.
-                if self.touch.pressed("confirm") {
-                    self.start_seeded_run();
-                } else if self.action_pressed(2, "back") {
-                    self.leave_seed_entry();
-                } else if self.touch.pressed("del") {
-                    self.seed_text.pop();
-                } else if let Some(k) = SEED_KEYS.iter().find(|k| self.touch.pressed(k)) {
-                    if self.seed_text.chars().count() < 20 {
-                        self.seed_text.push_str(k);
-                    }
-                }
-            }
+            Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::Paywall => {
-                if self.pressed(Key::U) {
+                // Keyboard U / R / Enter / Escape as ever; X / Y / B on a
+                // controller; the rows themselves on a touchscreen.
+                if self.action_pressed(18, "unlock") {
                     self.unlock(false);
-                } else if self.pressed(Key::R) {
+                } else if self.action_pressed(19, "restore") {
                     self.unlock(true);
-                } else if self.pressed(Key::ENTER) || self.pressed(Key::ESCAPE) {
+                } else if self.action_pressed(2, "back") || self.pressed(Key::ENTER) {
                     self.finish_run();
                 }
             }
@@ -966,6 +1275,44 @@ impl SaltLine {
                 }
             }
             Mode::Playing => self.handle_play_input(delta),
+        }
+    }
+
+    /// Keyboard text comes in through `unhandled_input`. This is the touch
+    /// keypad, and the controller moving a focus over the same keypad: A
+    /// presses the focused key, B deletes, or leaves once nothing is typed.
+    fn handle_seed_input(&mut self, delta: f64) {
+        let dx = self.action_repeated(1, "right", delta) as i32
+            - self.action_repeated(0, "left", delta) as i32;
+        let dy = self.action_repeated(2, "down", delta) as i32
+            - self.action_repeated(3, "up", delta) as i32;
+        if dx != 0 || dy != 0 {
+            self.seed_focus.step(dx, dy);
+        }
+        let key = if self.pad_action_pressed("confirm") {
+            Some(self.seed_focus.action())
+        } else if self.pad_action_pressed("back") {
+            Some(if self.seed_text.is_empty() {
+                "back"
+            } else {
+                keypad::DEL
+            })
+        } else if self.touch.pressed("back") || self.back_requested {
+            Some("back")
+        } else {
+            ["confirm", keypad::DEL]
+                .into_iter()
+                .chain(keypad::KEYS)
+                .find(|k| self.touch.pressed(k))
+        };
+        match key {
+            Some("confirm") => self.start_seeded_run(),
+            Some("back") => self.leave_seed_entry(),
+            Some(keypad::DEL) => {
+                self.seed_text.pop();
+            }
+            Some(k) if self.seed_text.chars().count() < 20 => self.seed_text.push_str(k),
+            _ => {}
         }
     }
 
@@ -989,6 +1336,7 @@ impl SaltLine {
                 if self.action_pressed(5 + i, action) {
                     let taken = self.run.as_mut().and_then(|r| r.take_offer(i));
                     if let Some(m) = taken {
+                        self.preview.clear();
                         self.learn(LEARN_DRAFT);
                         self.play_sound(Sound::Draft);
                         self.note(format!("TOOK {}", m.name()));
@@ -1263,7 +1611,11 @@ impl SaltLine {
         if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
             self.play_sound(Sound::Draft);
         }
-        // The paywall gate. Brief M6: free to play through screen 15.
+        self.paywall_gate();
+    }
+
+    /// The paywall gate. Brief M6: free to play through screen 15.
+    fn paywall_gate(&mut self) {
         let index = self.run.as_ref().map(|r| r.screen_index).unwrap_or(0);
         if self.entitlement == Entitlement::Free && index >= FREE_SCREENS {
             self.mode = Mode::Paywall;
@@ -1343,40 +1695,40 @@ impl SaltLine {
 
     fn render(&mut self) {
         self.touch_buttons.clear();
-        let want_w = self.pick_width();
-        if self.run.is_none() && want_w != self.buffer_w {
-            self.buffer_w = want_w;
-            self.apply_buffer_size();
-        } else if self.letterbox_now() != self.letterbox {
-            self.apply_buffer_size();
-        }
         match self.mode {
             Mode::Playing | Mode::Paused | Mode::Paywall => self.render_play(),
             _ => self.render_menu(),
         }
-
         self.upload();
-        self.maybe_screenshot();
     }
 
+    /// Hand the buffer to the GPU without allocating: the frame is copied
+    /// into whichever of the two upload buffers the image is not holding, the
+    /// image takes it by reference, and the texture is updated in place. Only
+    /// a change of buffer size makes a new texture.
     fn upload(&mut self) {
         let (w, h) = (self.canvas.w, self.canvas.h);
-        let data = self.canvas.to_packed();
-        let Some(image) =
-            Image::create_from_data(w, h, false, godot::classes::image::Format::RGBA8, &data)
-        else {
+        let format = godot::classes::image::Format::RGBA8;
+        let bytes = self.canvas.bytes();
+        let buf = &mut self.upload_bufs[self.upload_flip];
+        if buf.len() != bytes.len() {
+            buf.resize(bytes.len());
+        }
+        buf.as_mut_slice().copy_from_slice(bytes);
+        match self.image.as_mut() {
+            Some(image) => image.set_data(w, h, false, format, buf),
+            None => self.image = Image::create_from_data(w, h, false, format, buf),
+        }
+        self.upload_flip ^= 1;
+        let Some(image) = self.image.as_ref() else {
             return;
         };
-        let reusable = self
-            .texture
-            .as_ref()
-            .is_some_and(|t| t.get_width() == w && t.get_height() == h);
-        if reusable {
-            if let Some(t) = self.texture.as_mut() {
-                t.update(&image);
+        match self.texture.as_mut() {
+            Some(t) if t.get_width() == w && t.get_height() == h => t.update(image),
+            _ => {
+                self.texture = ImageTexture::create_from_image(image);
+                self.base_mut().queue_redraw();
             }
-        } else {
-            self.texture = ImageTexture::create_from_image(&image);
         }
     }
 
@@ -1641,7 +1993,14 @@ impl SaltLine {
                     "DAILY RUN",
                     fg,
                 );
-                y = self.menu_row(y, "seed", "S      SEED ENTRY", "SEED ENTRY", fg);
+                let seed = self.input_label("seed");
+                y = self.menu_row(
+                    y,
+                    "seed",
+                    &format!("{seed}      SEED ENTRY"),
+                    "SEED ENTRY",
+                    fg,
+                );
                 let controls = self.input_label("controls");
                 y = self.menu_row(
                     y,
@@ -1788,7 +2147,7 @@ impl SaltLine {
                 let shown = format!("> {text}");
                 self.centred(y, &shown, fg);
                 y += 10;
-                if self.touch_active {
+                if self.plated() {
                     y = self.draw_seed_keypad(y) + 6;
                     y = self.menu_row(y, "confirm", "", "START", fg);
                     y = self.menu_row(y, "back", "", "BACK", dim);
@@ -1860,11 +2219,15 @@ impl SaltLine {
     ) {
         let pal = self.pal.clone();
         self.canvas.plate(x, y, w, h, &pal);
-        let c = if self.touch.held(action) {
+        let c = if self.lit(action) {
             pal.get(slot::ALERT)
         } else {
             pal.get(slot::UI_FG)
         };
+        if self.focused(action) {
+            self.canvas
+                .rect_outline(x - 1, y - 1, w + 2, h + 2, pal.get(slot::ALERT));
+        }
         let tx = x + (w - crate::font::small_width(label) as i32) / 2;
         let ty = y + (h - crate::font::SMALL_H as i32) / 2;
         self.canvas.text_small(tx, ty, label, c);
@@ -1875,23 +2238,45 @@ impl SaltLine {
     /// is any text and the platform keyboard is not dependable inside a game
     /// view. Returns the y below it.
     fn draw_seed_keypad(&mut self, top: i32) -> i32 {
-        let (kw, kh, pitch) = (18, 15, 20);
-        let rows = [&SEED_KEYS[..13], &SEED_KEYS[13..26], &SEED_KEYS[26..]];
+        let (kw, kh, pitch, del_w) = (18, 15, 20, 36);
         let mut y = top;
-        for (r, keys) in rows.into_iter().enumerate() {
-            let del_w = if r == 2 { 36 + 2 } else { 0 };
-            let row_w = keys.len() as i32 * pitch - 2 + del_w;
+        for keys in &keypad::ROWS[..keypad::KEY_ROWS] {
+            let row_w = keys
+                .iter()
+                .map(|&k| if k == keypad::DEL { del_w + 2 } else { pitch })
+                .sum::<i32>()
+                - 2;
             let mut x = (self.canvas.w - row_w) / 2;
-            for &k in keys {
-                self.draw_touch_button(x, y, kw, kh, k, k);
-                x += pitch;
-            }
-            if r == 2 {
-                self.draw_touch_button(x, y, 36, kh, "DEL", "del");
+            for &k in keys.iter() {
+                if k == keypad::DEL {
+                    self.draw_touch_button(x, y, del_w, kh, "DEL", k);
+                } else {
+                    self.draw_touch_button(x, y, kw, kh, k, k);
+                    x += pitch;
+                }
             }
             y += kh + 2;
         }
         y
+    }
+
+    /// Menu lines are plates rather than "KEY  TEXT": on a touchscreen, and
+    /// for a controller on the seed keypad, where the focus moves over them.
+    fn plated(&self) -> bool {
+        self.touch_active || (self.controller_active && self.mode == Mode::SeedEntry)
+    }
+
+    /// The controller's keypad focus is on this action's plate.
+    fn focused(&self, action: &str) -> bool {
+        self.mode == Mode::SeedEntry
+            && self.controller_active
+            && !self.touch_active
+            && self.seed_focus.action() == action
+    }
+
+    /// A plate's label lights while a finger is on it or the focus is.
+    fn lit(&self, action: &str) -> bool {
+        self.touch.held(action) || self.focused(action)
     }
 
     /// A menu line. With a keyboard or controller it reads "KEY  TEXT"; on a
@@ -1905,7 +2290,7 @@ impl SaltLine {
         text: &str,
         c: crate::palette::Rgba,
     ) -> i32 {
-        if !self.touch_active {
+        if !self.plated() {
             self.centred(y, keyed, c);
             return y + 8;
         }
@@ -1914,7 +2299,11 @@ impl SaltLine {
         let pad = 10;
         let x = (self.canvas.w - tw) / 2 - pad;
         self.canvas.plate(x, y - 4, tw + 2 * pad, 13, &pal);
-        let c = if self.touch.held(action) {
+        if self.focused(action) {
+            self.canvas
+                .rect_outline(x - 1, y - 5, tw + 2 * pad + 2, 15, pal.get(slot::ALERT));
+        }
+        let c = if self.lit(action) {
             pal.get(slot::ALERT)
         } else {
             c
@@ -2069,34 +2458,28 @@ impl SaltLine {
         }
 
         let hint = self.arc_hint();
-        let boxes = screen.target_boxes();
-        let mut world = screen.world(&boxes);
-        world.wind = match hint {
+        let wind = match hint {
             ArcHint::Wind => wind_shown.unwrap_or(0.0),
             ArcHint::Short | ArcHint::Full => 0.0,
         };
-        let opts = FireOptions {
-            record_path: true,
-            ..FireOptions::default()
+        let Some(run) = self.run.as_ref() else { return };
+        // A whole ballistic flight per frame while a finger is held still is
+        // wasted: the path only changes when one of these does.
+        let key = PreviewKey {
+            angle: self.angle_ticks,
+            power: self.power_ticks,
+            hint,
+            wind: wind.to_bits(),
+            seed: run.run_seed,
+            index: run.screen_index,
+            shots: run.shots_on_screen,
+            offset: run.emplacement_offset.to_bits(),
         };
         let shot = Shot::new(self.angle_ticks, self.power_ticks);
-        let traces = ballistics::fire(&world, screen.muzzle(), shot, loadout, &opts);
-        let Some(path) = traces.first().map(|t| &t.path) else {
-            return;
-        };
-        let upto = match hint {
-            ArcHint::Short => {
-                let apex = path
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
-                    .map_or(0, |(i, _)| i);
-                let window = (SHORT_ARC_SECONDS / DT) as usize;
-                crate::aim::short_arc_len(apex, path.len(), window)
-            }
-            ArcHint::Full | ArcHint::Wind => path.len(),
-        };
-        raster::draw_trajectory(&mut self.canvas, view, path, upto, &pal);
+        let (path, upto) = self
+            .preview
+            .get_or(key, || preview_path(screen, loadout, shot, hint, wind));
+        raster::draw_trajectory(&mut self.canvas, view, path, *upto, &pal);
     }
 
     fn draw_structures(&mut self, screen: &Screen, view: &View) {
@@ -2561,7 +2944,8 @@ impl SaltLine {
         let alert = pal.get(slot::ALERT);
         let (w, h) = (self.canvas.w, self.canvas.h);
         let bw = (w - 40).max(120);
-        let bh = 80;
+        // Touch rows are spaced for a finger, so the box grows to hold them.
+        let bh = if self.touch_active { 94 } else { 80 };
         let x = (w - bw) / 2;
         let y = (h - bh) / 2;
         self.canvas.plate(x, y, bw, bh, &pal);
@@ -2572,11 +2956,25 @@ impl SaltLine {
         cy += 12;
         self.centred(cy, "ONE PURCHASE, NO ADS, NO TIMERS", dim);
         cy += 14;
-        self.centred(cy, "U      UNLOCK", fg);
-        cy += 8;
-        self.centred(cy, "R      RESTORE PURCHASE", fg);
-        cy += 8;
-        self.centred(cy, "ENTER  END THE RUN", dim);
+        // The keyboard's Enter also ends the run, as it always has.
+        let end = if self.controller_active {
+            self.input_label("back")
+        } else {
+            "ENTER".into()
+        };
+        let rows = [
+            ("unlock", self.input_label("unlock"), "UNLOCK", fg),
+            (
+                "restore",
+                self.input_label("restore"),
+                "RESTORE PURCHASE",
+                fg,
+            ),
+            ("back", end, "END THE RUN", dim),
+        ];
+        for (action, key, text, c) in rows {
+            cy = self.menu_row(cy, action, &format!("{key:<7}{text}"), text, c);
+        }
     }
 
     fn render_pause(&mut self) {
@@ -2600,6 +2998,41 @@ impl SaltLine {
         let title = self.input_label("replay");
         self.centred((h - 48) / 2 + 31, &format!("{title}  TITLE"), dim);
     }
+}
+
+/// The drag preview's flight, and how much of it the arc hint shows.
+fn preview_path(
+    screen: &Screen,
+    loadout: &Loadout,
+    shot: Shot,
+    hint: ArcHint,
+    wind: f64,
+) -> Preview {
+    let boxes = screen.target_boxes();
+    let mut world = screen.world(&boxes);
+    world.wind = wind;
+    let opts = FireOptions {
+        record_path: true,
+        ..FireOptions::default()
+    };
+    let mut traces = ballistics::fire(&world, screen.muzzle(), shot, loadout, &opts);
+    if traces.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let path = traces.swap_remove(0).path;
+    let upto = match hint {
+        ArcHint::Short => {
+            let apex = path
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
+                .map_or(0, |(i, _)| i);
+            let window = (SHORT_ARC_SECONDS / DT) as usize;
+            crate::aim::short_arc_len(apex, path.len(), window)
+        }
+        ArcHint::Full | ArcHint::Wind => path.len(),
+    };
+    (path, upto)
 }
 
 /// What a prompt calls an action on a touchscreen: the glyph on its on-screen
@@ -2737,7 +3170,8 @@ impl SaltLine {
             self.status_time = 0.0;
         }
         self.status_time = (self.status_time - delta).max(0.0);
-        self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        self.begin_input_frame(delta);
+        self.apply_frame_cap();
         if self.action_pressed(4, "copy") {
             // Only a finished report: a panic off the main thread can stop the
             // game while the hook is still writing, and half a report copied

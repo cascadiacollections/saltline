@@ -217,6 +217,11 @@ impl Canvas {
         out
     }
 
+    /// The frame as RGBA8 bytes, row by row.
+    pub fn bytes(&self) -> &[u8] {
+        &self.px
+    }
+
     pub fn to_packed(&self) -> PackedByteArray {
         PackedByteArray::from(self.px.as_slice())
     }
