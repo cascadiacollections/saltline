@@ -71,7 +71,7 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, SavedRun, Sound};
+use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, Sound};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
@@ -80,7 +80,7 @@ use crate::pads::Pads;
 use crate::palette::Palette;
 use crate::raster::Canvas;
 use crate::render::{self, Art, Cache};
-use crate::resume::{RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
+use crate::resume::{self, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
 use crate::save;
 use crate::sprites::Sprites;
 use crate::touch::Button;
@@ -233,7 +233,7 @@ impl INode2D for SaltLine {
         // The dev clock (`--salt-shot-at`) runs on the capped time the core
         // animates by, so a capture on a slow frame lands at the same point
         // of an animation.
-        let capped = crate::resume::frame_delta(delta);
+        let capped = resume::frame_delta(delta);
         self.elapsed += capped;
         self.poll_display(capped);
         self.watch_drift(capped);
@@ -481,6 +481,24 @@ impl SaltLine {
 
 // ------------------------------------------------------------------ launch
 
+/// The run files on `user://`, through `save`, for `resume`'s rules.
+struct UserFiles;
+
+impl resume::RunFiles for UserFiles {
+    fn read(&self, path: &str) -> Option<String> {
+        save::read(path)
+    }
+    fn write(&mut self, main: &str, temp: &str, text: &str) -> bool {
+        save::write(main, temp, text)
+    }
+    fn rename(&mut self, from: &str, to: &str) -> bool {
+        save::rename(from, to)
+    }
+    fn remove(&mut self, path: &str) {
+        save::remove(path);
+    }
+}
+
 impl SaltLine {
     /// Leave no run to resume or score: the copy set aside at launch, the
     /// temporary file and the run file. If a file cannot be deleted, the run
@@ -521,23 +539,11 @@ impl SaltLine {
     ///
     /// The file is moved aside to `RUN_LOADING_PATH` before the core rebuilds
     /// it, and only put back once the rebuild succeeds, so a log that brings
-    /// the sim down costs one crash, not one every launch.
+    /// the sim down costs one crash, not one every launch. Which copy, and
+    /// the move, are `resume::take_saved`.
     fn find_saved_run(&mut self) {
-        let found = if save::read(RUN_LOADING_PATH).is_some() {
-            SavedRun::Interrupted
-        } else {
-            let (path, text) = match save::read(RUN_PATH) {
-                Some(t) => (RUN_PATH, t),
-                None => match save::read(RUN_TEMP_PATH) {
-                    Some(t) => (RUN_TEMP_PATH, t),
-                    None => return,
-                },
-            };
-            if text.trim().is_empty() {
-                return;
-            }
-            save::rename(path, RUN_LOADING_PATH);
-            SavedRun::Found(text)
+        let Some(found) = resume::take_saved(&mut UserFiles) else {
+            return;
         };
         let fx = self.g.saved_run(found);
         self.apply(fx);

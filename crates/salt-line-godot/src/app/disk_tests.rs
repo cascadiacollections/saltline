@@ -16,9 +16,12 @@
 //! first `k` operations: the process "dies" after the `k`-th, and everything
 //! after it is lost, as a power cut would lose it.
 //! Each surviving disk is launched on twice, as the node would launch, and
-//! the invariants are checked. One effect is one operation: the node's
-//! writes are atomic (`durable`'s temp-and-rename), so a write is either
-//! there or not. `RunFile::Discard` is several deletes in the node and is
+//! the invariants are checked. Each effect is an operation, and so is each
+//! run-file step inside one: a run-file write is its temporary file and then
+//! the rename (`durable`'s temp-and-rename, so the run file itself is either
+//! the old text or the new), and launch picks a copy and moves it aside
+//! with the node's own `resume::take_saved`. The save's write is one
+//! operation. `RunFile::Discard` is several deletes in the node and is
 //! modelled here as one; a crash part-way through it is not exercised. A
 //! crash part-way through a Discard is harmless anyway, since the score has
 //! not been written yet; a Discard that fails outright is not modelled.
@@ -32,6 +35,7 @@ use pretty_assertions::assert_eq;
 use salt_line_sim::run::Phase;
 
 use crate::input::{Event, Intents, Key};
+use crate::resume::{self, RunFiles, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
 
 const FRAME: f64 = 1.0 / 60.0;
 const WINDOW: (i32, i32) = (1280, 720);
@@ -53,15 +57,17 @@ fn keys(keys: &[Key]) -> Intents {
     }
 }
 
-/// The game's files, in memory: the save, the run kept for CONTINUE (and
-/// the copy a launch sets aside while it rebuilds it), and the crash
-/// reports. Each effect is one operation, as the node carries it out.
-/// `budget` is how many more operations happen before the process dies;
-/// after that nothing reaches the disk.
+/// The game's files, in memory: the save, the run kept for CONTINUE (its
+/// temporary file, and the copy a launch sets aside while it rebuilds it),
+/// and the crash reports. Each effect is one operation, and each run-file
+/// operation inside it (`resume::RunFiles`) one more. `budget` is how many
+/// more operations happen before the process dies; after that nothing
+/// reaches the disk.
 #[derive(Clone, Default)]
 struct FakeDisk {
     save: Option<String>,
     run: Option<String>,
+    temp: Option<String>,
     set_aside: Option<String>,
     crash_report: Option<String>,
     old_crash_report: Option<String>,
@@ -106,15 +112,14 @@ impl FakeDisk {
                     self.apply(g, more);
                 }
                 Effect::RunFile(RunFile::Write(line) | RunFile::Keep(line)) => {
-                    self.run = Some(line);
+                    self.write(RUN_PATH, RUN_TEMP_PATH, &line);
                 }
                 Effect::RunFile(RunFile::Restore) => {
-                    if let Some(text) = self.set_aside.take() {
-                        self.run = Some(text);
-                    }
+                    self.rename(RUN_LOADING_PATH, RUN_PATH);
                 }
                 Effect::RunFile(RunFile::Discard | RunFile::Abandon(_)) => {
                     self.set_aside = None;
+                    self.temp = None;
                     self.run = None;
                 }
                 Effect::CrashReport(CrashReport::Retire) => {
@@ -132,20 +137,7 @@ impl FakeDisk {
         let save = self.save.as_deref().map(Save::parse).unwrap_or_default();
         let mut g = Game::new(false, save);
         g.set_last_crash(self.crash_report.clone());
-        let found = if self.set_aside.is_some() {
-            Some(SavedRun::Interrupted)
-        } else {
-            match self.run.clone() {
-                Some(text) if !text.trim().is_empty() => {
-                    if self.alive() {
-                        self.set_aside = self.run.take();
-                    }
-                    Some(SavedRun::Found(text))
-                }
-                _ => None,
-            }
-        };
-        if let Some(found) = found {
+        if let Some(found) = resume::take_saved(self) {
             let fx = g.saved_run(found);
             self.apply(&mut g, fx);
         }
@@ -159,6 +151,55 @@ impl FakeDisk {
             .as_deref()
             .map(|t| Save::parse(t).scores)
             .unwrap_or_default()
+    }
+}
+
+impl FakeDisk {
+    fn file(&mut self, path: &str) -> &mut Option<String> {
+        match path {
+            RUN_PATH => &mut self.run,
+            RUN_TEMP_PATH => &mut self.temp,
+            RUN_LOADING_PATH => &mut self.set_aside,
+            _ => unreachable!("{path}"),
+        }
+    }
+}
+
+/// The node's `user://` operations, each one step the process can die
+/// after. A write is two: the temporary file, then the rename.
+impl resume::RunFiles for FakeDisk {
+    fn read(&self, path: &str) -> Option<String> {
+        match path {
+            RUN_PATH => self.run.clone(),
+            RUN_TEMP_PATH => self.temp.clone(),
+            RUN_LOADING_PATH => self.set_aside.clone(),
+            _ => unreachable!("{path}"),
+        }
+    }
+
+    fn write(&mut self, main: &str, temp: &str, text: &str) -> bool {
+        if !self.alive() {
+            return false;
+        }
+        *self.file(temp) = Some(text.into());
+        self.rename(temp, main)
+    }
+
+    fn rename(&mut self, from: &str, to: &str) -> bool {
+        if !self.alive() {
+            return false;
+        }
+        let Some(text) = self.file(from).take() else {
+            return false;
+        };
+        *self.file(to) = Some(text);
+        true
+    }
+
+    fn remove(&mut self, path: &str) {
+        if self.alive() {
+            *self.file(path) = None;
+        }
     }
 }
 

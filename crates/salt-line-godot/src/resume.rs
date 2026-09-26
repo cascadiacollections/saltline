@@ -32,9 +32,9 @@
 //! run.txt           the rename at step 3 of the      straight after run.txt.new;
 //!                   same replace; RunFile::Restore   Restore once a launch has
 //!                                                    rebuilt the run
-//! run-loading.txt   game.rs moving run.txt (or, if   at launch, before the text
-//!                   that is missing, run.txt.new)    reaches the core, so before
-//!                   aside                            any rebuild
+//! run-loading.txt   take_saved moving run.txt (or   at launch, before the text
+//!                   run.txt.new, if run.txt is       reaches the core, so before
+//!                   missing or damaged) aside        any rebuild
 //! ```
 //!
 //! `RunFile::Discard` deletes all three, and if a file will not go, writes
@@ -44,9 +44,10 @@
 //!
 //! ```text
 //! writing run.txt.new
-//!     finds  the previous line in run.txt; with no run.txt, run.txt.new itself
-//!     cost   one entry behind; a torn run.txt.new fails `judge` and is
-//!            discarded with a note
+//!     finds  the previous line in run.txt; with no run.txt, or a damaged
+//!            one, run.txt.new itself if it is whole (`take_saved`)
+//!     cost   one entry behind; a torn run.txt.new with nothing better
+//!            beside it fails `judge` and is discarded with a note
 //! after the rename
 //!     finds  the new line
 //!     cost   nothing
@@ -99,6 +100,9 @@
 use salt_line_sim::replay::{decode_log, encode_log, Replay, DRAFT_MARK};
 use salt_line_sim::run::{LoggedShot, RunState};
 use salt_line_sim::{SCREEN_W_MAX, SCREEN_W_MIN, SIM_EPOCH};
+
+use crate::app::SavedRun;
+use crate::durable::{self, Pick};
 
 pub const RUN_PATH: &str = "user://run.txt";
 /// Written in full, then moved over `RUN_PATH`.
@@ -288,6 +292,65 @@ pub fn judge(text: Option<&str>) -> Found {
     }
 }
 
+// ------------------------------------------------------------ the run files
+
+/// The file operations the run files need. `game.rs` carries them out on
+/// `user://` through `save`; `app/disk_tests.rs` on files held in memory,
+/// with the process killed between any two. Both go through the functions
+/// below, so the rules the crash tests check are the ones the game runs.
+pub trait RunFiles {
+    /// A file's text; `None` if it is missing or unreadable.
+    fn read(&self, path: &str) -> Option<String>;
+    /// Replace `main` with `text` by way of `temp` (`save::write`). Returns
+    /// whether it reached disk; on failure `main` is left as it was.
+    fn write(&mut self, main: &str, temp: &str, text: &str) -> bool;
+    /// Move `from` to `to`, replacing `to`. Returns whether it moved.
+    fn rename(&mut self, from: &str, to: &str) -> bool;
+    /// Delete a file if it is there.
+    fn remove(&mut self, path: &str);
+}
+
+/// Whether a run file's text is a whole copy: no NUL bytes (what a crash
+/// leaves where data was not committed), and a well-formed `resume` line.
+/// A line from another epoch counts: it is whole, only not this build's to
+/// replay, and [`judge`] says so with its own note.
+pub fn sound(text: &str) -> bool {
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty()).peekable();
+    !text.contains('\0')
+        && lines.peek().is_some()
+        && lines.all(|l| {
+            matches!(
+                Saved::parse(l),
+                Ok(_) | Err(Stale::OlderVersion | Stale::NewerVersion)
+            )
+        })
+}
+
+/// At launch: find the saved run and move it aside to [`RUN_LOADING_PATH`]
+/// before the core parses or replays it (see "A corrupt run file costs one
+/// crash" above). `None` is no run.
+///
+/// Of `run.txt` and `run.txt.new` the copy is chosen as the save's is
+/// (`durable::pick_by`, with [`sound`]): a whole `run.txt`, else a whole
+/// `run.txt.new` (a write that died before its rename, beside a damaged or
+/// missing `run.txt`), else whichever is legible, to be judged and
+/// discarded with a note. A blank `run.txt` is what a discard that could not
+/// delete leaves: no run, unless a whole `run.txt.new` was written since.
+pub fn take_saved(files: &mut impl RunFiles) -> Option<SavedRun> {
+    if files.read(RUN_LOADING_PATH).is_some() {
+        return Some(SavedRun::Interrupted);
+    }
+    let main = files.read(RUN_PATH);
+    let temp = files.read(RUN_TEMP_PATH);
+    let (path, text) = match durable::pick_by(main.as_deref(), temp.as_deref(), sound) {
+        Pick::Main => (RUN_PATH, main?),
+        Pick::Temp => (RUN_TEMP_PATH, temp?),
+        Pick::Empty => return None,
+    };
+    files.rename(path, RUN_LOADING_PATH);
+    Some(SavedRun::Found(text))
+}
+
 /// Seconds of wall clock any one frame may advance animation and UI timers
 /// by. After minutes in the background the engine hands over the whole gap as
 /// one delta; uncapped, a shot would finish, or a clear be skipped, in a
@@ -459,6 +522,86 @@ mod tests {
         // two lines, not for a stale epoch on its second.
         let text = text.replace("resume 2 ", &format!("resume {SIM_EPOCH} "));
         assert!(matches!(judge(Some(&text)), Found::Discard(Stale::Damaged)));
+    }
+
+    /// The run files in memory, for `take_saved`.
+    #[derive(Default)]
+    struct Mem(std::collections::BTreeMap<String, String>);
+
+    impl RunFiles for Mem {
+        fn read(&self, path: &str) -> Option<String> {
+            self.0.get(path).cloned()
+        }
+        fn write(&mut self, main: &str, _temp: &str, text: &str) -> bool {
+            self.0.insert(main.into(), text.into());
+            true
+        }
+        fn rename(&mut self, from: &str, to: &str) -> bool {
+            let Some(text) = self.0.remove(from) else {
+                return false;
+            };
+            self.0.insert(to.into(), text);
+            true
+        }
+        fn remove(&mut self, path: &str) {
+            self.0.remove(path);
+        }
+    }
+
+    fn files(main: Option<&str>, temp: Option<&str>) -> Mem {
+        let mut m = Mem::default();
+        for (path, text) in [(RUN_PATH, main), (RUN_TEMP_PATH, temp)] {
+            if let Some(t) = text {
+                m.0.insert(path.into(), t.into());
+            }
+        }
+        m
+    }
+
+    fn found(files: &mut Mem) -> Option<String> {
+        match take_saved(files) {
+            Some(crate::app::SavedRun::Found(text)) => Some(text),
+            Some(crate::app::SavedRun::Interrupted) => Some("interrupted".into()),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn launch_prefers_a_sound_copy_as_the_save_does() {
+        let good = Saved::of(&played(7, 320, 2), false).to_line();
+        let newer = Saved::of(&played(7, 320, 3), false).to_line();
+        // Cut inside the header, so it cannot pass for a shorter log.
+        let torn = &good[..10];
+        let zeros = "\0".repeat(good.len());
+        // A damaged run.txt loses to a whole run.txt.new, which is moved
+        // aside in its place.
+        for damaged in [torn, zeros.as_str()] {
+            let mut m = files(Some(damaged), Some(&good));
+            assert_eq!(found(&mut m).as_deref(), Some(good.as_str()));
+            assert_eq!(m.read(RUN_LOADING_PATH).as_deref(), Some(good.as_str()));
+            assert_eq!(m.read(RUN_TEMP_PATH), None);
+        }
+        // A whole run.txt beats a newer run.txt.new: that write never landed.
+        let mut m = files(Some(&good), Some(&newer));
+        assert_eq!(found(&mut m).as_deref(), Some(good.as_str()));
+        // A damaged copy alone is still handed over, to be judged and
+        // discarded with a note.
+        let mut m = files(Some(torn), None);
+        assert_eq!(found(&mut m).as_deref(), Some(torn));
+        // Blank is no run; so is nothing.
+        assert_eq!(found(&mut files(Some(""), None)), None);
+        assert_eq!(found(&mut files(None, None)), None);
+        // A run from another epoch is a whole copy, to be discarded with
+        // its own note rather than passed over for an older temp.
+        let mut other = Saved::of(&played(7, 320, 2), false);
+        other.epoch = SIM_EPOCH + 1;
+        let other = other.to_line();
+        let mut m = files(Some(&other), Some(&good));
+        assert_eq!(found(&mut m).as_deref(), Some(other.as_str()));
+        // Left set aside by a launch that died: never replayed.
+        let mut m = files(Some(&good), None);
+        m.0.insert(RUN_LOADING_PATH.into(), good.clone());
+        assert_eq!(found(&mut m).as_deref(), Some("interrupted"));
     }
 
     #[test]
