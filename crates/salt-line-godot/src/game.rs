@@ -185,9 +185,10 @@ pub struct SaltLine {
     back_requested: bool,
     /// Running on a phone or tablet.
     mobile: bool,
-    /// Extra inset for edge-anchored HUD and buttons, in buffer pixels, so
-    /// nothing sits inside a phone's rounded screen corners. Zero on desktop.
-    corner_pad: i32,
+    /// Extra inset (from the sides, from top and bottom) for edge-anchored HUD
+    /// and buttons, in buffer pixels, so nothing crowds a phone's rounded
+    /// screen corners. Zero on desktop.
+    corner_pad: (i32, i32),
     /// Buffer pixels of black kept clear on the left and right for a display
     /// cutout (a phone's camera hole in landscape). The game node is offset
     /// past the left one.
@@ -253,7 +254,7 @@ impl INode2D for SaltLine {
             touch_active: false,
             back_requested: false,
             mobile: false,
-            corner_pad: 0,
+            corner_pad: (0, 0),
             letterbox: (0, 0),
             audio: Vec::new(),
             low_shell_warned: false,
@@ -274,9 +275,11 @@ impl INode2D for SaltLine {
         self.mobile = Os::singleton().has_feature("mobile");
         self.touch_active = self.mobile;
         if self.mobile {
-            // A radius of about a sixth of the screen height keeps HUD text out
-            // of the curve on current phones (Pixel 10: 138 px at 1080 px).
-            self.corner_pad = 6;
+            // Rounded screen corners (Pixel 10: 138 px radius at 1080 px tall):
+            // 10 buffer pixels in from the side and 6 down keeps HUD text and
+            // buttons comfortably inside the curve without raising the buttons
+            // off the ground.
+            self.corner_pad = (10, 6);
             // What shows beside the playfield is a letterbox, not sky.
             RenderingServer::singleton().set_default_clear_color(Color::BLACK);
         }
@@ -1739,17 +1742,17 @@ impl SaltLine {
     /// clear of the wind and shells plates.
     fn draw_play_controls(&mut self, loadout: &Loadout) {
         let (w, h) = (self.canvas.w, self.canvas.h);
-        let p = self.corner_pad;
+        let (ex, ey) = self.corner_pad;
         let (bw, bh) = (22, 18);
-        let y = h - bh - 3 - p;
+        let y = h - bh - 3 - ey;
         // Right of the ANG/PWR readouts in the bottom-left corner.
-        let x0 = 44 + p;
+        let x0 = 44 + ex;
         self.draw_touch_button(x0, y, bw, bh, "<", "left");
         self.draw_touch_button(x0 + bw + 3, y, bw, bh, ">", "right");
         self.draw_touch_button(x0 + 2 * bw + 12, y, bw, bh, "-", "down");
         self.draw_touch_button(x0 + 3 * bw + 15, y, bw, bh, "+", "up");
         // Left of the screen index in the bottom-right corner.
-        self.draw_touch_button(w - 16 - 40 - p, y, 40, bh, "FIRE", "fire");
+        self.draw_touch_button(w - 16 - 40 - ex, y, 40, bh, "FIRE", "fire");
 
         let y2 = y - bh - 3;
         if loadout.airburst() {
@@ -1761,7 +1764,7 @@ impl SaltLine {
             self.draw_touch_button(x0 + 3 * bw + 15, y2, bw, bh, "E>", "reposition_right");
         }
 
-        self.draw_touch_button((w - 20) / 2, 3 + p, 20, 13, "II", "back");
+        self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", "back");
     }
 
     fn render_play(&mut self) {
@@ -2051,7 +2054,7 @@ impl SaltLine {
         let dim = pal.get(slot::SKY_LO);
         let alert = pal.get(slot::ALERT);
         let w = self.canvas.w;
-        let p = self.corner_pad;
+        let (ex, ey) = self.corner_pad;
 
         // Wind, top left. Shown as a signed number, never an arrow — reading a
         // number and converting it to a correction is the core skill
@@ -2067,33 +2070,33 @@ impl SaltLine {
             }
         };
         self.canvas.plate(
-            3 + p,
-            3 + p,
+            3 + ex,
+            3 + ey,
             20 + crate::font::big_width(&wind_text) as i32,
             13,
             &pal,
         );
-        self.canvas.text_small(6 + p, 5 + p, "WIND", dim);
-        self.canvas.text_big(6 + p + 18, 4 + p, &wind_text, alert);
+        self.canvas.text_small(6 + ex, 5 + ey, "WIND", dim);
+        self.canvas.text_big(6 + ex + 18, 4 + ey, &wind_text, alert);
 
         // Shells, top right. Alert accent under 10 — the only other place that
         // colour is allowed (DESIGN §5.2).
         let shell_text = format!("{shells}");
         let plate_w = 26 + crate::font::big_width(&shell_text) as i32;
-        let px = w - plate_w - 3 - p;
-        self.canvas.plate(px, 3 + p, plate_w, 13, &pal);
-        self.canvas.text_small(px + 3, 5 + p, "SHELLS", dim);
+        let px = w - plate_w - 3 - ex;
+        self.canvas.plate(px, 3 + ey, plate_w, 13, &pal);
+        self.canvas.text_small(px + 3, 5 + ey, "SHELLS", dim);
         let c = if shells < 10 { alert } else { fg };
-        self.canvas.text_big(px + 3 + 25, 4 + p, &shell_text, c);
+        self.canvas.text_big(px + 3 + 25, 4 + ey, &shell_text, c);
 
         // Screen index, bottom right, small. No score during the run
         // (DESIGN §1).
         let idx = format!("{}", index + 1);
-        let ix = w - crate::font::small_width(&idx) as i32 - 3 - p;
-        self.canvas.text_small(ix, self.canvas.h - 8 - p, &idx, fg);
+        let ix = w - crate::font::small_width(&idx) as i32 - 3 - ex;
+        self.canvas.text_small(ix, self.canvas.h - 8 - ey, &idx, fg);
 
         // Instruments, bottom left.
-        let mut y = self.canvas.h - 8 - p;
+        let mut y = self.canvas.h - 8 - ey;
         let shot = Shot::new(self.angle_ticks, self.power_ticks).quantized(loadout);
         let angle = if loadout.angle_quantum_ticks == 1 {
             format!("ANG {:.2}", shot.angle_degrees())
@@ -2101,20 +2104,20 @@ impl SaltLine {
             format!("ANG {:.1}", shot.angle_degrees())
         };
         let power = format!("PWR {}", shot.power_ticks);
-        self.canvas.text_small(3 + p, y, &power, fg);
+        self.canvas.text_small(3 + ex, y, &power, fg);
         y -= 7;
-        self.canvas.text_small(3 + p, y, &angle, fg);
+        self.canvas.text_small(3 + ex, y, &angle, fg);
         if let Some(r) = range {
             if loadout.has_flag(flags::RANGEFINDER) {
                 y -= 7;
                 self.canvas
-                    .text_small(3 + p, y, &format!("RNG {:.0}", r), fg);
+                    .text_small(3 + ex, y, &format!("RNG {:.0}", r), fg);
             }
         }
         if loadout.airburst() {
             y -= 7;
             self.canvas
-                .text_small(3 + p, y, &format!("FUSE {fuse:.0}"), fg);
+                .text_small(3 + ex, y, &format!("FUSE {fuse:.0}"), fg);
         }
         if loadout.enfilade_units > 0.0 {
             y -= 7;
@@ -2124,7 +2127,7 @@ impl SaltLine {
                 .map(|r| r.emplacement_offset)
                 .unwrap_or(0.0);
             self.canvas
-                .text_small(3 + p, y, &format!("EMPL {off:+.0}"), dim);
+                .text_small(3 + ex, y, &format!("EMPL {off:+.0}"), dim);
         }
 
         // Held modifiers, one compact line.
@@ -2142,16 +2145,16 @@ impl SaltLine {
             .collect();
         if !held.is_empty() {
             let line = held.join(" ");
-            self.canvas.text_small(3 + p, 18 + p, &line, dim);
+            self.canvas.text_small(3 + ex, 18 + ey, &line, dim);
         }
 
         if self.status_time > 0.0 {
             let text = self.status.clone();
             let x = (w - crate::font::small_width(&text) as i32) / 2;
-            self.canvas.text_small(x, 24 + p, &text, alert);
+            self.canvas.text_small(x, 24 + ey, &text, alert);
         } else if let Some(text) = self.onboarding_prompt(phase, wind) {
             let x = (w - crate::font::small_width(&text) as i32) / 2;
-            self.canvas.text_small(x.max(2), 24 + p, &text, alert);
+            self.canvas.text_small(x.max(2), 24 + ey, &text, alert);
         }
 
         // Only once the shell has actually landed: the sim resolves the clear
@@ -2161,7 +2164,7 @@ impl SaltLine {
         if self.clear_hold > 0.0 {
             let text = "SCREEN CLEAR";
             let x = (w - crate::font::small_width(text) as i32) / 2;
-            self.canvas.text_small(x, 34 + p, text, fg);
+            self.canvas.text_small(x, 34 + ey, text, fg);
         }
 
         if self.debug {
