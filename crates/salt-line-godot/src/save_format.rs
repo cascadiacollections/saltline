@@ -14,20 +14,56 @@
 //! bind fire SPACE A
 //! run <seed> <screens> <shells> <shots> <daily>
 //! ```
+//!
+//! Optional lines (`touch_aim`, `arc_hint`, `last_arc`) appear only once the
+//! player has chosen a value; there is one `bind` line per rebound action and
+//! one `run` line per board entry, best first.
+//!
+//! # A line-based format with forward-compatible versioning
+//!
+//! Each line is a keyword followed by whitespace-separated fields. The rules
+//! that make it robust are all in [`Save::parse`]:
+//!
+//! * **Line-level recovery.** A malformed line is skipped, never fatal, so a
+//!   torn write loses at most the record it tore. Serialisation writes the
+//!   settings first and the board last, and ends every `run` line with a
+//!   single-character field, so a line cut short almost always has too few
+//!   fields to parse rather than parsing to a wrong number.
+//! * **Unknown keywords are ignored**, and a `run` line may carry extra
+//!   trailing fields. A newer build can add data without an older one
+//!   discarding the rest of the file.
+//! * **A newer `version` is refused, not guessed at.** The save reads as
+//!   empty with [`Save::from_the_future`] set, and `save.rs` then refuses to
+//!   write, so running an older build never clobbers a newer file.
+//! * **Missing values default.** A file with no `version` line reads as
+//!   version 1, and absent settings take the values in [`Save::default`].
+//!
+//! Durability — writing to a temporary file and renaming it over the real
+//! one — is `save.rs`'s job, not this module's. The format is pinned by an
+//! `insta` snapshot test and fuzzed by `fuzz/fuzz_targets/save_parse.rs`.
 
-/// Format version written by this build.
+/// Format version written by this build. Bump it when an older build would
+/// misread the new output; additions an older build can safely ignore (a new
+/// keyword, a trailing field) do not need a bump.
 pub const VERSION: u32 = 2;
-/// Leaderboard depth kept on disk.
+/// Leaderboard depth kept on disk. Entries past this rank are dropped when
+/// the board is sorted.
 pub const KEEP: usize = 20;
 
 /// One finished run. Score is screens cleared, tiebreak shells then shots
 /// (DESIGN §1).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
+    /// The run's seed, so a shared seed can be compared (see
+    /// [`Save::best_on`]).
     pub seed: u64,
+    /// Screens cleared: the score.
     pub screens: u32,
+    /// Shells left at the end: the first tiebreak, higher is better.
     pub shells: i32,
+    /// Shots fired: the second tiebreak, lower is better.
     pub shots: u32,
+    /// Whether this was the daily seed. Stored as `1` / `0`.
     pub daily: bool,
 }
 
@@ -46,6 +82,7 @@ pub enum TouchAim {
 }
 
 impl TouchAim {
+    /// The word written to the save file.
     pub fn token(self) -> &'static str {
         match self {
             Self::Buttons => "buttons",
@@ -53,6 +90,8 @@ impl TouchAim {
         }
     }
 
+    /// Inverse of [`token`](Self::token). `None` for an unknown word, which
+    /// the parser treats as "not chosen".
     pub fn from_token(s: &str) -> Option<Self> {
         match s {
             "buttons" => Some(Self::Buttons),
@@ -61,6 +100,7 @@ impl TouchAim {
         }
     }
 
+    /// The next option, wrapping, for a settings row that cycles on press.
     pub fn next(self) -> Self {
         match self {
             Self::Buttons => Self::Drag,
@@ -73,7 +113,8 @@ impl TouchAim {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArcHint {
     /// The first stretch of the still-air arc: direction and power, never the
-    /// landing. Reading the wind stays the player's job (DESIGN 2.5).
+    /// landing. Reading the wind stays the player's job (DESIGN §2.5).
+    /// The length drawn is chosen by [`crate::aim::short_arc_len`].
     Short,
     /// The whole arc in still air.
     Full,
@@ -82,6 +123,7 @@ pub enum ArcHint {
 }
 
 impl ArcHint {
+    /// The word written to the save file.
     pub fn token(self) -> &'static str {
         match self {
             Self::Short => "short",
@@ -90,6 +132,7 @@ impl ArcHint {
         }
     }
 
+    /// Inverse of [`token`](Self::token). `None` for an unknown word.
     pub fn from_token(s: &str) -> Option<Self> {
         match s {
             "short" => Some(Self::Short),
@@ -99,6 +142,7 @@ impl ArcHint {
         }
     }
 
+    /// The next option, wrapping, for a settings row that cycles on press.
     pub fn next(self) -> Self {
         match self {
             Self::Short => Self::Full,
@@ -108,22 +152,31 @@ impl ArcHint {
     }
 }
 
+/// Everything the game keeps between sessions, parsed from and serialised to
+/// the text format described in the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
+    /// The last unlock the platform confirmed. A cache, never proof of
+    /// purchase; see [`crate::store::entitlement`].
     pub unlocked: bool,
+    /// The leaderboard, best first, at most [`KEEP`] entries once sorted.
     pub scores: Vec<Entry>,
     /// Master effects volume, as an integer percentage for a stable text
-    /// representation.
+    /// representation. `0..=100`; larger values are capped on read and write.
     pub volume: u8,
     pub muted: bool,
-    /// Bitset of contextual lessons the player has already demonstrated.
+    /// Bitset of contextual lessons the player has already demonstrated,
+    /// one `presentation::LEARN_*` bit each.
     pub learned: u32,
     /// User-editable action bindings: action, keyboard token, pad token.
-    /// Missing actions fall back to the built-in defaults.
+    /// Missing actions fall back to the built-in defaults. Tokens are
+    /// `[A-Za-z0-9_]` only; the action is stored lower-case and both input
+    /// tokens upper-case.
     pub bindings: Vec<(String, String, String)>,
     /// Touch settings. `None` until the player picks one, so the built-in
     /// default can change without overriding anyone's choice.
     pub touch_aim: Option<TouchAim>,
+    /// The drag-aim trajectory preview, `None` until chosen.
     pub arc_hint: Option<ArcHint>,
     /// Keep the last shot's arc drawn until the next one. `None` until the
     /// player toggles it, like the touch settings.
@@ -159,6 +212,9 @@ impl Save {
         for line in text.lines() {
             let mut it = line.split_whitespace();
             match it.next() {
+                // The version is checked wherever the line appears. Lines
+                // before it have already been read into `save`, but an early
+                // return discards them, so position does not matter.
                 Some("version") => {
                     // An unreadable version is a future one by assumption; the
                     // conservative reading is the one that preserves data.
@@ -207,6 +263,8 @@ impl Save {
                 }
                 Some("run") => {
                     let parts: Vec<&str> = it.collect();
+                    // `>=` rather than `==`: fields a later version appends
+                    // are ignored, not a reason to drop the entry.
                     if parts.len() >= 5 {
                         if let (Ok(seed), Ok(screens), Ok(shells), Ok(shots)) = (
                             parts[0].parse::<u64>(),
@@ -229,10 +287,14 @@ impl Save {
                 _ => {}
             }
         }
+        // Hand-edited files may list runs in any order or exceed `KEEP`.
         save.sort();
         save
     }
 
+    /// Render the save as text, always at the current [`VERSION`].
+    /// `Save::parse(&s.serialize())` gives back `s` with its board sorted and
+    /// cut to [`KEEP`] and its volume capped (a property test holds this).
     pub fn serialize(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("version {VERSION}\n"));
@@ -265,24 +327,29 @@ impl Save {
         out
     }
 
+    /// Rank the board best first and cut it to [`KEEP`]. The sort is stable,
+    /// so of two equal results the older one keeps the higher place.
     pub(crate) fn sort(&mut self) {
         self.scores.sort_by_key(|e| std::cmp::Reverse(e.rank()));
         self.scores.truncate(KEEP);
     }
 
     /// Place a finished run on the board. Returns its position, or `None` if
-    /// it did not make the cut. Persisting is the caller's job.
+    /// it did not make the cut. Persisting is the caller's job
+    /// (`save::record` does both).
     pub fn place(&mut self, entry: Entry) -> Option<usize> {
         self.scores.push(entry);
         self.sort();
         self.scores.iter().position(|e| *e == entry)
     }
 
+    /// The top of the board, if there is one.
     pub fn best(&self) -> Option<&Entry> {
         self.scores.first()
     }
 
     /// Best score on a specific seed — what a shared seed is judged against.
+    /// Only runs still on the board are considered.
     pub fn best_on(&self, seed: u64) -> Option<&Entry> {
         self.scores.iter().find(|e| e.seed == seed)
     }
