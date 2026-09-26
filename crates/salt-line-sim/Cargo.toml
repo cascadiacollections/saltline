@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
+insta = "1"
+rstest = { version = "0.26", default-features = false }
 # Test-only: property tests (tests/properties.rs). The sim itself still has no
 # dependencies, so nothing here reaches a build of the game.
 proptest = { version = "1", default-features = false, features = ["std"] }

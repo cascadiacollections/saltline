@@ -76,3 +76,8 @@ hygiene:
 # Line coverage summary (cargo-llvm-cov + cargo-nextest, llvm-tools-preview).
 cov:
     cargo llvm-cov nextest --workspace --summary-only --ignore-filename-regex '/bin/'
+
+# Run the pure modules under Miri, which fails on undefined behaviour (nightly + miri component).
+miri:
+    PROPTEST_CASES=4 MIRIFLAGS=-Zmiri-disable-isolation rustup run nightly cargo miri test -p salt-line-sim --lib -- dmath:: rng::
+    PROPTEST_CASES=4 MIRIFLAGS=-Zmiri-disable-isolation rustup run nightly cargo miri test -p salt-line-godot --lib -- save_format:: touch:: aim:: icons::

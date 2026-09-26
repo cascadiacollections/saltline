@@ -1,0 +1,4 @@
+# typos (https://github.com/crate-ci/typos). Snapshot files are generated hex
+# digests and palette digits, not prose.
+[files]
+extend-exclude = ["*.snap", "proptest-regressions/"]

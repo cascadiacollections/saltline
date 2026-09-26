@@ -199,6 +199,34 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Miri interprets the tests and fails on undefined behaviour. The code has
+  # almost no unsafe today, so this is future-proofing: it covers the pure
+  # modules (trig, RNG, save format, touch, aim, icons), because the whole sim
+  # suite takes far too long interpreted. Snapshot tests opt out (insta uses a
+  # socket Miri cannot emulate).
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: miri
+      - name: miri
+        env:
+          PROPTEST_CASES: "4"
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p salt-line-sim --lib -- dmath:: rng::
+          cargo +nightly miri test -p salt-line-godot --lib -- save_format:: touch:: aim:: icons::
+
   # Advisories, licences, bans and sources for the whole dependency tree
   # (deny.toml). A new RustSec advisory can turn this red with no change here;
   # that is the point, and the fix is usually a Dependabot bump.

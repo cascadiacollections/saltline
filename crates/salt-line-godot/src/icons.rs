@@ -67,4 +67,23 @@ mod tests {
     fn the_sock_is_as_wide_limp_as_flying() {
         assert_eq!(width(&SOCK), width(&SOCK_LIMP));
     }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "insta opens a socket, which Miri cannot emulate")]
+    fn the_hud_icons_draw_as_designed() {
+        use crate::palette::{slot, Palette};
+        use crate::raster::Canvas;
+        let pal = Palette::default();
+        let colors = [
+            pal.get(slot::UI_FG),
+            pal.get(slot::ALERT),
+            pal.get(slot::SKY_LO),
+        ];
+        let mut c = Canvas::new(40, 7);
+        c.icon(0, 0, &SHELL, &colors, false);
+        c.icon(6, 0, &SOCK, &colors, false);
+        c.icon(17, 0, &SOCK, &colors, true);
+        c.icon(28, 0, &SOCK_LIMP, &colors, false);
+        insta::assert_snapshot!(c.palette_text(&pal));
+    }
 }
