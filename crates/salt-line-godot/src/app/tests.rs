@@ -960,3 +960,119 @@ fn f1_toggles_the_debug_overlay() {
     tick(&mut g, keys(&[Key::F1]));
     assert!(g.debug);
 }
+
+// ----------------------------------------------------------- display fit
+
+#[test]
+fn a_phone_starts_with_touch_controls_and_corner_insets() {
+    let g = Game::new(true, Save::default());
+    assert!(g.touch_active);
+    assert_eq!(g.corner_pad, (10, 6));
+    assert_eq!(Game::new(false, Save::default()).corner_pad, (0, 0));
+}
+
+#[test]
+fn a_camera_cutout_is_letterboxed_and_followed() {
+    let mut g = Game::new(true, Save::default());
+    // A 20:9 phone held landscape with a camera hole on the left.
+    g.fit_display((2400, 1080), (96, 0));
+    // 2304 usable pixels at 6 screen pixels to one.
+    assert_eq!((g.buffer_w, g.buffer_h), (384, 180));
+    assert_eq!(g.letterbox, (16, 0));
+    // The phone turns round: the hole is on the right now.
+    let mut i = idle();
+    i.window = (2400, 1080);
+    i.cutout = (0, 96);
+    let fx = tick(&mut g, i);
+    assert_eq!(g.letterbox, (0, 16));
+    assert!(fx.contains(&Effect::Buffer {
+        w: 384,
+        h: 180,
+        letterbox: (0, 16)
+    }));
+}
+
+#[test]
+fn the_buffer_keeps_its_width_through_a_run() {
+    let mut g = playing(1);
+    let mut wide = idle();
+    wide.window = (1600, 720);
+    tick(&mut g, wide.clone());
+    assert_eq!(g.buffer_w, 320, "the world is as wide as the run");
+    // The next run is generated for the window as it is now.
+    g.finish_run();
+    let mut again = keys(&[Key::R]);
+    again.window = (1600, 720);
+    tick(&mut g, again);
+    assert_eq!(g.buffer_w, 400);
+    assert_eq!(g.run.as_ref().unwrap().width, 400);
+}
+
+// ---------------------------------------------------------- touch menus
+
+fn button(action: &'static str) -> Button {
+    Button {
+        rect: crate::touch::Rect::new(0, 0, 10, 10),
+        action,
+    }
+}
+
+#[test]
+fn touch_settings_cycle_and_are_written_on_leaving() {
+    let mut g = game();
+    g.mode = Mode::Controls;
+    g.finger_down(0, 5.0, 5.0, &[button("aim_mode")]);
+    g.finger_up(0);
+    let fx = tick(&mut g, idle());
+    assert_eq!(g.save.touch_aim, Some(TouchAim::Drag));
+    assert!(fx.contains(&Effect::Play(Sound::Ui)));
+    g.finger_down(0, 5.0, 5.0, &[button("arc_hint")]);
+    g.finger_up(0);
+    tick(&mut g, idle());
+    assert_eq!(g.save.arc_hint, Some(DEFAULT_ARC_HINT.next()));
+    g.finger_down(0, 5.0, 5.0, &[button("back")]);
+    g.finger_up(0);
+    let fx = tick(&mut g, idle());
+    assert_eq!(g.mode, Mode::Title);
+    assert_eq!(count(&fx, is_settings), 1);
+}
+
+#[test]
+fn the_touch_keypad_types_a_seed() {
+    let mut g = game();
+    g.open_seed_entry();
+    for key in ["S", "E", "A", keypad::DEL, "A"] {
+        g.finger_down(0, 5.0, 5.0, &[button(key)]);
+        g.finger_up(0);
+        tick(&mut g, idle());
+    }
+    assert_eq!(g.seed_text, "SEA");
+    g.finger_down(0, 5.0, 5.0, &[button("confirm")]);
+    g.finger_up(0);
+    tick(&mut g, idle());
+    assert_eq!(g.mode, Mode::Playing);
+    assert_eq!(g.last_seed, parse_seed("SEA"));
+}
+
+#[test]
+fn rebinding_moves_an_action_and_reset_restores_it() {
+    let mut g = playing(1);
+    g.save
+        .bindings
+        .push(("fire".into(), "U".into(), "B".into()));
+    tick(&mut g, keys(&[Key::Space]));
+    assert!(g.anim.is_none(), "space no longer fires");
+    assert_eq!(g.input_label("fire"), "U");
+    tick(&mut g, keys(&[Key::U]));
+    assert!(g.anim.is_some());
+
+    let mut g = game();
+    g.save
+        .bindings
+        .push(("back".into(), "C".into(), "B".into()));
+    g.mode = Mode::Controls;
+    let fx = tick(&mut g, keys(&[Key::R]));
+    assert!(g.save.bindings.is_empty());
+    assert_eq!(g.status, "DEFAULT BINDINGS RESTORED");
+    assert_eq!(count(&fx, is_settings), 0, "written on leaving Controls");
+}
