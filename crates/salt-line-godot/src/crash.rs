@@ -10,6 +10,43 @@
 //!
 //! Engine-free: the hook cannot reach the node, so the node keeps a small
 //! global context up to date, and everything here is plain `std`.
+//!
+//! # How the pieces fit
+//!
+//! - **Hook chaining.** [`install`] takes the hook already installed (gdext's,
+//!   which prints the panic to the Godot console) and installs a closure
+//!   that calls it first and then `on_panic`, which writes the report.
+//!   Nothing the engine already did is lost; the report is added on top.
+//!   `INSTALLED` makes a second call a no-op, so the hook is never chained
+//!   to itself.
+//! - **The context.** Every frame, before the frame's input is acted on,
+//!   the node calls [`note`] with the mode, the run and the aim. The hook
+//!   reads that under `CONTEXT.try_lock()`: a panic raised while `note`
+//!   holds the lock would deadlock on a plain `lock()` (the same thread,
+//!   waiting for itself), so the report says `context: unavailable` instead.
+//! - **Two flags.** `PANICKED` is set first thing in the hook, so the node
+//!   stops the game on its very next check ([`panicked`]). `READY` is set
+//!   last, once the report is written and held, so the error screen's copy
+//!   button ([`report`]) never hands over half a report. The gap between
+//!   the two is only visible after a panic off the main thread, where the
+//!   node can reach the error screen while the hook is still writing; a copy
+//!   then says the report is not ready.
+//! - **Privacy.** The report holds the version, platform, panic message and
+//!   location, mode, seed, aim and shot log: what is needed to replay the
+//!   crash (DESIGN §3) and nothing about the player. [`tidy_path`] strips
+//!   the build machine's directories, and so its user name, from the panic
+//!   location. The message is copied as it is, so a panic that quotes a
+//!   path carries it. The report leaves the device only if the player
+//!   pastes it.
+//! - **Nothing written after a panic.** The report is the last file the
+//!   game's code writes this session. `save::store` refuses, and the node
+//!   drops every file effect (`app::Effect::survives_panic`): state that was half-updated
+//!   when the panic unwound is not trusted to replace the last good save or
+//!   run file, and the report must stay where the next launch looks for it.
+//! - **Editor and hot reload.** `lib.rs` installs the hook only outside the
+//!   editor: there a panic is the developer's to read in the output panel,
+//!   and the editor hot-reloads this library. On unload, [`uninstall`] takes
+//!   the hook out, since it is code in the library being unloaded.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -269,6 +306,10 @@ fn on_panic(info: &PanicHookInfo) {
     READY.store(true, Ordering::SeqCst);
 }
 
+/// Straight over the file, not by way of a temporary one as `durable` does:
+/// a panic hook should do as little as it can, and a torn report is still
+/// worth more than none. Flushed (`sync_all`) because the process may not
+/// live much longer.
 fn write_report(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = fs::File::create(path)?;
