@@ -13,6 +13,7 @@ pub mod aim;
 pub mod crash;
 pub mod durable;
 pub mod font;
+pub mod frame;
 pub mod game;
 pub mod icons;
 pub mod palette;

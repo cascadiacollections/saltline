@@ -6,9 +6,9 @@
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
-    AudioStream, AudioStreamPlayer, DisplayServer, INode2D, Image, ImageTexture, Input, InputEvent,
-    InputEventKey, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os, RenderingServer,
-    ResourceLoader, Time,
+    AudioStream, AudioStreamPlayer, DisplayServer, Engine, INode2D, Image, ImageTexture, Input,
+    InputEvent, InputEventKey, InputEventMouseMotion, InputEventScreenDrag, InputEventScreenTouch,
+    Node2D, Os, RenderingServer, ResourceLoader, Time,
 };
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
@@ -24,6 +24,7 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_
 
 use crate::crash;
 use crate::durable::Debounce;
+use crate::frame::{self, DisplayPoll, Memo, Redraw};
 use crate::palette::{slot, Palette};
 use crate::presentation::{
     self, RepeatState, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER,
@@ -145,6 +146,46 @@ impl Anim {
     }
 }
 
+/// Everything the drag preview's trajectory depends on. The terrain and the
+/// targets only change when a shot lands (`shots`) or the screen does
+/// (`seed`, `index`); the muzzle moves with Enfilade (`offset`).
+#[derive(PartialEq, Debug)]
+struct PreviewKey {
+    angle: i32,
+    power: i32,
+    hint: ArcHint,
+    /// Bits of the wind the preview flies in, which is the HUD's wind.
+    wind: u64,
+    seed: u64,
+    index: u32,
+    shots: u32,
+    offset: u64,
+}
+
+/// A cached preview: the primary shell's path and how much of it to draw.
+type Preview = (Vec<Vec2>, usize);
+
+/// See `SaltLine::frame_state`.
+#[derive(PartialEq)]
+struct FrameState {
+    mode: Mode,
+    aim: (i32, i32),
+    cam_x: i32,
+    buffer: (i32, i32, (i32, i32)),
+    devices: (bool, bool),
+    run: Option<(u32, Phase, i32, u32, u64, u64)>,
+    seed: usize,
+    settings: (
+        u8,
+        bool,
+        Option<bool>,
+        Option<TouchAim>,
+        Option<ArcHint>,
+        u32,
+    ),
+    misc: (bool, bool, bool),
+}
+
 #[derive(GodotClass)]
 #[class(base = Node2D)]
 pub struct SaltLine {
@@ -156,7 +197,25 @@ pub struct SaltLine {
     /// resolution. DESIGN §5.1 — "UI renders in the same buffer at the same
     /// resolution".
     canvas: Canvas,
+    /// The frame's image and texture live as long as the buffer keeps its
+    /// size: each frame is copied into one of `upload_bufs` and handed to the
+    /// image, which shares rather than copies it. Two buffers, so the one
+    /// being written is never the one the image still holds.
+    image: Option<Gd<Image>>,
     texture: Option<Gd<ImageTexture>>,
+    upload_bufs: [PackedByteArray; 2],
+    upload_flip: usize,
+    /// Whether this frame needs drawing at all. See `frame::Redraw`.
+    redraw: Redraw,
+    /// The engine's frame cap as the project set it, restored in play.
+    project_fps: i32,
+    fps_cap: i32,
+    /// When to read the display's safe area again, and what it last said.
+    display: DisplayPoll,
+    window_size: Vector2i,
+    cutout: (i32, i32),
+    /// The drag preview's trajectory, recomputed only when its inputs change.
+    preview: Memo<PreviewKey, Preview>,
 
     buffer_w: i32,
     buffer_h: i32,
@@ -255,7 +314,17 @@ impl INode2D for SaltLine {
             pal: Palette::default(),
             sprites: None,
             canvas: Canvas::new(320, 180),
+            image: None,
             texture: None,
+            upload_bufs: [PackedByteArray::new(), PackedByteArray::new()],
+            upload_flip: 0,
+            redraw: Redraw::default(),
+            project_fps: 0,
+            fps_cap: 0,
+            display: DisplayPoll::default(),
+            window_size: Vector2i::ZERO,
+            cutout: (0, 0),
+            preview: Memo::default(),
             buffer_w: 320,
             buffer_h: SCREEN_H as i32,
             cam_x: 0,
@@ -324,6 +393,9 @@ impl INode2D for SaltLine {
         self.find_last_crash();
         self.setup_audio();
         self.entitlement = store::entitlement(self.save.unlocked);
+        self.project_fps = Engine::singleton().get_max_fps();
+        self.fps_cap = self.project_fps;
+        self.read_display();
         self.buffer_w = self.pick_width();
         self.apply_buffer_size();
         if let Some(dir) = Self::cmdline_value("--salt-gallery") {
@@ -356,14 +428,23 @@ impl INode2D for SaltLine {
         self.note_crash_context();
         self.elapsed += delta;
         self.status_time = (self.status_time - delta).max(0.0);
+        self.poll_display(delta);
+        let before = self.frame_state();
         self.handle_input(delta);
         if self.auto {
             self.autopilot(delta);
         }
         self.step(delta);
         self.tick_settings(delta);
-        self.render();
-        self.base_mut().queue_redraw();
+        if self.frame_state() != before {
+            self.redraw.mark();
+        }
+        self.apply_frame_cap();
+        if self.redraw.due(self.busy()) {
+            self.render();
+        }
+        // Every frame, drawn or not: an undrawn frame is the last one drawn.
+        self.maybe_screenshot();
     }
 
     fn draw(&mut self) {
@@ -376,6 +457,12 @@ impl INode2D for SaltLine {
     }
 
     fn input(&mut self, event: Gd<InputEvent>) {
+        let event = match event.try_cast::<InputEventMouseMotion>() {
+            // Nothing follows the mouse.
+            Ok(_) => return,
+            Err(event) => event,
+        };
+        self.redraw.mark();
         let event = match event.try_cast::<InputEventScreenDrag>() {
             Ok(drag) => {
                 let local = self
@@ -413,11 +500,22 @@ impl INode2D for SaltLine {
 
     fn on_notification(&mut self, what: CanvasItemNotification) {
         match what {
-            CanvasItemNotification::WM_GO_BACK_REQUEST => self.back_requested = true,
+            CanvasItemNotification::WM_GO_BACK_REQUEST => {
+                self.back_requested = true;
+                self.redraw.mark();
+            }
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
                 self.touch.release_all();
                 self.flush_settings();
+                self.redraw.mark();
+            }
+            // The display may have turned, or grown a cutout, while away.
+            CanvasItemNotification::WM_WINDOW_FOCUS_IN
+            | CanvasItemNotification::APPLICATION_FOCUS_IN
+            | CanvasItemNotification::APPLICATION_RESUMED => {
+                self.display.invalidate();
+                self.redraw.mark();
             }
             // Pending settings go to disk before the app can be killed: a
             // phone may never resume a paused app, and a close is final.
@@ -480,8 +578,8 @@ impl SaltLine {
     /// Internal buffer width. DESIGN §5.1: fix the height at 180, let the
     /// width float 320..400 by device aspect, and generate terrain to fill it.
     fn pick_width(&self) -> i32 {
-        let size = DisplayServer::singleton().window_get_size();
-        let (l, r) = self.cutout_px();
+        let size = self.window_size;
+        let (l, r) = self.cutout;
         let usable = size.x - l - r;
         let aspect = if size.y > 0 {
             usable as f64 / size.y as f64
@@ -513,6 +611,32 @@ impl SaltLine {
             window.set_content_scale_size(Vector2i::new(self.buffer_w + l + r, h));
         }
         self.base_mut().set_position(Vector2::new(l as f32, 0.0));
+        self.redraw.mark();
+    }
+
+    /// Read the window size and the cutout it leaves, for `pick_width` and
+    /// `letterbox_now`. Not every frame: see `poll_display`.
+    fn read_display(&mut self) {
+        self.window_size = DisplayServer::singleton().window_get_size();
+        self.cutout = self.cutout_px();
+    }
+
+    /// Re-read the display when the window changes size, focus comes back or
+    /// a second has passed, and follow it if the buffer should change. The
+    /// safe area is a platform round trip on a phone; the size is not.
+    fn poll_display(&mut self, delta: f64) {
+        let size = DisplayServer::singleton().window_get_size();
+        if !self.display.check((size.x, size.y), delta) {
+            return;
+        }
+        self.read_display();
+        let want_w = self.pick_width();
+        if self.run.is_none() && want_w != self.buffer_w {
+            self.buffer_w = want_w;
+            self.apply_buffer_size();
+        } else if self.letterbox_now() != self.letterbox {
+            self.apply_buffer_size();
+        }
     }
 
     /// Screen pixels a display cutout takes from the left and right edges: a
@@ -523,9 +647,8 @@ impl SaltLine {
         if !self.mobile {
             return (0, 0);
         }
-        let ds = DisplayServer::singleton();
-        let win = ds.window_get_size();
-        let safe = ds.get_display_safe_area();
+        let win = self.window_size;
+        let safe = DisplayServer::singleton().get_display_safe_area();
         if safe.size.x <= 0 || safe.size.y <= 0 {
             return (0, 0);
         }
@@ -537,8 +660,8 @@ impl SaltLine {
     /// The cutout in buffer pixels, rounded up so the playfield never reaches
     /// under it.
     fn letterbox_now(&self) -> (i32, i32) {
-        let (l, r) = self.cutout_px();
-        let win_h = DisplayServer::singleton().window_get_size().y;
+        let (l, r) = self.cutout;
+        let win_h = self.window_size.y;
         if win_h <= 0 || self.buffer_h <= 0 {
             return (0, 0);
         }
@@ -557,6 +680,7 @@ impl SaltLine {
         self.power_ticks = 600;
         self.anim = None;
         self.last_arc.clear();
+        self.preview.clear();
         self.clear_hold = 0.0;
         self.cam_x = 0;
         self.cam_target = 0.0;
@@ -577,12 +701,14 @@ impl SaltLine {
         let Some(run) = self.run.as_mut() else { return };
         run.screen_index = index;
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
+        self.preview.clear();
         self.note(format!("SCREEN {}", index + 1));
     }
 
     fn note(&mut self, text: String) {
         self.status = text;
         self.status_time = 2.4;
+        self.redraw.mark();
     }
 
     // ----------------------------------------------------------------- input
@@ -847,6 +973,66 @@ impl SaltLine {
         self.back_requested = false;
     }
 
+    /// Something on screen is moving or being held, so every frame draws.
+    fn busy(&self) -> bool {
+        let input = Input::singleton();
+        let stick = [JoyAxis::LEFT_X, JoyAxis::LEFT_Y]
+            .into_iter()
+            .any(|axis| input.get_joy_axis(0, axis).abs() > 0.45);
+        self.anim.is_some()
+            || self.clear_hold > 0.0
+            || self.status_time > 0.0
+            || self.auto
+            || self.touch.active()
+            || stick
+            || input.is_anything_pressed()
+    }
+
+    /// What a frame shows that input or a step can change, compared across
+    /// the frame as a second line of defence behind the explicit marks.
+    fn frame_state(&self) -> FrameState {
+        FrameState {
+            mode: self.mode,
+            aim: (self.angle_ticks, self.power_ticks),
+            cam_x: self.cam_x,
+            buffer: (self.buffer_w, self.buffer_h, self.letterbox),
+            devices: (self.touch_active, self.controller_active),
+            run: self.run.as_ref().map(|r| {
+                (
+                    r.screen_index,
+                    r.phase,
+                    r.shells,
+                    r.shots_on_screen,
+                    r.fuse.to_bits(),
+                    r.emplacement_offset.to_bits(),
+                )
+            }),
+            seed: self.seed_text.len(),
+            settings: (
+                self.save.volume,
+                self.save.muted,
+                self.save.last_arc,
+                self.save.touch_aim,
+                self.save.arc_hint,
+                self.save.learned,
+            ),
+            misc: (self.debug, self.crash_copied, self.last_crash.is_some()),
+        }
+    }
+
+    /// Menus, overlays and the error screen run at `frame::IDLE_FPS`; play
+    /// runs uncapped, or at whatever the project asked for. `Engine` max FPS
+    /// rather than low-processor mode, which would also throttle play and
+    /// the shot replay.
+    fn apply_frame_cap(&mut self) {
+        let idle = self.broken || self.mode != Mode::Playing;
+        let cap = frame::frame_cap(idle, self.project_fps);
+        if cap != self.fps_cap {
+            self.fps_cap = cap;
+            Engine::singleton().set_max_fps(cap);
+        }
+    }
+
     fn handle_mode_input(&mut self, delta: f64) {
         if self.pressed(Key::F1) {
             self.debug = !self.debug;
@@ -986,6 +1172,7 @@ impl SaltLine {
                 if self.action_pressed(5 + i, action) {
                     let taken = self.run.as_mut().and_then(|r| r.take_offer(i));
                     if let Some(m) = taken {
+                        self.preview.clear();
                         self.learn(LEARN_DRAFT);
                         self.play_sound(Sound::Draft);
                         self.note(format!("TOOK {}", m.name()));
@@ -1340,40 +1527,40 @@ impl SaltLine {
 
     fn render(&mut self) {
         self.touch_buttons.clear();
-        let want_w = self.pick_width();
-        if self.run.is_none() && want_w != self.buffer_w {
-            self.buffer_w = want_w;
-            self.apply_buffer_size();
-        } else if self.letterbox_now() != self.letterbox {
-            self.apply_buffer_size();
-        }
         match self.mode {
             Mode::Playing | Mode::Paused | Mode::Paywall => self.render_play(),
             _ => self.render_menu(),
         }
-
         self.upload();
-        self.maybe_screenshot();
     }
 
+    /// Hand the buffer to the GPU without allocating: the frame is copied
+    /// into whichever of the two upload buffers the image is not holding, the
+    /// image takes it by reference, and the texture is updated in place. Only
+    /// a change of buffer size makes a new texture.
     fn upload(&mut self) {
         let (w, h) = (self.canvas.w, self.canvas.h);
-        let data = self.canvas.to_packed();
-        let Some(image) =
-            Image::create_from_data(w, h, false, godot::classes::image::Format::RGBA8, &data)
-        else {
+        let format = godot::classes::image::Format::RGBA8;
+        let bytes = self.canvas.bytes();
+        let buf = &mut self.upload_bufs[self.upload_flip];
+        if buf.len() != bytes.len() {
+            buf.resize(bytes.len());
+        }
+        buf.as_mut_slice().copy_from_slice(bytes);
+        match self.image.as_mut() {
+            Some(image) => image.set_data(w, h, false, format, buf),
+            None => self.image = Image::create_from_data(w, h, false, format, buf),
+        }
+        self.upload_flip ^= 1;
+        let Some(image) = self.image.as_ref() else {
             return;
         };
-        let reusable = self
-            .texture
-            .as_ref()
-            .is_some_and(|t| t.get_width() == w && t.get_height() == h);
-        if reusable {
-            if let Some(t) = self.texture.as_mut() {
-                t.update(&image);
+        match self.texture.as_mut() {
+            Some(t) if t.get_width() == w && t.get_height() == h => t.update(image),
+            _ => {
+                self.texture = ImageTexture::create_from_image(image);
+                self.base_mut().queue_redraw();
             }
-        } else {
-            self.texture = ImageTexture::create_from_image(&image);
         }
     }
 
@@ -2066,34 +2253,28 @@ impl SaltLine {
         }
 
         let hint = self.arc_hint();
-        let boxes = screen.target_boxes();
-        let mut world = screen.world(&boxes);
-        world.wind = match hint {
+        let wind = match hint {
             ArcHint::Wind => wind_shown.unwrap_or(0.0),
             ArcHint::Short | ArcHint::Full => 0.0,
         };
-        let opts = FireOptions {
-            record_path: true,
-            ..FireOptions::default()
+        let Some(run) = self.run.as_ref() else { return };
+        // A whole ballistic flight per frame while a finger is held still is
+        // wasted: the path only changes when one of these does.
+        let key = PreviewKey {
+            angle: self.angle_ticks,
+            power: self.power_ticks,
+            hint,
+            wind: wind.to_bits(),
+            seed: run.run_seed,
+            index: run.screen_index,
+            shots: run.shots_on_screen,
+            offset: run.emplacement_offset.to_bits(),
         };
         let shot = Shot::new(self.angle_ticks, self.power_ticks);
-        let traces = ballistics::fire(&world, screen.muzzle(), shot, loadout, &opts);
-        let Some(path) = traces.first().map(|t| &t.path) else {
-            return;
-        };
-        let upto = match hint {
-            ArcHint::Short => {
-                let apex = path
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
-                    .map_or(0, |(i, _)| i);
-                let window = (SHORT_ARC_SECONDS / DT) as usize;
-                crate::aim::short_arc_len(apex, path.len(), window)
-            }
-            ArcHint::Full | ArcHint::Wind => path.len(),
-        };
-        raster::draw_trajectory(&mut self.canvas, view, path, upto, &pal);
+        let (path, upto) = self
+            .preview
+            .get_or(key, || preview_path(screen, loadout, shot, hint, wind));
+        raster::draw_trajectory(&mut self.canvas, view, path, *upto, &pal);
     }
 
     fn draw_structures(&mut self, screen: &Screen, view: &View) {
@@ -2599,6 +2780,41 @@ impl SaltLine {
     }
 }
 
+/// The drag preview's flight, and how much of it the arc hint shows.
+fn preview_path(
+    screen: &Screen,
+    loadout: &Loadout,
+    shot: Shot,
+    hint: ArcHint,
+    wind: f64,
+) -> Preview {
+    let boxes = screen.target_boxes();
+    let mut world = screen.world(&boxes);
+    world.wind = wind;
+    let opts = FireOptions {
+        record_path: true,
+        ..FireOptions::default()
+    };
+    let mut traces = ballistics::fire(&world, screen.muzzle(), shot, loadout, &opts);
+    if traces.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let path = traces.swap_remove(0).path;
+    let upto = match hint {
+        ArcHint::Short => {
+            let apex = path
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
+                .map_or(0, |(i, _)| i);
+            let window = (SHORT_ARC_SECONDS / DT) as usize;
+            crate::aim::short_arc_len(apex, path.len(), window)
+        }
+        ArcHint::Full | ArcHint::Wind => path.len(),
+    };
+    (path, upto)
+}
+
 /// What a prompt calls an action on a touchscreen: the glyph on its on-screen
 /// button, or nothing where the prompt's own line is the button.
 fn touch_label(action: &str) -> &'static str {
@@ -2723,6 +2939,7 @@ impl SaltLine {
         }
         self.status_time = (self.status_time - delta).max(0.0);
         self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        self.apply_frame_cap();
         if self.action_pressed(4, "copy") {
             let text = crash::report()
                 .or_else(|| {
