@@ -4,9 +4,20 @@
 //! Each row is one pixel row. `.` is transparent and a digit picks a colour
 //! from the list the caller passes: `1` the first, `2` the second, and so on.
 //! All icons are as tall as the big digits they sit beside.
+//!
+//! This is palette-indexed pixel art in its smallest form: the icon stores
+//! colour *indices* into a short per-call list, not colours, and
+//! [`Canvas::icon`](crate::raster::Canvas::icon) resolves them against
+//! palette entries the caller chooses. The same icon can therefore be drawn
+//! in different slots without a second bitmap, and carries no colour of its
+//! own (DESIGN §5.2). `Canvas::icon` can also mirror an icon horizontally,
+//! which is how the windsock points left — a flip, not a rotation
+//! (DESIGN §5.1).
 
 use crate::font::BIG_H;
 
+/// One icon: [`BIG_H`] rows of equal length, each character `.` or a
+/// colour digit `1`–`9`. Width is the row length in buffer pixels.
 pub type Icon = [&'static str; BIG_H];
 
 /// A shell standing on its base: body, then the driving band.
@@ -45,6 +56,8 @@ pub const SOCK_LIMP: Icon = [
     "3........",
 ];
 
+/// Width of `icon` in buffer pixels, taken from its first row; every row is
+/// the same length (a unit test checks this).
 pub fn width(icon: &Icon) -> i32 {
     icon[0].len() as i32
 }
