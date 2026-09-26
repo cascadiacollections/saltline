@@ -8,10 +8,40 @@
 //! A finger that goes down off every button is a free drag instead (drag
 //! aiming). Only one drag runs at a time; lifting it reports a drop for one
 //! frame.
+//!
+//! # How it fits
+//!
+//! Nothing here depends on Godot, so the whole input model runs under
+//! `cargo test` and `proptest`. The engine side, in `game.rs`, converts each
+//! `InputEventScreenTouch` / `InputEventScreenDrag` into the node's local
+//! space — which is buffer pixels, because the one canvas texture is drawn
+//! at the origin at 1:1 (DESIGN §5.1) — and forwards it here. It also keeps
+//! the list of [`Button`]s the renderer pushed while drawing the last frame
+//! and passes that to [`TouchPad::finger_down`].
+//!
+//! # Techniques
+//!
+//! * **Hit-testing against last frame's layout.** Buttons are declared as a
+//!   side effect of drawing them (an immediate-mode UI), so the only layout
+//!   that exists when a touch arrives is the one the player was looking at.
+//!   That is also the right one to test against.
+//! * **Capture on touch-down.** A finger is bound to one action for its whole
+//!   life, like pointer capture in a desktop toolkit. Sliding off a button
+//!   keeps it held; sliding onto one does not press it.
+//! * **Edge latching.** Presses are collected as events arrive and published
+//!   once per frame by [`TouchPad::update`], so a tap that goes down and up
+//!   between two frames is still seen exactly once.
+//! * **Hold-to-repeat** shares [`RepeatState`] with the keyboard and gamepad,
+//!   so a held on-screen button repeats at the same delay and rate as a key.
+//!
+//! Actions are `&'static str` names shared with the keyboard bindings
+//! (`"left"`, `"fire"`, `"draft_1"`...), so game code asks one question per
+//! action whatever the input device.
 
 use crate::presentation::RepeatState;
 
-/// A rectangle in buffer pixels.
+/// An axis-aligned rectangle in buffer pixels: `x, y` is the top-left corner
+/// and `w, h` the size, with y pointing down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: i32,
@@ -21,10 +51,15 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// A rectangle with its top-left corner at `(x, y)`.
     pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         Self { x, y, w, h }
     }
 
+    /// Whether a point in buffer pixels falls inside. Half-open: the left
+    /// and top edges are in, the right and bottom edges are out, so two
+    /// buttons that share an edge never both claim a touch on it. Takes
+    /// floats because touch positions arrive sub-pixel.
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.x as f32
             && y >= self.y as f32
@@ -36,10 +71,26 @@ impl Rect {
 /// An on-screen button that stands in for an input action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Button {
+    /// Hit area in buffer pixels, normally the plate the button is drawn as.
     pub rect: Rect,
+    /// The action a press reports, the same name the keyboard binding uses.
     pub action: &'static str,
 }
 
+/// Multi-touch state for one frame at a time: which finger holds which
+/// button, the one free drag, and per-action repeat timers.
+///
+/// Feed it events with [`finger_down`](Self::finger_down),
+/// [`finger_moved`](Self::finger_moved) and [`finger_up`](Self::finger_up)
+/// as they arrive, call [`update`](Self::update) once per frame, then read it
+/// with [`pressed`](Self::pressed), [`held`](Self::held),
+/// [`repeated`](Self::repeated), [`drag`](Self::drag) and
+/// [`dropped`](Self::dropped). All but [`held`](Self::held) and
+/// [`drag`](Self::drag) are latched by the update; those two read the live
+/// finger state.
+///
+/// Finger indices are Godot's touch indices; they are only compared, never
+/// used to index anything.
 #[derive(Default)]
 pub struct TouchPad {
     /// Finger index and the action of the button it went down on, if any.
@@ -47,15 +98,22 @@ pub struct TouchPad {
     /// Actions whose button a finger went down on since the last update. Kept
     /// separately so a tap that lifts before the next frame still counts.
     went_down: Vec<&'static str>,
+    /// `went_down` as published by the last update: this frame's presses.
     pressed: Vec<&'static str>,
+    /// Activations this frame, per action, from hold-to-repeat.
     repeats: Vec<(&'static str, u32)>,
+    /// One repeat timer per action ever held. Small linear-scanned `Vec`s
+    /// rather than maps: there are a few dozen actions at most.
     repeat_state: Vec<(&'static str, RepeatState)>,
     drag: Option<Drag>,
     /// A drag that lifted since the last update, as (start, end).
     dropping: Option<((f32, f32), (f32, f32))>,
+    /// `dropping` as published by the last update, visible for one frame.
     dropped: Option<((f32, f32), (f32, f32))>,
 }
 
+/// The one free drag: the finger that owns it and where it went down and is
+/// now, in buffer pixels.
 struct Drag {
     index: i32,
     start: (f32, f32),
@@ -63,14 +121,20 @@ struct Drag {
 }
 
 impl TouchPad {
-    /// A finger touched down. Later buttons are drawn over earlier ones, so the
-    /// last one containing the point wins.
+    /// A finger touched down at `(x, y)` in buffer pixels. `buttons` is the
+    /// layout drawn last frame. Later buttons are drawn over earlier ones, so
+    /// the last one containing the point wins.
+    ///
+    /// Off every button, the finger starts the free drag if none is running;
+    /// otherwise it is tracked but does nothing.
     pub fn finger_down(&mut self, index: i32, x: f32, y: f32, buttons: &[Button]) {
         let action = buttons
             .iter()
             .rev()
             .find(|b| b.rect.contains(x, y))
             .map(|b| b.action);
+        // A repeated down for the same index (a lost up event) replaces the
+        // old binding rather than leaving a finger stuck on a button.
         self.fingers.retain(|(i, _)| *i != index);
         self.fingers.push((index, action));
         match action {
@@ -86,12 +150,18 @@ impl TouchPad {
         }
     }
 
+    /// A finger moved to `(x, y)` in buffer pixels. Only the drag finger's
+    /// position is tracked; a finger on a button stays bound to it wherever
+    /// it moves.
     pub fn finger_moved(&mut self, index: i32, x: f32, y: f32) {
         if let Some(d) = self.drag.as_mut().filter(|d| d.index == index) {
             d.now = (x, y);
         }
     }
 
+    /// A finger lifted. If it owned the drag, the drag becomes a drop, which
+    /// the next [`update`](Self::update) publishes through
+    /// [`dropped`](Self::dropped).
     pub fn finger_up(&mut self, index: i32) {
         self.fingers.retain(|(i, _)| *i != index);
         if self.drag.as_ref().is_some_and(|d| d.index == index) {
@@ -115,11 +185,16 @@ impl TouchPad {
         self.dropped = None;
     }
 
-    /// Once per frame, before any action is read.
+    /// Once per frame, before any action is read. Publishes the presses and
+    /// drop collected since the last call and advances every repeat timer by
+    /// `delta` seconds. `delay` and `rate` are the hold-to-repeat timings in
+    /// seconds, the same ones the keyboard uses; see [`RepeatState::tick`].
     pub fn update(&mut self, delta: f64, delay: f64, rate: f64) {
         self.pressed = std::mem::take(&mut self.went_down);
         self.dropped = self.dropping.take();
         let mut held: Vec<&'static str> = self.fingers.iter().filter_map(|(_, a)| *a).collect();
+        // A tap that already lifted still counts as held for this one frame,
+        // so its repeat timer sees the edge and reports one activation.
         held.extend(self.pressed.iter().copied());
         held.sort_unstable();
         held.dedup();
@@ -148,7 +223,9 @@ impl TouchPad {
         self.fingers.iter().any(|(_, a)| *a == Some(action))
     }
 
-    /// Activations this frame, with hold-to-repeat.
+    /// Activations this frame, with hold-to-repeat: 1 on the press, 0 during
+    /// the delay, then one per `rate` interval elapsed while held (more than
+    /// one on a long frame).
     pub fn repeated(&self, action: &str) -> u32 {
         self.repeats
             .iter()
@@ -157,12 +234,14 @@ impl TouchPad {
             .unwrap_or(0)
     }
 
-    /// The free drag in progress, as (start, now).
+    /// The free drag in progress, as (start, now) in buffer pixels.
     pub fn drag(&self) -> Option<((f32, f32), (f32, f32))> {
         self.drag.as_ref().map(|d| (d.start, d.now))
     }
 
-    /// A free drag lifted this frame, as (start, end).
+    /// A free drag lifted this frame, as (start, end) in buffer pixels.
+    /// `Some` for exactly one frame per drop; cancelled or abandoned drags
+    /// never drop.
     pub fn dropped(&self) -> Option<((f32, f32), (f32, f32))> {
         self.dropped
     }
