@@ -165,3 +165,32 @@ Programmer art, per the brief, but two gaps affect play rather than polish:
   now emits base, sabot, cluster and auger strips; the two chassis variants
   reuse the base barrel, which is correct but means those builds read only from
   the hull.
+
+---
+
+## 6. Sim epochs
+
+`SIM_EPOCH` (`salt-line-sim/src/lib.rs`) versions the sim's outcomes, as
+DESIGN §9.3 proposes. `tests/golden_runs.rs` hashes the pinned screen digests
+together with the golden-run corpus (`tests/golden_runs.txt`) and asserts the
+result is the current epoch's entry in `EPOCHS`. When it fails: bump
+`SIM_EPOCH`, regenerate the corpus, append `(epoch, digest)` to `EPOCHS`
+(never edit an existing entry) and add a line here with the digest; a test
+checks that every digest in `EPOCHS` appears in this section.
+
+Saved logs use the text form of `replay::encode_log`, which starts with a
+format version (`v2`). The parser rejects any other version, so an epoch-1
+log, which has no fuse or offset to give, is refused rather than replayed
+with guessed values.
+
+- **Epoch 1:** everything before epoch 2. Shot logs held only screen, angle
+  and power, so a run that used Airburst or Enfilade did not replay: the
+  fuse and the emplacement offset were never recorded.
+- **Epoch 2:** each logged shot also records the fuse (tenths of a unit) and
+  the emplacement offset (whole units), and both are in `state_hash`. The
+  live game now holds the fuse on a 0.1-unit grid (a new screen's default
+  fuse is rounded to it) and the offset on whole units, so a replay applies
+  exactly the values that flew. Screen generation is unchanged — the pinned
+  screen digests did not move — but every run's final hash did, and the
+  determinism bin's digest changed from `0xe58dfc4036186a6a` to
+  `0x6d19f4bc6cd194fa`. Epoch digest: `0xce60de848487e4a5`.
