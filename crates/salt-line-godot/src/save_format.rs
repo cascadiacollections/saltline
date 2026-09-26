@@ -152,7 +152,7 @@ impl Default for Save {
 }
 
 impl Save {
-    /// Parse a save file. Unparseable lines are skipped rather than fatal:
+    /// Parse a save file. Unparsable lines are skipped rather than fatal:
     /// a truncated write should cost the last record, not the whole board.
     pub fn parse(text: &str) -> Save {
         let mut save = Save::default();

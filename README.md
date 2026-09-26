@@ -143,6 +143,10 @@ across random inputs: any recorded run replays to the same state, any save
 reads back as written, and drag aim never leaves the grid. On a failure,
 proptest shrinks the input to a minimal case and records it under
 `proptest-regressions/`; commit that file so the case stays covered.
+CI runs the tests with cargo-nextest (`.config/nextest.toml`), plus the
+doctests. `just cov` prints line coverage, which CI also writes to the coverage
+job's summary. `just hygiene` runs typos (spelling), zizmor (workflow security)
+and cargo-machete (unused dependencies), as the hygiene job does.
 `just deny` (cargo-deny, `deny.toml`) checks the dependency tree for security
 advisories, disallowed licences and unknown sources. CI runs it on every pull
 request.

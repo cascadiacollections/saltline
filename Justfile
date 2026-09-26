@@ -66,3 +66,13 @@ android-log:
 # Check advisories, licences, bans and sources (deny.toml). Needs cargo-deny.
 deny:
     cargo deny check
+
+# Spelling, workflow security and unused dependencies (typos, zizmor, cargo-machete), as CI runs them.
+hygiene:
+    typos
+    zizmor .github/workflows/
+    cargo machete
+
+# Line coverage summary (cargo-llvm-cov + cargo-nextest, llvm-tools-preview).
+cov:
+    cargo llvm-cov nextest --workspace --summary-only --ignore-filename-regex '/bin/'
