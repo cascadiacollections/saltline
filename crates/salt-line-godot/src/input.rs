@@ -2,10 +2,11 @@
 //! hands the core each frame.
 //!
 //! The node reads the engine's events and polls; [`Intents`] is the result,
-//! in terms that name no engine type: which keys and pad buttons went down
-//! since the last frame, which are held, and where the left stick points,
-//! with the window size, display cutout and date the frame sees. Touch
-//! is among the frame's events and reaches [`crate::touch`] through the core.
+//! in terms that name no engine type: the events since the last frame in
+//! order (keys, typed text, touches, the back gesture), the pad buttons
+//! that went down, what is held, and where the left stick points, with the
+//! window size, display cutout and date the frame sees. Touch is among the
+//! frame's events and reaches [`crate::touch`] through the core.
 //!
 //! Actions are not resolved here but in the core (`app`), because the
 //! bindings are part of the save and because what a press means depends on
@@ -18,6 +19,20 @@
 //! Key and button names are the tokens a `bind` line in the save uses
 //! (`bind fire SPACE A`), so [`Key::from_token`] and [`Pad::from_token`] are
 //! the whole of the binding format.
+//!
+//! # Techniques
+//!
+//! * **Edge latching.** Key presses arrive as events between frames and are
+//!   queued ([`Controls::queue`]); [`Controls::begin`] publishes them once a
+//!   frame. A tap shorter than a frame is still one press, which polling
+//!   alone would miss.
+//! * **Take-once consumption.** [`Controls::pressed`] and
+//!   [`Controls::take_pad`] remove the press they report, so one physical
+//!   press drives at most one action, and a press no action took is dropped
+//!   at the next `begin` rather than firing late.
+//! * **Hold-to-repeat.** [`Controls::repeated`] counts 1 on the press, then
+//!   one per interval after a delay, from [`RepeatState`]. The state is kept
+//!   per key, so every action bound to a key shares its repeats.
 
 use crate::presentation::RepeatState;
 
@@ -30,6 +45,8 @@ pub enum Key {
     Down,
     Space,
     Enter,
+    /// Keypad Enter: a second confirm on the title, and Enter in seed entry.
+    /// Not bindable.
     KpEnter,
     Escape,
     BracketLeft,
@@ -349,11 +366,14 @@ pub enum Event {
         x: f32,
         y: f32,
     },
+    /// A finger already down moved to `(x, y)`, in buffer pixels.
     FingerMoved {
         index: i32,
         x: f32,
         y: f32,
     },
+    /// A finger lifted. `index` is the platform's finger number, the same
+    /// for the whole of one touch.
     FingerUp {
         index: i32,
     },
@@ -371,7 +391,9 @@ impl Event {
     }
 }
 
-/// One frame of input, as the node saw it.
+/// One frame of input, as the node saw it: the only way player input and
+/// the outside world (window, date) reach the core. Built fresh each frame
+/// by the node, or by hand in a test.
 #[derive(Clone, Debug, Default)]
 pub struct Intents {
     /// Everything the player did since the last frame, oldest first.
@@ -421,7 +443,8 @@ pub struct Controls {
     keys: Vec<(Key, RepeatState)>,
     /// Hold-to-repeat per pad button, shared by every action bound to it.
     pad_keys: Vec<(Pad, RepeatState)>,
-    /// Hold-to-repeat for the left stick, per action slot.
+    /// Hold-to-repeat for the left stick, per action slot. Slots are
+    /// `0..8`; the core uses at most six at once.
     pad_repeat: [RepeatState; 8],
 }
 
@@ -511,6 +534,7 @@ impl Controls {
 
     /// Hold-to-repeat for a stick direction, kept per action slot. Ticked
     /// every time the slot is asked, pushed or not, so a release resets it.
+    /// `slot` must be below 8.
     pub fn stick_repeated(
         &mut self,
         slot: usize,
