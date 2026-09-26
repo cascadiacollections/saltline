@@ -31,7 +31,8 @@ pub fn on_disk(user_path: &str) -> Option<PathBuf> {
     Some(PathBuf::from(global))
 }
 
-fn read(user_path: &str) -> Option<String> {
+/// A `user://` file's text. `None` if it is missing or unreadable.
+pub fn read(user_path: &str) -> Option<String> {
     match on_disk(user_path) {
         Some(p) => std::fs::read_to_string(p).ok(),
         None => FileAccess::open(user_path, ModeFlags::READ).map(|f| f.get_as_text().to_string()),
@@ -73,39 +74,86 @@ pub fn store(save: &Save) -> bool {
         // the last good save with. `record` goes through here too.
         return false;
     }
-    let text = save.serialize();
-    if let (Some(main), Some(temp)) = (on_disk(SAVE_PATH), on_disk(TEMP_PATH)) {
-        return match durable::write_atomic(&main, &temp, &text) {
+    write(SAVE_PATH, TEMP_PATH, &save.serialize())
+}
+
+/// Replace a `user://` file with `text` by way of `temp`:
+/// `durable::write_atomic` where there is a disk path, Godot's file API where
+/// there is not. Returns whether it reached disk; on failure the old file is
+/// left as it was.
+pub fn write(main: &str, temp: &str, text: &str) -> bool {
+    if let (Some(main_disk), Some(temp_disk)) = (on_disk(main), on_disk(temp)) {
+        return match durable::write_atomic(&main_disk, &temp_disk, text) {
             Ok(()) => true,
             Err(e) => {
-                godot_warn!("salt-line: could not write {SAVE_PATH} ({e}); the old save is intact");
+                godot_warn!("salt-line: could not write {main} ({e}); the old file is intact");
                 false
             }
         };
     }
-    store_via_engine(&text)
+    write_via_engine(main, temp, text)
+}
+
+/// Move a `user://` file, replacing any file at `to`. Returns whether it
+/// moved; a missing `from` is not worth a warning.
+pub fn rename(from: &str, to: &str) -> bool {
+    if let (Some(f), Some(t)) = (on_disk(from), on_disk(to)) {
+        return match std::fs::rename(&f, &t) {
+            Ok(()) => true,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    godot_warn!("salt-line: could not move {from} to {to} ({e})");
+                }
+                false
+            }
+        };
+    }
+    let Some(mut dir) = DirAccess::open("user://") else {
+        return false;
+    };
+    FileAccess::file_exists(from) && dir.rename(from, to) == godot::global::Error::OK
+}
+
+/// Delete a `user://` file if it is there.
+pub fn remove(user_path: &str) {
+    match on_disk(user_path) {
+        Some(p) => {
+            if let Err(e) = std::fs::remove_file(&p) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    godot_warn!("salt-line: could not delete {user_path} ({e})");
+                }
+            }
+        }
+        None => {
+            if FileAccess::file_exists(user_path) {
+                if let Some(mut dir) = DirAccess::open("user://") {
+                    dir.remove(user_path);
+                }
+            }
+        }
+    }
 }
 
 /// Where `user://` has no real path: Godot's file API, write-then-rename, but
 /// with no way to flush the data before the rename.
-fn store_via_engine(text: &str) -> bool {
-    let Some(mut f) = FileAccess::open(TEMP_PATH, ModeFlags::WRITE) else {
-        godot_warn!("salt-line: could not write {TEMP_PATH}");
+fn write_via_engine(main: &str, temp: &str, text: &str) -> bool {
+    let Some(mut f) = FileAccess::open(temp, ModeFlags::WRITE) else {
+        godot_warn!("salt-line: could not write {temp}");
         return false;
     };
     f.store_string(&GString::from(text));
     let err = f.get_error();
     f.close();
     if err != godot::global::Error::OK {
-        godot_warn!("salt-line: {TEMP_PATH} was not written cleanly; keeping the old save");
+        godot_warn!("salt-line: {temp} was not written cleanly; keeping the old file");
         return false;
     }
     let Some(mut dir) = DirAccess::open("user://") else {
-        godot_warn!("salt-line: could not open user:// to replace {SAVE_PATH}");
+        godot_warn!("salt-line: could not open user:// to replace {main}");
         return false;
     };
-    if dir.rename(TEMP_PATH, SAVE_PATH) != godot::global::Error::OK {
-        godot_warn!("salt-line: could not replace {SAVE_PATH}; the old save is intact");
+    if dir.rename(temp, main) != godot::global::Error::OK {
+        godot_warn!("salt-line: could not replace {main}; the old file is intact");
         return false;
     }
     true

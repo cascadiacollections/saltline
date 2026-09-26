@@ -165,14 +165,15 @@ impl Pcg32 {
     /// from a prefix whose length is a multiple of `span`, so every residue
     /// is equally likely. On average it takes at most two draws.
     ///
+    /// The full range `0..=u32::MAX` has a span of 2^32, which wraps to 0;
+    /// it returns one unfiltered draw, in debug and release builds alike.
+    ///
     /// # Panics
     ///
-    /// In debug builds, if `hi < lo`, and for the full range `0..=u32::MAX`,
-    /// where `hi - lo + 1` overflows. The `span == 0` branch is reached only
-    /// in release builds, where that addition wraps.
+    /// If `hi < lo`, in every build.
     pub fn range_u32(&mut self, lo: u32, hi: u32) -> u32 {
-        debug_assert!(hi >= lo);
-        let span = hi - lo + 1;
+        assert!(hi >= lo, "range_u32: hi {hi} is below lo {lo}");
+        let span = (hi - lo).wrapping_add(1);
         if span == 0 {
             return self.next_u32();
         }
@@ -197,9 +198,12 @@ impl Pcg32 {
     ///
     /// # Panics
     ///
-    /// In debug builds, if the weights sum past `u32::MAX`.
+    /// If the weights sum past `u32::MAX`, in every build.
     pub fn weighted(&mut self, weights: &[u32]) -> usize {
-        let total: u32 = weights.iter().sum();
+        let total = weights
+            .iter()
+            .try_fold(0u32, |sum, &w| sum.checked_add(w))
+            .expect("weights sum past u32::MAX");
         if total == 0 {
             return 0;
         }
@@ -281,6 +285,23 @@ mod tests {
             let i = r.range_u32(3, 9);
             assert!((3..=9).contains(&i));
         }
+    }
+
+    #[test]
+    fn the_full_u32_range_is_one_plain_draw() {
+        // `0..=u32::MAX` has a span of 2^32, which does not fit a u32. It
+        // must behave the same in debug and release: one unfiltered draw.
+        let mut r = Pcg32::new(4321);
+        let mut plain = r.clone();
+        for _ in 0..16 {
+            assert_eq!(r.range_u32(0, u32::MAX), plain.next_u32());
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "weights sum past u32::MAX")]
+    fn weighted_rejects_a_table_that_overflows_in_every_build() {
+        Pcg32::new(1).weighted(&[u32::MAX, 1]);
     }
 
     #[test]
