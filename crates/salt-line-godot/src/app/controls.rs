@@ -49,7 +49,7 @@ impl Game {
         down
     }
 
-    pub(super) fn action_pressed(&mut self, _slot: usize, action: &str) -> bool {
+    pub(super) fn action_pressed(&mut self, action: &str) -> bool {
         let (key, _) = self.action_binding(action);
         let key_down = Key::from_token(&key)
             .map(|k| self.pressed(k))
@@ -126,7 +126,7 @@ impl Game {
         if self.pressed(Key::F1) {
             self.debug = !self.debug;
         }
-        if self.action_pressed(15, "mute") {
+        if self.action_pressed("mute") {
             self.save.muted = !self.save.muted;
             self.apply_volume();
             self.settings.touch();
@@ -139,9 +139,9 @@ impl Game {
         match self.mode {
             Mode::Title => {
                 let resumable = self.resumable.is_some();
-                let confirm = self.action_pressed(0, "confirm") || self.pressed(Key::KpEnter);
+                let confirm = self.action_pressed("confirm") || self.pressed(Key::KpEnter);
                 let daily = if resumable {
-                    self.action_pressed(11, "new_run")
+                    self.action_pressed("new_run")
                 } else {
                     confirm
                 };
@@ -153,16 +153,16 @@ impl Game {
                         self.play(Sound::Ui);
                         self.start_run(seed, true);
                     }
-                } else if self.action_pressed(17, "seed") {
+                } else if self.action_pressed("seed") {
                     if self.confirm_discard("seed") {
                         self.open_seed_entry();
                     }
-                } else if self.last_crash.is_some() && self.action_pressed(4, "copy") {
+                } else if self.last_crash.is_some() && self.action_pressed("copy") {
                     self.copy_last_crash();
-                } else if self.action_pressed(1, "controls") {
+                } else if self.action_pressed("controls") {
                     self.play(Sound::Ui);
                     self.mode = Mode::Controls;
-                } else if self.action_pressed(2, "back") {
+                } else if self.action_pressed("back") {
                     self.fx.push(Effect::Quit);
                 }
                 if self.mode != Mode::Title {
@@ -190,25 +190,25 @@ impl Game {
                     self.settings.touch();
                     self.play(Sound::Ui);
                 }
-                if self.action_pressed(16, "last_arc") {
+                if self.action_pressed("last_arc") {
                     self.save.last_arc = Some(!self.last_arc_on());
                     self.settings.touch();
                     self.play(Sound::Ui);
                 }
-                if self.action_pressed(3, "replay") {
+                if self.action_pressed("replay") {
                     self.save.bindings.clear();
                     self.settings.touch();
                     self.note("DEFAULT BINDINGS RESTORED".into());
-                } else if self.action_pressed(2, "back") {
+                } else if self.action_pressed("back") {
                     self.play(Sound::Ui);
                     self.mode = Mode::Title;
                 }
             }
             Mode::Paused => {
-                if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
+                if self.action_pressed("confirm") || self.action_pressed("back") {
                     self.play(Sound::Ui);
                     self.mode = Mode::Playing;
-                } else if self.action_pressed(3, "replay") {
+                } else if self.action_pressed("replay") {
                     self.play(Sound::Ui);
                     self.mode = Mode::Title;
                     self.suspend_run();
@@ -216,15 +216,15 @@ impl Game {
             }
             Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::GameOver => {
-                if self.action_pressed(4, "copy") {
+                if self.action_pressed("copy") {
                     // Seed sharing: the seed is the whole run, so the
                     // clipboard is the whole share format.
                     let seed = format_seed(self.last_seed);
                     self.fx.push(Effect::Clipboard(seed.clone()));
                     self.note(format!("COPIED {seed}"));
-                } else if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
+                } else if self.action_pressed("confirm") || self.action_pressed("back") {
                     self.mode = Mode::Title;
-                } else if self.action_pressed(3, "replay") {
+                } else if self.action_pressed("replay") {
                     let seed = self.last_seed;
                     let daily = self.daily;
                     self.start_run(seed, daily);
@@ -273,7 +273,7 @@ impl Game {
     }
 
     pub(super) fn handle_play_input(&mut self, delta: f64) {
-        if self.action_pressed(2, "back") {
+        if self.action_pressed("back") {
             self.touch.cancel_drag();
             self.mode = Mode::Paused;
             return;
@@ -289,7 +289,7 @@ impl Game {
 
         if phase == Phase::Drafting {
             for (i, action) in ["draft_1", "draft_2", "draft_3"].into_iter().enumerate() {
-                if self.action_pressed(5 + i, action) {
+                if self.action_pressed(action) {
                     let taken = self.run.as_mut().and_then(|r| r.take_offer(i));
                     if let Some(m) = taken {
                         self.new_preview();
@@ -345,8 +345,8 @@ impl Game {
         }
 
         // Enfilade reposition.
-        let l = self.action_pressed(8, "reposition_left");
-        let rr = self.action_pressed(9, "reposition_right");
+        let l = self.action_pressed("reposition_left");
+        let rr = self.action_pressed("reposition_right");
         if l || rr {
             let step = if l { -5.0 } else { 5.0 };
             let ok = self.run.as_mut().map(|r| {
@@ -358,7 +358,7 @@ impl Game {
             }
         }
 
-        if self.action_pressed(10, "fire") || self.pressed(Key::Enter) {
+        if self.action_pressed("fire") || self.pressed(Key::Enter) {
             self.fire();
         }
 

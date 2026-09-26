@@ -220,14 +220,17 @@ impl Game {
         self.mode = Mode::GameOver;
     }
 
-    /// Put a finished run on the board and write it; `keep` is its line, for
-    /// a later launch to score if the board does not reach disk.
+    /// Ask for a finished run to go on the board; `keep` is its line, for a
+    /// later launch to score if the board does not reach disk. The entry is
+    /// only placed in memory once it is on disk (`stored`): placed first, a
+    /// later settings write would carry it to disk while the kept line
+    /// scored it again at the next launch.
     pub(super) fn record(&mut self, entry: Entry, keep: Option<String>, announce: bool) {
-        self.save.place(entry);
-        self.fx.push(Effect::Store {
-            save: Box::new(self.save.clone()),
-            why: Store::Score { keep, announce },
-        });
+        self.fx.push(Effect::Store(Store::Score {
+            entry,
+            keep,
+            announce,
+        }));
     }
 
     /// Play the game for the camera: aim with the solver, take offer 1.

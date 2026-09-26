@@ -90,27 +90,25 @@ fn count(fx: &[Effect], want: impl Fn(&Effect) -> bool) -> usize {
 }
 
 fn is_score(e: &Effect) -> bool {
-    matches!(
-        e,
-        Effect::Store {
-            why: Store::Score { .. },
-            ..
-        }
-    )
+    matches!(e, Effect::Store(Store::Score { .. }))
 }
 
 fn is_settings(e: &Effect) -> bool {
-    matches!(
-        e,
-        Effect::Store {
-            why: Store::Settings,
-            ..
-        }
-    )
+    matches!(e, Effect::Store(Store::Settings))
 }
 
 fn is_run_write(e: &Effect) -> bool {
     matches!(e, Effect::WriteRun(_))
+}
+
+fn entry(seed: u64) -> Entry {
+    Entry {
+        seed,
+        screens: 1,
+        shells: 0,
+        shots: 40,
+        daily: false,
+    }
 }
 
 /// A run with every shell thrown away: over, and ready to be scored.
@@ -333,15 +331,7 @@ fn a_tap_steps_the_aim_once_and_is_learned_once() {
     let fx = tick(&mut g, keys(&[Key::Right]));
     assert_eq!(g.angle_ticks, 900 + quantum);
     assert_eq!(g.save.learned & LEARN_ANGLE, LEARN_ANGLE);
-    let learned = |e: &Effect| {
-        matches!(
-            e,
-            Effect::Store {
-                why: Store::Learned,
-                ..
-            }
-        )
-    };
+    let learned = |e: &Effect| matches!(e, Effect::Store(Store::Learned));
     assert_eq!(count(&fx, learned), 1);
     let fx = tick(&mut g, keys(&[Key::Right]));
     assert_eq!(count(&fx, learned), 0, "already learned");
@@ -477,8 +467,8 @@ fn the_last_shell_ends_the_run_and_it_is_scored_exactly_once() {
     tick(&mut g, keys(&[Key::Space]));
     let fx = run_until(&mut g, 4000, |g| g.mode == Mode::GameOver);
     assert_eq!(count(&fx, is_score), 1);
-    assert_eq!(g.save.scores.len(), 1);
-    assert_eq!(g.save.scores[0].seed, seed);
+    // Not on the board until the write says it is on disk.
+    assert!(g.save.scores.is_empty());
     // The run file goes first, then the board.
     let discard = fx
         .iter()
@@ -486,19 +476,26 @@ fn the_last_shell_ends_the_run_and_it_is_scored_exactly_once() {
         .unwrap();
     let score = fx.iter().position(is_score).unwrap();
     assert!(discard < score);
-    // Scored from memory with its line kept in case the board cannot be
-    // written.
-    match &fx[score] {
-        Effect::Store {
-            why: Store::Score { keep, announce },
-            save,
+    // Scored with its line kept in case the board cannot be written.
+    let Effect::Store(why) = fx[score].clone() else {
+        unreachable!()
+    };
+    match &why {
+        Store::Score {
+            entry,
+            keep,
+            announce,
         } => {
+            assert_eq!(entry.seed, seed);
             assert!(keep.is_some());
             assert!(!announce);
-            assert_eq!(save.scores.len(), 1);
         }
         other => panic!("{other:?}"),
     }
+    assert_eq!(g.save_to_store(&why).scores.len(), 1);
+    assert!(g.stored(why, true).is_empty());
+    assert_eq!(g.save.scores.len(), 1);
+    assert_eq!(g.save.scores[0].seed, seed);
     assert!(fx.contains(&Effect::RecheckDisplay));
     let fx = frames(&mut g, 60);
     assert_eq!(count(&fx, is_score), 0);
@@ -537,6 +534,7 @@ fn a_board_that_cannot_be_written_keeps_the_run_and_says_so() {
     let mut g = game();
     let fx = g.stored(
         Store::Score {
+            entry: entry(1),
             keep: Some("line".into()),
             announce: false,
         },
@@ -544,6 +542,10 @@ fn a_board_that_cannot_be_written_keeps_the_run_and_says_so() {
     );
     assert_eq!(fx[0], Effect::KeepRun("line".into()));
     assert_eq!(g.status, "SCORE NOT SAVED");
+    assert!(
+        g.save.scores.is_empty(),
+        "a failed score stays off the board"
+    );
 
     // A save from a newer build fails every write: one note saying why.
     let mut g = game();
@@ -861,25 +863,19 @@ fn a_saved_run_that_had_ended_is_scored_at_launch() {
     let fx = g.saved_run(SavedRun::Found(line.clone()));
     assert_eq!(fx[0], Effect::Remove(RUN_LOADING_PATH));
     assert_eq!(fx[1], Effect::DiscardRunFile);
-    match &fx[2] {
-        Effect::Store {
-            why: Store::Score { keep, announce },
-            ..
-        } => {
+    let Effect::Store(why) = fx[2].clone() else {
+        panic!("{:?}", fx[2])
+    };
+    match &why {
+        Store::Score { keep, announce, .. } => {
             assert_eq!(keep.as_deref(), Some(line.as_str()));
             assert!(announce);
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(g.save.scores.len(), 1);
     assert!(g.resumable.is_none());
-    g.stored(
-        Store::Score {
-            keep: None,
-            announce: true,
-        },
-        true,
-    );
+    g.stored(why, true);
+    assert_eq!(g.save.scores.len(), 1);
     assert_eq!(g.status, "LAST RUN SCORED");
 }
 

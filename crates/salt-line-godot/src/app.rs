@@ -37,9 +37,21 @@
 //! file is discarded before a finished run's score goes on the board, so a
 //! crash in between loses the score rather than recording it twice.
 //!
-//! A write whose outcome the player hears about ([`Effect::Store`]) is
-//! reported back through [`Game::stored`], which may say so on screen and
-//! ask for more.
+//! A save write ([`Effect::Store`]) is reported back through
+//! [`Game::stored`], which may say so on screen and ask for more. The adapter
+//! applies what `stored` returns at once, before the rest of the list it was
+//! working through: a failed score's [`Effect::KeepRun`] lands straight after
+//! the failed write.
+//!
+//! # After a panic
+//!
+//! Nothing is written once a panic has happened ([`Effect::survives_panic`]):
+//! the state in memory is not trusted enough to replace what is on disk, and
+//! the crash report the hook just wrote must stay where the next launch looks
+//! for it. The check lives in the adapter, on every effect it applies,
+//! because a panic can land mid-frame with effects already queued and before
+//! [`Game::broken_tick`] has run; `broken_tick` also drops whatever the
+//! crashed frame left queued.
 //!
 //! Environment events that must not wait for the next frame — focus lost,
 //! the app paused by the platform, the window closing, a touch — are methods
@@ -185,18 +197,23 @@ pub enum Aspect {
     Keep,
 }
 
-/// Why the save is being written, which decides what the player is told.
+/// Why the save is being written, which decides what is written and what the
+/// player is told.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Store {
     /// An onboarding step was learned. A failure is not worth a word.
     Learned,
-    /// Settings changed. Not written at all after a panic.
+    /// Settings changed.
     Settings,
-    /// A finished run went on the board. If the board does not reach disk,
-    /// `keep` (the finished run's line) is written back to `user://run.txt`
-    /// so a later launch can score it. `announce` says "LAST RUN SCORED" on
-    /// success: a run scored at launch rather than at its end.
+    /// A finished run goes on the board: the save is written with `entry`
+    /// placed, and `entry` joins the board in memory only once that write
+    /// succeeds, so it reaches disk exactly once, here or not at all. If the
+    /// board does not reach disk, `keep` (the finished run's line) is written
+    /// back to `user://run.txt` so a later launch can score it. `announce`
+    /// says "LAST RUN SCORED" on success: a run scored at launch rather than
+    /// at its end.
     Score {
+        entry: Entry,
         keep: Option<String>,
         announce: bool,
     },
@@ -225,16 +242,13 @@ pub enum Effect {
     Aspect(Aspect),
     Clipboard(String),
     Quit,
-    /// Write the save (`save::store`), then report the outcome to
-    /// `Game::stored`.
-    Store {
-        save: Box<Save>,
-        why: Store,
-    },
-    /// Write the running run to `user://run.txt`. Skipped after a panic.
+    /// Write the save as `Game::save_to_store` has it when the effect is
+    /// applied (`save::store`), then report the outcome to `Game::stored`.
+    Store(Store),
+    /// Write the running run to `user://run.txt`.
     WriteRun(String),
     /// Write a finished run back to `user://run.txt` for a later launch to
-    /// score, even after a panic.
+    /// score.
     KeepRun(String),
     /// Make sure no run file is left to resume or score. If a file cannot be
     /// deleted, the run file is overwritten with nothing, which
@@ -253,6 +267,25 @@ pub enum Effect {
     RetireCrashReport,
     /// Log a warning.
     Warn(String),
+}
+
+impl Effect {
+    /// Whether the adapter still carries this out after a panic. Everything
+    /// that writes, moves or deletes a file is dropped: see the module docs.
+    /// What is left is what the error screen needs: sound, drawing, the
+    /// clipboard, quitting, warnings.
+    pub fn survives_panic(&self) -> bool {
+        !matches!(
+            self,
+            Effect::Store(_)
+                | Effect::WriteRun(_)
+                | Effect::KeepRun(_)
+                | Effect::DiscardRunFile
+                | Effect::Rename { .. }
+                | Effect::Remove(_)
+                | Effect::RetireCrashReport
+        )
+    }
 }
 
 /// What the adapter found of a saved run at launch.
@@ -546,13 +579,15 @@ impl Game {
         report: impl FnOnce() -> Option<String>,
     ) -> Vec<Effect> {
         if !self.broken {
-            // Whatever the game last said no longer applies.
+            // Whatever the game last said no longer applies, and whatever the
+            // crashed frame asked for is not to be done.
             self.broken = true;
             self.status_time = 0.0;
+            self.fx.clear();
         }
         self.status_time = (self.status_time - delta).max(0.0);
         self.begin_input_frame(delta, intents);
-        if self.action_pressed(4, "copy") {
+        if self.action_pressed("copy") {
             // Only a finished report: a panic off the main thread can stop the
             // game while the hook is still writing, and half a report copied
             // looks like a whole one.
@@ -563,7 +598,7 @@ impl Game {
                 }
                 None => self.note("REPORT NOT READY - TRY AGAIN".into()),
             }
-        } else if self.action_pressed(2, "back") {
+        } else if self.action_pressed("back") {
             self.fx.push(Effect::Quit);
         }
         self.back_requested = false;
@@ -665,8 +700,22 @@ impl Game {
         self.take_effects()
     }
 
+    /// The save as an `Effect::Store` for `why` writes it: as it is, with a
+    /// score's entry placed.
+    pub fn save_to_store(&self, why: &Store) -> std::borrow::Cow<'_, Save> {
+        match why {
+            Store::Score { entry, .. } => {
+                let mut save = self.save.clone();
+                save.place(*entry);
+                std::borrow::Cow::Owned(save)
+            }
+            Store::Learned | Store::Settings => std::borrow::Cow::Borrowed(&self.save),
+        }
+    }
+
     /// A write the core asked for with `Effect::Store` reached disk, or did
-    /// not.
+    /// not. The adapter applies what this returns before anything after the
+    /// `Store` in the list it came from.
     pub fn stored(&mut self, why: Store, ok: bool) -> Vec<Effect> {
         match why {
             Store::Learned => {}
@@ -675,8 +724,13 @@ impl Game {
                     self.note_not_saved("SETTINGS NOT SAVED");
                 }
             }
-            Store::Score { keep, announce } => {
+            Store::Score {
+                entry,
+                keep,
+                announce,
+            } => {
                 if ok {
+                    self.save.place(entry);
                     if announce {
                         self.note("LAST RUN SCORED".into());
                     }
@@ -1053,5 +1107,7 @@ mod controls;
 mod play;
 mod session;
 
+#[cfg(test)]
+mod disk_tests;
 #[cfg(test)]
 mod tests;

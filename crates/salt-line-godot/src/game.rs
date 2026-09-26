@@ -16,7 +16,7 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Aspect, Effect, Game, Mode, SavedRun, Sound, Store, Typed};
+use crate::app::{Aspect, Effect, Game, Mode, SavedRun, Sound, Typed};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
@@ -343,6 +343,11 @@ impl SaltLine {
     /// Carry out what the core asked for, in the order it asked.
     fn apply(&mut self, fx: Vec<Effect>) {
         for effect in fx {
+            // Nothing is written after a panic, even what was queued before
+            // it. See `app`'s module docs.
+            if !effect.survives_panic() && crash::panicked() {
+                continue;
+            }
             match effect {
                 Effect::Play(sound) => {
                     if let Some(player) =
@@ -379,21 +384,13 @@ impl SaltLine {
                     DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
                 }
                 Effect::Quit => self.base().get_tree().quit(),
-                Effect::Store { save, why } => {
-                    // After a panic nothing in memory is trusted enough to
-                    // write, and settings say nothing of it. A score still
-                    // hears that it was not saved (`save::store` refuses).
-                    if why == Store::Settings && crash::panicked() {
-                        continue;
-                    }
-                    let ok = save::store(&save);
+                Effect::Store(why) => {
+                    let ok = save::store(&self.g.save_to_store(&why));
                     let fx = self.g.stored(why, ok);
                     self.apply(fx);
                 }
                 Effect::WriteRun(line) => {
-                    if !crash::panicked() {
-                        save::write(RUN_PATH, RUN_TEMP_PATH, &line);
-                    }
+                    save::write(RUN_PATH, RUN_TEMP_PATH, &line);
                 }
                 Effect::KeepRun(line) => {
                     save::write(RUN_PATH, RUN_TEMP_PATH, &line);

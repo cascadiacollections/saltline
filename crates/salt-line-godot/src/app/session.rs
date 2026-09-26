@@ -26,10 +26,7 @@ impl Game {
     pub(super) fn learn(&mut self, bit: u32) {
         if self.save.learned & bit == 0 {
             self.save.learned |= bit;
-            self.fx.push(Effect::Store {
-                save: Box::new(self.save.clone()),
-                why: Store::Learned,
-            });
+            self.fx.push(Effect::Store(Store::Learned));
         }
     }
 
@@ -101,10 +98,7 @@ impl Game {
     }
 
     pub(super) fn write_settings(&mut self) {
-        self.fx.push(Effect::Store {
-            save: Box::new(self.save.clone()),
-            why: Store::Settings,
-        });
+        self.fx.push(Effect::Store(Store::Settings));
     }
 
     /// Say a write failed. A save from a newer build is never written by this
