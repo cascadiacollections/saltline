@@ -5,7 +5,7 @@ use super::*;
 use pretty_assertions::assert_eq;
 use salt_line_sim::run::Phase;
 
-use crate::input::{Intents, Key, Pad};
+use crate::input::{Event, Intents, Key, Pad};
 use crate::resume::Saved;
 
 /// A 60 Hz frame.
@@ -25,8 +25,19 @@ fn idle() -> Intents {
 /// Keys that went down this frame and are still held.
 fn keys(keys: &[Key]) -> Intents {
     Intents {
-        keys: keys.to_vec(),
+        events: keys.iter().map(|k| Event::key(*k)).collect(),
         keys_held: keys.to_vec(),
+        ..idle()
+    }
+}
+
+/// A key typed in seed entry, on a key the game does not otherwise read.
+fn typing(typed: Typed) -> Intents {
+    Intents {
+        events: vec![Event::Key {
+            key: None,
+            typed: Some(typed),
+        }],
         ..idle()
     }
 }
@@ -205,7 +216,7 @@ fn back_pauses_and_back_again_resumes() {
 #[test]
 fn the_platform_back_gesture_is_the_back_action_once() {
     let mut g = playing(1);
-    g.go_back();
+    g.events(&[Event::Back]);
     tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Paused);
     tick(&mut g, idle());
@@ -275,11 +286,11 @@ fn a_typed_seed_starts_that_run() {
     tick(&mut g, keys(&[Key::S]));
     assert_eq!(g.mode, Mode::SeedEntry);
     for c in "SALTY".chars() {
-        g.typed(Typed::Char(c), TODAY);
+        tick(&mut g, typing(Typed::Char(c)));
     }
-    g.typed(Typed::Backspace, TODAY);
+    tick(&mut g, typing(Typed::Backspace));
     assert_eq!(g.seed_text, "SALT");
-    g.typed(Typed::Enter, TODAY);
+    tick(&mut g, typing(Typed::Enter));
     assert_eq!(g.mode, Mode::Playing);
     assert!(!g.daily);
     assert_eq!(g.last_seed, parse_seed("SALT"));
@@ -289,7 +300,13 @@ fn a_typed_seed_starts_that_run() {
 fn a_blank_seed_is_todays_daily_seed_but_not_a_daily_run() {
     let mut g = game();
     tick(&mut g, keys(&[Key::S]));
-    g.typed(Typed::Enter, TODAY + 1);
+    tick(
+        &mut g,
+        Intents {
+            today: TODAY + 1,
+            ..typing(Typed::Enter)
+        },
+    );
     assert_eq!(g.last_seed, daily_seed(TODAY + 1));
     assert!(!g.daily);
 }
@@ -299,10 +316,10 @@ fn seed_text_stops_at_twenty_characters_and_escape_leaves() {
     let mut g = game();
     g.open_seed_entry();
     for _ in 0..30 {
-        g.typed(Typed::Char('7'), TODAY);
+        tick(&mut g, typing(Typed::Char('7')));
     }
     assert_eq!(g.seed_text.len(), SEED_MAX);
-    g.typed(Typed::Escape, TODAY);
+    tick(&mut g, typing(Typed::Escape));
     assert_eq!(g.mode, Mode::Title);
 }
 
@@ -604,8 +621,16 @@ fn drag_game() -> Game {
 #[test]
 fn a_drag_aims_live_and_fires_on_release() {
     let mut g = drag_game();
-    g.finger_down(0, 200.0, 100.0, &[]);
-    g.finger_moved(0, 150.0, 140.0);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 200.0,
+        y: 100.0,
+    }]);
+    g.events(&[Event::FingerMoved {
+        index: 0,
+        x: 150.0,
+        y: 140.0,
+    }]);
     tick(&mut g, idle());
     let aim = (g.angle_ticks, g.power_ticks);
     assert_ne!(aim, (900, 600));
@@ -614,7 +639,7 @@ fn a_drag_aims_live_and_fires_on_release() {
         g.onboarding_prompt(Phase::Firing, None).as_deref(),
         Some("LET GO TO FIRE  PULL BACK TO CANCEL")
     );
-    g.finger_up(0);
+    g.events(&[Event::FingerUp { index: 0 }]);
     let fx = tick(&mut g, idle());
     assert!(fx.contains(&Effect::Play(Sound::Fire)));
     assert!(g.anim.is_some());
@@ -624,13 +649,25 @@ fn a_drag_aims_live_and_fires_on_release() {
 #[test]
 fn a_drag_pulled_back_into_the_dead_zone_cancels() {
     let mut g = drag_game();
-    g.finger_down(0, 200.0, 100.0, &[]);
-    g.finger_moved(0, 150.0, 140.0);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 200.0,
+        y: 100.0,
+    }]);
+    g.events(&[Event::FingerMoved {
+        index: 0,
+        x: 150.0,
+        y: 140.0,
+    }]);
     tick(&mut g, idle());
-    g.finger_moved(0, 201.0, 101.0);
+    g.events(&[Event::FingerMoved {
+        index: 0,
+        x: 201.0,
+        y: 101.0,
+    }]);
     tick(&mut g, idle());
     assert_eq!((g.angle_ticks, g.power_ticks), (900, 600));
-    g.finger_up(0);
+    g.events(&[Event::FingerUp { index: 0 }]);
     tick(&mut g, idle());
     assert!(g.anim.is_none());
 }
@@ -638,13 +675,21 @@ fn a_drag_pulled_back_into_the_dead_zone_cancels() {
 #[test]
 fn losing_focus_mid_drag_puts_the_aim_back() {
     let mut g = drag_game();
-    g.finger_down(0, 200.0, 100.0, &[]);
-    g.finger_moved(0, 150.0, 140.0);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 200.0,
+        y: 100.0,
+    }]);
+    g.events(&[Event::FingerMoved {
+        index: 0,
+        x: 150.0,
+        y: 140.0,
+    }]);
     tick(&mut g, idle());
-    g.focus_lost();
+    g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Paused);
     // Back by touch: a key press would hand aiming to the keyboard.
-    g.go_back();
+    g.events(&[Event::Back]);
     tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Playing);
     tick(&mut g, idle());
@@ -659,7 +704,12 @@ fn touch_buttons_press_their_actions() {
         rect: crate::touch::Rect::new(10, 10, 20, 20),
         action: Action::Fire,
     };
-    g.finger_down(0, 15.0, 15.0, &[fire]);
+    g.set_buttons(&[fire]);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 15.0,
+        y: 15.0,
+    }]);
     assert!(g.touch_active);
     tick(&mut g, idle());
     assert!(g.anim.is_some());
@@ -673,33 +723,33 @@ fn touch_buttons_press_their_actions() {
 #[test]
 fn losing_focus_pauses_a_live_screen() {
     let mut g = playing(1);
-    let fx = g.focus_lost();
+    let fx = g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Paused);
     assert!(fx.contains(&Effect::Redraw));
 
     let mut g = playing(1);
-    g.app_paused();
+    g.app_paused(&[]);
     assert_eq!(g.mode, Mode::Paused);
 }
 
 #[test]
 fn losing_focus_does_not_pause_a_draft_the_autopilot_or_a_capture() {
     let mut g = at_draft();
-    g.focus_lost();
+    g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Playing);
 
     let mut g = playing(1);
     g.auto = true;
-    g.focus_lost();
+    g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Playing);
 
     let mut g = playing(1);
     g.capturing = true;
-    g.focus_lost();
+    g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Playing);
 
     let mut g = game();
-    g.focus_lost();
+    g.focus_lost(&[]);
     assert_eq!(g.mode, Mode::Title);
 }
 
@@ -738,9 +788,13 @@ fn leaving_controls_or_losing_focus_writes_settings_at_once() {
     let mut g = game();
     tick(&mut g, keys(&[Key::V]));
     tick(&mut g, keys(&[Key::Right]));
-    let fx = g.focus_lost();
+    let fx = g.focus_lost(&[]);
     assert_eq!(count(&fx, is_settings), 1);
-    assert_eq!(count(&g.closing(), is_settings), 0, "nothing left to write");
+    assert_eq!(
+        count(&g.closing(&[]), is_settings),
+        0,
+        "nothing left to write"
+    );
 }
 
 #[test]
@@ -1025,17 +1079,32 @@ fn button(action: Action) -> Button {
 fn touch_settings_cycle_and_are_written_on_leaving() {
     let mut g = game();
     g.mode = Mode::Controls;
-    g.finger_down(0, 5.0, 5.0, &[button(Action::AimMode)]);
-    g.finger_up(0);
+    g.set_buttons(&[button(Action::AimMode)]);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 5.0,
+        y: 5.0,
+    }]);
+    g.events(&[Event::FingerUp { index: 0 }]);
     let fx = tick(&mut g, idle());
     assert_eq!(g.save.touch_aim, Some(TouchAim::Drag));
     assert!(fx.contains(&Effect::Play(Sound::Ui)));
-    g.finger_down(0, 5.0, 5.0, &[button(Action::ArcHint)]);
-    g.finger_up(0);
+    g.set_buttons(&[button(Action::ArcHint)]);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 5.0,
+        y: 5.0,
+    }]);
+    g.events(&[Event::FingerUp { index: 0 }]);
     tick(&mut g, idle());
     assert_eq!(g.save.arc_hint, Some(DEFAULT_ARC_HINT.next()));
-    g.finger_down(0, 5.0, 5.0, &[button(Action::Back)]);
-    g.finger_up(0);
+    g.set_buttons(&[button(Action::Back)]);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 5.0,
+        y: 5.0,
+    }]);
+    g.events(&[Event::FingerUp { index: 0 }]);
     let fx = tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Title);
     assert_eq!(count(&fx, is_settings), 1);
@@ -1052,13 +1121,23 @@ fn the_touch_keypad_types_a_seed() {
         keypad::DEL,
         Action::Type('A'),
     ] {
-        g.finger_down(0, 5.0, 5.0, &[button(key)]);
-        g.finger_up(0);
+        g.set_buttons(&[button(key)]);
+        g.events(&[Event::FingerDown {
+            index: 0,
+            x: 5.0,
+            y: 5.0,
+        }]);
+        g.events(&[Event::FingerUp { index: 0 }]);
         tick(&mut g, idle());
     }
     assert_eq!(g.seed_text, "SEA");
-    g.finger_down(0, 5.0, 5.0, &[button(Action::Confirm)]);
-    g.finger_up(0);
+    g.set_buttons(&[button(Action::Confirm)]);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 5.0,
+        y: 5.0,
+    }]);
+    g.events(&[Event::FingerUp { index: 0 }]);
     tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Playing);
     assert_eq!(g.last_seed, parse_seed("SEA"));
@@ -1105,4 +1184,125 @@ fn rebinding_moves_an_action_and_reset_restores_it() {
     assert!(g.save.bindings.is_empty());
     assert_eq!(g.status, "DEFAULT BINDINGS RESTORED");
     assert_eq!(count(&fx, is_settings), 0, "written on leaving Controls");
+}
+
+// ------------------------------------------------------- events in order
+
+fn typed_key(key: Key, typed: Typed) -> Event {
+    Event::Key {
+        key: Some(key),
+        typed: Some(typed),
+    }
+}
+
+fn with_events(events: Vec<Event>) -> Intents {
+    Intents { events, ..idle() }
+}
+
+#[test]
+fn an_m_typed_in_a_seed_does_not_also_mute() {
+    let mut g = game();
+    g.open_seed_entry();
+    tick(
+        &mut g,
+        with_events(vec![typed_key(Key::M, Typed::Char('M'))]),
+    );
+    assert_eq!(g.seed_text, "M");
+    assert!(!g.save.muted);
+    // Outside seed entry the same key is only a press.
+    let mut g = game();
+    tick(
+        &mut g,
+        with_events(vec![typed_key(Key::M, Typed::Char('M'))]),
+    );
+    assert!(g.save.muted);
+}
+
+#[test]
+fn the_enter_that_starts_a_seeded_run_does_not_fire_but_a_later_space_does() {
+    let mut g = game();
+    g.open_seed_entry();
+    tick(
+        &mut g,
+        with_events(vec![
+            typed_key(Key::S, Typed::Char('S')),
+            typed_key(Key::Enter, Typed::Enter),
+        ]),
+    );
+    assert_eq!(g.mode, Mode::Playing);
+    assert_eq!(g.last_seed, parse_seed("S"));
+    assert!(g.anim.is_none(), "Enter typed, not pressed");
+
+    // A Space after the Enter, in the same frame, is no longer in seed entry.
+    let mut g = game();
+    g.open_seed_entry();
+    tick(
+        &mut g,
+        with_events(vec![
+            typed_key(Key::Enter, Typed::Enter),
+            typed_key(Key::Space, Typed::Char(' ')),
+        ]),
+    );
+    assert_eq!(g.mode, Mode::Playing);
+    assert!(g.anim.is_some(), "the Space fired in the run's first frame");
+}
+
+#[test]
+fn a_key_that_types_nothing_moves_the_keypad_focus() {
+    let mut g = game();
+    g.open_seed_entry();
+    g.controller_active = true;
+    tick(&mut g, with_events(vec![Event::key(Key::Right)]));
+    assert_eq!(g.seed_focus.action(), Action::Type('B'));
+    assert_eq!(g.seed_text, "");
+}
+
+#[test]
+fn the_crash_context_sees_the_frame_after_its_events() {
+    let mut g = game();
+    g.open_seed_entry();
+    let mut seen = None;
+    g.tick_with(
+        FRAME,
+        &with_events(vec![typed_key(Key::Enter, Typed::Enter)]),
+        |g| seen = Some(g.mode),
+    );
+    assert_eq!(seen, Some(Mode::Playing));
+}
+
+#[test]
+fn touches_arrive_with_the_frame() {
+    let mut g = playing(1);
+    let fire = Button {
+        rect: crate::touch::Rect::new(10, 10, 20, 20),
+        action: Action::Fire,
+    };
+    g.set_buttons(&[fire]);
+    tick(
+        &mut g,
+        with_events(vec![
+            Event::FingerDown {
+                index: 0,
+                x: 15.0,
+                y: 15.0,
+            },
+            Event::FingerUp { index: 0 },
+        ]),
+    );
+    assert!(g.touch_active);
+    assert!(g.anim.is_some(), "a tap inside one frame still fires");
+}
+
+#[test]
+fn a_touch_queued_before_focus_is_lost_is_let_go_with_the_rest() {
+    let mut g = playing(1);
+    let fx = g.focus_lost(&[Event::FingerDown {
+        index: 0,
+        x: 200.0,
+        y: 100.0,
+    }]);
+    assert!(fx.contains(&Effect::Redraw));
+    assert!(g.touch_active);
+    assert!(!g.touch.active(), "no finger left stuck down");
+    assert_eq!(g.mode, Mode::Paused);
 }

@@ -236,7 +236,7 @@ impl Game {
         }
     }
 
-    /// Keyboard text comes in through `typed`. This is the touch keypad, and
+    /// Keyboard text comes in as typed events (`Game::typed`). This is the touch keypad, and
     /// the controller moving a focus over the same keypad: A presses the
     /// focused key, B deletes, or leaves once nothing is typed.
     pub(super) fn handle_seed_input(&mut self, delta: f64) {

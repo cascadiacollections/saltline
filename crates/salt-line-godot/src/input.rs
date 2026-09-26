@@ -5,8 +5,7 @@
 //! in terms that name no engine type: which keys and pad buttons went down
 //! since the last frame, which are held, and where the left stick points,
 //! with the window size, display cutout and date the frame sees. Touch
-//! arrives separately, as it happens, through `app::Game::finger_down` and
-//! its neighbours into [`crate::touch`].
+//! is among the frame's events and reaches [`crate::touch`] through the core.
 //!
 //! Actions are not resolved here but in the core (`app`), because the
 //! bindings are part of the save and because what a press means depends on
@@ -321,13 +320,62 @@ pub fn touch_label(action: Action) -> &'static str {
     }
 }
 
-/// One frame of keyboard and joypad input, as the node saw it.
+/// A key typed in seed entry: text comes from the keyboard's characters, not
+/// its bindings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Typed {
+    Backspace,
+    Enter,
+    Escape,
+    /// A printable ASCII character.
+    Char(char),
+}
+
+/// Something the player did between two frames. Kept in order: a key typed
+/// in seed entry must know whether the Enter before it has already started
+/// the run.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Event {
+    /// A key went down. `key` is the key, if the game reads it; `typed` is
+    /// what it types in seed entry, if anything. A press and release inside
+    /// one frame still counts: polling alone would lose it.
+    Key {
+        key: Option<Key>,
+        typed: Option<Typed>,
+    },
+    /// A finger touched down at `(x, y)` in buffer pixels.
+    FingerDown {
+        index: i32,
+        x: f32,
+        y: f32,
+    },
+    FingerMoved {
+        index: i32,
+        x: f32,
+        y: f32,
+    },
+    FingerUp {
+        index: i32,
+    },
+    /// The platform's back gesture (Android).
+    Back,
+}
+
+impl Event {
+    /// A key press that types nothing.
+    pub fn key(key: Key) -> Event {
+        Event::Key {
+            key: Some(key),
+            typed: None,
+        }
+    }
+}
+
+/// One frame of input, as the node saw it.
 #[derive(Clone, Debug, Default)]
 pub struct Intents {
-    /// Keys that went down since the last frame, oldest first, even if they
-    /// came up again before it. Polling alone loses a press and release
-    /// inside one frame, so the node queues them as the events arrive.
-    pub keys: Vec<Key>,
+    /// Everything the player did since the last frame, oldest first.
+    pub events: Vec<Event>,
     /// Keys down now.
     pub keys_held: Vec<Key>,
     /// Pad buttons that went down since the last frame, on any pad.
@@ -351,7 +399,7 @@ pub struct Intents {
 impl Intents {
     /// Nothing pressed or held. The window, cutout and day are kept.
     pub fn clear(&mut self) {
-        self.keys.clear();
+        self.events.clear();
         self.keys_held.clear();
         self.pads.clear();
         self.pads_held.clear();
@@ -363,7 +411,11 @@ impl Intents {
 /// stick slot.
 #[derive(Debug, Default)]
 pub struct Controls {
-    /// This frame's input. Presses are removed as actions take them.
+    /// Key presses since the last frame, oldest first, waiting for it.
+    queued: Vec<Key>,
+    /// This frame's key presses. Removed as actions take them.
+    presses: Vec<Key>,
+    /// This frame's input. Pad presses are removed as actions take them.
     now: Intents,
     /// Hold-to-repeat per key, shared by every action bound to it.
     keys: Vec<(Key, RepeatState)>,
@@ -374,9 +426,21 @@ pub struct Controls {
 }
 
 impl Controls {
+    /// A key went down: it is pressed on the next frame.
+    pub fn queue(&mut self, key: Key) {
+        self.queued.push(key);
+    }
+
+    /// The key typed text instead: forget its presses queued so far.
+    pub fn swallow(&mut self, key: Key) {
+        self.queued.retain(|k| *k != key);
+    }
+
     /// Once per frame, before any action is read: this frame's presses are
     /// the ones queued since the last. Presses no action took are dropped.
     pub fn begin(&mut self, intents: &Intents) {
+        std::mem::swap(&mut self.presses, &mut self.queued);
+        self.queued.clear();
         self.now.clone_from(intents);
     }
 
@@ -384,10 +448,10 @@ impl Controls {
     /// the frame began. The press is taken, so of two actions bound to the
     /// same key only the first one asked fires.
     pub fn pressed(&mut self, key: Key) -> bool {
-        let Some(i) = self.now.keys.iter().position(|k| *k == key) else {
+        let Some(i) = self.presses.iter().position(|k| *k == key) else {
             return false;
         };
-        self.now.keys.swap_remove(i);
+        self.presses.swap_remove(i);
         true
     }
 
@@ -528,10 +592,24 @@ mod tests {
     }
 
     #[test]
+    fn a_swallowed_key_loses_the_presses_queued_before_it_only() {
+        let mut c = Controls::default();
+        c.queue(Key::M);
+        c.queue(Key::Space);
+        c.queue(Key::M);
+        c.swallow(Key::M);
+        c.queue(Key::M);
+        c.begin(&Intents::default());
+        assert!(c.pressed(Key::Space));
+        assert!(c.pressed(Key::M));
+        assert!(!c.pressed(Key::M));
+    }
+
+    #[test]
     fn a_press_is_taken_by_the_first_asker_only() {
         let mut c = Controls::default();
+        c.queue(Key::Space);
         c.begin(&Intents {
-            keys: vec![Key::Space],
             pads: vec![Pad::A],
             ..Intents::default()
         });
@@ -544,10 +622,9 @@ mod tests {
     #[test]
     fn two_presses_in_one_frame_are_two_presses() {
         let mut c = Controls::default();
-        c.begin(&Intents {
-            keys: vec![Key::Left, Key::Left],
-            ..Intents::default()
-        });
+        c.queue(Key::Left);
+        c.queue(Key::Left);
+        c.begin(&Intents::default());
         assert!(c.pressed(Key::Left));
         assert!(c.pressed(Key::Left));
         assert!(!c.pressed(Key::Left));
@@ -556,10 +633,8 @@ mod tests {
     #[test]
     fn untaken_presses_do_not_carry_into_the_next_frame() {
         let mut c = Controls::default();
-        c.begin(&Intents {
-            keys: vec![Key::M],
-            ..Intents::default()
-        });
+        c.queue(Key::M);
+        c.begin(&Intents::default());
         c.begin(&Intents::default());
         assert!(!c.pressed(Key::M));
     }
@@ -568,8 +643,8 @@ mod tests {
     fn a_held_key_repeats_after_the_delay_then_at_the_rate() {
         let (delay, rate) = (0.28, 0.035);
         let mut c = Controls::default();
+        c.queue(Key::Up);
         c.begin(&Intents {
-            keys: vec![Key::Up],
             keys_held: vec![Key::Up],
             ..Intents::default()
         });

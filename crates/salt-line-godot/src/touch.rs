@@ -15,11 +15,10 @@
 //! `cargo test` and `proptest`. The engine side, in `game.rs`, converts each
 //! `InputEventScreenTouch` / `InputEventScreenDrag` into the node's local
 //! space — which is buffer pixels, because the one canvas texture is drawn
-//! at the origin at 1:1 (DESIGN §5.1) — and forwards it through the core
-//! (`app::Game::finger_down` and its neighbours), which owns the pad. The
-//! node also keeps the list of [`Button`]s the renderer (`render`) pushed
-//! while drawing the last frame and passes that to
-//! [`TouchPad::finger_down`].
+//! at the origin at 1:1 (DESIGN §5.1) — and hands it to the core as one of
+//! the frame's `input::Event`s. The core owns the pad, and the list of
+//! [`Button`]s the renderer (`render`) laid out while drawing the last
+//! frame, which it passes to [`TouchPad::finger_down`].
 //!
 //! # Techniques
 //!

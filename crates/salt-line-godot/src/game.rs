@@ -16,13 +16,11 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{
-    Abandoned, Aspect, CrashReport, Effect, Game, Mode, RunFile, SavedRun, Sound, Typed,
-};
+use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, SavedRun, Sound};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
-use crate::input::{self, Intents};
+use crate::input::{self, Event, Intents, Typed};
 use crate::pads::Pads;
 use crate::palette::Palette;
 use crate::raster::Canvas;
@@ -67,10 +65,10 @@ pub struct SaltLine {
     /// Drawing work kept between frames. See `render::Cache`.
     cache: Cache,
 
-    /// Key and button presses as events arrive, handed to the core as the
-    /// next frame's `Intents`. Polling alone loses a press and release
-    /// inside one frame.
-    key_queue: Vec<Key>,
+    /// Key presses, typed text, touches and the back gesture as they arrive,
+    /// and pad presses, handed to the core as the next frame's `Intents`.
+    /// Polling alone loses a press and release inside one frame.
+    events: Vec<Event>,
     pad_queue: Vec<JoyButton>,
     /// The frame's input as the core sees it, kept to reuse its buffers.
     intents: Intents,
@@ -112,7 +110,7 @@ impl INode2D for SaltLine {
             display: DisplayPoll::default(),
             cutout: (0, 0),
             cache: Cache::default(),
-            key_queue: Vec::new(),
+            events: Vec::new(),
             pad_queue: Vec::new(),
             intents: Intents::default(),
             pads: Pads::default(),
@@ -168,15 +166,6 @@ impl INode2D for SaltLine {
             self.broken_frame(delta);
             return;
         }
-        // Keep the crash hook's picture of the run current. Taken before this
-        // frame's input, so a panic inside `fire` still reports the aim it
-        // fired.
-        crash::note(
-            self.g.mode_name(),
-            self.g.run.as_ref(),
-            (self.g.angle_ticks, self.g.power_ticks),
-            self.g.resumed,
-        );
         // The dev clock (`--salt-shot-at`) runs on the capped time the core
         // animates by, so a capture on a slow frame lands at the same point
         // of an animation.
@@ -184,7 +173,17 @@ impl INode2D for SaltLine {
         self.elapsed += capped;
         self.poll_display(capped);
         self.gather_intents();
-        let fx = self.g.tick(delta, &self.intents);
+        // Keep the crash hook's picture of the run current. Taken before this
+        // frame's input is acted on, so a panic inside `fire` still reports
+        // the aim it fired.
+        let fx = self.g.tick_with(delta, &self.intents, |g| {
+            crash::note(
+                g.mode_name(),
+                g.run.as_ref(),
+                (g.angle_ticks, g.power_ticks),
+                g.resumed,
+            )
+        });
         self.apply(fx);
         self.prune_pads(capped);
         self.apply_frame_cap();
@@ -229,7 +228,7 @@ impl INode2D for SaltLine {
         let event = match event.try_cast::<InputEventKey>() {
             Ok(key) => {
                 if key.is_pressed() && !key.is_echo() {
-                    self.key_queue.push(key.get_keycode());
+                    self.events.push(key_event(&key));
                 }
                 return;
             }
@@ -254,7 +253,11 @@ impl INode2D for SaltLine {
                     .try_cast::<InputEventScreenDrag>()
                     .map(|d| d.get_position())
                     .unwrap_or_else(|_| drag.get_position());
-                self.g.finger_moved(drag.get_index(), pos.x, pos.y);
+                self.events.push(Event::FingerMoved {
+                    index: drag.get_index(),
+                    x: pos.x,
+                    y: pos.y,
+                });
                 return;
             }
             Err(event) => event,
@@ -271,23 +274,28 @@ impl INode2D for SaltLine {
             .try_cast::<InputEventScreenTouch>()
             .map(|t| t.get_position())
             .unwrap_or_else(|_| touch.get_position());
-        if touch.is_pressed() {
-            self.g
-                .finger_down(touch.get_index(), pos.x, pos.y, &self.touch_buttons);
+        let index = touch.get_index();
+        self.events.push(if touch.is_pressed() {
+            Event::FingerDown {
+                index,
+                x: pos.x,
+                y: pos.y,
+            }
         } else {
-            self.g.finger_up(touch.get_index());
-        }
+            Event::FingerUp { index }
+        });
     }
 
     fn on_notification(&mut self, what: CanvasItemNotification) {
         match what {
             CanvasItemNotification::WM_GO_BACK_REQUEST => {
-                self.g.go_back();
+                self.events.push(Event::Back);
                 self.redraw.mark();
             }
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
-                let fx = self.g.focus_lost();
+                let pending = std::mem::take(&mut self.events);
+                let fx = self.g.focus_lost(&pending);
                 self.apply(fx);
             }
             // The display may have turned, or grown a cutout, while away.
@@ -300,42 +308,17 @@ impl INode2D for SaltLine {
             // Pending settings go to disk before the app can be killed: a
             // phone may never resume a paused app, and a close is final.
             CanvasItemNotification::APPLICATION_PAUSED => {
-                let fx = self.g.app_paused();
+                let pending = std::mem::take(&mut self.events);
+                let fx = self.g.app_paused(&pending);
                 self.apply(fx);
             }
             CanvasItemNotification::WM_CLOSE_REQUEST | CanvasItemNotification::EXIT_TREE => {
-                let fx = self.g.closing();
+                let pending = std::mem::take(&mut self.events);
+                let fx = self.g.closing(&pending);
                 self.apply(fx);
             }
             _ => {}
         }
-    }
-
-    fn unhandled_input(&mut self, event: Gd<InputEvent>) {
-        if self.g.mode != Mode::SeedEntry {
-            return;
-        }
-        let Ok(key) = event.try_cast::<InputEventKey>() else {
-            return;
-        };
-        if !key.is_pressed() || key.is_echo() {
-            return;
-        }
-        let unicode = key.get_unicode();
-        let keycode = key.get_keycode();
-        let typed = match keycode {
-            Key::BACKSPACE => Typed::Backspace,
-            Key::ENTER | Key::KP_ENTER => Typed::Enter,
-            Key::ESCAPE => Typed::Escape,
-            _ if (32..127).contains(&unicode) => Typed::Char(unicode as u8 as char),
-            // Arrows and the like fall through to move the keypad focus.
-            _ => return,
-        };
-        let fx = self.g.typed(typed, Self::today());
-        self.apply(fx);
-        // Typed, not pressed: an M in a seed must not also mute, nor the
-        // Enter that starts the run fire its first shot.
-        self.key_queue.retain(|k| *k != keycode);
     }
 }
 
@@ -595,7 +578,7 @@ impl SaltLine {
         let input = Input::singleton();
         let mut i = std::mem::take(&mut self.intents);
         i.clear();
-        i.keys.extend(self.key_queue.drain(..).filter_map(core_key));
+        i.events.append(&mut self.events);
         i.keys_held.extend(
             KEYS.iter()
                 .filter(|(_, k)| input.is_key_pressed(*k))
@@ -693,6 +676,7 @@ impl SaltLine {
             &mut self.touch_buttons,
             &mut self.cache,
         );
+        self.g.set_buttons(&self.touch_buttons);
         self.upload();
         self.maybe_screenshot();
         self.base_mut().queue_redraw();
@@ -706,6 +690,7 @@ impl SaltLine {
             &mut self.touch_buttons,
             &mut self.cache,
         );
+        self.g.set_buttons(&self.touch_buttons);
         self.upload();
     }
 
@@ -813,6 +798,25 @@ const PADS: [(input::Pad, JoyButton); 12] = [
     (input::Pad::DpadUp, JoyButton::DPAD_UP),
     (input::Pad::DpadDown, JoyButton::DPAD_DOWN),
 ];
+
+/// A key press as the core takes it: the key, if the game reads it, and
+/// what it types in seed entry, if anything. Arrows and the like type
+/// nothing, and so move the seed keypad's focus instead.
+fn key_event(key: &Gd<InputEventKey>) -> Event {
+    let keycode = key.get_keycode();
+    let unicode = key.get_unicode();
+    let typed = match keycode {
+        Key::BACKSPACE => Some(Typed::Backspace),
+        Key::ENTER | Key::KP_ENTER => Some(Typed::Enter),
+        Key::ESCAPE => Some(Typed::Escape),
+        _ if (32..127).contains(&unicode) => Some(Typed::Char(unicode as u8 as char)),
+        _ => None,
+    };
+    Event::Key {
+        key: core_key(keycode),
+        typed,
+    }
+}
 
 /// A key as the core names it; `None` for one it never reads.
 fn core_key(key: Key) -> Option<input::Key> {

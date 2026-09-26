@@ -53,10 +53,14 @@
 //! [`Game::broken_tick`] has run; `broken_tick` also drops whatever the
 //! crashed frame left queued.
 //!
-//! Environment events that must not wait for the next frame — focus lost,
-//! the app paused by the platform, the window closing, a touch — are methods
-//! the adapter calls as they arrive, and return their effects at once: a
-//! phone may never resume a paused app, so its settings are written now.
+//! Player input comes in with the frame, in [`Intents`]: what is held, and
+//! the events since the last frame in the order they happened (keys, typed
+//! text, touches, the back gesture). Only the notifications that must not
+//! wait for a frame — focus lost, the app paused by the platform, the window
+//! closing — are methods the adapter calls as they arrive, returning their
+//! effects at once: a phone may never resume a paused app, so its settings
+//! are written now. They take the events queued since the last frame first,
+//! so nothing is taken out of order.
 
 use salt_line_sim::ballistics::{End, Shot, Trace};
 use salt_line_sim::dmath;
@@ -68,7 +72,8 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_
 
 use crate::cli::DevArgs;
 use crate::durable::Debounce;
-use crate::input::{self, Action, Controls, Intents, Key, Pad};
+use crate::input::Typed;
+use crate::input::{self, Action, Controls, Event, Intents, Key, Pad};
 use crate::keypad::{self, Focus};
 use crate::presentation::{
     self, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER, LEARN_SHELLS, LEARN_WIND,
@@ -316,17 +321,6 @@ pub enum SavedRun {
     Found(String),
 }
 
-/// A key typed in seed entry: text comes from the keyboard's characters, not
-/// its bindings.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Typed {
-    Backspace,
-    Enter,
-    Escape,
-    /// A printable ASCII character.
-    Char(char),
-}
-
 /// Longest seed entry takes, in characters.
 pub const SEED_MAX: usize = 20;
 
@@ -409,6 +403,8 @@ pub struct Game {
     pub touch_active: bool,
     /// The platform's back gesture (Android), taken as the `back` action.
     pub back_requested: bool,
+    /// The touch buttons on screen. See `set_buttons`.
+    pub buttons: Vec<Button>,
     /// The aim a touch drag started from, put back if the pull is cancelled.
     pub drag_from: Option<(i32, i32)>,
     /// The primary shell's path from the last shot. Drawn only while the sim
@@ -497,6 +493,7 @@ impl Default for Game {
             touch: TouchPad::default(),
             touch_active: false,
             back_requested: false,
+            buttons: Vec::new(),
             drag_from: None,
             last_arc: Vec::new(),
             low_shell_warned: false,
@@ -548,14 +545,30 @@ impl Game {
         std::mem::take(&mut self.fx)
     }
 
-    /// One frame: timers, the display, input, the replay, persistence.
+    /// One frame: the events since the last, then timers, the display,
+    /// input, the replay, persistence.
     ///
     /// `delta` is the engine's, uncapped. Animation and timers never jump
     /// more than a tenth of a second, however long the app sat in the
     /// background (`resume::frame_delta`).
     pub fn tick(&mut self, delta: f64, intents: &Intents) -> Vec<Effect> {
-        let delta = resume::frame_delta(delta);
+        self.tick_with(delta, intents, |_| {})
+    }
+
+    /// `tick`, calling `before_frame` once the events are in and before
+    /// anything else: the node keeps the crash report's picture of the game
+    /// current there, so a panic inside `fire` still reports the aim it
+    /// fired.
+    pub fn tick_with(
+        &mut self,
+        delta: f64,
+        intents: &Intents,
+        before_frame: impl FnOnce(&Game),
+    ) -> Vec<Effect> {
         self.today = intents.today;
+        self.events(&intents.events);
+        before_frame(self);
+        let delta = resume::frame_delta(delta);
         self.status_time = (self.status_time - delta).max(0.0);
         self.poll_display(intents.window, intents.cutout);
         let before = self.frame_state();
@@ -602,6 +615,8 @@ impl Game {
             self.status_time = 0.0;
             self.fx.clear();
         }
+        self.today = intents.today;
+        self.events(&intents.events);
         self.status_time = (self.status_time - delta).max(0.0);
         self.begin_input_frame(delta, intents);
         if self.action_pressed(Action::Copy) {
@@ -650,31 +665,67 @@ impl Game {
 // ------------------------------------------------------ environment events
 
 impl Game {
-    /// The platform's back gesture (Android). Taken as the `back` action on
-    /// the next frame.
-    pub fn go_back(&mut self) {
-        self.back_requested = true;
+    /// The touch buttons the frame on screen drew, which the next touches are
+    /// tested against. The node hands them over after every frame it draws.
+    pub fn set_buttons(&mut self, buttons: &[Button]) {
+        self.buttons.clear();
+        self.buttons.extend_from_slice(buttons);
     }
 
-    /// A finger went down at `(x, y)` in buffer pixels. `buttons` are the
-    /// ones the last frame drew.
-    pub fn finger_down(&mut self, index: i32, x: f32, y: f32, buttons: &[Button]) {
-        self.touch_active = true;
-        self.touch.finger_down(index, x, y, buttons);
+    /// Take the events in the order they happened, as they would have been
+    /// taken the moment they arrived: a touch goes to the touch pad, a key
+    /// press waits for the frame's actions, and a key typed in seed entry is
+    /// typed and not pressed as well, so an M in a seed does not also mute,
+    /// nor the Enter that starts the run fire its first shot.
+    fn events(&mut self, events: &[Event]) {
+        for event in events {
+            match *event {
+                Event::Key { key, typed } => {
+                    if let Some(key) = key {
+                        self.controls.queue(key);
+                    }
+                    if let (Some(typed), Mode::SeedEntry) = (typed, self.mode) {
+                        self.typed(typed);
+                        if let Some(key) = key {
+                            self.controls.swallow(key);
+                        }
+                    }
+                }
+                Event::FingerDown { index, x, y } => {
+                    self.touch_active = true;
+                    self.touch.finger_down(index, x, y, &self.buttons);
+                }
+                Event::FingerMoved { index, x, y } => self.touch.finger_moved(index, x, y),
+                Event::FingerUp { index } => {
+                    self.touch_active = true;
+                    self.touch.finger_up(index);
+                }
+                Event::Back => self.back_requested = true,
+            }
+        }
     }
 
-    pub fn finger_up(&mut self, index: i32) {
-        self.touch_active = true;
-        self.touch.finger_up(index);
-    }
-
-    pub fn finger_moved(&mut self, index: i32, x: f32, y: f32) {
-        self.touch.finger_moved(index, x, y);
+    /// A key typed in seed entry.
+    fn typed(&mut self, key: Typed) {
+        match key {
+            Typed::Backspace => {
+                self.seed_text.pop();
+            }
+            Typed::Enter => self.start_seeded_run(),
+            Typed::Escape => self.leave_seed_entry(),
+            Typed::Char(c) => {
+                if self.seed_text.chars().count() < SEED_MAX {
+                    self.seed_text.push(c);
+                }
+            }
+        }
     }
 
     /// Window or application focus lost: every finger is up, a live screen
-    /// pauses, and pending settings go to disk.
-    pub fn focus_lost(&mut self) -> Vec<Effect> {
+    /// pauses, and pending settings go to disk. `pending` are the events
+    /// that arrived since the last frame, which happened first.
+    pub fn focus_lost(&mut self, pending: &[Event]) -> Vec<Effect> {
+        self.events(pending);
         self.touch.release_all();
         self.auto_pause();
         self.flush_settings();
@@ -684,36 +735,17 @@ impl Game {
 
     /// The platform paused the app. Pending settings go to disk before the
     /// app can be killed: a phone may never resume a paused app.
-    pub fn app_paused(&mut self) -> Vec<Effect> {
+    pub fn app_paused(&mut self, pending: &[Event]) -> Vec<Effect> {
+        self.events(pending);
         self.auto_pause();
         self.flush_settings();
         self.take_effects()
     }
 
     /// The window is closing or the node leaving the tree: a close is final.
-    pub fn closing(&mut self) -> Vec<Effect> {
+    pub fn closing(&mut self, pending: &[Event]) -> Vec<Effect> {
+        self.events(pending);
         self.flush_settings();
-        self.take_effects()
-    }
-
-    /// A key typed in seed entry. The adapter only sends them in that mode.
-    /// `today` is for a blank seed, which is today's daily.
-    pub fn typed(&mut self, key: Typed, today: u64) -> Vec<Effect> {
-        match key {
-            Typed::Backspace => {
-                self.seed_text.pop();
-            }
-            Typed::Enter => {
-                self.today = today;
-                self.start_seeded_run();
-            }
-            Typed::Escape => self.leave_seed_entry(),
-            Typed::Char(c) => {
-                if self.seed_text.chars().count() < SEED_MAX {
-                    self.seed_text.push(c);
-                }
-            }
-        }
         self.take_effects()
     }
 

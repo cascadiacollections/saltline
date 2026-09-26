@@ -10,7 +10,7 @@ use super::*;
 use pretty_assertions::assert_eq;
 use salt_line_sim::run::Phase;
 
-use crate::input::{Intents, Key};
+use crate::input::{Event, Intents, Key};
 
 const FRAME: f64 = 1.0 / 60.0;
 const WINDOW: (i32, i32) = (1280, 720);
@@ -26,7 +26,7 @@ fn idle() -> Intents {
 
 fn keys(keys: &[Key]) -> Intents {
     Intents {
-        keys: keys.to_vec(),
+        events: keys.iter().map(|k| Event::key(*k)).collect(),
         keys_held: keys.to_vec(),
         ..idle()
     }
@@ -363,8 +363,8 @@ fn nothing_queued_before_a_panic_is_replayed_after_it() {
     assert!(!g.fx.is_empty());
     let fx = g.broken_tick(FRAME, &idle(), || None);
     assert_eq!(fx, vec![]);
-    assert!(g.focus_lost().iter().all(Effect::survives_panic));
-    assert_eq!(g.closing(), vec![]);
+    assert!(g.focus_lost(&[]).iter().all(Effect::survives_panic));
+    assert_eq!(g.closing(&[]), vec![]);
 }
 
 #[test]

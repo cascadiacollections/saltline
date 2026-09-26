@@ -9,8 +9,8 @@
 //!
 //! While drawing, each on-screen control is laid out as a [`Button`] for the
 //! next frame's touches to be tested against (`touch`'s immediate-mode
-//! layout). The node keeps the list and hands it back to
-//! `Game::finger_down`.
+//! layout). The node hands the list to `Game::set_buttons` for the next
+//! touches.
 //!
 //! Because nothing here needs the engine, a frame can be drawn under
 //! `cargo test` and compared pixel for pixel; see the tests at the end.
@@ -1191,7 +1191,7 @@ fn preview_path(
 mod tests {
     use super::*;
     use crate::app::Effect;
-    use crate::input::{Intents, Key};
+    use crate::input::{Event, Intents, Key};
     use crate::save_format::Save;
 
     const WINDOW: (i32, i32) = (1280, 720);
@@ -1243,7 +1243,7 @@ mod tests {
         g.tick(
             1.0 / 60.0,
             &Intents {
-                keys: vec![Key::Enter],
+                events: vec![Event::key(Key::Enter)],
                 ..idle()
             },
         );
@@ -1352,9 +1352,24 @@ mod tests {
         g.save.touch_aim = Some(TouchAim::Drag);
         g.take_effects();
         let (still, _) = draw(&g);
-        g.finger_down(0, 200.0, 100.0, &[]);
-        g.finger_moved(0, 150.0, 140.0);
-        g.tick(1.0 / 60.0, &idle());
+        g.tick(
+            1.0 / 60.0,
+            &Intents {
+                events: vec![
+                    Event::FingerDown {
+                        index: 0,
+                        x: 200.0,
+                        y: 100.0,
+                    },
+                    Event::FingerMoved {
+                        index: 0,
+                        x: 150.0,
+                        y: 140.0,
+                    },
+                ],
+                ..idle()
+            },
+        );
         let (dragging, _) = draw(&g);
         let changed = still
             .bytes()
