@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "salt-line-godot"
 version.workspace = true
 edition.workspace = true
@@ -25,3 +26,6 @@ monetization = []
 # empty scene and hangs. Building down-level still runs on newer engines.
 godot = { version = "0.5", features = ["api-4-7"] }
 salt-line-sim = { path = "../salt-line-sim" }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }

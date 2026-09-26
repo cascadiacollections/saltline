@@ -495,4 +495,98 @@ mod tests {
         }
         assert_eq!(Save::parse("last_arc maybe\n").last_arc, None);
     }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Bindings as the parser normalizes them: lowercase actions, uppercase keys.
+        fn action() -> impl Strategy<Value = String> {
+            "[a-z0-9_]{1,12}"
+        }
+
+        fn token() -> impl Strategy<Value = String> {
+            "[A-Z0-9_]{1,12}"
+        }
+
+        fn saves() -> impl Strategy<Value = Save> {
+            let entry = (
+                any::<u64>(),
+                any::<u32>(),
+                any::<i32>(),
+                any::<u32>(),
+                any::<bool>(),
+            )
+                .prop_map(|(seed, screens, shells, shots, daily)| Entry {
+                    seed,
+                    screens,
+                    shells,
+                    shots,
+                    daily,
+                });
+            let aim = prop::option::of(prop_oneof![Just(TouchAim::Buttons), Just(TouchAim::Drag)]);
+            let hint = prop::option::of(prop_oneof![
+                Just(ArcHint::Short),
+                Just(ArcHint::Full),
+                Just(ArcHint::Wind)
+            ]);
+            (
+                (
+                    any::<bool>(),
+                    prop::collection::vec(entry, 0..20),
+                    any::<u8>(),
+                    any::<bool>(),
+                ),
+                (
+                    any::<u32>(),
+                    prop::collection::vec((action(), token(), token()), 0..6),
+                ),
+                (aim, hint, prop::option::of(any::<bool>())),
+            )
+                .prop_map(
+                    |(
+                        (unlocked, scores, volume, muted),
+                        (learned, bindings),
+                        (touch_aim, arc_hint, last_arc),
+                    )| Save {
+                        unlocked,
+                        scores,
+                        volume,
+                        muted,
+                        learned,
+                        bindings,
+                        touch_aim,
+                        arc_hint,
+                        last_arc,
+                        ..Save::default()
+                    },
+                )
+        }
+
+        proptest! {
+            #[test]
+            fn any_text_parses_without_panicking(text in "\\PC*") {
+                let _ = Save::parse(&text);
+            }
+
+            #[test]
+            fn any_line_soup_parses_without_panicking(
+                lines in prop::collection::vec("(version|unlocked|volume|muted|learned|touch_aim|arc_hint|last_arc|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
+            ) {
+                let _ = Save::parse(&lines.join("\n"));
+            }
+
+            #[test]
+            fn a_save_reads_back_as_written(save in saves()) {
+                // What a save should come back as: volume capped, board ranked and cut.
+                let mut expected = save.clone();
+                expected.volume = expected.volume.min(100);
+                expected.sort();
+                let back = Save::parse(&save.serialize());
+                prop_assert_eq!(&back, &expected);
+                // And writing it again changes nothing.
+                prop_assert_eq!(Save::parse(&back.serialize()), back);
+            }
+        }
+    }
 }

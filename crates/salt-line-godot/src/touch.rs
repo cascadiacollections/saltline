@@ -321,4 +321,63 @@ mod tests {
         pad.update(0.016, DELAY, RATE);
         assert_eq!((pad.drag(), pad.dropped()), (None, None));
     }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Clone, Debug)]
+        enum Ev {
+            Down(i32, f32, f32),
+            Move(i32, f32, f32),
+            Up(i32),
+            Frame,
+            Release,
+        }
+
+        fn events() -> impl Strategy<Value = Vec<Ev>> {
+            let finger = 0i32..3;
+            let x = 0.0f32..60.0;
+            let y = 0.0f32..40.0;
+            prop::collection::vec(
+                prop_oneof![
+                    (finger.clone(), x.clone(), y.clone()).prop_map(|(i, x, y)| Ev::Down(i, x, y)),
+                    (finger.clone(), x, y).prop_map(|(i, x, y)| Ev::Move(i, x, y)),
+                    finger.prop_map(Ev::Up),
+                    Just(Ev::Frame),
+                    Just(Ev::Release),
+                ],
+                0..60,
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn only_a_finger_off_every_button_drags_and_drops(evs in events()) {
+                let b = buttons();
+                let on_button = |x: f32, y: f32| b.iter().any(|b| b.rect.contains(x, y));
+                let mut pad = TouchPad::default();
+                // Where each drag could have started: free fingers' down points.
+                let mut free_downs = Vec::new();
+                for ev in evs {
+                    match ev {
+                        Ev::Down(i, x, y) => {
+                            if !on_button(x, y) {
+                                free_downs.push((x, y));
+                            }
+                            pad.finger_down(i, x, y, &b);
+                        }
+                        Ev::Move(i, x, y) => pad.finger_moved(i, x, y),
+                        Ev::Up(i) => pad.finger_up(i),
+                        Ev::Frame => pad.update(0.016, DELAY, RATE),
+                        Ev::Release => pad.release_all(),
+                    }
+                    for (start, _) in pad.drag().into_iter().chain(pad.dropped()) {
+                        prop_assert!(!on_button(start.0, start.1), "a drag started on a button");
+                        prop_assert!(free_downs.contains(&start), "a drag started where no finger went down");
+                    }
+                }
+            }
+        }
+    }
 }

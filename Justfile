@@ -115,3 +115,7 @@ ios: ios-project
     if [ -z "$device" ]; then echo "error: no iPhone found; plug it in and trust this Mac" >&2; exit 1; fi
     xcrun devicectl device install app --device "$device" "$app"
     xcrun devicectl device process launch --device "$device" com.cascadiacollections.saltline
+
+# Check advisories, licences, bans and sources (deny.toml). Needs cargo-deny.
+deny:
+    cargo deny check
