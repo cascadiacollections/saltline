@@ -360,20 +360,19 @@ pub enum Event {
         key: Option<Key>,
         typed: Option<Typed>,
     },
-    /// A finger touched down at `(x, y)` in buffer pixels.
+    /// A finger touched down at `(x, y)` in buffer pixels. `FingerMoved`
+    /// follows it to a new position and `FingerUp` lifts it; `index` is the
+    /// platform's finger number, the same for the whole of one touch.
     FingerDown {
         index: i32,
         x: f32,
         y: f32,
     },
-    /// A finger already down moved to `(x, y)`, in buffer pixels.
     FingerMoved {
         index: i32,
         x: f32,
         y: f32,
     },
-    /// A finger lifted. `index` is the platform's finger number, the same
-    /// for the whole of one touch.
     FingerUp {
         index: i32,
     },
