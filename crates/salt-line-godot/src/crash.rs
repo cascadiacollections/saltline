@@ -304,6 +304,8 @@ mod tests {
             screen_index,
             angle_ticks,
             power_ticks,
+            fuse_tenths: 0,
+            emplacement_offset: 0,
         }
     }
 
