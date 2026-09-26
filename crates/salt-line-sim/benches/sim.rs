@@ -5,6 +5,12 @@
 //! it clearable, DESIGN §2.4), resolving a shot, and rebuilding a run from its
 //! log. Screens are generated at several depths because later bands try more
 //! templates and harder shapes before one passes.
+//!
+//! Benchmarks catch what the tests cannot: a change that keeps every output
+//! identical but makes it slower. They assert nothing; compare runs by hand
+//! before and after a change to generation, the solver or the integrator.
+//! Inputs go through `black_box` so the optimiser cannot fold a constant
+//! seed into a precomputed result.
 
 use divan::{black_box, Bencher};
 use salt_line_sim::ballistics::{fire, FireOptions, Shot};
@@ -56,8 +62,10 @@ fn resolve_a_shot(bencher: Bencher, record_path: bool) {
     });
 }
 
-/// Rebuilding a whole run from its seed and shot log, which is what seed
-/// sharing and the determinism gate do.
+/// Rebuilding a whole run from its seed and shot log, which is what the
+/// determinism gate does, and what watching or resuming a run would do
+/// (DESIGN §9.6 puts a 60-shot rebuild at about a quarter of a millisecond).
+/// Sharing a seed alone does not replay anything; it only regenerates.
 #[divan::bench]
 fn replay_a_run(bencher: Bencher) {
     let mut state = RunState::new(SEED, 320);
