@@ -203,9 +203,12 @@ with guessed values.
   re-resolved, so debris refilling its footprint cannot stand it back up
   (DESIGN §2.7). Auger's bedrock check reads the layer at the shell's depth,
   not the column's surface, so bedrock stops a tunnelling shell wherever it
-  reaches it (DESIGN §4). Screen generation is unchanged — the pinned screen
-  digests did not move — but a log that crosses a band start after a supply
-  screen, tunnels with Auger, or piles debris over a wreck replays
-  differently. The determinism bin's digest changed from
-  `0x6d19f4bc6cd194fa` to `0x8e29ed6154deaf03`. Epoch digest:
-  `0x64713d327a31a792`.
+  reaches it (DESIGN §4); the check is made only while the shell is
+  underground, so one that tunnels out over a deep crater flies on. Screen
+  generation is unchanged — the pinned screen digests did not move — but a
+  log that crosses a band start after a supply screen, tunnels with Auger,
+  or piles debris over a wreck replays differently. The determinism bin's digest changed from
+  `0x6d19f4bc6cd194fa` to `0x8e29ed6154deaf03`. As with any bump, a saved
+  in-progress run from epoch 2 is discarded on update: the resume file
+  refuses an older epoch rather than replay it under new rules. Epoch
+  digest: `0x64713d327a31a792`.
