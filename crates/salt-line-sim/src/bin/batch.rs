@@ -19,13 +19,16 @@
 //!
 //! The report has three parts: surviving direct-aim candidates by band and
 //! by template, a solver-assisted economy model (see the comment above its
-//! printout), and totals. Screen generation tries eight seeds, then eight
-//! Flat seeds, then a terrain-free single-target fallback returned without
-//! gating; a failure here means that last fallback failed.
+//! printout), and totals. Screen generation climbs down a four-rung ladder
+//! (eight drawn seeds, eight Flat seeds, a terrain-free single target, then a
+//! level calm-air single target) and every rung is gated on the solver, so a
+//! failure here means even the level rung failed. The totals count how many
+//! screens came off each rung, and every screen with targets, fallbacks
+//! included, is re-validated here rather than trusted.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::screen_seed;
-use salt_line_sim::run::{generate_screen, refund, Screen};
+use salt_line_sim::run::{generate_screen, refund, Rung, Screen};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::Template;
 use salt_line_sim::{band_of, BAND_LEN, MIN_SOLUTIONS, SCREEN_W_REF, START_SHELLS};
@@ -277,6 +280,7 @@ fn main() {
     let mut by_template: Vec<Bucket> = vec![Bucket::default(); Template::ALL.len()];
     let mut failures: Vec<(u64, u32, &'static str, usize)> = Vec::new();
     let mut supply_screens = 0u64;
+    let mut rung_counts = [0u64; Rung::ALL.len()];
     let mut modifier_screens = [0u64; MODIFIER_COUNT];
     let mut modifier_picks = [0u64; MODIFIER_COUNT];
     let mut economy_spent = 0u64;
@@ -337,6 +341,13 @@ fn main() {
                 }
                 continue;
             }
+            let Some(rung) = screen.rung else {
+                eprintln!(
+                    "seed {run_seed:#x} screen {index}: a screen with targets reports no rung"
+                );
+                std::process::exit(1);
+            };
+            rung_counts[rung as usize] += 1;
             let report = if args.fast {
                 solver::validate(&screen, &lo)
             } else {
@@ -556,6 +567,15 @@ fn main() {
         "fallbacks to Flat: {fallbacks} ({:.2}%)",
         fallbacks as f64 / screens_checked.max(1) as f64 * 100.0
     );
+    println!("screens by generation rung (every rung validated):");
+    for r in Rung::ALL {
+        let n = rung_counts[r as usize];
+        println!(
+            "  {:<11} {n:>6} ({:.2}%)",
+            format!("{r:?}"),
+            n as f64 / screens_checked.max(1) as f64 * 100.0
+        );
+    }
 
     if failures.is_empty() {
         println!("unsolvable screens: 0 — every screen passed the gate");
