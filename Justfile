@@ -70,7 +70,7 @@ deny:
 # Spelling, workflow security and unused dependencies (typos, zizmor, cargo-machete), as CI runs them.
 hygiene:
     typos
-    zizmor .github/workflows/
+    zizmor .
     cargo machete
 
 # Line coverage summary (cargo-llvm-cov + cargo-nextest, llvm-tools-preview).
