@@ -4,11 +4,26 @@
 //! sample the swatch image programmatically rather than transcribing hex
 //! values by hand. So the image is the single source of truth; edit
 //! `tools/gen_sprites.py`, regenerate, and the game follows.
+//!
+//! Everything the game draws goes into one native-resolution
+//! [`Canvas`](crate::raster::Canvas) (DESIGN §5.1), and every colour that
+//! reaches it comes from this table by slot index. Code names a *role*
+//! ([`slot::ALERT`], [`slot::UI_FG`]) rather than an RGB value, so the
+//! allocation in DESIGN §5.2 — four terrain tones, three sky, three hull,
+//! three structure, two UI, one alert — is enforced by the type of the index,
+//! not by review. Read DESIGN §5 before adding a colour: the answer is to
+//! reuse a slot.
+//!
+//! Colours are stored as straight RGBA bytes. The software rasteriser writes
+//! bytes into the buffer, so converting from Godot's float `Color` happens
+//! once, at load, instead of once per pixel.
 
 use godot::classes::{Image, Texture2D};
 use godot::prelude::*;
 
-/// Slot order in `art/palette_16.png`, matching `gen_sprites.py`.
+/// Slot names in the order they appear in `art/palette_16.png`, matching
+/// `gen_sprites.py`. `SLOTS[i]` is the name of the colour at [`slot`] index
+/// `i`; useful for debug output and snapshot tests.
 pub const SLOTS: [&str; 16] = [
     "sand",
     "rock",
@@ -29,6 +44,8 @@ pub const SLOTS: [&str; 16] = [
 ];
 
 /// Indices into the palette. Named after their DESIGN §5.2 role.
+///
+/// Each is a valid index into [`Palette::colours`], `0..16`.
 pub mod slot {
     pub const SAND: usize = 0;
     pub const ROCK: usize = 1;
@@ -48,11 +65,14 @@ pub mod slot {
     pub const ALERT: usize = 15;
 }
 
+/// One colour as `[r, g, b, a]` bytes, the layout of an RGBA8 image row.
+/// Palette colours are always fully opaque (`a == 255`).
 pub type Rgba = [u8; 4];
 
 /// The palette as straight bytes, so the rasteriser never touches a float.
 #[derive(Clone, Debug)]
 pub struct Palette {
+    /// The sixteen colours, indexed by [`slot`].
     pub colours: [Rgba; 16],
     /// True when the swatch image was found and sampled.
     pub sampled: bool,
@@ -89,6 +109,10 @@ impl Default for Palette {
 }
 
 impl Palette {
+    /// The colour in `slot` (see [`slot`]).
+    ///
+    /// Out-of-range indices clamp to 15 rather than panic, so a bad index
+    /// shows up on screen as the alert colour instead of crashing a frame.
     #[inline]
     pub fn get(&self, slot: usize) -> Rgba {
         self.colours[slot.min(15)]
@@ -102,8 +126,13 @@ impl Palette {
 
     /// Read the sixteen swatches out of `art/palette_16.png`.
     ///
-    /// The swatch sheet is written at 4x, sixteen 12px cells across the top
-    /// row, so cell `i` is sampled at its centre.
+    /// The swatch sheet is sixteen 12px cells across the top row, written at
+    /// 4x (so 48px cells in the file), and cell `i` is sampled at its centre.
+    /// The cell size is derived from the image width, so the scale factor
+    /// can change without touching this code.
+    ///
+    /// Never fails: a missing or undersized sheet logs a warning and returns
+    /// [`Palette::default`], with [`Palette::sampled`] left `false`.
     pub fn load(path: &str) -> Palette {
         let Ok(image) = try_load_image(path) else {
             godot_warn!("salt-line: {path} missing, falling back to built-in palette");
@@ -118,10 +147,15 @@ impl Palette {
         // Cell width in whatever scale the sheet was written at.
         let cell = w / 16;
         let y = (cell / 2).min(h - 1);
+        // Start from the fallback so a failed sample can never leave a slot
+        // uninitialised; every slot is overwritten below.
         let mut colours = FALLBACK;
         for (i, c) in colours.iter_mut().enumerate() {
             let x = (i as i32 * cell + cell / 2).min(w - 1);
             let col = image.get_pixel(x, y);
+            // Godot hands back float channels in 0.0..=1.0; round rather than
+            // truncate so a byte round-trips through the float exactly. Alpha
+            // is forced opaque: the palette has no translucent colours.
             *c = [
                 (col.r * 255.0).round() as u8,
                 (col.g * 255.0).round() as u8,

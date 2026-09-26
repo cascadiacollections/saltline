@@ -4,14 +4,37 @@
 //! screen index, and never a TTF scaled down into the buffer. The draft cards
 //! use the same font at the same size — "resist the urge to make draft UI
 //! larger and smoother than the game".
+//!
+//! Each glyph is a 1-bit mask written as strings of `'0'` and `'1'`, one
+//! string per pixel row, top to bottom. The mask carries no colour: the
+//! caller picks a palette slot and
+//! [`Canvas::text_small`](crate::raster::Canvas::text_small) /
+//! [`Canvas::text_big`](crate::raster::Canvas::text_big) set every `1` pixel
+//! to it, so text obeys the same sixteen-colour rule as everything else
+//! (DESIGN §5.2). Against packed bits, strings keep each glyph legible and
+//! diffable in the source; the cost is a few bytes of `.rodata` and a byte
+//! compare per pixel, which is nothing at 180px tall.
+//!
+//! The layout is monospaced: every character, including one with no glyph,
+//! advances the cursor by the same amount. That keeps [`small_width`] and
+//! [`big_width`] a multiplication, which is what the HUD uses to size its
+//! plates before drawing.
 
 /// 3x5 glyphs. The subset in `tools/gen_sprites.py`, completed to the full
 /// alphabet so UI strings do not silently lose letters.
+///
+/// Glyph width in buffer pixels.
 pub const SMALL_W: usize = 3;
+/// Glyph height in buffer pixels.
 pub const SMALL_H: usize = 5;
 /// One pixel of tracking between 3x5 glyphs.
 pub const SMALL_ADVANCE: usize = 4;
 
+/// The 3x5 mask for `c`, or `None` if the face has no glyph for it.
+///
+/// Case-insensitive: the face is capitals only, so lower-case input draws as
+/// upper case. A `None` still advances the cursor when drawn, so an
+/// unsupported character shows as a gap rather than collapsing the string.
 pub fn small_glyph(c: char) -> Option<[&'static str; SMALL_H]> {
     Some(match c.to_ascii_uppercase() {
         'A' => ["111", "101", "111", "101", "101"],
@@ -69,6 +92,8 @@ pub fn small_glyph(c: char) -> Option<[&'static str; SMALL_H]> {
         '<' => ["001", "011", "111", "011", "001"],
         '(' => ["010", "100", "100", "100", "010"],
         ')' => ["010", "001", "001", "001", "010"],
+        // A small multiplication sign. Only `*` reaches this arm: `x` is
+        // upper-cased above and matches the letter `X`.
         'x' | '*' => ["000", "101", "010", "101", "000"],
         ' ' => ["000", "000", "000", "000", "000"],
         _ => return None,
@@ -77,10 +102,17 @@ pub fn small_glyph(c: char) -> Option<[&'static str; SMALL_H]> {
 
 /// 5x7 glyphs: digits and the few symbols the instruments need. Labels stay
 /// 3x5; only the numbers a player reads mid-shot get the larger face.
+///
+/// Glyph width in buffer pixels.
 pub const BIG_W: usize = 5;
+/// Glyph height in buffer pixels. HUD icons are drawn to the same height so
+/// they sit level with the digits beside them (see [`crate::icons`]).
 pub const BIG_H: usize = 7;
+/// One pixel of tracking between 5x7 glyphs.
 pub const BIG_ADVANCE: usize = 6;
 
+/// The 5x7 mask for `c`, or `None` outside digits, `+ - . :` and space.
+/// Unlike [`small_glyph`] there are no letters: labels stay in the small face.
 pub fn big_glyph(c: char) -> Option<[&'static str; BIG_H]> {
     Some(match c {
         '0' => [
@@ -132,7 +164,10 @@ pub fn big_glyph(c: char) -> Option<[&'static str; BIG_H]> {
     })
 }
 
-/// Rendered width of a string in the 3x5 face, without the trailing tracking.
+/// Rendered width of a string in the 3x5 face, in buffer pixels, without the
+/// trailing tracking. Counts `char`s, not bytes, and counts characters with
+/// no glyph too, matching how the canvas advances. Use it to centre or
+/// right-align text before drawing.
 pub fn small_width(s: &str) -> usize {
     let n = s.chars().count();
     if n == 0 {
@@ -142,7 +177,8 @@ pub fn small_width(s: &str) -> usize {
     }
 }
 
-/// Rendered width of a string in the 5x7 face.
+/// Rendered width of a string in the 5x7 face, in buffer pixels, on the same
+/// terms as [`small_width`].
 pub fn big_width(s: &str) -> usize {
     let n = s.chars().count();
     if n == 0 {
