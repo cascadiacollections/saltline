@@ -143,7 +143,7 @@ Touch aiming has two modes, chosen with AIM on the CONTROLS / AUDIO screen:
   player's job (DESIGN §2.5).
 
 Until a player picks one, the defaults are `DEFAULT_TOUCH_AIM` and
-`DEFAULT_ARC_HINT` in `game.rs`.
+`DEFAULT_ARC_HINT` in `app.rs`.
 
 LAST ARC, on the same screen for every input, leaves the last shot's path
 drawn as a faint dotted line until the next shot or the next screen. It is on

@@ -13,7 +13,7 @@
 //! Floats are fine here because they never reach the sim: they are rounded
 //! to integer ticks first, and the sim only ever sees ticks.
 //!
-//! `game.rs` recomputes the aim every frame while the finger is down, so the
+//! The core (`app`) recomputes the aim every frame while the finger is down, so the
 //! readouts and barrel sprite show exactly what letting go would fire, and
 //! fires on the drop. A pull that ends back inside [`DEAD_ZONE`] cancels and
 //! restores the aim from before the drag.

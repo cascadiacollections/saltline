@@ -335,8 +335,8 @@ impl Save {
     }
 
     /// Place a finished run on the board. Returns its position, or `None` if
-    /// it did not make the cut. Persisting is the caller's job
-    /// ([`save::record`](crate::save::record) does both).
+    /// it did not make the cut. Persisting is the caller's job: the core
+    /// asks the node for it with `app::Effect::Store`.
     pub fn place(&mut self, entry: Entry) -> Option<usize> {
         self.scores.push(entry);
         self.sort();
