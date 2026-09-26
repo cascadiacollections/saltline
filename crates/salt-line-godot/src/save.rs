@@ -47,7 +47,7 @@ pub fn load() -> Save {
     let save = match durable::pick(main.as_deref(), temp.as_deref()) {
         Pick::Main => Save::parse(main.as_deref().unwrap_or_default()),
         Pick::Temp => {
-            godot_warn!("salt-line: {SAVE_PATH} missing or empty; recovered {TEMP_PATH}");
+            godot_warn!("salt-line: {SAVE_PATH} missing or damaged; recovered {TEMP_PATH}");
             Save::parse(temp.as_deref().unwrap_or_default())
         }
         Pick::Empty => Save::default(),
