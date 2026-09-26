@@ -305,17 +305,15 @@ platform. What that costs, concretely:
   on macOS (Apple silicon), and the determinism job fails unless all five
   digests are identical.
 
-## Monetization
+## Nothing for sale
 
-The preview is built **without** the `monetization` feature and sells nothing.
-The paywall, the free-screen gate and the storefront seam all exist in
-`crates/salt-line-godot/src/store.rs`, behind that flag.
+Salt Line is free, with no paywall, no locked screens and no crippled build:
+every build plays every screen, and there is no store code in it.
 
-No build grants the unlock locally. Entitlement is asked of the platform at
-startup; the `unlocked` line in the save file is a cache of that answer and is
-never treated as proof of purchase, because it is a text file the player owns.
-With no storefront SDK linked, a monetized build answers `Unavailable` — which
-is why it is not the build that ships.
+The save file is plain text the player owns. It holds settings, bindings and
+the local board, nothing that grants or withholds content, so editing it by
+hand changes nothing but those. Saves from earlier builds may carry an
+`unlocked` line; it is ignored on load and dropped on the next write.
 
 ## Independence
 

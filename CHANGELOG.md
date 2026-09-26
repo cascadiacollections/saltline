@@ -44,4 +44,9 @@ second. See RELEASING.md for the release steps.
   solvable.
 - Engine target raised to Godot 4.7.2.
 
+### Removed
+
+- The unused paywall and store code. Every build plays every screen. Old save
+  files still load; their `unlocked` line is ignored.
+
 [Unreleased]: https://github.com/cascadiacollections/saltline/commits/main
