@@ -107,4 +107,57 @@ mod tests {
             }
         }
     }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn point() -> impl Strategy<Value = (f32, f32)> {
+            (-500.0f32..900.0, -300.0f32..500.0)
+        }
+
+        proptest! {
+            #[test]
+            fn a_pull_aims_on_the_grid_or_cancels(
+                start in point(),
+                now in point(),
+                quantum in prop::sample::select(vec![1, 2, 5, 10]),
+            ) {
+                let dx = (start.0 - now.0) as f64;
+                let dy = (now.1 - start.1) as f64;
+                match pull_to_aim(start, now, quantum) {
+                    None => prop_assert!(dx.hypot(dy) < DEAD_ZONE),
+                    Some((angle, power)) => {
+                        prop_assert!(dx.hypot(dy) >= DEAD_ZONE);
+                        prop_assert!((0..=MAX_ANGLE_TICKS).contains(&angle));
+                        prop_assert_eq!(angle % quantum, 0);
+                        prop_assert!((0..=POWER_TICKS_MAX).contains(&power));
+                        prop_assert_eq!(power % POWER_STEP, 0);
+                    }
+                }
+            }
+
+            #[test]
+            fn pulling_further_the_same_way_never_weakens_the_shot(
+                start in point(),
+                dir in (0.05f32..1.0, 0.05f32..1.0),
+                a in 0.0f32..150.0,
+                b in 0.0f32..150.0,
+            ) {
+                let (near, far) = if a < b { (a, b) } else { (b, a) };
+                let at = |d: f32| (start.0 - dir.0 * d, start.1 + dir.1 * d);
+                if let (Some((_, p1)), Some((_, p2))) =
+                    (pull_to_aim(start, at(near), 10), pull_to_aim(start, at(far), 10))
+                {
+                    prop_assert!(p1 <= p2);
+                }
+            }
+
+            #[test]
+            fn the_short_arc_stays_in_the_first_half(apex in 0usize..2000, len in 0usize..2000, window in 1usize..200) {
+                prop_assert!(short_arc_len(apex, len, window) <= len / 2);
+                prop_assert!(short_arc_len(apex, len, window) <= window);
+            }
+        }
+    }
 }

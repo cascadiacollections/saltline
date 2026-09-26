@@ -62,3 +62,7 @@ android: android-apk
 # Follow the game's log on the device.
 android-log:
     "{{ adb }}" logcat --pid="$("{{ adb }}" shell pidof com.cascadiacollections.saltline)"
+
+# Check advisories, licences, bans and sources (deny.toml). Needs cargo-deny.
+deny:
+    cargo deny check
