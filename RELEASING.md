@@ -24,7 +24,7 @@ Supported toolchain, pinned and checked in:
 |---|---|
 | Rust | `1.98.1` — `rust-toolchain.toml` |
 | Godot | `4.7.2` — `project.godot` `config/features`, the CI export job, and the `api-4-7` feature on the `godot` crate |
-| Python | 3.9+ with Pillow, managed by `uv`, only to regenerate `art/` |
+| Python | 3.10+ with Pillow, managed by `uv`, to regenerate `art/` and the site; `tools/release_version.py` needs only a stock Python 3.9+ |
 
 ## Build it
 
@@ -126,8 +126,17 @@ A failed tag build publishes nothing. Fix forward: delete the tag
 (`git push origin :vX.Y.Z`), fix, and tag again. If the release job itself
 failed after creating the release, delete the release as well before re-running.
 
-Tag builds never restore the Rust cache (a cache written by a pull request must
-not reach a release), so they take longer than a PR build.
+Only a commit on `main` can be released: the `version` job fails a tag that
+points anywhere else. The release is marked **latest** unconditionally, so
+tagging an older line after a newer release (say `v0.1.2` after `v0.2.0`)
+would make the older one "latest"; fix that by hand in the release settings
+if it ever happens.
+
+Tag builds never restore the Rust cache. A tag run can only restore caches
+written on `main` (pull request caches are scoped to `refs/pull/N/merge`), but
+a release should not depend on even that, so tag builds start cold and take
+longer; the macOS job's timeout is raised to 75 minutes on tags to cover that
+and the notarization wait.
 
 ### Version rule
 
@@ -168,21 +177,40 @@ So `v0.1.0` is `1009999`, and the dev build from run 70 once `main` says
   beats all of them. That is why `main` is bumped straight after tagging: a
   dev build still carrying the released version would be refused over the
   release.
-- A local `just android` build keeps `versionCode=1`, so any CI build installs
-  over it (the key must match, as always).
+- A local `just android` build keeps `versionCode=1`, lower than any CI build,
+  so it installs with `adb install -r -d`: `-d` permits the downgrade, which
+  Android allows only for a debuggable APK, and `just android` exports a debug
+  one. The key must still match (below).
 
 Dev builds also get `version/name` `X.Y.Z-dev.<run>`, so Settings > Apps shows
-which build is installed. If `run_number` ever passed 9998 within one version,
-dev builds would share a code; Android accepts an equal code, so they would
-still install, only unordered. Bump the patch version if that ever matters.
+which build is installed.
+
+**The 9998 cap is permanent.** `github.run_number` never resets: it counts
+every run of this workflow, pull requests included, across all versions (about
+70 by 0.1.0). Once it passes 9998, every later dev build gets `build = 9998`
+for good. They still install over each other (Android accepts an equal code)
+and releases still beat them, but dev builds within one version are no longer
+ordered by age. When that is near, change the scheme in
+`tools/release_version.py`, for example subtract a recorded offset from the
+run number, or reset the build field per version from the tag history, and
+note the change here.
 
 **Keys come first.** Android only compares versionCodes between APKs signed
-with the same key. Dev builds are signed with the debug key; tag builds with
-the release key once it exists (see "Owner action required"). The two then do
-not install over each other: moving a device between the dev channel and
-releases means an uninstall, which deletes `user://` saves. Until the release
-key exists, tag builds fall back to the debug key with a warning and install
-over dev builds in versionCode order.
+with the same key; an APK signed with a different key does not install at all
+until the old one is uninstalled, which deletes `user://` saves.
+
+- Pushes to `main` (dev builds) and `v*` tags are signed with the **release
+  key** once it exists (see "Owner action required"), so dev builds and
+  releases install over each other in versionCode order. Consequence: a dev
+  build installed over a player's release replaces it, and the player cannot
+  go back to that release, because it has the lower versionCode. Their way
+  back is the next release, which beats every dev build before it.
+- Pull request builds are always signed with the **debug key**
+  (`ANDROID_DEBUG_KEYSTORE`, the same key as a local `just android`). They do
+  not install over release-signed builds, or those over them, without an
+  uninstall.
+- Until the release key exists, main and tag builds fall back to the debug key
+  with a warning, and everything installs over everything in versionCode order.
 
 ### macOS universal build
 
@@ -274,8 +302,8 @@ Copy this into the release notes, trimmed to what is still true.
   off-by-default feature flag and has no storefront behind it.
 - Desktop binaries are unsigned and un-notarized unless the owner has set up
   the signing secrets below, so macOS Gatekeeper and Windows SmartScreen will
-  both warn. The Android APK is signed with the debug key until the release
-  key exists. See "Owner action required".
+  both warn. Android dev builds and releases are signed with the debug key
+  until the release key exists. See "Owner action required".
 - Remapping is intentionally plain-text in this preview rather than an
   interactive capture UI. The in-game controls screen documents the format,
   displays active bindings and can reset defaults.
@@ -303,8 +331,10 @@ mistaken for "already handled".
 
 - **Independence and employer review.** Complete the checklist in
   `design/DESIGN.md` §7 before anything is published.
-- **Android release key.** See below. Until it exists, releases are signed
-  with the debug key.
+- **The `release` environment and a `v*` tag ruleset.** See below. Do this
+  before adding any signing secret.
+- **Android release key.** See below. Until it exists, dev builds and
+  releases are signed with the debug key.
 - **macOS signing and notarization.** See below. Until the secrets exist, the
   macOS build is unsigned.
 - **Windows code signing.** Documentation only, see below.
@@ -315,6 +345,39 @@ mistaken for "already handled".
 - **Trademark and naming clearance** for "Salt Line".
 - **Privacy statement.** The game collects and transmits nothing today. Say so
   explicitly if it is ever published anywhere that asks.
+
+### The `release` environment and tag ruleset
+
+A step's `if:` is not a security boundary: anyone with write access could push
+a branch whose workflow simply prints a repository secret. So the signing
+secrets live in a GitHub **Environment** named `release`, and only runs the
+environment admits can read them. CI runs the Android job in it for pushes to
+`main` and `v*` tags, and the desktop export jobs (macOS signing) for `v*`
+tags only; pull requests never
+enter it.
+
+1. Settings > Environments > New environment, named `release`.
+2. Deployment branches and tags: **Selected branches and tags**, with the
+   branch rule `main` and the tag rule `v*`. Nothing else may deploy to it.
+   Optionally add yourself as a required reviewer, which makes every main push
+   and tag wait for approval (the price of a manual gate on each dev build).
+3. Add the `ANDROID_RELEASE_*` and `APPLE_*` secrets below as **environment
+   secrets** of `release`, not repository secrets (`gh secret set NAME --env
+   release`). Only `ANDROID_DEBUG_KEYSTORE` stays a repository secret.
+4. Settings > Rules > Rulesets > New tag ruleset, targeting `v*`: restrict
+   creation, update and deletion to the maintainers (bypass list), so no one
+   else can push a tag that the environment would admit. Protect `main` with a
+   branch ruleset as well (pull requests required), since a push to `main` is
+   admitted too.
+
+Owner decision: **main dev builds are signed with the release key** (see "Android versionCode", "Keys come first"). The alternative that was
+considered was a separate package id for dev builds
+(`com.cascadiacollections.saltline.dev`, installable side by side, with its own
+saves and the debug key, keeping the release key to tags only). It was not
+chosen because a dev build could then never upgrade a player's install or
+carry their saves; the cost of the chosen option is that the release key is
+used on every push to `main`, so the protection of `main` matters as much as
+that of the tags.
 
 ### Android release key
 
@@ -337,8 +400,8 @@ keytool -genkeypair -v \
 keytool -list -v -keystore saltline-release.keystore   # note the SHA-256
 ```
 
-Store it as three repository secrets (Settings > Secrets and variables >
-Actions, or `gh secret set NAME`):
+Store it as three environment secrets of `release` (see above; `gh secret set
+NAME --env release`):
 
 | Secret | Value |
 |---|---|
@@ -348,10 +411,14 @@ Actions, or `gh secret set NAME`):
 
 Then keep an **offline backup**: the keystore file and its password in a
 password manager, plus a second copy on encrypted offline media stored apart
-from it. A GitHub secret cannot be read back, so it is not a backup. Only `v*`
-tag builds ever see these secrets, and the Android job prints each APK's
-certificate digest (`apksigner verify --print-certs`), which must match the
-one noted above.
+from it. A GitHub secret cannot be read back, so it is not a backup. The
+workflow asks for these secrets only on pushes to `main` and `v*` tags, and
+once they are environment secrets GitHub enforces that: a run the `release`
+environment does not admit (a pull request, another branch, another tag)
+cannot read them. Until they are moved there, a repository secret is readable
+by any workflow run with write access behind it. The Android job prints each
+APK's certificate digest (`apksigner verify --print-certs`), which must match
+the one noted above.
 
 An Android App Bundle (`.aab`) is required only to publish on Google Play,
 which is not planned; sideloaded APKs are the distribution. If Play ever
@@ -373,7 +440,7 @@ unsigned, as today.
    and Access > Integrations > App Store Connect API > Team Keys, role
    Developer. Download the `.p8` (possible only once) and note the key ID and
    the issuer ID.
-3. Secrets:
+3. Environment secrets of `release` (tag builds only use them):
 
 | Secret | Value |
 |---|---|

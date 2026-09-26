@@ -74,7 +74,8 @@ android-apk: android-lib
 
 # Build, install and launch on the attached device or emulator.
 android: android-apk
-    "{{ adb }}" install -r build/SaltLine.apk
+    # -d: CI builds carry a far higher versionCode than this local build's 1, and a debug APK may downgrade.
+    "{{ adb }}" install -r -d build/SaltLine.apk
     "{{ adb }}" shell am force-stop com.cascadiacollections.saltline
     "{{ adb }}" shell monkey -p com.cascadiacollections.saltline -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 

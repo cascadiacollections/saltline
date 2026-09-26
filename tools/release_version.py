@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Version bookkeeping for releases. Standard library only, so CI can run it
-with the runner's python3 and no environment.
+"""Version bookkeeping for releases. Standard library only and Python 3.9+,
+so CI and `just` can run it with any python3 and no environment.
 
     release_version.py check [--tag vX.Y.Z]
         Every place the version is written down agrees (see RELEASING.md,
         "Version rule"). With --tag, the tag must match it too, and
         CHANGELOG.md must have a non-empty section for that version.
+
+    release_version.py version
+        Print the Cargo workspace version.
 
     release_version.py notes X.Y.Z
         Print that version's CHANGELOG.md section (the release notes).
@@ -24,8 +27,13 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import tomllib
 from pathlib import Path
+from typing import NoReturn
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # pragma: no cover - older Pythons fall back to a regex
+    tomllib = None
 
 ROOT = Path(__file__).resolve().parent.parent
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -37,18 +45,36 @@ RELEASE_BUILD = 9999
 MAX_DEV_BUILD = RELEASE_BUILD - 1
 
 
-def fail(msg: str) -> None:
+def fail(msg: str) -> NoReturn:
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
+def read(name: str) -> str:
+    try:
+        return (ROOT / name).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        fail(f"{name} not found at the repository root")
+
+
 def cargo_version() -> str:
-    data = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
-    return data["workspace"]["package"]["version"]
+    text = read("Cargo.toml")
+    if tomllib is not None:
+        try:
+            version = tomllib.loads(text).get("workspace", {}).get("package", {}).get("version")
+        except tomllib.TOMLDecodeError as e:
+            fail(f"Cargo.toml does not parse: {e}")
+    else:
+        m = re.search(r"^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+        v = m and re.search(r'^version\s*=\s*"([^"]*)"', m.group(1), re.M)
+        version = v.group(1) if v else None
+    if not version:
+        fail("Cargo.toml has no [workspace.package] version")
+    return version
 
 
 def godot_version() -> str:
-    text = (ROOT / "project.godot").read_text(encoding="utf-8")
+    text = read("project.godot")
     m = re.search(r'^config/version="([^"]*)"', text, re.M)
     if not m:
         fail("project.godot has no config/version")
@@ -60,7 +86,7 @@ def presets() -> dict[str, dict[str, str]]:
     names: dict[str, str] = {}
     options: dict[str, dict[str, str]] = {}
     section = None
-    for line in (ROOT / "export_presets.cfg").read_text(encoding="utf-8").splitlines():
+    for line in read("export_presets.cfg").splitlines():
         line = line.strip()
         if not line or line.startswith(";"):
             continue
@@ -92,13 +118,19 @@ def parse_semver(version: str) -> tuple[int, int, int]:
 
 
 def changelog_section(version: str) -> str:
-    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    """The version's CHANGELOG.md section; fails unless it has bullet entries."""
+    text = read("CHANGELOG.md")
     m = re.search(
         rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |^\[[^\]]+\]: |\Z)",
         text,
         re.M | re.S,
     )
-    return m.group(1).strip() if m else ""
+    if not m:
+        fail(f"CHANGELOG.md has no '## [{version}]' section")
+    section = m.group(1).strip()
+    if not re.search(r"^\s*[-*] \S", section, re.M):
+        fail(f"CHANGELOG.md's '## [{version}]' section has no entries")
+    return section
 
 
 def check(tag: str | None) -> None:
@@ -136,8 +168,8 @@ def check(tag: str | None) -> None:
     if len(set(found.values())) != 1:
         fail("versions disagree; bump them together (RELEASING.md, 'Version rule')")
 
-    if tag is not None and not changelog_section(version):
-        fail(f"CHANGELOG.md has no (or an empty) '## [{version}]' section")
+    if tag is not None:
+        changelog_section(version)
     print(f"ok: {version}")
 
 
@@ -149,7 +181,7 @@ def android_code(run: int, release: bool) -> int:
 
 def set_android(code: int, name: str | None) -> None:
     path = ROOT / "export_presets.cfg"
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = read("export_presets.cfg").splitlines(keepends=True)
     android = next(
         (s for s, opts in _preset_sections(lines).items() if opts == "Android"), None
     )
@@ -193,6 +225,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check")
     c.add_argument("--tag")
+    sub.add_parser("version")
     n = sub.add_parser("notes")
     n.add_argument("version")
     a = sub.add_parser("android-code")
@@ -205,11 +238,10 @@ def main() -> None:
 
     if args.cmd == "check":
         check(args.tag)
+    elif args.cmd == "version":
+        print(cargo_version())
     elif args.cmd == "notes":
-        notes = changelog_section(args.version)
-        if not notes:
-            fail(f"CHANGELOG.md has no (or an empty) '## [{args.version}]' section")
-        print(notes)
+        print(changelog_section(args.version))
     elif args.cmd == "android-code":
         print(android_code(args.run, args.release))
     elif args.cmd == "set-android":
