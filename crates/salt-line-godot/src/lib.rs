@@ -17,6 +17,7 @@ pub mod font;
 pub mod frame;
 pub mod game;
 pub mod icons;
+pub mod input;
 pub mod keypad;
 pub mod pads;
 pub mod palette;

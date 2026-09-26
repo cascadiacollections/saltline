@@ -11,6 +11,7 @@ use salt_line_sim::run::{buffer_width, Phase, RunState, Screen};
 use salt_line_sim::{Vec2, DT, SCREEN_H, SCREEN_W_MAX, SCREEN_W_MIN};
 
 use crate::durable::Debounce;
+use crate::input::{self, Controls, Intents, Key, Pad};
 use crate::keypad::Focus;
 use crate::presentation;
 use crate::raster::View;
@@ -186,6 +187,8 @@ pub struct Game {
     pub status_time: f64,
     pub debug: bool,
 
+    /// This frame's key and pad presses, and hold-to-repeat.
+    pub controls: Controls,
     /// The controller's place on the seed keypad.
     pub seed_focus: Focus,
     pub controller_active: bool,
@@ -265,6 +268,7 @@ impl Default for Game {
             status: String::new(),
             status_time: 0.0,
             debug: false,
+            controls: Controls::default(),
             seed_focus: Focus::default(),
             controller_active: false,
             touch: TouchPad::default(),
@@ -435,6 +439,119 @@ impl Game {
             Mode::Playing => "Playing",
             Mode::Paused => "Paused",
             Mode::GameOver => "GameOver",
+        }
+    }
+}
+
+// ------------------------------------------------------------------ actions
+
+impl Game {
+    fn binding(&self, action: &str, default_key: &str, default_pad: &str) -> (String, String) {
+        self.save
+            .bindings
+            .iter()
+            .find(|(a, _, _)| a == action)
+            .map(|(_, k, p)| (k.clone(), p.clone()))
+            .unwrap_or_else(|| (default_key.into(), default_pad.into()))
+    }
+
+    /// The key and pad tokens bound to an action.
+    pub fn action_binding(&self, action: &str) -> (String, String) {
+        let defaults = input::default_binding(action);
+        self.binding(action, defaults.0, defaults.1)
+    }
+
+    /// Once per frame, before any action is read.
+    pub fn begin_input_frame(&mut self, delta: f64, intents: &Intents) {
+        self.controls.begin(intents);
+        self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+    }
+
+    /// This frame's press of a key, taken. See `Controls::pressed`.
+    pub fn pressed(&mut self, key: Key) -> bool {
+        self.controls.pressed(key)
+    }
+
+    pub fn shift_held(&self) -> bool {
+        self.controls.held(Key::Shift)
+    }
+
+    /// True on the frame the button went down on any joypad.
+    fn pad_pressed(&mut self, button: Pad) -> bool {
+        let down = self.controls.take_pad(button);
+        if down {
+            self.controller_active = true;
+            self.touch_active = false;
+        }
+        down
+    }
+
+    pub fn action_pressed(&mut self, _slot: usize, action: &str) -> bool {
+        let (key, _) = self.action_binding(action);
+        let key_down = Key::from_token(&key)
+            .map(|k| self.pressed(k))
+            .unwrap_or(false);
+        if key_down {
+            self.controller_active = false;
+            self.touch_active = false;
+        }
+        let pad_down = self.pad_action_pressed(action);
+        let touch_down = self.touch.pressed(action) || (action == "back" && self.back_requested);
+        key_down || pad_down || touch_down
+    }
+
+    /// `action_pressed` for the controller alone.
+    pub fn pad_action_pressed(&mut self, action: &str) -> bool {
+        let (_, pad) = self.action_binding(action);
+        Pad::from_token(&pad)
+            .map(|b| self.pad_pressed(b))
+            .unwrap_or(false)
+    }
+
+    pub fn action_repeated(&mut self, slot: usize, action: &str, delta: f64) -> u32 {
+        let (key, pad) = self.action_binding(action);
+        let keyboard = Key::from_token(&key)
+            .map(|k| self.controls.repeated(k, delta, REPEAT_DELAY, REPEAT_RATE))
+            .unwrap_or(0);
+        let buttons = match Pad::from_token(&pad) {
+            Some(b) => self
+                .controls
+                .pad_repeated(b, delta, REPEAT_DELAY, REPEAT_RATE),
+            None => 0,
+        };
+        // Left stick is always available in addition to remappable D-pad.
+        let dir = match action {
+            "left" => Some(input::STICK_LEFT),
+            "right" => Some(input::STICK_RIGHT),
+            "up" => Some(input::STICK_UP),
+            "down" => Some(input::STICK_DOWN),
+            _ => None,
+        };
+        let stick_down = dir.is_some_and(|d| self.controls.stick(d));
+        let stick =
+            self.controls
+                .stick_repeated(slot, stick_down, delta, REPEAT_DELAY, REPEAT_RATE);
+        if keyboard > 0 {
+            self.controller_active = false;
+            self.touch_active = false;
+        }
+        if buttons > 0 || stick_down {
+            self.controller_active = true;
+            self.touch_active = false;
+        }
+        keyboard + buttons + stick + self.touch.repeated(action)
+    }
+
+    /// What a prompt calls an action on the device in use.
+    pub fn input_label(&self, action: &str) -> String {
+        if self.touch_active {
+            return input::touch_label(action).to_string();
+        }
+        let (key, pad) = self.action_binding(action);
+        if self.controller_active {
+            pad
+        } else {
+            key
         }
     }
 }

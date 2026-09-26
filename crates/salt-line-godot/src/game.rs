@@ -25,12 +25,12 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H};
 use crate::app::*;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Memo, Redraw};
+use crate::input::{self, Intents};
 use crate::keypad::{self, Focus};
 use crate::pads::Pads;
 use crate::palette::{slot, Palette};
 use crate::presentation::{
-    self, RepeatState, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER,
-    LEARN_SHELLS, LEARN_WIND,
+    self, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER, LEARN_SHELLS, LEARN_WIND,
 };
 use crate::raster::{self, Canvas, View};
 use crate::resume::{self, Found, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
@@ -92,23 +92,18 @@ pub struct SaltLine {
     /// The drag preview's trajectory, recomputed only when its inputs change.
     preview: Memo<PreviewKey, Preview>,
 
-    /// Key hold-to-repeat state.
-    keys: Vec<(Key, RepeatState)>,
-    /// Key and button presses as events arrive, and the ones this frame
-    /// reads. Polling alone loses a press and release inside one frame.
+    /// Key and button presses as events arrive, handed to the core as the
+    /// next frame's `Intents`. Polling alone loses a press and release
+    /// inside one frame.
     key_queue: Vec<Key>,
-    key_presses: Vec<Key>,
     pad_queue: Vec<JoyButton>,
-    pad_presses: Vec<JoyButton>,
+    /// The frame's input as the core sees it, kept to reuse its buffers.
+    intents: Intents,
     /// The joypads that drive the game: any that has pressed a button or
     /// shown a stick at rest. See `pads::Pads`.
     pads: Pads,
     /// Seconds until the joypad list is checked against the connected ones.
     pad_prune: f64,
-    /// Hold-to-repeat per pad button, shared by every action bound to it.
-    pad_keys: Vec<(JoyButton, RepeatState)>,
-    /// Hold-to-repeat for the left stick, per action slot.
-    pad_repeat: [RepeatState; 8],
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
     audio: Vec<Option<Gd<AudioStreamPlayer>>>,
@@ -142,15 +137,11 @@ impl INode2D for SaltLine {
             fps_cap: 0,
             display: DisplayPoll::default(),
             preview: Memo::default(),
-            keys: Vec::new(),
             key_queue: Vec::new(),
-            key_presses: Vec::new(),
+            intents: Intents::default(),
             pad_queue: Vec::new(),
-            pad_presses: Vec::new(),
             pads: Pads::default(),
             pad_prune: 0.0,
-            pad_keys: Vec::new(),
-            pad_repeat: [RepeatState::default(); 8],
             touch_buttons: Vec::new(),
             audio: Vec::new(),
             shot_path: None,
@@ -593,92 +584,6 @@ impl SaltLine {
         }
     }
 
-    fn binding(&self, action: &str, default_key: &str, default_pad: &str) -> (String, String) {
-        self.g
-            .save
-            .bindings
-            .iter()
-            .find(|(a, _, _)| a == action)
-            .map(|(_, k, p)| (k.clone(), p.clone()))
-            .unwrap_or_else(|| (default_key.into(), default_pad.into()))
-    }
-
-    fn key_token(token: &str) -> Option<Key> {
-        Some(match token {
-            "LEFT" => Key::LEFT,
-            "RIGHT" => Key::RIGHT,
-            "UP" => Key::UP,
-            "DOWN" => Key::DOWN,
-            "SPACE" => Key::SPACE,
-            "ENTER" => Key::ENTER,
-            "ESCAPE" => Key::ESCAPE,
-            "LBRACKET" => Key::BRACKETLEFT,
-            "RBRACKET" => Key::BRACKETRIGHT,
-            "COMMA" => Key::COMMA,
-            "PERIOD" => Key::PERIOD,
-            "1" => Key::KEY_1,
-            "2" => Key::KEY_2,
-            "3" => Key::KEY_3,
-            "C" => Key::C,
-            "R" => Key::R,
-            "S" => Key::S,
-            "U" => Key::U,
-            "N" => Key::N,
-            "V" => Key::V,
-            "M" => Key::M,
-            "L" => Key::L,
-            _ => return None,
-        })
-    }
-
-    fn pad_token(token: &str) -> Option<JoyButton> {
-        Some(match token {
-            "A" => JoyButton::A,
-            "B" => JoyButton::B,
-            "X" => JoyButton::X,
-            "Y" => JoyButton::Y,
-            "START" => JoyButton::START,
-            "BACK" => JoyButton::BACK,
-            "LB" => JoyButton::LEFT_SHOULDER,
-            "RB" => JoyButton::RIGHT_SHOULDER,
-            "DPAD_LEFT" => JoyButton::DPAD_LEFT,
-            "DPAD_RIGHT" => JoyButton::DPAD_RIGHT,
-            "DPAD_UP" => JoyButton::DPAD_UP,
-            "DPAD_DOWN" => JoyButton::DPAD_DOWN,
-            _ => return None,
-        })
-    }
-
-    fn action_binding(&self, action: &str) -> (String, String) {
-        let defaults = match action {
-            "left" => ("LEFT", "DPAD_LEFT"),
-            "right" => ("RIGHT", "DPAD_RIGHT"),
-            "up" => ("UP", "DPAD_UP"),
-            "down" => ("DOWN", "DPAD_DOWN"),
-            "fire" => ("SPACE", "A"),
-            "fuse_down" => ("LBRACKET", "LB"),
-            "fuse_up" => ("RBRACKET", "RB"),
-            "reposition_left" => ("COMMA", "X"),
-            "reposition_right" => ("PERIOD", "Y"),
-            "draft_1" => ("1", "X"),
-            "draft_2" => ("2", "A"),
-            "draft_3" => ("3", "B"),
-            "confirm" => ("ENTER", "A"),
-            "back" => ("ESCAPE", "B"),
-            "copy" => ("C", "X"),
-            "replay" => ("R", "Y"),
-            "controls" => ("V", "BACK"),
-            "mute" => ("M", "START"),
-            "last_arc" => ("L", "X"),
-            "seed" => ("S", "Y"),
-            // Only offered over a saved run, where confirm is CONTINUE and
-            // pad Y is already seed entry.
-            "new_run" => ("N", "RB"),
-            _ => ("", ""),
-        };
-        self.binding(action, defaults.0, defaults.1)
-    }
-
     /// Once a second, forget joypads that have been unplugged.
     fn prune_pads(&mut self, delta: f64) {
         self.pad_prune -= delta;
@@ -694,14 +599,6 @@ impl SaltLine {
         self.pads.retain_connected(&connected);
     }
 
-    /// The button is held on any joypad.
-    fn pad_held(&self, button: JoyButton) -> bool {
-        let input = Input::singleton();
-        self.pads
-            .iter()
-            .any(|p| input.is_joy_button_pressed(p.device, button))
-    }
-
     /// The stick is pushed past the threshold on any joypad whose stick has
     /// been seen at rest.
     fn stick_held(&self, axis: JoyAxis, sign: f32) -> bool {
@@ -713,149 +610,36 @@ impl SaltLine {
             .any(|p| input.get_joy_axis(p.device, axis) * sign > 0.45)
     }
 
-    /// Take this frame's press of a pad button, if it had one. Taken, so a
-    /// second action bound to the same button in the same mode does not
-    /// fire as well: the first one asked wins.
-    fn take_pad_press(&mut self, button: JoyButton) -> bool {
-        let Some(i) = self.pad_presses.iter().position(|b| *b == button) else {
-            return false;
-        };
-        self.pad_presses.swap_remove(i);
-        true
-    }
-
-    /// True on the frame the button went down on any joypad.
-    fn pad_pressed(&mut self, button: JoyButton) -> bool {
-        let down = self.take_pad_press(button);
-        if down {
-            self.g.controller_active = true;
-            self.g.touch_active = false;
-        }
-        down
-    }
-
-    fn action_pressed(&mut self, _slot: usize, action: &str) -> bool {
-        let (key, _) = self.action_binding(action);
-        let key_down = Self::key_token(&key)
-            .map(|k| self.pressed(k))
-            .unwrap_or(false);
-        if key_down {
-            self.g.controller_active = false;
-            self.g.touch_active = false;
-        }
-        let pad_down = self.pad_action_pressed(action);
-        let touch_down =
-            self.g.touch.pressed(action) || (action == "back" && self.g.back_requested);
-        key_down || pad_down || touch_down
-    }
-
-    /// `action_pressed` for the controller alone.
-    fn pad_action_pressed(&mut self, action: &str) -> bool {
-        let (_, pad) = self.action_binding(action);
-        Self::pad_token(&pad)
-            .map(|b| self.pad_pressed(b))
-            .unwrap_or(false)
-    }
-
-    fn action_repeated(&mut self, slot: usize, action: &str, delta: f64) -> u32 {
-        let (key, pad) = self.action_binding(action);
-        let keyboard = Self::key_token(&key)
-            .map(|k| self.repeated(k, delta))
-            .unwrap_or(0);
-        let buttons = match Self::pad_token(&pad) {
-            Some(b) => {
-                let press = self.take_pad_press(b);
-                let down = self.pad_held(b);
-                let i = match self.pad_keys.iter().position(|(k, _)| *k == b) {
-                    Some(i) => i,
-                    None => {
-                        self.pad_keys.push((b, RepeatState::default()));
-                        self.pad_keys.len() - 1
-                    }
-                };
-                self.pad_keys[i]
-                    .1
-                    .tick_pressed(press, down, delta, REPEAT_DELAY, REPEAT_RATE)
-            }
-            None => 0,
-        };
-        // Left stick is always available in addition to remappable D-pad.
-        let axis = match action {
-            "left" => Some((JoyAxis::LEFT_X, -1.0)),
-            "right" => Some((JoyAxis::LEFT_X, 1.0)),
-            "up" => Some((JoyAxis::LEFT_Y, -1.0)),
-            "down" => Some((JoyAxis::LEFT_Y, 1.0)),
-            _ => None,
-        };
-        let stick_down = axis.is_some_and(|(axis, sign)| self.stick_held(axis, sign));
-        let stick = self.pad_repeat[slot].tick(stick_down, delta, REPEAT_DELAY, REPEAT_RATE);
-        if keyboard > 0 {
-            self.g.controller_active = false;
-            self.g.touch_active = false;
-        }
-        if buttons > 0 || stick_down {
-            self.g.controller_active = true;
-            self.g.touch_active = false;
-        }
-        keyboard + buttons + stick + self.g.touch.repeated(action)
-    }
-
-    fn input_label(&self, action: &str) -> String {
-        if self.g.touch_active {
-            return touch_label(action).to_string();
-        }
-        let (key, pad) = self.action_binding(action);
-        if self.g.controller_active {
-            pad
-        } else {
-            key
-        }
-    }
-
-    fn key_slot(&mut self, key: Key) -> usize {
-        if let Some(i) = self.keys.iter().position(|(k, _)| *k == key) {
-            i
-        } else {
-            self.keys.push((key, RepeatState::default()));
-            self.keys.len() - 1
-        }
-    }
-
-    /// True on the frame a key goes down, even if it came up again before
-    /// the frame began. The press is taken, so of two actions bound to the
-    /// same key only the first one asked fires.
-    fn pressed(&mut self, key: Key) -> bool {
-        let Some(i) = self.key_presses.iter().position(|k| *k == key) else {
-            return false;
-        };
-        self.key_presses.swap_remove(i);
-        true
-    }
-
-    /// Number of activations this frame, with hold-to-repeat. The repeat
-    /// state is per key, so actions sharing a key share its repeats.
-    fn repeated(&mut self, key: Key, delta: f64) -> u32 {
-        let pressed = self.pressed(key);
-        let down = Input::singleton().is_key_pressed(key);
-        let i = self.key_slot(key);
-        self.keys[i]
-            .1
-            .tick_pressed(pressed, down, delta, REPEAT_DELAY, REPEAT_RATE)
-    }
-
-    fn shift_held(&self) -> bool {
-        let input = Input::singleton();
-        input.is_key_pressed(Key::SHIFT)
-    }
-
     /// Once per frame, before any action is read: this frame's presses are
-    /// the ones queued since the last.
+    /// the ones queued since the last, with what is held now.
     fn begin_input_frame(&mut self, delta: f64) {
-        std::mem::swap(&mut self.key_presses, &mut self.key_queue);
-        self.key_queue.clear();
-        std::mem::swap(&mut self.pad_presses, &mut self.pad_queue);
-        self.pad_queue.clear();
-        self.g.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        let input = Input::singleton();
+        let mut i = std::mem::take(&mut self.intents);
+        i.clear();
+        i.keys.extend(self.key_queue.drain(..).filter_map(core_key));
+        i.keys_held.extend(
+            KEYS.iter()
+                .filter(|(_, k)| input.is_key_pressed(*k))
+                .map(|(c, _)| *c),
+        );
+        i.pads.extend(self.pad_queue.drain(..).filter_map(core_pad));
+        for (c, b) in PADS {
+            if self
+                .pads
+                .iter()
+                .any(|p| input.is_joy_button_pressed(p.device, b))
+            {
+                i.pads_held.push(c);
+            }
+        }
+        i.stick = [
+            self.stick_held(JoyAxis::LEFT_X, -1.0),
+            self.stick_held(JoyAxis::LEFT_X, 1.0),
+            self.stick_held(JoyAxis::LEFT_Y, -1.0),
+            self.stick_held(JoyAxis::LEFT_Y, 1.0),
+        ];
+        self.g.begin_input_frame(delta, &i);
+        self.intents = i;
     }
 
     fn handle_input(&mut self, delta: f64) {
@@ -897,10 +681,10 @@ impl SaltLine {
     }
 
     fn handle_mode_input(&mut self, delta: f64) {
-        if self.pressed(Key::F1) {
+        if self.g.pressed(input::Key::F1) {
             self.g.debug = !self.g.debug;
         }
-        if self.action_pressed(15, "mute") {
+        if self.g.action_pressed(15, "mute") {
             self.g.save.muted = !self.g.save.muted;
             self.apply_volume();
             self.g.settings.touch();
@@ -913,9 +697,10 @@ impl SaltLine {
         match self.g.mode {
             Mode::Title => {
                 let resumable = self.g.resumable.is_some();
-                let confirm = self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER);
+                let confirm =
+                    self.g.action_pressed(0, "confirm") || self.g.pressed(input::Key::KpEnter);
                 let daily = if resumable {
-                    self.action_pressed(11, "new_run")
+                    self.g.action_pressed(11, "new_run")
                 } else {
                     confirm
                 };
@@ -927,16 +712,16 @@ impl SaltLine {
                         self.play_sound(Sound::Ui);
                         self.start_run(seed, true);
                     }
-                } else if self.action_pressed(17, "seed") {
+                } else if self.g.action_pressed(17, "seed") {
                     if self.confirm_discard("seed") {
                         self.open_seed_entry();
                     }
-                } else if self.g.last_crash.is_some() && self.action_pressed(4, "copy") {
+                } else if self.g.last_crash.is_some() && self.g.action_pressed(4, "copy") {
                     self.copy_last_crash();
-                } else if self.action_pressed(1, "controls") {
+                } else if self.g.action_pressed(1, "controls") {
                     self.play_sound(Sound::Ui);
                     self.g.mode = Mode::Controls;
-                } else if self.action_pressed(2, "back") {
+                } else if self.g.action_pressed(2, "back") {
                     self.base().get_tree().quit();
                 }
                 if self.g.mode != Mode::Title {
@@ -944,8 +729,8 @@ impl SaltLine {
                 }
             }
             Mode::Controls => {
-                let down = self.action_repeated(0, "left", delta);
-                let up = self.action_repeated(1, "right", delta);
+                let down = self.g.action_repeated(0, "left", delta);
+                let up = self.g.action_repeated(1, "right", delta);
                 if down + up > 0 {
                     let volume =
                         (self.g.save.volume as i32 + (up as i32 - down as i32) * 5).clamp(0, 100);
@@ -964,25 +749,25 @@ impl SaltLine {
                     self.g.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
-                if self.action_pressed(16, "last_arc") {
+                if self.g.action_pressed(16, "last_arc") {
                     self.g.save.last_arc = Some(!self.g.last_arc_on());
                     self.g.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
-                if self.action_pressed(3, "replay") {
+                if self.g.action_pressed(3, "replay") {
                     self.g.save.bindings.clear();
                     self.g.settings.touch();
                     self.note("DEFAULT BINDINGS RESTORED".into());
-                } else if self.action_pressed(2, "back") {
+                } else if self.g.action_pressed(2, "back") {
                     self.play_sound(Sound::Ui);
                     self.g.mode = Mode::Title;
                 }
             }
             Mode::Paused => {
-                if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
+                if self.g.action_pressed(0, "confirm") || self.g.action_pressed(2, "back") {
                     self.play_sound(Sound::Ui);
                     self.g.mode = Mode::Playing;
-                } else if self.action_pressed(3, "replay") {
+                } else if self.g.action_pressed(3, "replay") {
                     self.play_sound(Sound::Ui);
                     self.g.mode = Mode::Title;
                     self.suspend_run();
@@ -990,15 +775,15 @@ impl SaltLine {
             }
             Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::GameOver => {
-                if self.action_pressed(4, "copy") {
+                if self.g.action_pressed(4, "copy") {
                     // Seed sharing: the seed is the whole run, so the
                     // clipboard is the whole share format.
                     let seed = format_seed(self.g.last_seed);
                     DisplayServer::singleton().clipboard_set(&GString::from(seed.as_str()));
                     self.note(format!("COPIED {seed}"));
-                } else if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
+                } else if self.g.action_pressed(0, "confirm") || self.g.action_pressed(2, "back") {
                     self.g.mode = Mode::Title;
-                } else if self.action_pressed(3, "replay") {
+                } else if self.g.action_pressed(3, "replay") {
                     let seed = self.g.last_seed;
                     let daily = self.g.daily;
                     self.start_run(seed, daily);
@@ -1012,16 +797,16 @@ impl SaltLine {
     /// keypad, and the controller moving a focus over the same keypad: A
     /// presses the focused key, B deletes, or leaves once nothing is typed.
     fn handle_seed_input(&mut self, delta: f64) {
-        let dx = self.action_repeated(1, "right", delta) as i32
-            - self.action_repeated(0, "left", delta) as i32;
-        let dy = self.action_repeated(2, "down", delta) as i32
-            - self.action_repeated(3, "up", delta) as i32;
+        let dx = self.g.action_repeated(1, "right", delta) as i32
+            - self.g.action_repeated(0, "left", delta) as i32;
+        let dy = self.g.action_repeated(2, "down", delta) as i32
+            - self.g.action_repeated(3, "up", delta) as i32;
         if dx != 0 || dy != 0 {
             self.g.seed_focus.step(dx, dy);
         }
-        let key = if self.pad_action_pressed("confirm") {
+        let key = if self.g.pad_action_pressed("confirm") {
             Some(self.g.seed_focus.action())
-        } else if self.pad_action_pressed("back") {
+        } else if self.g.pad_action_pressed("back") {
             Some(if self.g.seed_text.is_empty() {
                 "back"
             } else {
@@ -1047,7 +832,7 @@ impl SaltLine {
     }
 
     fn handle_play_input(&mut self, delta: f64) {
-        if self.action_pressed(2, "back") {
+        if self.g.action_pressed(2, "back") {
             self.g.touch.cancel_drag();
             self.g.mode = Mode::Paused;
             return;
@@ -1063,7 +848,7 @@ impl SaltLine {
 
         if phase == Phase::Drafting {
             for (i, action) in ["draft_1", "draft_2", "draft_3"].into_iter().enumerate() {
-                if self.action_pressed(5 + i, action) {
+                if self.g.action_pressed(5 + i, action) {
                     let taken = self.g.run.as_mut().and_then(|r| r.take_offer(i));
                     if let Some(m) = taken {
                         self.preview.clear();
@@ -1089,17 +874,17 @@ impl SaltLine {
             .map(|r| r.loadout.angle_quantum_ticks)
             .unwrap_or(5)
             .max(1);
-        let mult = if self.shift_held() { 10 } else { 1 };
+        let mult = if self.g.shift_held() { 10 } else { 1 };
 
-        let left = self.action_repeated(0, "left", delta) as i32;
-        let right = self.action_repeated(1, "right", delta) as i32;
+        let left = self.g.action_repeated(0, "left", delta) as i32;
+        let right = self.g.action_repeated(1, "right", delta) as i32;
         if left + right != 0 {
             self.learn(LEARN_ANGLE);
             self.g.angle_ticks = (self.g.angle_ticks + (right - left) * quantum * mult)
                 .clamp(0, dmath::MAX_ANGLE_TICKS);
         }
-        let down = self.action_repeated(2, "down", delta) as i32;
-        let up = self.action_repeated(3, "up", delta) as i32;
+        let down = self.g.action_repeated(2, "down", delta) as i32;
+        let up = self.g.action_repeated(3, "up", delta) as i32;
         if up + down != 0 {
             self.learn(LEARN_POWER);
             self.g.power_ticks =
@@ -1108,8 +893,8 @@ impl SaltLine {
 
         // Airburst fuse.
         let fuse_step = 4.0 * mult as f64;
-        let minus = self.action_repeated(4, "fuse_down", delta) as f64;
-        let plus = self.action_repeated(5, "fuse_up", delta) as f64;
+        let minus = self.g.action_repeated(4, "fuse_down", delta) as f64;
+        let plus = self.g.action_repeated(5, "fuse_up", delta) as f64;
         if minus + plus > 0.0 {
             if let Some(r) = self.g.run.as_mut() {
                 if r.loadout.airburst() {
@@ -1120,8 +905,8 @@ impl SaltLine {
         }
 
         // Enfilade reposition.
-        let l = self.action_pressed(8, "reposition_left");
-        let rr = self.action_pressed(9, "reposition_right");
+        let l = self.g.action_pressed(8, "reposition_left");
+        let rr = self.g.action_pressed(9, "reposition_right");
         if l || rr {
             let step = if l { -5.0 } else { 5.0 };
             let ok = self.g.run.as_mut().map(|r| {
@@ -1133,7 +918,7 @@ impl SaltLine {
             }
         }
 
-        if self.action_pressed(10, "fire") || self.pressed(Key::ENTER) {
+        if self.g.action_pressed(10, "fire") || self.g.pressed(input::Key::Enter) {
             self.fire();
         }
 
@@ -1643,7 +1428,7 @@ impl SaltLine {
             Mode::Title => {
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
-                let confirm = self.input_label("confirm");
+                let confirm = self.g.input_label("confirm");
                 // With a saved run, confirm continues it and a new run is a
                 // separate action that asks twice (`confirm_discard`).
                 let again = "PRESS AGAIN - SAVED RUN IS LOST";
@@ -1655,7 +1440,7 @@ impl SaltLine {
                         "CONTINUE",
                         alert,
                     );
-                    let key = self.input_label("new_run");
+                    let key = self.g.input_label("new_run");
                     let text = if self.g.discard_armed == Some("daily") {
                         again
                     } else {
@@ -1671,7 +1456,7 @@ impl SaltLine {
                         fg,
                     );
                 }
-                let seed = self.input_label("seed");
+                let seed = self.g.input_label("seed");
                 let seed_text = if self.g.discard_armed == Some("seed") {
                     again
                 } else {
@@ -1684,7 +1469,7 @@ impl SaltLine {
                     seed_text,
                     fg,
                 );
-                let controls = self.input_label("controls");
+                let controls = self.g.input_label("controls");
                 y = self.menu_row(
                     y,
                     "controls",
@@ -1692,7 +1477,7 @@ impl SaltLine {
                     "CONTROLS / AUDIO",
                     fg,
                 );
-                let back = self.input_label("back");
+                let back = self.g.input_label("back");
                 y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", dim);
                 if self.g.last_crash.is_some() {
                     let text = if self.g.crash_copied {
@@ -1700,7 +1485,7 @@ impl SaltLine {
                     } else {
                         "COPY LAST CRASH REPORT"
                     };
-                    let copy = self.input_label("copy");
+                    let copy = self.g.input_label("copy");
                     y = self.menu_row(y, "copy", &format!("{copy}      {text}"), text, alert);
                 }
                 y += 6;
@@ -1801,10 +1586,10 @@ impl SaltLine {
                     ("BACK", "back", ""),
                 ];
                 for (name, a, b) in rows {
-                    let mut labels = self.input_label(a);
+                    let mut labels = self.g.input_label(a);
                     if !b.is_empty() {
                         labels.push('/');
-                        labels.push_str(&self.input_label(b));
+                        labels.push_str(&self.g.input_label(b));
                     }
                     self.centred(y, &format!("{name}: {labels}"), fg);
                     y += 7;
@@ -1813,14 +1598,14 @@ impl SaltLine {
                 self.centred(y, "M / START  MUTE     R / Y  RESET", dim);
                 y += 7;
                 let on = if self.g.last_arc_on() { "ON" } else { "OFF" };
-                let toggle = format!("{}  LAST ARC: {on}", self.input_label("last_arc"));
+                let toggle = format!("{}  LAST ARC: {on}", self.g.input_label("last_arc"));
                 self.centred(y, &toggle, fg);
                 y += 9;
                 self.centred(y, "EDIT bind LINES IN salt_line.txt TO REMAP", dim);
                 y += 7;
                 self.centred(y, "FORMAT: bind ACTION KEY PAD", dim);
                 y += 9;
-                let back = self.input_label("back");
+                let back = self.g.input_label("back");
                 self.centred(y, &format!("{back}  BACK"), fg);
             }
             Mode::SeedEntry => {
@@ -2337,9 +2122,9 @@ impl SaltLine {
         if phase == Phase::Drafting && self.g.save.learned & LEARN_DRAFT == 0 {
             return Some(format!(
                 "{} {} {}  PICK A MODIFIER",
-                self.input_label("draft_1"),
-                self.input_label("draft_2"),
-                self.input_label("draft_3")
+                self.g.input_label("draft_1"),
+                self.g.input_label("draft_2"),
+                self.g.input_label("draft_3")
             ));
         }
         let learned = self.g.save.learned;
@@ -2356,21 +2141,21 @@ impl SaltLine {
         if learned & LEARN_ANGLE == 0 {
             Some(format!(
                 "{} / {}  SET ANGLE",
-                self.input_label("left"),
-                self.input_label("right")
+                self.g.input_label("left"),
+                self.g.input_label("right")
             ))
         } else if learned & LEARN_POWER == 0 {
             Some(format!(
                 "{} / {}  SET POWER",
-                self.input_label("up"),
-                self.input_label("down")
+                self.g.input_label("up"),
+                self.g.input_label("down")
             ))
         } else if learned & LEARN_FIRE == 0 {
             // On a touchscreen the button already says FIRE.
             if self.g.touch_active {
                 Some("TAP FIRE".into())
             } else {
-                Some(format!("{}  FIRE", self.input_label("fire")))
+                Some(format!("{}  FIRE", self.g.input_label("fire")))
             }
         } else if learned & LEARN_CRATER == 0 {
             Some("CRATERS PERSIST - CORRECT FROM THE LAST SHOT".into())
@@ -2642,9 +2427,9 @@ impl SaltLine {
         self.canvas
             .plate((w - 150) / 2, (h - 48) / 2, 150, 48, &pal);
         self.centred((h - 48) / 2 + 8, "PAUSED", fg);
-        let resume = self.input_label("confirm");
+        let resume = self.g.input_label("confirm");
         self.centred((h - 48) / 2 + 21, &format!("{resume} / BACK  RESUME"), fg);
-        let title = self.input_label("replay");
+        let title = self.g.input_label("replay");
         self.centred((h - 48) / 2 + 31, &format!("{title}  TITLE"), dim);
     }
 }
@@ -2682,24 +2467,6 @@ fn preview_path(
         ArcHint::Full | ArcHint::Wind => path.len(),
     };
     (path, upto)
-}
-
-/// What a prompt calls an action on a touchscreen: the glyph on its on-screen
-/// button, or nothing where the prompt's own line is the button.
-fn touch_label(action: &str) -> &'static str {
-    match action {
-        "left" => "<",
-        "right" => ">",
-        "up" => "+",
-        "down" => "-",
-        "fire" => "FIRE",
-        "fuse_down" => "F-",
-        "fuse_up" => "F+",
-        "reposition_left" => "E<",
-        "reposition_right" => "E>",
-        "draft_1" | "draft_2" | "draft_3" => "TAP",
-        _ => "",
-    }
 }
 
 // ------------------------------------------------- settings and crash reports
@@ -2810,7 +2577,7 @@ impl SaltLine {
         self.g.status_time = (self.g.status_time - delta).max(0.0);
         self.begin_input_frame(delta);
         self.apply_frame_cap();
-        if self.action_pressed(4, "copy") {
+        if self.g.action_pressed(4, "copy") {
             // Only a finished report: a panic off the main thread can stop the
             // game while the hook is still writing, and half a report copied
             // looks like a whole one.
@@ -2822,7 +2589,7 @@ impl SaltLine {
             } else {
                 self.note("REPORT NOT READY - TRY AGAIN".into());
             }
-        } else if self.action_pressed(2, "back") {
+        } else if self.g.action_pressed(2, "back") {
             self.base().get_tree().quit();
         }
         self.g.back_requested = false;
@@ -2848,7 +2615,7 @@ impl SaltLine {
         y += 8;
         self.centred(y, "PASTE IT INTO A BUG REPORT ON GITHUB.", dim);
         y += 16;
-        let copy = self.input_label("copy");
+        let copy = self.g.input_label("copy");
         y = self.menu_row(
             y,
             "copy",
@@ -2856,7 +2623,7 @@ impl SaltLine {
             "COPY REPORT",
             fg,
         );
-        let back = self.input_label("back");
+        let back = self.g.input_label("back");
         y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", fg);
         y += 4;
         if self.g.status_time > 0.0 {
@@ -3106,4 +2873,59 @@ impl SaltLine {
             format_seed(saved.seed)
         ));
     }
+}
+
+/// The keys the core reads, and the engine's names for them.
+const KEYS: [(input::Key, Key); 25] = [
+    (input::Key::Left, Key::LEFT),
+    (input::Key::Right, Key::RIGHT),
+    (input::Key::Up, Key::UP),
+    (input::Key::Down, Key::DOWN),
+    (input::Key::Space, Key::SPACE),
+    (input::Key::Enter, Key::ENTER),
+    (input::Key::KpEnter, Key::KP_ENTER),
+    (input::Key::Escape, Key::ESCAPE),
+    (input::Key::BracketLeft, Key::BRACKETLEFT),
+    (input::Key::BracketRight, Key::BRACKETRIGHT),
+    (input::Key::Comma, Key::COMMA),
+    (input::Key::Period, Key::PERIOD),
+    (input::Key::Num1, Key::KEY_1),
+    (input::Key::Num2, Key::KEY_2),
+    (input::Key::Num3, Key::KEY_3),
+    (input::Key::C, Key::C),
+    (input::Key::R, Key::R),
+    (input::Key::S, Key::S),
+    (input::Key::U, Key::U),
+    (input::Key::N, Key::N),
+    (input::Key::V, Key::V),
+    (input::Key::M, Key::M),
+    (input::Key::L, Key::L),
+    (input::Key::F1, Key::F1),
+    (input::Key::Shift, Key::SHIFT),
+];
+
+/// The pad buttons the core reads, and the engine's names for them.
+const PADS: [(input::Pad, JoyButton); 12] = [
+    (input::Pad::A, JoyButton::A),
+    (input::Pad::B, JoyButton::B),
+    (input::Pad::X, JoyButton::X),
+    (input::Pad::Y, JoyButton::Y),
+    (input::Pad::Start, JoyButton::START),
+    (input::Pad::Back, JoyButton::BACK),
+    (input::Pad::LeftShoulder, JoyButton::LEFT_SHOULDER),
+    (input::Pad::RightShoulder, JoyButton::RIGHT_SHOULDER),
+    (input::Pad::DpadLeft, JoyButton::DPAD_LEFT),
+    (input::Pad::DpadRight, JoyButton::DPAD_RIGHT),
+    (input::Pad::DpadUp, JoyButton::DPAD_UP),
+    (input::Pad::DpadDown, JoyButton::DPAD_DOWN),
+];
+
+/// A key as the core names it; `None` for one it never reads.
+fn core_key(key: Key) -> Option<input::Key> {
+    KEYS.iter().find(|(_, k)| *k == key).map(|(c, _)| *c)
+}
+
+/// A pad button as the core names it; `None` for one it never reads.
+fn core_pad(button: JoyButton) -> Option<input::Pad> {
+    PADS.iter().find(|(_, b)| *b == button).map(|(c, _)| *c)
 }
