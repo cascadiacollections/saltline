@@ -1,0 +1,24 @@
+# cargo-mutants (https://mutants.rs): mutates the code (flips comparisons,
+# replaces return values) and reports each change the tests fail to notice.
+# The weekly workflow runs it; `cargo mutants -f <file>` checks one file.
+
+# Engine glue only runs inside Godot, so no headless test can catch a mutant
+# there. The tool binaries are exercised by CI jobs, not by tests.
+exclude_globs = [
+    "crates/salt-line-godot/src/game.rs",
+    "crates/salt-line-godot/src/lib.rs",
+    "crates/salt-line-godot/src/save.rs",
+    "crates/salt-line-godot/src/sprites.rs",
+    "crates/salt-line-sim/src/bin/**",
+]
+test_tool = "nextest"
+
+# Mutants no test can reasonably catch, each with the reason.
+exclude_re = [
+    # Widens range_u32's rejection zone by one value in 2^32: a bias far below
+    # anything a test could measure.
+    "replace - with / in Pcg32::range_u32",
+    # weighted's fallback after the loop is unreachable: a roll below the total
+    # always returns inside it. It exists only so the function is total.
+    "replace - with [+/] in Pcg32::weighted",
+]

@@ -123,9 +123,66 @@ proptest! {
     }
 
     #[test]
+    fn float_ranges_are_half_open(seed in any::<u64>(), lo in -1e6f64..1e6, span in 1e-3f64..1e6) {
+        let hi = lo + span;
+        let mut r = Pcg32::new(seed);
+        for _ in 0..16 {
+            let v = r.range_f64(lo, hi);
+            prop_assert!(lo <= v && v < hi, "{} outside {}..{}", v, lo, hi);
+        }
+    }
+
+    #[test]
+    fn a_weighted_pick_never_lands_on_a_zero_weight(
+        seed in any::<u64>(),
+        weights in prop::collection::vec(prop_oneof![Just(0u32), 1u32..50], 1..8),
+    ) {
+        prop_assume!(weights.iter().any(|&w| w > 0));
+        let mut r = Pcg32::new(seed);
+        for _ in 0..32 {
+            let i = r.weighted(&weights);
+            prop_assert!(weights[i] > 0, "picked index {} with weight 0 from {:?}", i, weights);
+        }
+    }
+
+    #[test]
+    fn a_shuffle_is_a_permutation(seed in any::<u64>(), len in 0usize..40) {
+        let mut xs: Vec<usize> = (0..len).collect();
+        Pcg32::new(seed).shuffle(&mut xs);
+        let mut sorted = xs.clone();
+        sorted.sort_unstable();
+        prop_assert_eq!(sorted, (0..len).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn any_shot_quantizes_into_range(angle in any::<i32>(), power in any::<i32>()) {
         let q = Shot::new(angle, power).quantized(&Loadout::default());
         prop_assert!((0..=MAX_ANGLE_TICKS).contains(&q.angle_ticks));
         prop_assert!((0..=POWER_TICKS_MAX).contains(&q.power_ticks));
+    }
+}
+
+/// Two items must come out in both orders across seeds; a shuffle that
+/// skipped short slices would always leave them as they were.
+#[test]
+fn even_two_items_get_shuffled() {
+    let swapped = (0..64u64).any(|seed| {
+        let mut xs = [0, 1];
+        Pcg32::new(seed).shuffle(&mut xs);
+        xs == [1, 0]
+    });
+    assert!(swapped);
+}
+
+/// A trailing zero weight must never be picked: a roll that ran past the
+/// total would fall through the table onto it.
+#[test]
+fn a_trailing_zero_weight_is_never_picked() {
+    for seed in 0..32u64 {
+        let mut r = Pcg32::new(seed);
+        for _ in 0..64 {
+            assert_eq!(r.weighted(&[1, 0]), 0);
+            assert_ne!(r.weighted(&[2, 3, 0]), 2);
+        }
     }
 }

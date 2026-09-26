@@ -16,9 +16,11 @@ fn screen_digests_are_pinned() {
     for seed in [1u64, 0xFEED_FACE, 20260907] {
         for width in [320usize, 400] {
             out.push_str(&format!("seed {seed:#x}, width {width}\n"));
-            for index in 0..12 {
+            // Early screens, then deeper bands, where screens carry several
+            // targets and their spacing is part of what is pinned.
+            for index in (0..12).chain(40..44).chain(120..124) {
                 let h = screen_hash(&generate_screen(seed, index, width, &lo));
-                out.push_str(&format!("  {index:2} {h:016x}\n"));
+                out.push_str(&format!("  {index:3} {h:016x}\n"));
             }
         }
     }

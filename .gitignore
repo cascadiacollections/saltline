@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+
+# cargo-mutants output
+mutants.out/
+mutants.out.old/
