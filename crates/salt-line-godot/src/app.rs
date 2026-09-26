@@ -7,12 +7,12 @@
 //!
 //! * **This module, the core.** [`Game`] owns the mode, the run, the shot
 //!   being replayed, the aim, the drag, the onboarding prompts, the save and
-//!   the bookkeeping that keeps a run on disk (DESIGN §9.1). It is stepped by
+//!   the bookkeeping that keeps a run on disk (DESIGN §9.6). It is stepped by
 //!   [`Game::tick`] with a frame's [`Intents`] and answers with the
 //!   [`Effect`]s the engine must carry out: play a sound, write a file, set
-//!   the clipboard, resize the buffer, quit. It reads no clock, file or
-//!   device of its own; what it needs from the outside comes in as
-//!   arguments, and what it wants done goes out as effects.
+//!   the clipboard, resize the buffer, quit. It reads no clock, file or device
+//!   of its own; what it needs from the outside comes in as arguments, and
+//!   what it wants done goes out as effects.
 //! * **`render`, the drawing.** Functions over `&Game` that paint one frame
 //!   into a [`Canvas`](crate::raster::Canvas), the one buffer of DESIGN §5.1,
 //!   and lay out the on-screen buttons the next frame's touches are tested
@@ -101,7 +101,7 @@
 //!
 //! | Effect | Emitted by | Adapter action | Feedback via `stored()` | Dropped after panic |
 //! |---|---|---|---|---|
-//! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a draft taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
+//! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a draft offered or taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
 //! | `Volume(dB)` | mute, the Controls volume (the node sets it once itself at launch) | `set_volume_db` on every player | no | no |
 //! | `Redraw` | any status note, a buffer change, pausing, and [`Game::tick`] when the frame's [`FrameState`] changed | `frame::Redraw::mark` | no | no |
 //! | `RecheckDisplay` | [`Game::tick`], on entering Title or GameOver | `frame::DisplayPoll::invalidate` | no | no |
@@ -110,9 +110,9 @@
 //! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT | `DisplayServer::clipboard_set` | no | no |
 //! | `Quit` | back on the title or the error screen | `SceneTree::quit` | no | no |
 //! | `Store(Learned)` | an onboarding step done for the first time | `save::store`, then [`Game::stored`] | yes, ignored | yes |
-//! | `Store(Settings)` | settings once they settle (`durable::Debounce`), or on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
+//! | `Store(Settings)` | settings once they settle (`durable::Debounce`) or on leaving Controls; at once on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
 //! | `Store(Score)` | a run finished, or a finished run found at launch | `save::store` with the entry placed, then [`Game::stored`] | yes: placed in memory on success, `RunFile::Keep` on failure | yes |
-//! | `RunFile(Write)` | the run's log grew (a shot, a draft) | atomic write of `user://run.txt` | no | yes |
+//! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft) | atomic write of `user://run.txt` | no | yes |
 //! | `RunFile(Keep)` | [`Game::stored`], for a score that did not reach disk | atomic write of `user://run.txt` | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a run finished, a finished run found at launch, a CONTINUE that failed to rebuild | delete every run file, or blank `run.txt` | no | yes |
@@ -125,7 +125,9 @@
 //! when a later launch finds its log on disk and scores it (DESIGN §9.6).
 //! Three rules, together, rule that out whatever moment the process dies,
 //! and `app/disk_tests.rs` checks them by killing a simulated process after
-//! every disk operation in turn:
+//! every effect in turn. They assume `RunFile::Discard` succeeds: if the run
+//! file can be neither deleted nor blanked and the score is then written, the
+//! next launch scores it again (a warning is logged).
 //!
 //! 1. **The run file goes first.** `RunFile::Discard` is queued before
 //!    `Store(Score)`, and effects are applied in order. A crash in between
@@ -147,12 +149,15 @@
 //! # Where to change things
 //!
 //! * **A sound.** A [`Sound`] variant, its [`Sound::file`] name and a `.wav`
-//!   under `art/audio/`, then a `self.play(Sound::…)` where it happens. The
+//!   under `art/audio/` (its voice goes in `tools/gen_audio.py`; run it to
+//!   write `art/audio/<name>.wav`), then a `self.play(Sound::…)` where it
+//!   happens. The
 //!   adapter indexes its players by `sound as usize`, so the variant goes in
 //!   [`Sound::ALL`] in declaration order.
 //! * **An action.** A variant of [`Action`]. If a `bind` line may name it:
-//!   [`Action::BINDABLE`], [`Action::token`] (a save-format name, never to be
-//!   renamed), [`input::default_binding`] and [`input::touch_label`]. Then
+//!   [`Action::BINDABLE`] (an array: bump its length), a match arm in
+//!   [`Action::token`] (a save-format name, never to be renamed),
+//!   [`input::default_binding`] and [`input::touch_label`]. Then
 //!   read it with `action_pressed` or `action_repeated` in the mode's handler
 //!   in `app/controls.rs`, placed with the take-once rule in mind: the first
 //!   action asked takes a shared key.
@@ -162,8 +167,11 @@
 //! * **A setting.** A field on [`Save`] (`Option<T>` while "not chosen yet"
 //!   should follow a changing default, as `touch_aim` does), with its line in
 //!   `save_format`. Change it in the Controls arm followed by
-//!   `self.settings.touch()`, which debounces the write, and add it to
-//!   [`FrameState`] so a change redraws.
+//!   `self.settings.touch()`, which debounces the write. If it is an
+//!   `Option`, give it an `*_on()`-style reader that fills in the default.
+//!   Add it to [`FrameState`] so a change redraws (`settings` there is a
+//!   tuple, so its type changes too), and give it a `menu_row` in
+//!   `render.rs`'s Controls layout.
 //! * **A CLI flag.** A field and a parse line on [`DevArgs`], with a test in
 //!   `cli.rs`. Act on it in [`Game::start_dev`], keeping any state in `Dev`,
 //!   or in the node's `ready` if it needs the engine (`--salt-gallery`,
@@ -214,7 +222,8 @@ pub const CLEAR_HOLD: f64 = 0.55;
 /// seconds after the last shell lands.
 pub const TOPPLE_TIME: f64 = 0.22;
 /// Hold-to-repeat, shared by keys, pad buttons, the stick and touch buttons:
-/// seconds held before the first repeat.
+/// seconds held before repeats start; the first lands one `REPEAT_RATE`
+/// later.
 pub const REPEAT_DELAY: f64 = 0.28;
 /// Seconds between repeats once they start (about 28 a second).
 pub const REPEAT_RATE: f64 = 0.035;
@@ -247,7 +256,7 @@ pub enum Mode {
     /// Typing a seed, by keyboard, touch keypad or controller focus.
     SeedEntry,
     /// A run on screen and taking input. The only mode that steps the replay
-    /// and runs at the uncapped frame rate.
+    /// and is not held to `frame::IDLE_FPS`.
     Playing,
     /// A run on screen, frozen under the pause plate.
     Paused,
@@ -424,7 +433,7 @@ pub enum Effect {
     CrashReport(CrashReport),
 }
 
-/// What to do with the saved run (DESIGN §9.1). Which files that means is the
+/// What to do with the saved run (DESIGN §9.6). Which files that means is the
 /// adapter's business: `game.rs` keeps it in `user://run.txt`, written by way
 /// of `run.txt.new`, and moves it aside to `run-loading.txt` while a launch
 /// rebuilds it.
@@ -440,7 +449,7 @@ pub enum RunFile {
     /// Make sure no run is left to resume or score, the one set aside at
     /// launch included. If a file cannot be deleted, the run file is
     /// overwritten with nothing, which `resume::judge` reads as no run: a
-    /// finished log must never survive to be scored twice.
+    /// finished log is meant never to survive to be scored twice.
     Discard,
     /// `Discard`, for a run this build cannot continue, saying why in the log.
     Abandon(Abandoned),
@@ -645,7 +654,7 @@ pub(crate) struct InputState {
     pub(crate) drag_from: Option<(i32, i32)>,
 }
 
-/// The saved run (DESIGN §9.1): what is on disk and what CONTINUE offers.
+/// The saved run (DESIGN §9.6): what is on disk and what CONTINUE offers.
 pub(crate) struct RunFileState {
     /// The saved run CONTINUE would rebuild, already checked. See `resume`.
     pub(crate) resumable: Option<resume::Saved>,

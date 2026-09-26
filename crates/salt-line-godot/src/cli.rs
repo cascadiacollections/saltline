@@ -27,7 +27,8 @@ pub struct DevArgs {
     /// a human at the keyboard.
     pub shot: Option<String>,
     /// `--salt-shot-at <seconds>`: when to grab the screenshot, in seconds
-    /// of capped game time since the node came up.
+    /// since the node came up. Counted in capped frame time
+    /// (`resume::frame_delta`), so a slow frame does not skip past it.
     pub shot_at: f64,
     /// `--salt-auto`: play with the solver. See `Game::autopilot`.
     pub auto: bool,

@@ -1,5 +1,5 @@
 //! Upkeep around the game: the buffer and window, sounds, settings, crash
-//! reports, pausing on focus loss, and keeping the run on disk (DESIGN §9.1).
+//! reports, pausing on focus loss, and keeping the run on disk (DESIGN §9.6).
 //!
 //! Almost every helper here does one thing: push an [`Effect`]. None of them
 //! touches a file, a speaker or the window; that is the adapter's job, done

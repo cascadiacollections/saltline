@@ -98,8 +98,8 @@ impl Game {
     }
 
     /// Activations of `action` this frame with hold-to-repeat, summed over
-    /// key, pad button, left stick and touch button: 1 on the press, none
-    /// for `REPEAT_DELAY` seconds, then one every `REPEAT_RATE`.
+    /// key, pad button, left stick and touch button: 1 on the press, then
+    /// one every `REPEAT_RATE` from `REPEAT_DELAY + REPEAT_RATE` on.
     ///
     /// The key and pad repeat state is kept per key and per button; the
     /// stick has no press to take, so its state is kept per `slot`, one for

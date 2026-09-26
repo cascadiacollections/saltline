@@ -18,6 +18,9 @@
 //!   on_notification(): back ──► Event::Back     (each takes the queued events   │
 //!             │                                  first, then its effects are    │
 //!             │ queued in `events`               applied at once) ──► apply() ◄─┘
+//!             │                                 focus in / resumed ──►
+//!             │                                  DisplayPoll::invalidate,
+//!             │                                  Redraw::mark
 //!             ▼
 //!   process(delta)
 //!     ├─ crash::panicked()? ──yes──► broken_frame: Game::broken_tick,
@@ -34,6 +37,8 @@
 //!     └─ maybe_screenshot   --salt-shot
 //!   draw(): the texture at the origin, 1:1; the viewport stretch scales it
 //! ```
+//!
+//! `input()` marks a redraw on every event except mouse and stick motion.
 //!
 //! Crash handling sits in two places. `crash::install` (in `lib.rs`) chains
 //! a panic hook that writes the report; gdext catches the panic, and the

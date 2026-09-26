@@ -32,7 +32,8 @@
 //!   at the next `begin` rather than firing late.
 //! * **Hold-to-repeat.** [`Controls::repeated`] counts 1 on the press, then
 //!   one per interval after a delay, from [`RepeatState`]. The state is kept
-//!   per key, so every action bound to a key shares its repeats.
+//!   per key, so every action bound to a key shares its repeats; two actions
+//!   on one key that both call `repeated` in the same frame tick it twice.
 
 use crate::presentation::RepeatState;
 
