@@ -54,11 +54,17 @@ With `just` installed, the same common operations are available as `just test`,
 
 Every push to `main` that passes CI replaces the
 [`dev` prerelease](https://github.com/cascadiacollections/saltline/releases/tag/dev)
-with that commit's builds: Linux x86_64, macOS, Windows x86_64 and arm64, and
-an Android arm64 APK. They are for testing, not distribution: the desktop builds
-are unsigned, and the APK is signed with a debug key (with the
+with that commit's builds: Linux x86_64, macOS (universal), Windows x86_64 and
+arm64, and an Android arm64 APK. They are for testing, not distribution: the
+desktop builds are unsigned, and the APK is signed with a debug key (with the
 `ANDROID_DEBUG_KEYSTORE` repository secret, the same key as local
-`just android` builds, so either installs over the other).
+`just android` builds, so either installs over the other). Each dev APK gets a
+higher versionCode than the last, so it installs as an update.
+
+Pushing a `vX.Y.Z` tag builds the same set and publishes it as release
+`vX.Y.Z`, with notes from [`CHANGELOG.md`](CHANGELOG.md); see
+[RELEASING.md](RELEASING.md) for the version rule, the Android versionCode
+scheme and signing.
 
 ### Android
 
@@ -266,6 +272,9 @@ platform. What that costs, concretely:
   multiplication is not associative.
 - A run persists as `(run_seed, width, shot log)` and nothing else. Draft picks
   ride in the same triple with `angle_ticks = -1`.
+- CI holds it to that: the sim runs on Linux and Windows (x86_64 and arm64) and
+  on macOS (Apple silicon), and the determinism job fails unless all five
+  digests are identical.
 
 ## Monetization
 
