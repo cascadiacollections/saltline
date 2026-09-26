@@ -186,10 +186,10 @@ fn a_pad_can_start_a_run_and_the_prompts_follow_it() {
     tick(&mut g, pads(&[Pad::A]));
     assert_eq!(g.mode, Mode::Playing);
     assert!(g.controller_active);
-    assert_eq!(g.input_label("fire"), "A");
+    assert_eq!(g.input_label(Action::Fire), "A");
     tick(&mut g, keys(&[Key::Left]));
     assert!(!g.controller_active);
-    assert_eq!(g.input_label("fire"), "SPACE");
+    assert_eq!(g.input_label(Action::Fire), "SPACE");
 }
 
 #[test]
@@ -313,7 +313,8 @@ fn the_controller_types_on_the_keypad() {
     // Right once from the first key, then A presses it.
     tick(&mut g, pads(&[Pad::DpadRight]));
     tick(&mut g, pads(&[Pad::A]));
-    assert_eq!(g.seed_text, keypad::KEYS[1]);
+    assert_eq!(g.seed_text, "B");
+    assert_eq!(keypad::KEYS[1], Action::Type('B'));
     // B deletes, then leaves once nothing is typed.
     tick(&mut g, pads(&[Pad::B]));
     assert_eq!(g.seed_text, "");
@@ -656,7 +657,7 @@ fn touch_buttons_press_their_actions() {
     let mut g = playing(1);
     let fire = Button {
         rect: crate::touch::Rect::new(10, 10, 20, 20),
-        action: "fire",
+        action: Action::Fire,
     };
     g.finger_down(0, 15.0, 15.0, &[fire]);
     assert!(g.touch_active);
@@ -1006,7 +1007,7 @@ fn the_buffer_keeps_its_width_through_a_run() {
 
 // ---------------------------------------------------------- touch menus
 
-fn button(action: &'static str) -> Button {
+fn button(action: Action) -> Button {
     Button {
         rect: crate::touch::Rect::new(0, 0, 10, 10),
         action,
@@ -1017,16 +1018,16 @@ fn button(action: &'static str) -> Button {
 fn touch_settings_cycle_and_are_written_on_leaving() {
     let mut g = game();
     g.mode = Mode::Controls;
-    g.finger_down(0, 5.0, 5.0, &[button("aim_mode")]);
+    g.finger_down(0, 5.0, 5.0, &[button(Action::AimMode)]);
     g.finger_up(0);
     let fx = tick(&mut g, idle());
     assert_eq!(g.save.touch_aim, Some(TouchAim::Drag));
     assert!(fx.contains(&Effect::Play(Sound::Ui)));
-    g.finger_down(0, 5.0, 5.0, &[button("arc_hint")]);
+    g.finger_down(0, 5.0, 5.0, &[button(Action::ArcHint)]);
     g.finger_up(0);
     tick(&mut g, idle());
     assert_eq!(g.save.arc_hint, Some(DEFAULT_ARC_HINT.next()));
-    g.finger_down(0, 5.0, 5.0, &[button("back")]);
+    g.finger_down(0, 5.0, 5.0, &[button(Action::Back)]);
     g.finger_up(0);
     let fx = tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Title);
@@ -1037,17 +1038,43 @@ fn touch_settings_cycle_and_are_written_on_leaving() {
 fn the_touch_keypad_types_a_seed() {
     let mut g = game();
     g.open_seed_entry();
-    for key in ["S", "E", "A", keypad::DEL, "A"] {
+    for key in [
+        Action::Type('S'),
+        Action::Type('E'),
+        Action::Type('A'),
+        keypad::DEL,
+        Action::Type('A'),
+    ] {
         g.finger_down(0, 5.0, 5.0, &[button(key)]);
         g.finger_up(0);
         tick(&mut g, idle());
     }
     assert_eq!(g.seed_text, "SEA");
-    g.finger_down(0, 5.0, 5.0, &[button("confirm")]);
+    g.finger_down(0, 5.0, 5.0, &[button(Action::Confirm)]);
     g.finger_up(0);
     tick(&mut g, idle());
     assert_eq!(g.mode, Mode::Playing);
     assert_eq!(g.last_seed, parse_seed("SEA"));
+}
+
+#[test]
+fn bind_lines_in_an_existing_save_still_bind() {
+    let save = Save::parse(
+        "version 2\nbind fire U B\nbind back C X\nbind aim_mode X X\nbind no_such_action L L\n",
+    );
+    let mut g = Game::new(false, save);
+    g.fit_display(WINDOW, (0, 0));
+    assert_eq!(g.action_binding(Action::Fire), ("U".into(), "B".into()));
+    assert_eq!(g.action_binding(Action::Back), ("C".into(), "X".into()));
+    // Unbindable and unknown names bind nothing; their neighbours keep their
+    // defaults.
+    assert_eq!(g.action_binding(Action::LastArc), ("L".into(), "X".into()));
+    assert_eq!(g.action_binding(Action::AimMode), ("".into(), "".into()));
+    tick(&mut g, keys(&[Key::Enter]));
+    tick(&mut g, keys(&[Key::U]));
+    assert!(g.anim.is_some(), "U fires");
+    tick(&mut g, keys(&[Key::C]));
+    assert_eq!(g.mode, Mode::Paused, "C is back");
 }
 
 #[test]
@@ -1058,7 +1085,7 @@ fn rebinding_moves_an_action_and_reset_restores_it() {
         .push(("fire".into(), "U".into(), "B".into()));
     tick(&mut g, keys(&[Key::Space]));
     assert!(g.anim.is_none(), "space no longer fires");
-    assert_eq!(g.input_label("fire"), "U");
+    assert_eq!(g.input_label(Action::Fire), "U");
     tick(&mut g, keys(&[Key::U]));
     assert!(g.anim.is_some());
 

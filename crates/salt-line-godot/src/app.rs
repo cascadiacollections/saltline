@@ -68,7 +68,7 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_
 
 use crate::cli::DevArgs;
 use crate::durable::Debounce;
-use crate::input::{self, Controls, Intents, Key, Pad};
+use crate::input::{self, Action, Controls, Intents, Key, Pad};
 use crate::keypad::{self, Focus};
 use crate::presentation::{
     self, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER, LEARN_SHELLS, LEARN_WIND,
@@ -587,7 +587,7 @@ impl Game {
         }
         self.status_time = (self.status_time - delta).max(0.0);
         self.begin_input_frame(delta, intents);
-        if self.action_pressed("copy") {
+        if self.action_pressed(Action::Copy) {
             // Only a finished report: a panic off the main thread can stop the
             // game while the hook is still writing, and half a report copied
             // looks like a whole one.
@@ -598,7 +598,7 @@ impl Game {
                 }
                 None => self.note("REPORT NOT READY - TRY AGAIN".into()),
             }
-        } else if self.action_pressed("back") {
+        } else if self.action_pressed(Action::Back) {
             self.fx.push(Effect::Quit);
         }
         self.back_requested = false;
@@ -1055,9 +1055,9 @@ impl Game {
         if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 {
             return Some(format!(
                 "{} {} {}  PICK A MODIFIER",
-                self.input_label("draft_1"),
-                self.input_label("draft_2"),
-                self.input_label("draft_3")
+                self.input_label(Action::Draft1),
+                self.input_label(Action::Draft2),
+                self.input_label(Action::Draft3)
             ));
         }
         let learned = self.save.learned;
@@ -1074,21 +1074,21 @@ impl Game {
         if learned & LEARN_ANGLE == 0 {
             Some(format!(
                 "{} / {}  SET ANGLE",
-                self.input_label("left"),
-                self.input_label("right")
+                self.input_label(Action::Left),
+                self.input_label(Action::Right)
             ))
         } else if learned & LEARN_POWER == 0 {
             Some(format!(
                 "{} / {}  SET POWER",
-                self.input_label("up"),
-                self.input_label("down")
+                self.input_label(Action::Up),
+                self.input_label(Action::Down)
             ))
         } else if learned & LEARN_FIRE == 0 {
             // On a touchscreen the button already says FIRE.
             if self.touch_active {
                 Some("TAP FIRE".into())
             } else {
-                Some(format!("{}  FIRE", self.input_label("fire")))
+                Some(format!("{}  FIRE", self.input_label(Action::Fire)))
             }
         } else if learned & LEARN_CRATER == 0 {
             Some("CRATERS PERSIST - CORRECT FROM THE LAST SHOT".into())

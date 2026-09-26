@@ -22,6 +22,7 @@ use salt_line_sim::{Vec2, DT};
 
 use crate::app::{Game, Mode, SHORT_ARC_SECONDS, TOPPLE_TIME};
 use crate::frame::Memo;
+use crate::input::Action;
 use crate::keypad;
 use crate::palette::{slot, Palette};
 use crate::presentation;
@@ -160,16 +161,16 @@ impl Painter<'_> {
         y += 8;
         self.centred(y, "PASTE IT INTO A BUG REPORT ON GITHUB.", dim);
         y += 16;
-        let copy = self.g.input_label("copy");
+        let copy = self.g.input_label(Action::Copy);
         y = self.menu_row(
             y,
-            "copy",
+            Action::Copy,
             &format!("{copy}      COPY REPORT"),
             "COPY REPORT",
             fg,
         );
-        let back = self.g.input_label("back");
-        y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", fg);
+        let back = self.g.input_label(Action::Back);
+        y = self.menu_row(y, Action::Back, &format!("{back}  QUIT"), "QUIT", fg);
         y += 4;
         if self.g.status_time > 0.0 {
             let text = self.g.status.clone();
@@ -205,35 +206,35 @@ impl Painter<'_> {
             Mode::Title => {
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
-                let confirm = self.g.input_label("confirm");
+                let confirm = self.g.input_label(Action::Confirm);
                 // With a saved run, confirm continues it and a new run is a
                 // separate action that asks twice (`confirm_discard`).
                 let again = "PRESS AGAIN - SAVED RUN IS LOST";
                 if self.g.resumable.is_some() {
                     y = self.menu_row(
                         y,
-                        "confirm",
+                        Action::Confirm,
                         &format!("{confirm}  CONTINUE"),
                         "CONTINUE",
                         alert,
                     );
-                    let key = self.g.input_label("new_run");
+                    let key = self.g.input_label(Action::NewRun);
                     let text = if self.g.discard_armed == Some("daily") {
                         again
                     } else {
                         "NEW DAILY RUN"
                     };
-                    y = self.menu_row(y, "new_run", &format!("{key}      {text}"), text, fg);
+                    y = self.menu_row(y, Action::NewRun, &format!("{key}      {text}"), text, fg);
                 } else {
                     y = self.menu_row(
                         y,
-                        "confirm",
+                        Action::Confirm,
                         &format!("{confirm}  DAILY RUN"),
                         "DAILY RUN",
                         fg,
                     );
                 }
-                let seed = self.g.input_label("seed");
+                let seed = self.g.input_label(Action::Seed);
                 let seed_text = if self.g.discard_armed == Some("seed") {
                     again
                 } else {
@@ -241,29 +242,29 @@ impl Painter<'_> {
                 };
                 y = self.menu_row(
                     y,
-                    "seed",
+                    Action::Seed,
                     &format!("{seed}      {seed_text}"),
                     seed_text,
                     fg,
                 );
-                let controls = self.g.input_label("controls");
+                let controls = self.g.input_label(Action::Controls);
                 y = self.menu_row(
                     y,
-                    "controls",
+                    Action::Controls,
                     &format!("{controls}  CONTROLS / AUDIO"),
                     "CONTROLS / AUDIO",
                     fg,
                 );
-                let back = self.g.input_label("back");
-                y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", dim);
+                let back = self.g.input_label(Action::Back);
+                y = self.menu_row(y, Action::Back, &format!("{back}  QUIT"), "QUIT", dim);
                 if self.g.last_crash.is_some() {
                     let text = if self.g.crash_copied {
                         "CRASH REPORT COPIED"
                     } else {
                         "COPY LAST CRASH REPORT"
                     };
-                    let copy = self.g.input_label("copy");
-                    y = self.menu_row(y, "copy", &format!("{copy}      {text}"), text, alert);
+                    let copy = self.g.input_label(Action::Copy);
+                    y = self.menu_row(y, Action::Copy, &format!("{copy}      {text}"), text, alert);
                 }
                 y += 6;
                 if self.g.status_time > 0.0 {
@@ -312,29 +313,29 @@ impl Painter<'_> {
                 let tw = crate::font::small_width(&text) as i32;
                 let tx = (w - tw) / 2;
                 self.canvas.text_small(tx, y, &text, alert);
-                self.draw_touch_button(tx - 26, y - 6, 20, 17, "-", "left");
-                self.draw_touch_button(tx + tw + 6, y - 6, 20, 17, "+", "right");
+                self.draw_touch_button(tx - 26, y - 6, 20, 17, "-", Action::Left);
+                self.draw_touch_button(tx + tw + 6, y - 6, 20, 17, "+", Action::Right);
                 y += 20;
                 let mute = if self.g.save.muted { "UNMUTE" } else { "MUTE" };
-                y = self.menu_row(y, "mute", "", mute, fg);
+                y = self.menu_row(y, Action::Mute, "", mute, fg);
                 let last = if self.g.last_arc_on() {
                     "LAST ARC: ON"
                 } else {
                     "LAST ARC: OFF"
                 };
-                y = self.menu_row(y, "last_arc", "", last, fg);
+                y = self.menu_row(y, Action::LastArc, "", last, fg);
                 let aim = match self.g.touch_aim() {
                     TouchAim::Buttons => "AIM: BUTTONS",
                     TouchAim::Drag => "AIM: DRAG",
                 };
-                y = self.menu_row(y, "aim_mode", "", aim, fg);
+                y = self.menu_row(y, Action::AimMode, "", aim, fg);
                 if self.g.touch_aim() == TouchAim::Drag {
                     let arc = match self.g.arc_hint() {
                         ArcHint::Short => "ARC: SHORT",
                         ArcHint::Full => "ARC: FULL",
                         ArcHint::Wind => "ARC: FULL + WIND",
                     };
-                    y = self.menu_row(y, "arc_hint", "", arc, fg);
+                    y = self.menu_row(y, Action::ArcHint, "", arc, fg);
                     y += 4;
                     self.centred(y, "IN PLAY: PULL BACK, LET GO TO FIRE", fg);
                 } else {
@@ -342,7 +343,7 @@ impl Painter<'_> {
                     self.centred(y, "IN PLAY: < > ANGLE   - + POWER", fg);
                 }
                 y += 12;
-                self.menu_row(y, "back", "", "BACK", fg);
+                self.menu_row(y, Action::Back, "", "BACK", fg);
             }
             Mode::Controls => {
                 self.centred(y, "CONTROLS / AUDIO", fg);
@@ -355,16 +356,20 @@ impl Painter<'_> {
                 );
                 y += 10;
                 let rows = [
-                    ("AIM / POWER", "left", "up"),
-                    ("FIRE", "fire", ""),
-                    ("FUSE", "fuse_down", "fuse_up"),
-                    ("REPOSITION", "reposition_left", "reposition_right"),
-                    ("DRAFT", "draft_1", "draft_2"),
-                    ("BACK", "back", ""),
+                    ("AIM / POWER", Action::Left, Some(Action::Up)),
+                    ("FIRE", Action::Fire, None),
+                    ("FUSE", Action::FuseDown, Some(Action::FuseUp)),
+                    (
+                        "REPOSITION",
+                        Action::RepositionLeft,
+                        Some(Action::RepositionRight),
+                    ),
+                    ("DRAFT", Action::Draft1, Some(Action::Draft2)),
+                    ("BACK", Action::Back, None),
                 ];
                 for (name, a, b) in rows {
                     let mut labels = self.g.input_label(a);
-                    if !b.is_empty() {
+                    if let Some(b) = b {
                         labels.push('/');
                         labels.push_str(&self.g.input_label(b));
                     }
@@ -375,14 +380,14 @@ impl Painter<'_> {
                 self.centred(y, "M / START  MUTE     R / Y  RESET", dim);
                 y += 7;
                 let on = if self.g.last_arc_on() { "ON" } else { "OFF" };
-                let toggle = format!("{}  LAST ARC: {on}", self.g.input_label("last_arc"));
+                let toggle = format!("{}  LAST ARC: {on}", self.g.input_label(Action::LastArc));
                 self.centred(y, &toggle, fg);
                 y += 9;
                 self.centred(y, "EDIT bind LINES IN salt_line.txt TO REMAP", dim);
                 y += 7;
                 self.centred(y, "FORMAT: bind ACTION KEY PAD", dim);
                 y += 9;
-                let back = self.g.input_label("back");
+                let back = self.g.input_label(Action::Back);
                 self.centred(y, &format!("{back}  BACK"), fg);
             }
             Mode::SeedEntry => {
@@ -394,8 +399,8 @@ impl Painter<'_> {
                 y += 10;
                 if self.plated() {
                     y = self.draw_seed_keypad(y) + 6;
-                    y = self.menu_row(y, "confirm", "", "START", fg);
-                    y = self.menu_row(y, "back", "", "BACK", dim);
+                    y = self.menu_row(y, Action::Confirm, "", "START", fg);
+                    y = self.menu_row(y, Action::Back, "", "BACK", dim);
                 } else {
                     y += 4;
                     self.centred(y, "ANY TEXT WORKS. BLANK USES TODAY'S DAILY.", dim);
@@ -426,9 +431,15 @@ impl Painter<'_> {
                     self.centred(y, &format!("SEED {}", format_seed(seed)), dim);
                     y += 14;
                 }
-                y = self.menu_row(y, "replay", "R      SAME SEED AGAIN", "SAME SEED AGAIN", fg);
-                y = self.menu_row(y, "copy", "C      COPY SEED", "COPY SEED", fg);
-                y = self.menu_row(y, "confirm", "ENTER  TITLE", "TITLE", fg);
+                y = self.menu_row(
+                    y,
+                    Action::Replay,
+                    "R      SAME SEED AGAIN",
+                    "SAME SEED AGAIN",
+                    fg,
+                );
+                y = self.menu_row(y, Action::Copy, "C      COPY SEED", "COPY SEED", fg);
+                y = self.menu_row(y, Action::Confirm, "ENTER  TITLE", "TITLE", fg);
                 y += 4;
                 if self.g.status_time > 0.0 {
                     let text = self.g.status.clone();
@@ -446,20 +457,12 @@ impl Painter<'_> {
 
     /// Make a rectangle of this frame's buffer a button for the next frame's
     /// touches. Only called while touch controls are showing.
-    fn touch_button(&mut self, rect: Rect, action: &'static str) {
+    fn touch_button(&mut self, rect: Rect, action: Action) {
         self.buttons.push(Button { rect, action });
     }
 
     /// A plate with a glyph on it, lit while a finger is on it.
-    fn draw_touch_button(
-        &mut self,
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
-        label: &str,
-        action: &'static str,
-    ) {
+    fn draw_touch_button(&mut self, x: i32, y: i32, w: i32, h: i32, label: &str, action: Action) {
         let pal = self.pal;
         self.canvas.plate(x, y, w, h, pal);
         let c = if self.lit(action) {
@@ -493,8 +496,9 @@ impl Painter<'_> {
             for &k in keys.iter() {
                 if k == keypad::DEL {
                     self.draw_touch_button(x, y, del_w, kh, "DEL", k);
-                } else {
-                    self.draw_touch_button(x, y, kw, kh, k, k);
+                } else if let Action::Type(c) = k {
+                    let mut label = [0; 4];
+                    self.draw_touch_button(x, y, kw, kh, c.encode_utf8(&mut label), k);
                     x += pitch;
                 }
             }
@@ -510,7 +514,7 @@ impl Painter<'_> {
     }
 
     /// The controller's keypad focus is on this action's plate.
-    fn focused(&self, action: &str) -> bool {
+    fn focused(&self, action: Action) -> bool {
         self.g.mode == Mode::SeedEntry
             && self.g.controller_active
             && !self.g.touch_active
@@ -518,7 +522,7 @@ impl Painter<'_> {
     }
 
     /// A plate's label lights while a finger is on it or the focus is.
-    fn lit(&self, action: &str) -> bool {
+    fn lit(&self, action: Action) -> bool {
         self.g.touch.held(action) || self.focused(action)
     }
 
@@ -528,7 +532,7 @@ impl Painter<'_> {
     fn menu_row(
         &mut self,
         y: i32,
-        action: &'static str,
+        action: Action,
         keyed: &str,
         text: &str,
         c: crate::palette::Rgba,
@@ -573,24 +577,24 @@ impl Painter<'_> {
         let y2 = if self.g.drag_aiming() {
             y
         } else {
-            self.draw_touch_button(x0, y, bw, bh, "<", "left");
-            self.draw_touch_button(x0 + bw + 3, y, bw, bh, ">", "right");
-            self.draw_touch_button(x0 + 2 * bw + 12, y, bw, bh, "-", "down");
-            self.draw_touch_button(x0 + 3 * bw + 15, y, bw, bh, "+", "up");
+            self.draw_touch_button(x0, y, bw, bh, "<", Action::Left);
+            self.draw_touch_button(x0 + bw + 3, y, bw, bh, ">", Action::Right);
+            self.draw_touch_button(x0 + 2 * bw + 12, y, bw, bh, "-", Action::Down);
+            self.draw_touch_button(x0 + 3 * bw + 15, y, bw, bh, "+", Action::Up);
             // Left of the screen index in the bottom-right corner.
-            self.draw_touch_button(w - 16 - 40 - ex, y, 40, bh, "FIRE", "fire");
+            self.draw_touch_button(w - 16 - 40 - ex, y, 40, bh, "FIRE", Action::Fire);
             y - bh - 3
         };
         if loadout.airburst() {
-            self.draw_touch_button(x0, y2, bw, bh, "F-", "fuse_down");
-            self.draw_touch_button(x0 + bw + 3, y2, bw, bh, "F+", "fuse_up");
+            self.draw_touch_button(x0, y2, bw, bh, "F-", Action::FuseDown);
+            self.draw_touch_button(x0 + bw + 3, y2, bw, bh, "F+", Action::FuseUp);
         }
         if loadout.enfilade_units > 0.0 {
-            self.draw_touch_button(x0 + 2 * bw + 12, y2, bw, bh, "E<", "reposition_left");
-            self.draw_touch_button(x0 + 3 * bw + 15, y2, bw, bh, "E>", "reposition_right");
+            self.draw_touch_button(x0 + 2 * bw + 12, y2, bw, bh, "E<", Action::RepositionLeft);
+            self.draw_touch_button(x0 + 3 * bw + 15, y2, bw, bh, "E>", Action::RepositionRight);
         }
 
-        self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", "back");
+        self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
     }
 
     fn render_play(&mut self) {
@@ -1079,7 +1083,7 @@ impl Painter<'_> {
             let x = gap + i as i32 * (card_w + gap);
             self.canvas.plate(x, top, card_w, card_h, pal);
             if self.g.touch_active {
-                let action = ["draft_1", "draft_2", "draft_3"][i.min(2)];
+                let action = [Action::Draft1, Action::Draft2, Action::Draft3][i.min(2)];
                 self.touch_button(Rect::new(x, top, card_w, card_h), action);
             }
             let e = m.entry();
@@ -1135,15 +1139,15 @@ impl Painter<'_> {
             let top = (h - 64) / 2;
             self.canvas.plate((w - 150) / 2, top, 150, 64, pal);
             self.centred(top + 8, "PAUSED", fg);
-            let y = self.menu_row(top + 26, "confirm", "", "RESUME", fg);
-            self.menu_row(y, "replay", "", "TITLE", dim);
+            let y = self.menu_row(top + 26, Action::Confirm, "", "RESUME", fg);
+            self.menu_row(y, Action::Replay, "", "TITLE", dim);
             return;
         }
         self.canvas.plate((w - 150) / 2, (h - 48) / 2, 150, 48, pal);
         self.centred((h - 48) / 2 + 8, "PAUSED", fg);
-        let resume = self.g.input_label("confirm");
+        let resume = self.g.input_label(Action::Confirm);
         self.centred((h - 48) / 2 + 21, &format!("{resume} / BACK  RESUME"), fg);
-        let title = self.g.input_label("replay");
+        let title = self.g.input_label(Action::Replay);
         self.centred((h - 48) / 2 + 31, &format!("{title}  TITLE"), dim);
     }
 }
@@ -1221,7 +1225,7 @@ mod tests {
         (canvas, buttons)
     }
 
-    fn actions(buttons: &[Button]) -> Vec<&'static str> {
+    fn actions(buttons: &[Button]) -> Vec<Action> {
         buttons.iter().map(|b| b.action).collect()
     }
 
@@ -1275,7 +1279,15 @@ mod tests {
         let mut g = game();
         g.touch_active = true;
         let (_, buttons) = draw(&g);
-        assert_eq!(actions(&buttons), ["confirm", "seed", "controls", "back"]);
+        assert_eq!(
+            actions(&buttons),
+            [
+                Action::Confirm,
+                Action::Seed,
+                Action::Controls,
+                Action::Back
+            ]
+        );
 
         g.last_crash = Some("report".into());
         g.resumable = Some(crate::resume::Saved::of(
@@ -1285,7 +1297,14 @@ mod tests {
         let (_, buttons) = draw(&g);
         assert_eq!(
             actions(&buttons),
-            ["confirm", "new_run", "seed", "controls", "back", "copy"]
+            [
+                Action::Confirm,
+                Action::NewRun,
+                Action::Seed,
+                Action::Controls,
+                Action::Back,
+                Action::Copy
+            ]
         );
     }
 
@@ -1297,12 +1316,19 @@ mod tests {
         let (_, buttons) = draw(&g);
         assert_eq!(
             actions(&buttons),
-            ["left", "right", "down", "up", "fire", "back"]
+            [
+                Action::Left,
+                Action::Right,
+                Action::Down,
+                Action::Up,
+                Action::Fire,
+                Action::Back
+            ]
         );
         // Drag aiming keeps only the pause button: the open ground aims.
         g.save.touch_aim = Some(TouchAim::Drag);
         let (_, buttons) = draw(&g);
-        assert_eq!(actions(&buttons), ["back"]);
+        assert_eq!(actions(&buttons), [Action::Back]);
     }
 
     #[test]
@@ -1353,7 +1379,7 @@ mod tests {
         let mut canvas = Canvas::new(g.buffer_w, g.buffer_h);
         let mut buttons = vec![Button {
             rect: Rect::new(0, 0, 1, 1),
-            action: "stale",
+            action: Action::Delete,
         }];
         broken(
             &g,
@@ -1362,7 +1388,7 @@ mod tests {
             &mut buttons,
             &mut Cache::default(),
         );
-        assert_eq!(actions(&buttons), ["copy", "back"]);
+        assert_eq!(actions(&buttons), [Action::Copy, Action::Back]);
     }
 
     #[test]

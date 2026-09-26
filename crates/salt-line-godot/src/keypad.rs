@@ -1,29 +1,101 @@
 //! Engine-free layout of the on-screen seed keypad, and a focus that a D-pad
 //! moves over it, so a controller can type a seed without a keyboard.
 //!
-//! Each cell's name is also its touch action: a letter or digit types itself,
-//! `del` deletes, `confirm` starts the run and `back` leaves.
+//! Each cell is also its touch action: a letter or digit types itself, DEL
+//! deletes, START (`Confirm`) starts the run and BACK leaves.
+
+use crate::input::Action;
 
 /// Every key that types a character, in keypad order.
-pub const KEYS: [&str; 36] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+pub const KEYS: [Action; 36] = [
+    Action::Type('A'),
+    Action::Type('B'),
+    Action::Type('C'),
+    Action::Type('D'),
+    Action::Type('E'),
+    Action::Type('F'),
+    Action::Type('G'),
+    Action::Type('H'),
+    Action::Type('I'),
+    Action::Type('J'),
+    Action::Type('K'),
+    Action::Type('L'),
+    Action::Type('M'),
+    Action::Type('N'),
+    Action::Type('O'),
+    Action::Type('P'),
+    Action::Type('Q'),
+    Action::Type('R'),
+    Action::Type('S'),
+    Action::Type('T'),
+    Action::Type('U'),
+    Action::Type('V'),
+    Action::Type('W'),
+    Action::Type('X'),
+    Action::Type('Y'),
+    Action::Type('Z'),
+    Action::Type('0'),
+    Action::Type('1'),
+    Action::Type('2'),
+    Action::Type('3'),
+    Action::Type('4'),
+    Action::Type('5'),
+    Action::Type('6'),
+    Action::Type('7'),
+    Action::Type('8'),
+    Action::Type('9'),
 ];
 
-pub const DEL: &str = "del";
+pub const DEL: Action = Action::Delete;
 
 /// The keypad's rows as drawn: three rows of keys (the digits end in DEL),
 /// then the START and BACK lines beneath.
-pub const ROWS: [&[&str]; 5] = [
+pub const ROWS: [&[Action]; 5] = [
     &[
-        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+        Action::Type('A'),
+        Action::Type('B'),
+        Action::Type('C'),
+        Action::Type('D'),
+        Action::Type('E'),
+        Action::Type('F'),
+        Action::Type('G'),
+        Action::Type('H'),
+        Action::Type('I'),
+        Action::Type('J'),
+        Action::Type('K'),
+        Action::Type('L'),
+        Action::Type('M'),
     ],
     &[
-        "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        Action::Type('N'),
+        Action::Type('O'),
+        Action::Type('P'),
+        Action::Type('Q'),
+        Action::Type('R'),
+        Action::Type('S'),
+        Action::Type('T'),
+        Action::Type('U'),
+        Action::Type('V'),
+        Action::Type('W'),
+        Action::Type('X'),
+        Action::Type('Y'),
+        Action::Type('Z'),
     ],
-    &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", DEL],
-    &["confirm"],
-    &["back"],
+    &[
+        Action::Type('0'),
+        Action::Type('1'),
+        Action::Type('2'),
+        Action::Type('3'),
+        Action::Type('4'),
+        Action::Type('5'),
+        Action::Type('6'),
+        Action::Type('7'),
+        Action::Type('8'),
+        Action::Type('9'),
+        DEL,
+    ],
+    &[Action::Confirm],
+    &[Action::Back],
 ];
 
 /// Rows of `ROWS` that are keys, rather than menu lines.
@@ -43,7 +115,7 @@ impl Focus {
     }
 
     /// The action of the focused cell.
-    pub fn action(self) -> &'static str {
+    pub fn action(self) -> Action {
         ROWS[self.row][self.col_in_row()]
     }
 
@@ -66,7 +138,7 @@ mod tests {
 
     #[test]
     fn the_key_rows_hold_every_key_in_order_then_del() {
-        let keys: Vec<&str> = ROWS[..KEY_ROWS]
+        let keys: Vec<Action> = ROWS[..KEY_ROWS]
             .iter()
             .flat_map(|r| r.iter().copied())
             .filter(|k| *k != DEL)
@@ -78,32 +150,32 @@ mod tests {
     #[test]
     fn focus_starts_on_a_and_wraps_sideways() {
         let mut f = Focus::default();
-        assert_eq!(f.action(), "A");
+        assert_eq!(f.action(), Action::Type('A'));
         f.step(-1, 0);
-        assert_eq!(f.action(), "M");
+        assert_eq!(f.action(), Action::Type('M'));
         f.step(1, 0);
-        assert_eq!(f.action(), "A");
+        assert_eq!(f.action(), Action::Type('A'));
     }
 
     #[test]
     fn focus_keeps_its_column_through_short_rows() {
         let mut f = Focus::default();
         f.step(12, 0);
-        assert_eq!(f.action(), "M");
+        assert_eq!(f.action(), Action::Type('M'));
         f.step(0, 1);
-        assert_eq!(f.action(), "Z");
+        assert_eq!(f.action(), Action::Type('Z'));
         f.step(0, 1);
         assert_eq!(f.action(), DEL);
         f.step(0, 1);
-        assert_eq!(f.action(), "confirm");
+        assert_eq!(f.action(), Action::Confirm);
         f.step(0, 1);
-        assert_eq!(f.action(), "back");
+        assert_eq!(f.action(), Action::Back);
         f.step(0, 1);
-        assert_eq!(f.action(), "back");
+        assert_eq!(f.action(), Action::Back);
         f.step(0, -4);
-        assert_eq!(f.action(), "M");
+        assert_eq!(f.action(), Action::Type('M'));
         f.step(0, -1);
-        assert_eq!(f.action(), "M");
+        assert_eq!(f.action(), Action::Type('M'));
     }
 
     #[test]
@@ -112,6 +184,6 @@ mod tests {
         f.step(12, 2);
         assert_eq!(f.action(), DEL);
         f.step(-1, 0);
-        assert_eq!(f.action(), "9");
+        assert_eq!(f.action(), Action::Type('9'));
     }
 }
