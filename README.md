@@ -24,7 +24,6 @@ failing loudly.
 | Path | What it is |
 |---|---|
 | `design/DESIGN.md` | Full specification — mechanics, terrain, modifiers, art |
-| `IMPLEMENTATION_PROMPT.md` | The brief this build was written against |
 | `crates/salt-line-sim` | The whole game. No Godot dependency, no runtime dependencies at all |
 | `crates/salt-line-godot` | Rendering, input, UI. Draws what the sim says is true |
 | `art/` | Native-resolution sprites, 16-colour palette, reference scene |

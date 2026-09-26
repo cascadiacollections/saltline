@@ -113,7 +113,8 @@ feeds generation.
 
 6. **Solvability validation.** See §2.4. Reject and regenerate with
    `screen_seed + 1` on failure. Cap at 8 attempts, then fall back to a `Flat`
-   template — a boring screen is better than a hang.
+   template — a boring screen is better than a hang. The fallbacks are
+   validated as well; see the ladder in §2.4.
 
 ### 2.4 Solvability
 
@@ -145,6 +146,24 @@ difficulty and worth graphing over a 200-screen batch.
 `Overhang` screens intentionally fail the direct check and are only offered once
 the player holds a modifier that unlocks them (ricochet, airburst, or
 tunneling). Gate template availability on the loadout, not just the band.
+
+**Fallbacks are validated too.** When the drawn templates run out (§2.3 step 6)
+generation steps down a ladder, and every rung goes through the same gate:
+
+1. Eight drawn templates, each on the next seed.
+2. Eight `Flat` screens on a separate run of seeds.
+3. No template: the base ridge flattened to a gentle roll, one target.
+4. Level ground, no wind before or after the apex, one Pylon at half the
+   loadout's flat-ground range (or the band's distance, if nearer).
+
+Rung 4 is solvable by construction for any loadout the game can hold: nothing
+stands in the way, nothing blows the shell off line, and half range leaves a
+low and a high answer across a wide band of power, whatever Featherweight,
+Ballast or Sabot have done to the range and however coarse the angle quantum.
+It is still validated, to prove the construction rather than trust it. If it
+ever failed, a debug or test build would panic rather than show the screen, and
+the batch harness would fail. A supply screen (Scavenger Rites) has no targets,
+so there is nothing to prove; it is exempt by nature, not by oversight.
 
 ### 2.5 Difficulty curve
 
@@ -194,8 +213,11 @@ approach so the only remaining line is steeper. Both outcomes are legitimate.
 Do not "fix" players digging themselves out of trouble; that emergent recovery
 is the most interesting thing the system does.
 
-Cap total scar depth at bedrock. Never allow terrain to be excavated below the
-world floor, or the heightfield inverts and collision breaks.
+Bedrock slows excavation (crater radius ×0.55) but does not stop it: a column can be dug
+through bedrock down to `WORLD_FLOOR`, and no further. Never allow terrain to be
+excavated below the world floor, or the heightfield inverts and collision breaks.
+Digging through bedrock is slow on purpose; it is the expensive end of the Demo build
+and of the deep caches in §8.
 
 ### 2.7 Structural collapse
 
@@ -212,9 +234,10 @@ Two independent kill paths, and having both is the point:
 
 - **Direct.** Blast within the structure's bounding box reduces `integrity` by
   blast overlap × material factor.
-- **Undermining.** Craters inside the footprint reduce `support`. Recompute after
-  every detonation as the mean remaining height across footprint columns,
-  normalized to the original.
+- **Undermining.** Craters inside the footprint reduce `support`. Recompute once
+  per shot, after every detonation that shot caused (a Cluster shell's
+  submunitions all land before states are resolved), as the mean remaining height
+  across footprint columns, normalised to the original.
 
 **State thresholds:**
 
@@ -232,6 +255,9 @@ until every target reads Collapsed.
 Collapse animates as a topple in the lean direction, then the debris adds a small
 positive mound to the scar buffer where it lands. Terrain gets slightly higher
 where a structure fell. That is a nice consequence to leave in.
+
+Collapse is permanent. Debris or later craters that raise or refill the footprint
+never stand a collapsed structure back up.
 
 Undermining is what gives the DEMO build a win condition of its own. A player
 running Auger and Cluster never needs to hit a target directly — they excavate
@@ -275,7 +301,7 @@ Tags mark the build each supports: **DRIFT**, **DEMO**, **PRECISION**,
 | **Ballast** | Shell mass ×1.6. Wind acceleration ×0.5, but power range −20%. | DRIFT | 2 |
 | **Sabot** | Muzzle velocity +25%, crater radius ×0.5. | PRECISION | 2 |
 | **Airburst** | Set a fuse in units of distance; shell detonates there. Blast radius ×1.8, no terrain contact needed. | PRECISION | 1 |
-| **Skipstone** | Shells ricochet once off any surface at ≤20° incidence, retaining 70% velocity. | DEMO | 2 |
+| **Skipstone** | Shells ricochet once off terrain at ≤20° incidence, retaining 70% velocity. Structures are hit, not bounced off. | DEMO | 2 |
 | **Auger** | Shell tunnels through one material layer before detonating. Bedrock stops it. | DEMO | 1 |
 | **Cluster** | On detonation, splits into 3 submunitions at ±15°. Each does 40% damage. | DEMO | 2 |
 | **Thermal Lance** | Steel counts as Rock for crater radius. Structures collapse rather than chip. | DEMO | 1 |
