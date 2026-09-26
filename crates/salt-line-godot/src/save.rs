@@ -58,6 +58,19 @@ pub fn read(user_path: &str) -> Option<String> {
     }
 }
 
+/// Whether a `user://` file is there, whether or not it can be read.
+pub fn exists(user_path: &str) -> bool {
+    match on_disk(user_path) {
+        // `symlink_metadata` errors only when there is nothing to stat (or
+        // nothing it may stat, which is as good as there for "is it gone?").
+        Some(p) => !matches!(
+            std::fs::symlink_metadata(p),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        ),
+        None => FileAccess::file_exists(user_path),
+    }
+}
+
 /// Read the save file. A missing file is an empty board, not an error. If the
 /// save is missing or damaged but the temporary file survived — the game went
 /// down between writing it and moving it into place — that is loaded instead.

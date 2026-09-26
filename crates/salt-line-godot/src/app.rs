@@ -116,7 +116,7 @@
 //! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft); [`Game::stored`], for a score that did not reach disk; launch or CONTINUE, dropping a line that will not replay | `resume::replace`: the run file becomes the text (`Game::run_file_text`: finished runs still to score, then the live run) | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
-//! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why, then as `Discard` | no | yes |
+//! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only the set-aside copy (`resume::drop_set_aside`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
 //!
 //! # Scoring at most once
@@ -150,7 +150,14 @@
 //! it, and puts it back (`RunFile::Restore`) only once it rebuilt. A log that
 //! crashes the sim is found still set aside at the next launch and abandoned
 //! ([`SavedRun::Interrupted`]), so it costs one crash rather than one per
-//! launch.
+//! launch. When launch scores waiting runs or drops a bad line, it puts the
+//! file back first and only then rewrites it, and the rewrite deletes
+//! nothing until it has written its replacement: on a full disk every line
+//! stays where it was.
+//!
+//! Over a save from a newer build, which this build never writes, no score
+//! is tried at all: the finished runs stay in the run file, untouched but
+//! for being written back, for a build that can record them.
 //!
 //! # Where to change things
 //!
@@ -475,7 +482,10 @@ pub enum RunFile {
     /// overwritten with nothing, which `resume::judge` reads as no run: a
     /// finished log is meant never to survive to be scored twice.
     Discard,
-    /// `Discard`, for a run this build cannot continue, saying why in the log.
+    /// Throw away a run this build cannot continue, saying why in the log:
+    /// `Discard` for one it could not read, and for one the last launch
+    /// died rebuilding only the copy left set aside, never a `run.txt`
+    /// written since.
     Abandon(Abandoned),
 }
 
@@ -1083,29 +1093,35 @@ impl Game {
                 }
             }
             Store::Score {
-                entries, announce, ..
+                entries,
+                clear,
+                announce,
             } => {
                 if ok {
+                    // A score that cleared the run file is the waiting runs,
+                    // oldest first (`score_unscored`); one that did not (a
+                    // `--salt-screen` run) is none of them, however alike.
+                    if clear.is_some() {
+                        let n = entries.len().min(self.run_file.unscored.len());
+                        self.run_file.unscored.drain(..n);
+                    }
                     for entry in entries {
                         self.save.place(entry);
-                        let unscored = &mut self.run_file.unscored;
-                        if let Some(i) = unscored.iter().position(|u| u.entry == entry) {
-                            unscored.remove(i);
-                        }
                     }
                     if announce {
-                        self.note("LAST RUN SCORED".into());
+                        // Beside, not over, a note launch left about a line
+                        // it had to throw away.
+                        let text = if self.status_time > 0.0 && !self.status.is_empty() {
+                            format!("LAST RUN SCORED - {}", self.status)
+                        } else {
+                            "LAST RUN SCORED".into()
+                        };
+                        let time = self.status_time;
+                        self.note(text);
+                        self.status_time = self.status_time.max(time);
                     }
                 } else {
-                    // Not on the board (a save from a newer build, a full
-                    // disk, a finished log that would not go): keep the
-                    // finished logs in the run file, so a later score or
-                    // launch can get them there.
-                    if !self.run_file.unscored.is_empty() {
-                        self.fx
-                            .push(Effect::RunFile(RunFile::Write(self.run_file_text())));
-                    }
-                    self.note_not_saved("SCORE NOT SAVED");
+                    self.keep_unscored();
                 }
             }
         }
@@ -1185,18 +1201,24 @@ impl Game {
                 }
             }
         }
+        let rewrite = !self.run_file.unscored.is_empty()
+            || (stale.is_some() && self.run_file.resumable.is_some());
+        if rewrite {
+            // Put the file back first. A rename needs no room on the disk, so
+            // if the rewrite below cannot be written (a full disk) the whole
+            // file is still in place, finished runs, live run and all, and
+            // the clear is not confirmed.
+            self.fx.push(Effect::RunFile(RunFile::Restore));
+        }
         if !self.run_file.unscored.is_empty() {
             // Their lines gone before the scores go on the board, as in
             // `finish_run`; kept for a launch that can record them, if this
             // one cannot. The clear rewrites the file without anything
             // stale in it.
             self.score_unscored(true);
-        } else if self.run_file.resumable.is_some() {
-            self.fx.push(Effect::RunFile(if stale.is_some() {
-                RunFile::Write(self.run_file_text())
-            } else {
-                RunFile::Restore
-            }));
+        } else if rewrite {
+            self.fx
+                .push(Effect::RunFile(RunFile::Write(self.run_file_text())));
         } else if let Some(why) = stale {
             self.fx
                 .push(Effect::RunFile(RunFile::Abandon(Abandoned::Unreadable(

@@ -98,7 +98,8 @@
 //!   `Restore` is never applied (no file effect survives a panic, see
 //!   `app::Effect::survives_panic`); the next launch sees
 //!   `run-loading.txt`, never replays it, and throws it away
-//!   (`app::Abandoned::Interrupted`). Text that merely fails to parse or
+//!   (`app::Abandoned::Interrupted`, [`drop_set_aside`]), leaving any
+//!   `run.txt` beside it for the launch after. Text that merely fails to parse or
 //!   replay is caught by [`judge`] as [`Stale`] and discarded with a note,
 //!   without a crash at all. If the move aside at launch fails, the
 //!   one-crash guard is lost for that launch.
@@ -315,6 +316,8 @@ pub fn judge(text: Option<&str>) -> Found {
 pub trait RunFiles {
     /// A file's text; `None` if it is missing or unreadable.
     fn read(&self, path: &str) -> Option<String>;
+    /// Whether a file is there, readable or not.
+    fn exists(&self, path: &str) -> bool;
     /// Replace `main` with `text` by way of `temp` (`save::write`). Returns
     /// whether it reached disk; on failure `main` is left as it was.
     fn write(&mut self, main: &str, temp: &str, text: &str) -> bool;
@@ -365,41 +368,57 @@ pub fn take_saved(files: &mut impl RunFiles) -> Option<SavedRun> {
     Some(SavedRun::Found(text))
 }
 
-/// Make the saved run exactly `text`, or no run at all for `""`: the set-aside
-/// copy and the temporary file go, and `run.txt` is written with `text` or
-/// deleted. If something is left that a launch could read as a run other
-/// than `text` (a file that would not delete, a write that did not land),
+/// Make the saved run exactly `text`, or no run at all for `""`: `run.txt`
+/// is written with `text` (or deleted, or failing that blanked), and only
+/// once that has worked do the set-aside copy and the temporary file go. A
+/// write that fails (a full disk) therefore leaves every copy where it was,
+/// never the only one deleted. If something is still left that a launch
+/// could read as a run other than `text` (a file that would not delete),
 /// `run.txt` is written once more with `text`, which for `""` is the empty
 /// file [`judge`] reads as no run.
 ///
-/// Returns whether that is confirmed: afterwards neither `run.txt` nor
-/// `run.txt.new` holds anything but `text` or nothing. A score may only go
-/// on the board once its finished log is confirmed gone, or a later launch
-/// scores it again (`app`'s "Scoring at most once"). A set-aside copy that
-/// will not delete does not count against it: a launch that finds one
-/// throws it away unread.
+/// Returns whether that is confirmed: `text` is in place, and neither
+/// `run.txt` nor `run.txt.new` holds anything but `text` or nothing; a file
+/// that is there but cannot be read counts as holding something else. A
+/// score may only go on the board once its finished log is confirmed gone,
+/// or a later launch scores it again (`app`'s "Scoring at most once"). A
+/// set-aside copy that will not delete does not count against it: a launch
+/// that finds one throws it away unread.
 pub fn replace(files: &mut impl RunFiles, text: &str) -> bool {
-    if text.is_empty() {
+    let placed = if text.is_empty() {
         files.remove(RUN_PATH);
+        !files.exists(RUN_PATH) || files.write(RUN_PATH, RUN_TEMP_PATH, "")
     } else {
-        files.write(RUN_PATH, RUN_TEMP_PATH, text);
+        files.write(RUN_PATH, RUN_TEMP_PATH, text)
+    };
+    if !placed {
+        return false;
     }
     files.remove(RUN_LOADING_PATH);
     files.remove(RUN_TEMP_PATH);
     if holds_only(files, text) {
         return true;
     }
-    files.write(RUN_PATH, RUN_TEMP_PATH, text);
-    holds_only(files, text)
+    files.write(RUN_PATH, RUN_TEMP_PATH, text) && holds_only(files, text)
 }
 
-/// Neither `run.txt` nor `run.txt.new` holds a run other than `text`.
+/// Neither `run.txt` nor `run.txt.new` holds a run other than `text`. A
+/// file there that cannot be read may hold anything.
 fn holds_only(files: &impl RunFiles, text: &str) -> bool {
-    [RUN_PATH, RUN_TEMP_PATH].into_iter().all(|path| {
-        files
-            .read(path)
-            .is_none_or(|t| t.trim().is_empty() || t == text)
-    })
+    [RUN_PATH, RUN_TEMP_PATH]
+        .into_iter()
+        .all(|path| match files.read(path) {
+            Some(t) => t.trim().is_empty() || t == text,
+            None => !files.exists(path),
+        })
+}
+
+/// At launch, over a copy left set aside by a launch that died rebuilding
+/// it: throw that copy away, unread, and nothing else. A `run.txt` beside it
+/// was written after the copy was set aside (the live run put back), so it
+/// is kept for the next launch.
+pub fn drop_set_aside(files: &mut impl RunFiles) {
+    files.remove(RUN_LOADING_PATH);
 }
 
 /// Leave no run to resume or score: [`replace`] with nothing.
@@ -580,19 +599,37 @@ mod tests {
         assert!(matches!(judge(Some(&text)), Found::Discard(Stale::Damaged)));
     }
 
-    /// The run files in memory, for `take_saved`.
+    /// The run files in memory, for `take_saved` and `replace`. Files named
+    /// in `stuck` can be neither replaced nor deleted; those in `unreadable`
+    /// are there but read as `None`, as `save::read` reports any error.
     #[derive(Default)]
-    struct Mem(std::collections::BTreeMap<String, String>);
+    struct Mem(
+        std::collections::BTreeMap<String, String>,
+        std::collections::BTreeSet<&'static str>,
+        std::collections::BTreeSet<&'static str>,
+    );
 
     impl RunFiles for Mem {
         fn read(&self, path: &str) -> Option<String> {
+            if self.2.contains(path) {
+                return None;
+            }
             self.0.get(path).cloned()
         }
+        fn exists(&self, path: &str) -> bool {
+            self.0.contains_key(path)
+        }
         fn write(&mut self, main: &str, _temp: &str, text: &str) -> bool {
+            if self.1.contains(main) {
+                return false;
+            }
             self.0.insert(main.into(), text.into());
             true
         }
         fn rename(&mut self, from: &str, to: &str) -> bool {
+            if self.1.contains(from) || self.1.contains(to) {
+                return false;
+            }
             let Some(text) = self.0.remove(from) else {
                 return false;
             };
@@ -600,8 +637,27 @@ mod tests {
             true
         }
         fn remove(&mut self, path: &str) {
-            self.0.remove(path);
+            if !self.1.contains(path) {
+                self.0.remove(path);
+            }
         }
+    }
+
+    #[test]
+    fn a_run_file_that_is_there_but_unreadable_is_not_cleared() {
+        let finished = Saved::of(&played(7, 320, 2), false).to_line();
+        let mut m = files(Some(&finished), None);
+        m.1.insert(RUN_PATH);
+        m.2.insert(RUN_PATH);
+        assert!(
+            !discard(&mut m),
+            "a file that could not be read is not gone"
+        );
+        assert!(!replace(&mut m, "resume x\n"));
+        // Readable again, and able to go: cleared.
+        m.1.clear();
+        m.2.clear();
+        assert!(discard(&mut m));
     }
 
     fn files(main: Option<&str>, temp: Option<&str>) -> Mem {

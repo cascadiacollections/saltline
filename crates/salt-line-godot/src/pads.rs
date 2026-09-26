@@ -18,9 +18,12 @@
 //!
 //! A stick can also start drifting after it armed. So an armed axis that
 //! stays pushed for [`DRIFT_TIME`] on end, with no button pressed on that
-//! device meanwhile, is disarmed ([`Pads::tick`]), and arms again the next
-//! time it reads near centre. A player holding the stick over to sweep the
-//! aim lets go, or presses fire, well within that.
+//! device and nothing the push does meanwhile, is disarmed ([`Pads::tick`]),
+//! and arms again the next time it reads near centre. A push that is still
+//! moving the aim is being used ([`Pads::in_use`], called by `game.rs`), so
+//! however long a sweep takes (a minute and more at Vernier's finest step)
+//! it is never cut off; what is disarmed is a push that has done nothing
+//! for that long, at the end of the dial or in a menu it does not move.
 //!
 //! Button presses are taken from any pad (a press is what makes it count);
 //! buttons held down are read only from pads that count, for input; `busy`
@@ -33,11 +36,12 @@ pub const REST: f32 = 0.2;
 /// Past this fraction of full deflection an armed axis reads as pushed.
 pub const PUSH: f32 = 0.45;
 
-/// Seconds an armed axis may stay pushed, with no button pressed on its
-/// device, before it is taken for drift and disarmed. Longer than sweeping
-/// the aim dial end to end by holding the stick (a few seconds at the
-/// repeat rate), so a player holding the stick over is not cut off.
-pub const DRIFT_TIME: f64 = 8.0;
+/// Seconds an armed axis may stay pushed with nothing to show for it (no
+/// button pressed on its device, no change to the aim) before it is taken
+/// for drift and disarmed. Generous, since holding the stick against the
+/// end of the dial for a moment is normal; a sweep in progress resets it
+/// every step ([`Pads::in_use`]).
+pub const DRIFT_TIME: f64 = 20.0;
 
 /// The stick axes the game reads: left X, left Y.
 pub const STICK_AXES: usize = 2;
@@ -87,6 +91,14 @@ impl Pads {
             let pad = self.entry(device);
             pad.armed[axis] = true;
             pad.pushed_for[axis] = 0.0;
+        }
+    }
+
+    /// The stick is doing something: holding it over this frame changed the
+    /// aim. Nothing held is drift, so every drift clock starts again.
+    pub fn in_use(&mut self) {
+        for pad in &mut self.pads {
+            pad.pushed_for = [0.0; STICK_AXES];
         }
     }
 
@@ -182,6 +194,21 @@ mod tests {
         hold(&mut p, 1, 0.0, 0.0);
         hold(&mut p, (DRIFT_TIME * 60.0) as usize - 30, -0.9, 0.0);
         assert_eq!(p.iter().next().unwrap().armed, [true, false]);
+    }
+
+    #[test]
+    fn a_push_that_keeps_moving_the_aim_is_never_taken_for_drift() {
+        let mut p = Pads::default();
+        p.motion(0, 0, 0.0);
+        // A long sweep at the finest angle step: the aim changes all along.
+        for _ in 0..(DRIFT_TIME * 3.0) as usize {
+            hold(&mut p, 60, 0.9, 0.0);
+            p.in_use();
+        }
+        assert_eq!(p.iter().next().unwrap().armed, [true, false]);
+        // At the end stop nothing changes any more: then it is drift.
+        hold(&mut p, (DRIFT_TIME * 60.0) as usize + 1, 0.9, 0.0);
+        assert_eq!(p.iter().next().unwrap().armed, [false, false]);
     }
 
     #[test]

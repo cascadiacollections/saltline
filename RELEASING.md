@@ -298,6 +298,11 @@ Copy this into the release notes, trimmed to what is still true.
   interactive capture UI. The in-game controls screen documents the format,
   displays active bindings and can reset defaults.
 - Seed text entry and the F1 developer overlay require a keyboard.
+- A saved run is not carried back across a downgrade in one case: after a
+  score that could not be written (a full disk, or a save from a newer
+  build), `run.txt` holds more than one line, and an older build, which
+  expects one, reads it as damaged and discards it, with the run in progress
+  and the scores still waiting in it.
 - Programmer art throughout. Dimensions and the 16-colour palette are fixed and
   are the contract a real artist would work against.
 

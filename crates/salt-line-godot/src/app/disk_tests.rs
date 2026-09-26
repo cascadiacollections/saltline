@@ -24,7 +24,8 @@
 //! operation. Clearing the run file (`resume::replace`, for a score and for
 //! `RunFile::Discard`) is the node's several steps, each its own operation,
 //! so a crash part-way through one is exercised too. So is a `run.txt` that
-//! will not go at all (`stuck`): its score must stay off the board.
+//! will not go at all (`stuck`): its score must stay off the board; and a
+//! full disk (`full`), on which nothing may be lost.
 //!
 //! The tests would fail if the core or the adapter could score twice: for
 //! instance a score written without its `clear`, or written although the
@@ -79,6 +80,9 @@ struct FakeDisk {
     /// `run.txt` can be neither replaced nor deleted, as a read-only or
     /// failing file would be: a rename onto or off it, and its removal, fail.
     stuck: bool,
+    /// The disk is full: nothing new can be written (a run-file write's
+    /// temporary file, the save), though renames and deletes still work.
+    full: bool,
 }
 
 impl FakeDisk {
@@ -110,6 +114,9 @@ impl FakeDisk {
                     } else if fail {
                         self.fail_scores -= 1;
                         false
+                    } else if self.full || g.save.from_the_future {
+                        // `save::store` refuses a newer build's save.
+                        false
                     } else if self.alive() {
                         self.save = Some(g.save_to_store(&why).serialize());
                         true
@@ -124,6 +131,9 @@ impl FakeDisk {
                 }
                 Effect::RunFile(RunFile::Restore) => {
                     self.rename(RUN_LOADING_PATH, RUN_PATH);
+                }
+                Effect::RunFile(RunFile::Abandon(Abandoned::Interrupted)) => {
+                    resume::drop_set_aside(self);
                 }
                 Effect::RunFile(RunFile::Discard | RunFile::Abandon(_)) => {
                     resume::discard(self);
@@ -183,8 +193,12 @@ impl resume::RunFiles for FakeDisk {
         }
     }
 
+    fn exists(&self, path: &str) -> bool {
+        self.read(path).is_some()
+    }
+
     fn write(&mut self, main: &str, temp: &str, text: &str) -> bool {
-        if !self.alive() {
+        if !self.alive() || self.full {
             return false;
         }
         *self.file(temp) = Some(text.into());
@@ -374,6 +388,7 @@ fn crash_everywhere(start: FakeDisk, flow: fn(&mut FakeDisk) -> Played) {
         disk.budget = None;
         disk.fail_scores = 0;
         disk.stuck = false;
+        disk.full = false;
         let first = disk.launch();
         if let Some(saved) = first.run_file.resumable.as_ref() {
             // Either run, as far as it got before the crash.
@@ -547,6 +562,109 @@ fn a_run_file_that_will_not_go_keeps_its_score_for_later_not_twice() {
 #[test]
 fn a_run_file_that_will_not_go_survives_a_crash_anywhere() {
     crash_everywhere(FakeDisk::default(), finish_with_the_file_stuck);
+}
+
+/// A disk holding a finished run whose score never saved, above a run
+/// quit two shots in, and what was played.
+fn kept_and_live() -> (FakeDisk, Played) {
+    let mut disk = FakeDisk::default();
+    let played = score_fails_then_play_on(&mut disk);
+    disk.done = 0;
+    (disk, played)
+}
+
+/// The run a launch offers is the live run of `played`, as played.
+fn offers_the_live_run(g: &Game, played: &Played) {
+    let (seed, log) = played.live.as_ref().unwrap();
+    let offered = g
+        .run_file
+        .resumable
+        .as_ref()
+        .expect("the live run is offered");
+    assert_eq!(offered.seed, *seed);
+    assert_eq!(&offered.log, log);
+}
+
+#[test]
+fn a_full_disk_at_launch_loses_neither_the_run_nor_the_kept_score() {
+    let (mut disk, played) = kept_and_live();
+    disk.full = true;
+    for _ in 0..2 {
+        let g = disk.launch();
+        assert!(disk.board().is_empty());
+        offers_the_live_run(&g, &played);
+    }
+    disk.full = false;
+    let g = disk.launch();
+    assert_eq!(g.status, "LAST RUN SCORED");
+    offers_the_live_run(&g, &played);
+    let g = disk.launch();
+    offers_the_live_run(&g, &played);
+    let board = disk.board();
+    assert_eq!(board.len(), 1);
+    assert_eq!(board[0].seed, played.seed);
+}
+
+#[test]
+fn a_full_disk_keeps_a_good_run_beside_a_line_gone_bad() {
+    let mut disk = FakeDisk::default();
+    let mut played = quit_mid_run(&mut disk);
+    played.live = Some((played.seed, played.log.clone()));
+    let live = disk.run.clone().unwrap();
+    disk.run = Some(format!("resume junk\n{live}"));
+    disk.full = true;
+    let g = disk.launch();
+    offers_the_live_run(&g, &played);
+    disk.full = false;
+    let g = disk.launch();
+    offers_the_live_run(&g, &played);
+}
+
+#[test]
+fn a_launch_that_dies_scoring_never_costs_the_live_run() {
+    // Killed after every step of a launch that scores the kept run and
+    // rewrites the file down to the live one: once the live run is back in
+    // `run.txt`, no later launch loses it.
+    let (start, played) = kept_and_live();
+    let mut whole = start.clone();
+    whole.launch();
+    for k in 0..=whole.done {
+        let mut disk = start.clone();
+        disk.budget = Some(k);
+        disk.launch();
+        disk.budget = None;
+        let restored = disk.run.is_some();
+        disk.launch();
+        let g = disk.launch();
+        if restored {
+            offers_the_live_run(&g, &played);
+        }
+        assert!(disk.board().len() <= 1, "crash after {k}");
+    }
+}
+
+#[test]
+fn a_run_already_back_in_place_outlives_the_copy_left_set_aside() {
+    // The state a launch killed between writing the live run and deleting
+    // the set-aside copy would leave: the next launch throws away the copy
+    // (it may be what killed the last one), never the run beside it.
+    let (mut disk, played) = kept_and_live();
+    let live = resume::Saved {
+        epoch: salt_line_sim::SIM_EPOCH,
+        seed: played.live.as_ref().unwrap().0,
+        width: 320,
+        daily: false,
+        log: played.live.as_ref().unwrap().1.clone(),
+    };
+    disk.set_aside = disk.run.take();
+    disk.run = Some(live.to_line());
+    let g = disk.launch();
+    assert!(
+        g.run_file.resumable.is_none(),
+        "the set-aside copy is not replayed"
+    );
+    let g = disk.launch();
+    offers_the_live_run(&g, &played);
 }
 
 // ----------------------------------------------------------- after a panic

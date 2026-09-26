@@ -281,12 +281,32 @@ impl Game {
     /// entries are only placed in memory once they are on disk (`stored`):
     /// placed first, a later settings write would carry them to disk while
     /// their kept lines scored them again at the next launch.
+    ///
+    /// Over a save from a newer build, which this one never writes
+    /// (`save::store`), there is no attempt: the run file is not cleared
+    /// only to be written back, and the runs simply stay in it.
     pub(super) fn score_unscored(&mut self, announce: bool) {
+        if self.save.from_the_future {
+            self.keep_unscored();
+            return;
+        }
         self.fx.push(Effect::Store(Store::Score {
             entries: self.run_file.unscored.iter().map(|u| u.entry).collect(),
             clear: Some(self.kept_line().unwrap_or_default()),
             announce,
         }));
+    }
+
+    /// The waiting runs did not reach the board (a save from a newer build,
+    /// a full disk, a finished log that would not go): keep their lines in
+    /// the run file, so a later score or launch can get them there, and say
+    /// so.
+    pub(super) fn keep_unscored(&mut self) {
+        if !self.run_file.unscored.is_empty() {
+            self.fx
+                .push(Effect::RunFile(RunFile::Write(self.run_file_text())));
+        }
+        self.note_not_saved("SCORE NOT SAVED");
     }
 
     /// Play the game for the camera: aim with the solver, take offer 1.

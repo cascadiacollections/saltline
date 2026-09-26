@@ -26,11 +26,12 @@
 //!     ├─ crash::panicked()? ──yes──► broken_frame: Game::broken_tick,
 //!     │                               file effects dropped, error screen
 //!     ├─ poll_display       window size every frame, cutout when due
-//!     ├─ watch_drift        disarm a stick axis held over too long (pads)
+//!     ├─ watch_drift        disarm a stick axis held over, doing nothing, too long
 //!     ├─ gather_intents     events + keys/pads held + stick polled ──► Intents
 //!     ├─ Game::tick_with    events → crash::note (for the report) → timers
 //!     │                     → display → mode input → step → run file → settings
 //!     ├─ apply(effects)     in order; Store ──► save::store ──► Game::stored
+//!     ├─ pads.in_use        a stick held over that moved the aim is not drift
 //!     ├─ prune_pads         forget unplugged joypads, once a second
 //!     ├─ frame cap          idle menus at frame::IDLE_FPS
 //!     ├─ redraw.due(busy)?  dirty flag, or anything moving
@@ -241,6 +242,7 @@ impl INode2D for SaltLine {
         // Keep the crash hook's picture of the run current. Taken before this
         // frame's input is acted on, so a panic inside `fire` still reports
         // the aim it fired. The core gets the raw `delta` and caps it itself.
+        let aim = (self.g.play.angle_ticks, self.g.play.power_ticks);
         let fx = self.g.tick_with(delta, &self.intents, |g| {
             crash::note(
                 g.mode_name(),
@@ -250,6 +252,13 @@ impl INode2D for SaltLine {
             )
         });
         self.apply(fx);
+        // A stick held over that moved the aim this frame is a hand on it,
+        // however long it has been held: not drift (`Pads::in_use`).
+        if self.intents.stick.iter().any(|&held| held)
+            && aim != (self.g.play.angle_ticks, self.g.play.power_ticks)
+        {
+            self.pads.in_use();
+        }
         self.prune_pads(capped);
         self.apply_frame_cap();
         if self.redraw.due(self.busy()) {
@@ -465,17 +474,18 @@ impl SaltLine {
                     save::rename(RUN_LOADING_PATH, RUN_PATH);
                 }
                 Effect::RunFile(RunFile::Discard) => Self::discard_run_file(),
-                Effect::RunFile(RunFile::Abandon(why)) => {
-                    match why {
-                        Abandoned::Interrupted => godot_warn!(
+                Effect::RunFile(RunFile::Abandon(why)) => match why {
+                    Abandoned::Interrupted => {
+                        godot_warn!(
                             "salt-line: discarding {RUN_LOADING_PATH}: a rebuild did not finish"
-                        ),
-                        Abandoned::Unreadable(why) => {
-                            godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}")
-                        }
+                        );
+                        resume::drop_set_aside(&mut UserFiles);
                     }
-                    Self::discard_run_file();
-                }
+                    Abandoned::Unreadable(why) => {
+                        godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}");
+                        Self::discard_run_file();
+                    }
+                },
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (
                         save::on_disk(crash::REPORT_PATH),
@@ -499,6 +509,9 @@ struct UserFiles;
 impl resume::RunFiles for UserFiles {
     fn read(&self, path: &str) -> Option<String> {
         save::read(path)
+    }
+    fn exists(&self, path: &str) -> bool {
+        save::exists(path)
     }
     fn write(&mut self, main: &str, temp: &str, text: &str) -> bool {
         save::write(main, temp, text)
