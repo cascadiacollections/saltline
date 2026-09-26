@@ -240,6 +240,16 @@ impl TouchPad {
             .unwrap_or(0)
     }
 
+    /// Any finger is down, or a tap or drop is waiting to be read: the
+    /// screen is being touched and a lit button or drag band may change.
+    pub fn active(&self) -> bool {
+        !self.fingers.is_empty()
+            || !self.went_down.is_empty()
+            || self.drag.is_some()
+            || self.dropping.is_some()
+            || self.dropped.is_some()
+    }
+
     /// The free drag in progress, as (start, now) in buffer pixels.
     pub fn drag(&self) -> Option<((f32, f32), (f32, f32))> {
         self.drag.as_ref().map(|d| (d.start, d.now))
@@ -348,6 +358,25 @@ mod tests {
         pad.finger_down(1, 15.0, 15.0, &stacked);
         pad.update(0.016, DELAY, RATE);
         assert!(pad.pressed("draft_1") && !pad.pressed("back"));
+    }
+
+    #[test]
+    fn active_while_touched_and_until_a_tap_is_read() {
+        let mut pad = TouchPad::default();
+        assert!(!pad.active());
+        pad.finger_down(0, 35.0, 5.0, &buttons());
+        pad.finger_up(0);
+        assert!(pad.active());
+        pad.update(0.016, DELAY, RATE);
+        pad.update(0.016, DELAY, RATE);
+        assert!(!pad.active());
+        pad.finger_down(0, 100.0, 50.0, &buttons());
+        assert!(pad.active());
+        pad.finger_up(0);
+        pad.update(0.016, DELAY, RATE);
+        assert!(pad.active());
+        pad.update(0.016, DELAY, RATE);
+        assert!(!pad.active());
     }
 
     #[test]

@@ -86,6 +86,27 @@ impl RepeatState {
         }
         count
     }
+
+    /// `tick` for an input that also reports presses as events. A press seen
+    /// this frame always counts once and restarts the delay, even when the key
+    /// was let go again before the frame polled it, or was already held.
+    pub fn tick_pressed(
+        &mut self,
+        pressed: bool,
+        down: bool,
+        delta: f64,
+        delay: f64,
+        rate: f64,
+    ) -> u32 {
+        if pressed {
+            *self = Self {
+                down,
+                clock: -delay,
+            };
+            return 1;
+        }
+        self.tick(down, delta, delay, rate)
+    }
 }
 
 /// Linear fade for a flash that started at `at` and lasts `duration` seconds:
@@ -135,6 +156,21 @@ mod tests {
         assert_eq!(r.tick(true, 0.07, 0.28, 0.05), 1);
         assert_eq!(r.tick(false, 1.0, 0.28, 0.05), 0);
         assert_eq!(r.tick(true, 0.0, 0.28, 0.05), 1);
+    }
+
+    #[test]
+    fn a_press_between_polls_still_counts_once() {
+        let mut r = RepeatState::default();
+        // Down and up again inside one frame: never seen held.
+        assert_eq!(r.tick_pressed(true, false, 0.016, 0.28, 0.05), 1);
+        assert_eq!(r.tick_pressed(false, false, 0.016, 0.28, 0.05), 0);
+        // A normal press, then held into repeat.
+        assert_eq!(r.tick_pressed(true, true, 0.016, 0.28, 0.05), 1);
+        assert_eq!(r.tick_pressed(false, true, 0.27, 0.28, 0.05), 0);
+        assert_eq!(r.tick_pressed(false, true, 0.07, 0.28, 0.05), 1);
+        // Released and pressed again within a frame restarts the delay.
+        assert_eq!(r.tick_pressed(true, true, 0.016, 0.28, 0.05), 1);
+        assert_eq!(r.tick_pressed(false, true, 0.2, 0.28, 0.05), 0);
     }
 
     #[test]

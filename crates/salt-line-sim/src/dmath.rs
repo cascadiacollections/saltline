@@ -8,15 +8,26 @@
 //! Everything here is built from the IEEE-754 operations that *are* exactly
 //! specified — add, subtract, multiply, divide, `sqrt`, `floor` — so results
 //! are byte-identical everywhere. `f64::floor` and `f64::sqrt` are the only
-//! std float methods the sim crate calls.
+//! std float math functions the sim crate calls (comparisons such as
+//! `f64::min` and `f64::max` are exact too).
+//!
+//! The techniques are standard and worth knowing: `sin` is a Taylor series
+//! evaluated by Horner's method after argument reduction into
+//! `[-pi/2, pi/2]`; `cos` is `sin` shifted by a quarter turn; and `atan2` is
+//! replaced outright by a binary search over the integer angle grid
+//! ([`angle_ticks_from_dir`]), which needs only the trig above.
 //!
 //! Precision is ~1e-16 relative on the reduced interval, which is far tighter
 //! than anything the sim can observe: input angles are quantized to 0.05° ticks
 //! before any trig happens, and the authority on whether a shot connects is
 //! always the fixed-step integration, never the closed-form solve.
 
+/// π, rounded to the nearest `f64`. Constants are literals, so they are the
+/// same bits everywhere.
 pub const PI: f64 = core::f64::consts::PI;
+/// 2π (τ), one full turn in radians.
 pub const TWO_PI: f64 = core::f64::consts::TAU;
+/// π/2, a quarter turn in radians.
 pub const HALF_PI: f64 = core::f64::consts::FRAC_PI_2;
 
 /// Degrees per angle tick. `Vernier` changes the *input* quantization
@@ -38,11 +49,16 @@ const R15: f64 = 1.0 / 1307674368000.0;
 const R17: f64 = 1.0 / 355687428096000.0;
 const R19: f64 = 1.0 / 121645100408832000.0;
 
-/// Taylor series for sin on |x| <= pi/2. Truncation error < 1e-16 there.
+/// Taylor series for sin on |x| <= pi/2, through the x^19 term.
+///
+/// The series alternates, so the truncation error is bounded by the first
+/// omitted term, x^21/21!: about 2.6e-16 at the ends of the interval, roughly
+/// one ulp of 1.0, and far smaller nearer zero.
 #[inline]
 fn sin_poly(x: f64) -> f64 {
     let x2 = x * x;
-    // Horner from the tail inward.
+    // Horner from the tail inward: nested multiply-adds in powers of x²,
+    // fewer operations and less rounding than summing each power separately.
     let mut s = R19;
     s = R17 - x2 * s;
     s = R15 - x2 * s;
@@ -56,8 +72,12 @@ fn sin_poly(x: f64) -> f64 {
 }
 
 /// Deterministic sine. Argument reduction uses only floor / mul / sub.
+///
+/// Accurate for the modest arguments the sim passes (a few turns at most).
+/// The reduction is a plain `x - k*2pi`, not a Cody–Waite or Payne–Hanek
+/// scheme, so the error grows with `|x|` for large inputs.
 pub fn sin(x: f64) -> f64 {
-    // Reduce to [-pi, pi].
+    // Reduce to [-pi, pi]: `k` is the nearest whole number of turns.
     let k = (x * (1.0 / TWO_PI) + 0.5).floor();
     let mut r = x - k * TWO_PI;
     // Fold to [-pi/2, pi/2] using sin(pi - r) == sin(r).
@@ -69,14 +89,19 @@ pub fn sin(x: f64) -> f64 {
     sin_poly(r)
 }
 
-/// Deterministic cosine.
+/// Deterministic cosine, through the co-function identity
+/// `cos(x) = sin(pi/2 - x)`.
 #[inline]
 pub fn cos(x: f64) -> f64 {
     sin(HALF_PI - x)
 }
 
 /// `(cos, sin)` of a quantized angle. This is the only entry point the
-/// ballistics core uses — trig is never called on a raw float there.
+/// ballistics core uses for player input; its other trig calls (the ricochet
+/// limit, the cluster fan) take fixed constants, never a raw float from play.
+///
+/// `ticks` is in 0.05° steps ([`TICK_DEG`]); any `i32` works, though the sim
+/// only passes `0..=`[`MAX_ANGLE_TICKS`].
 #[inline]
 pub fn dir_from_ticks(ticks: i32) -> (f64, f64) {
     let a = ticks as f64 * TICK_RAD;
@@ -95,11 +120,14 @@ pub fn hypot(a: f64, b: f64) -> f64 {
     sqrt(a * a + b * b)
 }
 
+/// Largest integer not greater than `x`. Exact in IEEE-754.
 #[inline]
 pub fn floor(x: f64) -> f64 {
     x.floor()
 }
 
+/// Absolute value, written as a comparison so no std call is involved.
+/// Returns `-0.0` for `-0.0` and passes NaN through unchanged.
 #[inline]
 pub fn abs(x: f64) -> f64 {
     if x < 0.0 {
@@ -110,11 +138,16 @@ pub fn abs(x: f64) -> f64 {
 }
 
 /// Round-half-up, expressed through `floor`.
+///
+/// Halves go toward +infinity (`-0.5` rounds to `0.0`), unlike
+/// `f64::round`, which rounds halves away from zero.
 #[inline]
 pub fn round(x: f64) -> f64 {
     (x + 0.5).floor()
 }
 
+/// `x` limited to `[lo, hi]`. Unlike `f64::clamp` it does not panic when
+/// `lo > hi`, though the result is then not meaningful.
 #[inline]
 pub fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     if x < lo {
@@ -128,14 +161,20 @@ pub fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
 
 /// Hermite smoothstep. Used by the value noise (DESIGN §2.3) — matches
 /// `tools/gen_sprites.py::vnoise`.
+///
+/// `3f² - 2f³` on `f` in `[0, 1]`: 0 to 1 with zero slope at both ends, so
+/// noise interpolated with it has no creases at the lattice points.
 #[inline]
 pub fn smoothstep(f: f64) -> f64 {
     f * f * (3.0 - 2.0 * f)
 }
 
-/// Compact-support bump on `[-1, 1]`, peak 1 at 0, C1 at the edges.
+/// Compact-support bump on `[-radius, radius]`, peak 1 at 0, C1 at the edges.
 /// Stands in for a Gaussian everywhere in terrain shaping so that no `exp`
 /// call ever enters a state-affecting path.
+///
+/// `(1 - (d/radius)²)²` inside the radius, 0 outside and for `radius <= 0`.
+/// The same squared-falloff kernel shapes craters (DESIGN §2.6).
 #[inline]
 pub fn bump(d: f64, radius: f64) -> f64 {
     if radius <= 0.0 {
@@ -156,6 +195,12 @@ pub fn bump(d: f64, radius: f64) -> f64 {
 /// angles, in place of `atan2`. The cross product
 /// `vy*cos(a) - vx*sin(a) = |v|*sin(theta - a)` is monotonically decreasing in
 /// `a` across the quarter turn, so the search is exact.
+///
+/// Directions outside the quarter turn clamp: any direction with `vy <= 0`
+/// gives 0, and one with `vy > 0` and `vx <= 0` gives [`MAX_ANGLE_TICKS`].
+/// The search takes eleven halvings of the 1800-tick range. The solver uses
+/// this to turn a closed-form velocity into a dialable angle, and the Godot
+/// layer uses it for pull-to-aim.
 pub fn angle_ticks_from_dir(vx: f64, vy: f64) -> i32 {
     if vx <= 0.0 {
         return if vy > 0.0 { MAX_ANGLE_TICKS } else { 0 };

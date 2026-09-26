@@ -3,8 +3,28 @@
 //!
 //! Only the public API is used, the same surface the presentation layer and
 //! the replay format depend on. On a failure proptest shrinks the input and
-//! records it under `proptest-regressions/`; commit that file so the case
-//! stays covered.
+//! records its seed in `properties.proptest-regressions`, next to this file;
+//! commit that file so the case stays covered.
+//!
+//! How the test kinds divide the work:
+//!
+//! - Example tests (`#[cfg(test)]` in each module) pin one known case each
+//!   and document intent.
+//! - Property tests (here) state a rule that must hold for every input, such
+//!   as "any run replays to the same state", and search for a
+//!   counterexample. They find the case nobody thought to write down.
+//! - Snapshot and golden tests (`snapshots.rs`, `golden_runs.rs`) pin exact
+//!   outputs, so they catch any change at all, intended or not, including
+//!   one that keeps every property true.
+//! - Fuzzing (`fuzz/`) throws hostile, coverage-guided input at the parsers
+//!   and the replay for minutes at a time, looking for panics and broken
+//!   round trips the bounded strategies here never generate.
+//! - Benchmarks (`benches/sim.rs`) catch cost regressions, which no test
+//!   above notices.
+//!
+//! Replay property strength depends on the runs the strategy produces; see
+//! `the_scripted_player_uses_the_fuse_and_enfilade`, which checks the
+//! generated runs actually exercise the inputs the log records.
 
 mod common;
 
@@ -17,6 +37,9 @@ use salt_line_sim::replay::{decode_log, encode_log, state_hash, Replay};
 use salt_line_sim::rng::Pcg32;
 use salt_line_sim::{POWER_TICKS_MAX, SCREEN_W_MAX, SCREEN_W_MIN};
 
+/// Up to 40 player decisions. The ranges deliberately overshoot what the
+/// game allows (a negative fuse, offsets past Enfilade's limit) so the
+/// clamping paths are exercised and have to replay identically too.
 fn decisions() -> impl Strategy<Value = Vec<Decision>> {
     prop::collection::vec(
         (
@@ -44,6 +67,10 @@ proptest! {
     // count modest; the seeds still differ on every run of the suite.
     #![proptest_config(ProptestConfig::with_cases(48))]
 
+    /// The core replay property: seed, width and log are enough. Checks the
+    /// full state hash, the rebuilt log itself, and the text form's round
+    /// trip, so a replay that drifted, a log that recorded the wrong values
+    /// and an encoder that lost information all fail here.
     #[test]
     fn any_run_replays_to_the_same_state(
         seed in any::<u64>(),
