@@ -285,6 +285,9 @@ def tank(variant="base"):
     return b, (x0 + 13, ty - 1)   # sprite + barrel pivot
 
 
+BARREL_PIVOT = (3, 24)   # (x, y) inside the 28px frame
+
+
 def barrel(angle_deg, variant="base"):
     """Pre-rendered frame — no runtime rotation (§5.3)."""
     length, thick = 16, 3
@@ -294,9 +297,13 @@ def barrel(angle_deg, variant="base"):
         length, thick = 9, 5
     elif variant == "auger":
         length, thick = 16, 3
+    # Angles only run 0-90 deg (up and to the right), so the pivot sits near
+    # the frame's bottom-left corner rather than its centre: that leaves the
+    # full 28px for the barrel's length at every angle. Kept in sync with
+    # BARREL_PIVOT in crates/salt-line-godot/src/sprites.rs.
     s = 28
     b = Buf(s, s)
-    cx = cy = s // 2
+    cx, cy = BARREL_PIVOT
     a = math.radians(angle_deg)
     ex = cx + math.cos(a) * length
     ey = cy - math.sin(a) * length
@@ -304,6 +311,11 @@ def barrel(angle_deg, variant="base"):
     b.line(cx, cy, ex, ey, rgba("hull_edge"), 1)
     if variant == "auger":
         b.rect(ex - 1, ey - 1, 3, 3, rgba("hull_hi"))
+    # Nothing may touch the frame edge: a pixel there means the drawing ran
+    # off it and was clipped (the bug the centred pivot used to cause).
+    for i in range(s):
+        for edge in ((i, 0), (i, s - 1), (0, i), (s - 1, i)):
+            assert b.get(*edge)[3] == 0, (variant, angle_deg, edge)
     return b, (cx, cy)
 
 

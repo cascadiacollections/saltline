@@ -40,10 +40,12 @@ pub const BARREL_FRAMES: usize = 19;
 pub const PIVOT_BASE: (i32, i32) = (15, 3);
 /// Barrel pivot inside the Ballast chassis; see [`PIVOT_BASE`].
 pub const PIVOT_BALLAST: (i32, i32) = (13, 4);
-/// Pivot inside a barrel frame: its centre. `gen_sprites.py::barrel` draws
+/// Pivot inside a barrel frame, near its bottom-left corner: angles only run
+/// 0-90 degrees, so every barrel extends up and right from here and gets the
+/// full frame for its length. `gen_sprites.py::barrel` (`BARREL_PIVOT`) draws
 /// every frame outward from this point, so aligning it with the chassis
 /// pivot seats every angle correctly without runtime rotation.
-pub const BARREL_PIVOT: (i32, i32) = (14, 14);
+pub const BARREL_PIVOT: (i32, i32) = (3, 24);
 
 /// Every sprite the game draws, loaded once from `res://art/sprites`.
 ///
