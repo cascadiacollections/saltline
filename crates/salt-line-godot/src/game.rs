@@ -6,9 +6,9 @@
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
-    AudioStream, AudioStreamPlayer, DisplayServer, INode2D, Image, ImageTexture, Input, InputEvent,
-    InputEventKey, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os, RenderingServer,
-    ResourceLoader, Time,
+    window::ContentScaleAspect, AudioStream, AudioStreamPlayer, DisplayServer, INode2D, Image,
+    ImageTexture, Input, InputEvent, InputEventKey, InputEventScreenDrag, InputEventScreenTouch,
+    Node2D, Os, RenderingServer, ResourceLoader, Time,
 };
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
@@ -30,6 +30,7 @@ use crate::presentation::{
     LEARN_SHELLS, LEARN_WIND,
 };
 use crate::raster::{self, Canvas, View};
+use crate::resume::{self, Found, RUN_PATH, RUN_TEMP_PATH};
 use crate::save::{self, Entry, Save};
 use crate::save_format::{ArcHint, TouchAim};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
@@ -247,6 +248,16 @@ pub struct SaltLine {
     future_noted: bool,
     /// Showing the error screen. See `broken_frame`.
     broken: bool,
+    /// The saved run CONTINUE would rebuild, already checked. See `resume`.
+    resumable: Option<resume::Saved>,
+    /// Log length last written to `user://run.txt`; `None` before the first
+    /// write of this run.
+    run_saved_len: Option<usize>,
+    /// This run is kept in `user://run.txt`. Off for a `--salt-screen` jump,
+    /// which its log cannot rebuild.
+    run_persist: bool,
+    /// This run was rebuilt by CONTINUE, for the crash report.
+    resumed: bool,
 }
 
 #[godot_api]
@@ -304,6 +315,10 @@ impl INode2D for SaltLine {
             crash_copied: false,
             broken: false,
             future_noted: false,
+            resumable: None,
+            run_saved_len: None,
+            run_persist: false,
+            resumed: false,
         }
     }
 
@@ -325,6 +340,7 @@ impl INode2D for SaltLine {
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
         self.save = save::load();
         self.find_last_crash();
+        self.find_saved_run();
         self.setup_audio();
         self.entitlement = store::entitlement(self.save.unlocked);
         self.buffer_w = self.pick_width();
@@ -345,6 +361,8 @@ impl INode2D for SaltLine {
             if let Some(n) = Self::screen_arg() {
                 self.jump_to(n);
             }
+        } else if Self::cmdline_flag("--salt-continue") {
+            self.continue_run();
         }
         if !self.pal.sampled {
             godot_warn!("salt-line: palette not sampled from art; using the built-in fallback");
@@ -358,12 +376,16 @@ impl INode2D for SaltLine {
         }
         self.note_crash_context();
         self.elapsed += delta;
+        // Animation and timers never jump more than a tenth of a second, however
+        // long the app sat in the background. See `resume::frame_delta`.
+        let delta = resume::frame_delta(delta);
         self.status_time = (self.status_time - delta).max(0.0);
         self.handle_input(delta);
         if self.auto {
             self.autopilot(delta);
         }
         self.step(delta);
+        self.persist_run();
         self.tick_settings(delta);
         self.render();
         self.base_mut().queue_redraw();
@@ -420,13 +442,18 @@ impl INode2D for SaltLine {
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
                 self.touch.release_all();
+                self.auto_pause();
                 self.flush_settings();
             }
             // Pending settings go to disk before the app can be killed: a
             // phone may never resume a paused app, and a close is final.
-            CanvasItemNotification::APPLICATION_PAUSED
-            | CanvasItemNotification::WM_CLOSE_REQUEST
-            | CanvasItemNotification::EXIT_TREE => self.flush_settings(),
+            CanvasItemNotification::APPLICATION_PAUSED => {
+                self.auto_pause();
+                self.flush_settings();
+            }
+            CanvasItemNotification::WM_CLOSE_REQUEST | CanvasItemNotification::EXIT_TREE => {
+                self.flush_settings()
+            }
             _ => {}
         }
     }
@@ -553,6 +580,8 @@ impl SaltLine {
     }
 
     fn start_run(&mut self, seed: u64, daily: bool) {
+        // A new run is generated for the device, whatever a resumed one used.
+        self.set_run_width(None);
         // The world is as wide as the buffer, so the run is generated for it.
         let width = self.buffer_w as usize;
         let state = RunState::new(seed, width);
@@ -570,6 +599,7 @@ impl SaltLine {
         self.run = Some(state);
         self.mode = Mode::Playing;
         self.apply_buffer_size();
+        self.begin_persisting();
         self.note(format!("SEED {}", format_seed(seed)));
     }
 
@@ -579,6 +609,8 @@ impl SaltLine {
     fn jump_to(&mut self, index: u32) {
         let Some(run) = self.run.as_mut() else { return };
         run.screen_index = index;
+        // The log cannot rebuild a jump, so the run is not kept for resume.
+        self.run_persist = false;
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
         self.note(format!("SCREEN {}", index + 1));
     }
@@ -710,6 +742,7 @@ impl SaltLine {
             "controls" => ("V", "BACK"),
             "mute" => ("M", "START"),
             "last_arc" => ("L", "X"),
+            "continue" => ("R", "Y"),
             _ => ("", ""),
         };
         self.binding(action, defaults.0, defaults.1)
@@ -866,7 +899,9 @@ impl SaltLine {
         }
         match self.mode {
             Mode::Title => {
-                if self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER) {
+                if self.resumable.is_some() && self.action_pressed(11, "continue") {
+                    self.continue_run();
+                } else if self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER) {
                     let seed = daily_seed(Self::today());
                     self.play_sound(Sound::Ui);
                     self.start_run(seed, true);
@@ -923,6 +958,7 @@ impl SaltLine {
                     self.mode = Mode::Playing;
                 } else if self.action_pressed(3, "replay") {
                     self.play_sound(Sound::Ui);
+                    self.suspend_run();
                     self.mode = Mode::Title;
                 }
             }
@@ -1295,6 +1331,7 @@ impl SaltLine {
     }
 
     fn finish_run(&mut self) {
+        self.stop_persisting();
         if let Some(run) = self.run.as_ref() {
             let (screens, shells, shots) = run.score();
             let entry = Entry {
@@ -1633,6 +1670,16 @@ impl SaltLine {
             Mode::Title => {
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
+                if self.resumable.is_some() {
+                    let key = self.input_label("continue");
+                    y = self.menu_row(
+                        y,
+                        "continue",
+                        &format!("{key}      CONTINUE"),
+                        "CONTINUE",
+                        alert,
+                    );
+                }
                 let confirm = self.input_label("confirm");
                 y = self.menu_row(
                     y,
@@ -1662,6 +1709,11 @@ impl SaltLine {
                     y = self.menu_row(y, "copy", &format!("{copy}      {text}"), text, alert);
                 }
                 y += 6;
+                if self.status_time > 0.0 {
+                    let text = self.status.clone();
+                    self.centred(y, &text, alert);
+                    y += 10;
+                }
                 let best = self.save.best().copied();
                 if let Some(b) = best {
                     self.centred(
@@ -2679,6 +2731,7 @@ impl SaltLine {
             self.mode_name(),
             self.run.as_ref(),
             (self.angle_ticks, self.power_ticks),
+            self.resumed,
         );
     }
 
@@ -2794,5 +2847,172 @@ impl SaltLine {
         self.upload();
         self.maybe_screenshot();
         self.base_mut().queue_redraw();
+    }
+}
+
+// ------------------------------------------------------- lifecycle and resume
+
+impl SaltLine {
+    /// Focus lost, or the operating system paused the app: stop the clock on
+    /// a live screen, so a shot in the air or a clear in progress is still
+    /// there to watch on return. Not during a draft, where nothing moves and
+    /// the cards themselves say where the player was; a pause screen over
+    /// them would only cost a tap. Not for the dev autopilot or screenshots,
+    /// which nobody is watching with focus.
+    fn auto_pause(&mut self) {
+        if self.mode != Mode::Playing || self.auto || self.shot_path.is_some() {
+            return;
+        }
+        if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
+            return;
+        }
+        self.touch.cancel_drag();
+        self.mode = Mode::Paused;
+    }
+
+    /// Size the buffer for a run: the recorded width for a resumed one, the
+    /// device's for anything else. A resumed run generated at another width
+    /// keeps it (DESIGN §9.2: a replay must use it), shown letterboxed
+    /// instead of stretched across the window.
+    fn set_run_width(&mut self, width: Option<usize>) {
+        let device = self.pick_width();
+        let want = width.map_or(device, |w| w as i32);
+        self.buffer_w = want;
+        let aspect = if want == device {
+            ContentScaleAspect::EXPAND
+        } else {
+            ContentScaleAspect::KEEP
+        };
+        if let Some(mut window) = self.base().get_window() {
+            window.set_content_scale_aspect(aspect);
+        }
+    }
+
+    /// A new run replaces whatever was saved: it is written on the next
+    /// frame, log and all (empty, at the start).
+    fn begin_persisting(&mut self) {
+        self.resumable = None;
+        self.run_saved_len = None;
+        self.run_persist = true;
+        self.resumed = false;
+    }
+
+    /// The run is over and on the board: nothing is left to resume.
+    fn stop_persisting(&mut self) {
+        if self.run_persist {
+            self.discard_run_file();
+        }
+        self.run_persist = false;
+        self.resumable = None;
+    }
+
+    fn discard_run_file(&self) {
+        save::remove(RUN_PATH);
+        save::remove(RUN_TEMP_PATH);
+    }
+
+    /// Write `user://run.txt` whenever the log has grown: a shot fired or a
+    /// draft taken (a reposition rides in the next shot's entry). Checked
+    /// every frame, written only on a change.
+    fn persist_run(&mut self) {
+        if !self.run_persist || crash::panicked() {
+            return;
+        }
+        let Some(run) = self.run.as_ref() else { return };
+        let len = run.log.len();
+        if self.run_saved_len == Some(len) {
+            return;
+        }
+        let line = resume::Saved::of(run, self.daily).to_line();
+        // Tried once per change: a failed write is logged by `save::write`,
+        // and the next shot tries again.
+        save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+        self.run_saved_len = Some(len);
+    }
+
+    /// Quit to title keeps the run. It is already on disk, so CONTINUE picks
+    /// it up this session exactly as it would after the app was killed; only
+    /// starting another run gives it up. Stepping away should not cost a run
+    /// the player only wanted a break from.
+    fn suspend_run(&mut self) {
+        if !self.run_persist {
+            return;
+        }
+        self.resumable = self
+            .run
+            .as_ref()
+            .filter(|r| !r.is_over())
+            .map(|r| resume::Saved::of(r, self.daily));
+    }
+
+    /// At launch: offer the saved run, score one that had already ended, or
+    /// throw away one this build must not replay.
+    fn find_saved_run(&mut self) {
+        let text = save::read(RUN_PATH).or_else(|| save::read(RUN_TEMP_PATH));
+        match resume::judge(text.as_deref()) {
+            Found::Nothing => {}
+            Found::Continue(saved) => self.resumable = Some(saved),
+            Found::Finished(saved, run) => {
+                let (screens, shells, shots) = run.score();
+                let entry = Entry {
+                    seed: saved.seed,
+                    screens,
+                    shells,
+                    shots,
+                    daily: saved.daily,
+                };
+                let recorded = save::record(&mut self.save, entry);
+                self.discard_run_file();
+                self.note(if recorded.saved {
+                    "LAST RUN SCORED".into()
+                } else {
+                    "SCORE NOT SAVED".into()
+                });
+            }
+            Found::Discard(why) => {
+                godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}");
+                self.discard_run_file();
+                self.note(why.note().into());
+                self.status_time = 6.0;
+            }
+        }
+    }
+
+    /// Rebuild the saved run and drop the player back in where it stood.
+    fn continue_run(&mut self) {
+        let Some(saved) = self.resumable.take() else {
+            return;
+        };
+        let Some(run) = saved.reconstruct() else {
+            self.discard_run_file();
+            self.note(resume::Stale::Diverged.note().into());
+            return;
+        };
+        self.set_run_width(Some(saved.width));
+        (self.angle_ticks, self.power_ticks) = saved.aim().unwrap_or((900, 600));
+        self.anim = None;
+        self.last_arc.clear();
+        self.clear_hold = 0.0;
+        self.cam_x = 0;
+        self.cam_target = 0.0;
+        self.daily = saved.daily;
+        self.last_seed = saved.seed;
+        self.low_shell_warned = run.shells < 10;
+        self.retire_last_crash();
+        let screen = run.screen_index;
+        // What is on disk is this run, as rebuilt.
+        self.run_saved_len = Some(run.log.len());
+        self.run_persist = true;
+        self.resumed = true;
+        self.run = Some(run);
+        self.mode = Mode::Playing;
+        self.play_sound(Sound::Ui);
+        // Buffer size for the loadout, and the paywall gate if it is due.
+        self.after_screen_change();
+        self.note(format!(
+            "SCREEN {}  SEED {}",
+            screen + 1,
+            format_seed(saved.seed)
+        ));
     }
 }
