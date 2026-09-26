@@ -69,6 +69,27 @@ attached device or emulator (set `ANDROID_SERIAL` if there is more than one);
 newest NDK), Godot's export templates, and a debug keystore in the Godot editor
 settings. Phones use the Compatibility renderer; the desktop keeps Forward+.
 
+### iOS
+
+On a Mac, `just ios` builds the extension for arm64, exports an Xcode project
+to `build/ios`, signs it, then installs and launches it on the attached iPhone
+(set `IOS_DEVICE` to a name or UDID if there is more than one). Signing uses
+Xcode's automatic provisioning, which also registers the phone with your
+account. It needs a paid Apple developer account for installs that last a year.
+It also needs:
+
+- Xcode, signed in to that account under Settings > Accounts
+- rustup and Godot's export templates
+- your Team ID as `application/app_store_team_id` in the iOS preset of
+  `export_presets.cfg` (it is public, and in every app you sign)
+- Developer Mode on the iPhone (Settings > Privacy & Security), with the phone
+  trusting the Mac
+
+If the command-line signing step fails, `just ios-project` stops after the
+export. Open `build/ios/SaltLine.xcodeproj`, pick your team under Signing &
+Capabilities and press Run. CI builds the same project unsigned on every pull
+request.
+
 ## Controls
 
 | Keyboard | Controller | Touch | Action |

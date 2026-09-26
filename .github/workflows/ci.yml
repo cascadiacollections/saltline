@@ -408,6 +408,51 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # iOS can only be signed with a developer account, so CI stops short of that: it
+  # builds the extension, exports the Xcode project with a placeholder team, and
+  # builds the app unsigned. That still proves the export and the link, which is
+  # everything `just ios` does before signing.
+  ios:
+    name: ios (arm64, unsigned)
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ios
+      - name: build the GDExtension for iOS
+        run: |
+          rustup target add aarch64-apple-ios
+          cargo build -p salt-line-godot --target aarch64-apple-ios
+      - name: import assets
+        run: godot --headless --path . --frame-delay 800 --import
+      - name: export the Xcode project
+        run: |
+          set -eu
+          sed -i '' 's/^application\/app_store_team_id=""$/application\/app_store_team_id="ABCDE12345"/' export_presets.cfg
+          mkdir -p build/ios
+          godot --headless --path . --export-debug "iOS" build/ios/SaltLine.ipa
+          test -d build/ios/SaltLine.xcodeproj
+          # A missing extension library is skipped silently, so check it was wrapped.
+          find build/ios -name 'libsalt_line_godot.framework' | grep -q .
+      - name: build the app, unsigned
+        run: |
+          set -eu
+          xcodebuild -project build/ios/SaltLine.xcodeproj -configuration Debug -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO SYMROOT="$PWD/build/ios/out" -quiet build
+          app=$(ls -d build/ios/out/Debug-iphoneos/*.app | head -1)
+          echo "built $app"
+          find "$app" -maxdepth 3 \( -name '*salt_line*' -o -name '*.pck' \) | tee found.txt
+          grep -q salt_line found.txt
+
   # Native build for Windows on ARM (e.g. Snapdragon laptops), cross-compiled on
   # the x64 runner and exported with Godot's arm64 template. It cannot be
   # launched here, so unlike the playable jobs there is no smoke test.
