@@ -27,7 +27,8 @@ use crate::raster::Sprite;
 /// this is also the strip's height.
 pub const BARREL_FRAME: i32 = 28;
 /// Frames in the strip: 0..=90 degrees in 5-degree steps. The frame for an
-/// angle comes from the sim's `Shot::barrel_frame`.
+/// angle comes from the sim's
+/// [`Shot::barrel_frame`](salt_line_sim::ballistics::Shot::barrel_frame).
 pub const BARREL_FRAMES: usize = 19;
 
 /// Barrel pivot inside the tank sprite, from `gen_sprites.py::tank`:

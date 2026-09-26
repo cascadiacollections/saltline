@@ -13,24 +13,24 @@
 //! to it, so text obeys the same sixteen-colour rule as everything else
 //! (DESIGN §5.2). Against packed bits, strings keep each glyph legible and
 //! diffable in the source; the cost is a few bytes of `.rodata` and a byte
-//! compare per pixel, which is nothing at 180px tall.
+//! compare per pixel, negligible at this resolution.
 //!
 //! The layout is monospaced: every character, including one with no glyph,
 //! advances the cursor by the same amount. That keeps [`small_width`] and
 //! [`big_width`] a multiplication, which is what the HUD uses to size its
 //! plates before drawing.
 
-/// 3x5 glyphs. The subset in `tools/gen_sprites.py`, completed to the full
-/// alphabet so UI strings do not silently lose letters.
-///
-/// Glyph width in buffer pixels.
+/// Width of a 3x5 glyph, in buffer pixels.
 pub const SMALL_W: usize = 3;
-/// Glyph height in buffer pixels.
+/// Height of a 3x5 glyph, in buffer pixels.
 pub const SMALL_H: usize = 5;
 /// One pixel of tracking between 3x5 glyphs.
 pub const SMALL_ADVANCE: usize = 4;
 
 /// The 3x5 mask for `c`, or `None` if the face has no glyph for it.
+///
+/// The subset in `tools/gen_sprites.py`, completed to the full alphabet so UI
+/// strings do not silently lose letters.
 ///
 /// Case-insensitive: the face is capitals only, so lower-case input draws as
 /// upper case. A `None` still advances the cursor when drawn, so an
@@ -100,19 +100,19 @@ pub fn small_glyph(c: char) -> Option<[&'static str; SMALL_H]> {
     })
 }
 
-/// 5x7 glyphs: digits and the few symbols the instruments need. Labels stay
-/// 3x5; only the numbers a player reads mid-shot get the larger face.
-///
-/// Glyph width in buffer pixels.
+/// Width of a 5x7 glyph, in buffer pixels.
 pub const BIG_W: usize = 5;
-/// Glyph height in buffer pixels. HUD icons are drawn to the same height so
+/// Height of a 5x7 glyph, in buffer pixels. HUD icons are drawn to the same height so
 /// they sit level with the digits beside them (see [`crate::icons`]).
 pub const BIG_H: usize = 7;
 /// One pixel of tracking between 5x7 glyphs.
 pub const BIG_ADVANCE: usize = 6;
 
 /// The 5x7 mask for `c`, or `None` outside digits, `+ - . :` and space.
-/// Unlike [`small_glyph`] there are no letters: labels stay in the small face.
+///
+/// Digits and the few symbols the instruments need. Labels stay 3x5; only
+/// the numbers a player reads mid-shot get the larger face, so unlike
+/// [`small_glyph`] there are no letters.
 pub fn big_glyph(c: char) -> Option<[&'static str; BIG_H]> {
     Some(match c {
         '0' => [

@@ -9,10 +9,10 @@
 //! colour *indices* into a short per-call list, not colours, and
 //! [`Canvas::icon`](crate::raster::Canvas::icon) resolves them against
 //! palette entries the caller chooses. The same icon can therefore be drawn
-//! in different slots without a second bitmap, and can never introduce a
-//! seventeenth colour (DESIGN §5.2). `Canvas::icon` can also mirror an icon
-//! horizontally, which is how the windsock points left — a flip, not a
-//! rotation (DESIGN §5.1).
+//! in different slots without a second bitmap, and carries no colour of its
+//! own (DESIGN §5.2). `Canvas::icon` can also mirror an icon horizontally,
+//! which is how the windsock points left — a flip, not a rotation
+//! (DESIGN §5.1).
 
 use crate::font::BIG_H;
 
@@ -57,7 +57,7 @@ pub const SOCK_LIMP: Icon = [
 ];
 
 /// Width of `icon` in buffer pixels, taken from its first row; every row is
-/// the same length (checked by the tests below).
+/// the same length (a unit test checks this).
 pub fn width(icon: &Icon) -> i32 {
     icon[0].len() as i32
 }

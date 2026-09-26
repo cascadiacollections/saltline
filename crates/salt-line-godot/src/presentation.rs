@@ -1,4 +1,5 @@
-//! Engine-free helpers for presentation timing and held-input repeat.
+//! Engine-free helpers for presentation timing, held-input repeat and
+//! onboarding bits.
 //!
 //! Everything here runs on wall-clock seconds from Godot's frame `delta` and
 //! only changes what is drawn or how input is paced. None of it feeds back
@@ -6,12 +7,16 @@
 //! screen shake that read sim state, or randomness, would make two replays of
 //! the same run look different for no reason. Kept free of Godot types so it
 //! can be unit-tested.
-
-// Onboarding lessons, one bit each in the save file's `learned` field
-// (`save_format::Save::learned`). A bit is set the first time the player
-// demonstrates the thing, and the HUD prompts the lowest unset lesson in
-// roughly this order. Bits are persisted, so they must never be renumbered;
-// new lessons take the next free bit.
+//!
+//! # Onboarding lessons
+//!
+//! The `LEARN_*` constants are one bit each in the save file's `learned`
+//! field ([`Save::learned`](crate::save_format::Save::learned)). A bit is set
+//! the first time the player demonstrates the thing. `game.rs`'s
+//! `onboarding_prompt` shows the first unset of angle, power, fire, crater,
+//! wind, shells; the draft lesson is prompted whenever a draft is open, until
+//! learned. Bits are persisted, so they must never be renumbered; new lessons
+//! take the next free bit.
 
 /// Changed the angle.
 pub const LEARN_ANGLE: u32 = 1 << 0;
@@ -36,12 +41,13 @@ pub const IMPACT_TIME: f64 = 0.24;
 /// Seconds the alert border flashes after a structure collapses.
 pub const COLLAPSE_TIME: f64 = 0.34;
 
-/// Hold-to-repeat for one input: fires once on the press, waits `delay`, then
-/// fires every `rate` seconds while held — the same behaviour as a desktop
-/// keyboard's auto-repeat.
+/// Hold-to-repeat for one input: fires once on the press, again
+/// `delay + rate` later, then every `rate` while held — the same behaviour as
+/// a desktop keyboard's auto-repeat.
 ///
-/// Shared by keyboard, gamepad and on-screen buttons so all three repeat
-/// identically. `Default` is the released state.
+/// Used by the gamepad and on-screen buttons. The keyboard path in `game.rs`
+/// repeats the same logic inline with the same `REPEAT_DELAY`/`REPEAT_RATE`.
+/// `Default` is the released state.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RepeatState {
     down: bool,
@@ -84,7 +90,8 @@ impl RepeatState {
 
 /// Linear fade for a flash that started at `at` and lasts `duration` seconds:
 /// 1.0 at the start, falling to 0.0 at `at + duration` and staying there.
-/// Before `at` it reads 1.0. Clamped to `0.0..=1.0`.
+/// Before `at` it reads 1.0. Clamped to `0.0..=1.0`. `duration` must be
+/// positive.
 pub fn flash_strength(now: f64, at: f64, duration: f64) -> f64 {
     (1.0 - ((now - at) / duration).max(0.0)).clamp(0.0, 1.0)
 }

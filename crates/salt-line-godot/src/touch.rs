@@ -31,8 +31,8 @@
 //! * **Edge latching.** Presses are collected as events arrive and published
 //!   once per frame by [`TouchPad::update`], so a tap that goes down and up
 //!   between two frames is still seen exactly once.
-//! * **Hold-to-repeat** shares [`RepeatState`] with the keyboard and gamepad,
-//!   so a held on-screen button repeats at the same delay and rate as a key.
+//! * **Hold-to-repeat** uses [`RepeatState`], as the gamepad does, with the
+//!   keyboard's delay and rate.
 //!
 //! Actions are `&'static str` names shared with the keyboard bindings
 //! (`"left"`, `"fire"`, `"draft_1"`...), so game code asks one question per
@@ -44,14 +44,17 @@ use crate::presentation::RepeatState;
 /// and `w, h` the size, with y pointing down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
+    /// Left edge.
     pub x: i32,
+    /// Top edge.
     pub y: i32,
+    /// Width.
     pub w: i32,
+    /// Height.
     pub h: i32,
 }
 
 impl Rect {
-    /// A rectangle with its top-left corner at `(x, y)`.
     pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         Self { x, y, w, h }
     }
@@ -77,7 +80,7 @@ pub struct Button {
     pub action: &'static str,
 }
 
-/// Multi-touch state for one frame at a time: which finger holds which
+/// Multi-touch input state: which finger holds which
 /// button, the one free drag, and per-action repeat timers.
 ///
 /// Feed it events with [`finger_down`](Self::finger_down),
@@ -115,8 +118,11 @@ pub struct TouchPad {
 /// The one free drag: the finger that owns it and where it went down and is
 /// now, in buffer pixels.
 struct Drag {
+    /// Touch index of the finger that owns the drag.
     index: i32,
+    /// Where the finger went down.
     start: (f32, f32),
+    /// Where the finger is now.
     now: (f32, f32),
 }
 

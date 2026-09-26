@@ -9,10 +9,11 @@
 //! [`Canvas`](crate::raster::Canvas) (DESIGN §5.1), and every colour that
 //! reaches it comes from this table by slot index. Code names a *role*
 //! ([`slot::ALERT`], [`slot::UI_FG`]) rather than an RGB value, so the
-//! allocation in DESIGN §5.2 — four terrain tones, three sky, three hull,
-//! three structure, two UI, one alert — is enforced by the type of the index,
-//! not by review. Read DESIGN §5 before adding a colour: the answer is to
-//! reuse a slot.
+//! allocation in DESIGN §5.2 (four terrain tones, three sky, three hull,
+//! three structure, two UI, one alert) is visible at every call site. Slots
+//! are plain `usize` constants, so nothing stops a stray `[u8; 4]` literal;
+//! the rule is kept by drawing only through [`Palette::get`]. Read DESIGN §5
+//! before adding a colour: the answer is to reuse a slot.
 //!
 //! Colours are stored as straight RGBA bytes. The software rasteriser writes
 //! bytes into the buffer, so converting from Godot's float `Color` happens
@@ -23,7 +24,8 @@ use godot::prelude::*;
 
 /// Slot names in the order they appear in `art/palette_16.png`, matching
 /// `gen_sprites.py`. `SLOTS[i]` is the name of the colour at [`slot`] index
-/// `i`; useful for debug output and snapshot tests.
+/// `i`. Nothing reads it at runtime; it records the order `gen_sprites.py`
+/// writes the swatches in.
 pub const SLOTS: [&str; 16] = [
     "sand",
     "rock",
@@ -147,8 +149,7 @@ impl Palette {
         // Cell width in whatever scale the sheet was written at.
         let cell = w / 16;
         let y = (cell / 2).min(h - 1);
-        // Start from the fallback so a failed sample can never leave a slot
-        // uninitialised; every slot is overwritten below.
+        // Any start value would do; every slot is overwritten below.
         let mut colours = FALLBACK;
         for (i, c) in colours.iter_mut().enumerate() {
             let x = (i as i32 * cell + cell / 2).min(w - 1);

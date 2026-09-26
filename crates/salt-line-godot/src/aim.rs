@@ -11,8 +11,7 @@
 //! the pull. The vector from the current point back to the start gives the
 //! launch direction, and its length gives power, linear up to [`FULL_PULL`].
 //! Floats are fine here because they never reach the sim: they are rounded
-//! to integer ticks first, and the sim only ever sees ticks (angle in 0.05°
-//! steps, `0..=MAX_ANGLE_TICKS` for 0–90°; power `0..=POWER_TICKS_MAX`).
+//! to integer ticks first, and the sim only ever sees ticks.
 //!
 //! `game.rs` recomputes the aim every frame while the finger is down, so the
 //! readouts and barrel sprite show exactly what letting go would fire, and

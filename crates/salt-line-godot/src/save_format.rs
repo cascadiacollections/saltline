@@ -16,7 +16,7 @@
 //! ```
 //!
 //! Optional lines (`touch_aim`, `arc_hint`, `last_arc`) appear only once the
-//! player has chosen a value; there is one `bind` line per rebound action and
+//! player has chosen a value; there is one `bind` line per overridden action and
 //! one `run` line per board entry, best first.
 //!
 //! # A line-based format with forward-compatible versioning
@@ -25,10 +25,11 @@
 //! that make it robust are all in [`Save::parse`]:
 //!
 //! * **Line-level recovery.** A malformed line is skipped, never fatal, so a
-//!   torn write loses at most the record it tore. Serialisation writes the
-//!   settings first and the board last, and ends every `run` line with a
-//!   single-character field, so a line cut short almost always has too few
-//!   fields to parse rather than parsing to a wrong number.
+//!   torn write loses at most the record it tore. Because the last field of
+//!   a `run` line is a single character, a truncated `run` line always has
+//!   too few fields and is dropped. A truncated setting (`volume 7`) can
+//!   still misread; the rename in `save.rs` is what keeps torn files off
+//!   disk.
 //! * **Unknown keywords are ignored**, and a `run` line may carry extra
 //!   trailing fields. A newer build can add data without an older one
 //!   discarding the rest of the file.
@@ -77,7 +78,9 @@ impl Entry {
 /// How touch aims: on-screen buttons, or pulling back on the playfield.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TouchAim {
+    /// Plus-and-minus buttons for angle and power.
     Buttons,
+    /// Pull back on open ground; see [`crate::aim`].
     Drag,
 }
 
@@ -162,11 +165,13 @@ pub struct Save {
     /// The leaderboard, best first, at most [`KEEP`] entries once sorted.
     pub scores: Vec<Entry>,
     /// Master effects volume, as an integer percentage for a stable text
-    /// representation. `0..=100`; larger values are capped on read and write.
+    /// representation. `0..=100`: on read, values 101–255 are capped to 100;
+    /// anything that is not a `u8` is ignored.
     pub volume: u8,
+    /// Effects muted. Independent of `volume`.
     pub muted: bool,
     /// Bitset of contextual lessons the player has already demonstrated,
-    /// one `presentation::LEARN_*` bit each.
+    /// one [`presentation`](crate::presentation) `LEARN_*` bit each.
     pub learned: u32,
     /// User-editable action bindings: action, keyboard token, pad token.
     /// Missing actions fall back to the built-in defaults. Tokens are
@@ -294,7 +299,8 @@ impl Save {
 
     /// Render the save as text, always at the current [`VERSION`].
     /// `Save::parse(&s.serialize())` gives back `s` with its board sorted and
-    /// cut to [`KEEP`] and its volume capped (a property test holds this).
+    /// cut to [`KEEP`] and its volume capped, for bindings already
+    /// normalised, with `from_the_future` false (a property test holds this).
     pub fn serialize(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("version {VERSION}\n"));
@@ -336,7 +342,7 @@ impl Save {
 
     /// Place a finished run on the board. Returns its position, or `None` if
     /// it did not make the cut. Persisting is the caller's job
-    /// (`save::record` does both).
+    /// ([`save::record`](crate::save::record) does both).
     pub fn place(&mut self, entry: Entry) -> Option<usize> {
         self.scores.push(entry);
         self.sort();

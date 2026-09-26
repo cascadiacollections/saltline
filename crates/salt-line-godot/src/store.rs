@@ -32,8 +32,9 @@ pub const MONETIZED: bool = cfg!(feature = "monetization");
 pub enum Entitlement {
     /// Everything is playable. In a development preview this is unconditional.
     Full,
-    /// Free content only — screens 1..=`FREE_SCREENS` (from
-    /// `salt_line_sim::run`, counted from 1 as the player sees them).
+    /// Free content only — screens
+    /// 1..=[`FREE_SCREENS`](salt_line_sim::run::FREE_SCREENS), counted from 1
+    /// as the player sees them.
     Free,
 }
 
