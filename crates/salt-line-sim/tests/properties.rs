@@ -168,7 +168,7 @@ fn a_trailing_zero_weight_is_never_picked() {
 fn the_scripted_player_uses_the_fuse_and_enfilade() {
     let (mut fuse_runs, mut offset_runs) = (0, 0);
     for seed in 0..24u64 {
-        let played = play(seed, 320, &common::seeded_decisions(seed, 40));
+        let played = play(seed, 320, &common::seeded_decisions(seed, 40, 0.7));
         let shots: Vec<_> = played.log.iter().filter(|e| e.angle_ticks >= 0).collect();
         let mut fuses: Vec<_> = shots.iter().map(|e| e.fuse_tenths).collect();
         fuses.sort_unstable();

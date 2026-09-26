@@ -16,6 +16,23 @@ pub mod run; // M3 — economy, screen assembly, state machine
 pub mod solver; // M2 — solvability validation
 pub mod terrain; // M1 — noise, heightfield, scar buffer, materials // M4 — seed + shot log -> verified reconstruction
 
+/// Version of the sim's outcomes. DESIGN §9.3.
+///
+/// Bumped on any change that alters a replay's outcome: generation,
+/// ballistics, damage, the economy, or what the shot log records. A log
+/// recorded under one epoch is only replayed by a sim of the same epoch;
+/// under any other it keeps its seed and nothing else.
+///
+/// Enforced rather than remembered: `tests/golden_runs.rs` hashes the pinned
+/// screen digests together with the golden-run corpus and asserts the result
+/// is [`EPOCH_DIGEST`]. Every bump gets a line in NOTES.md.
+///
+/// Epoch 1 is everything before the fuse and emplacement offset were logged.
+pub const SIM_EPOCH: u32 = 2;
+
+/// The digest that `SIM_EPOCH` vouches for. See `tests/golden_runs.rs`.
+pub const EPOCH_DIGEST: u64 = 0xce60_de84_8487_e4a5;
+
 /// Fixed simulation timestep. Never make this variable.
 pub const DT: f64 = 1.0 / 120.0;
 

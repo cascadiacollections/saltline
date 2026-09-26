@@ -31,15 +31,16 @@ pub struct Decision {
 
 /// `n` decisions drawn from a seeded generator, with the same shape the
 /// property test's strategy produces. Used where a run has to be reproducible
-/// from a number, like the golden-run corpus.
-pub fn seeded_decisions(seed: u64, n: usize) -> Vec<Decision> {
+/// from a number, like the golden-run corpus. `skill` is the share of shots
+/// that are solver candidates rather than random.
+pub fn seeded_decisions(seed: u64, n: usize, skill: f64) -> Vec<Decision> {
     let mut r = Pcg32::new(seed);
     (0..n)
         .map(|_| Decision {
             angle: r.range_u32(0, MAX_ANGLE_TICKS as u32) as i32,
             power: r.range_u32(0, POWER_TICKS_MAX as u32) as i32,
             pick: r.range_u32(0, 2) as usize,
-            solve: r.next_f64() < 0.7,
+            solve: r.next_f64() < skill,
             fuse: (r.next_f64() < 0.4).then(|| r.range_f64(-20.0, 500.0)),
             reposition: (r.next_f64() < 0.4).then(|| r.range_f64(-40.0, 40.0)),
         })
