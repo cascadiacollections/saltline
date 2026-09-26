@@ -375,7 +375,9 @@ mod tests {
     #[case::old_log_format("resume 2 7 320 0 @0 900:600")]
     fn damaged_lines_are_discarded(#[case] text: &str) {
         // The cases are written against epoch 2; keep them honest if it moves.
-        let text = text.replacen("resume 2 ", &format!("resume {SIM_EPOCH} "), 1);
+        // Every line is rewritten, so the two-line case is damaged for being
+        // two lines, not for a stale epoch on its second.
+        let text = text.replace("resume 2 ", &format!("resume {SIM_EPOCH} "));
         assert!(matches!(judge(Some(&text)), Found::Discard(Stale::Damaged)));
     }
 

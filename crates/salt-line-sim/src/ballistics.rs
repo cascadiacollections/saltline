@@ -307,7 +307,8 @@ pub struct FireOptions {
 pub enum End {
     /// Hit the ground. `pos` is the refined contact point, or where a
     /// tunnelling shell stopped; `material` is the surface layer of that
-    /// column.
+    /// column, or for a tunnelling shell the layer it stopped in. The run
+    /// sizes the crater from the surface layer either way.
     Terrain { pos: Vec2, material: Material },
     /// Entered target box `index` (into [`World::targets`]). `pos` is the end
     /// of the step that entered it, not a refined contact point.
@@ -430,7 +431,8 @@ fn normal_at(field: &Heightfield, x: f64) -> Vec2 {
 /// Auger's travel budget: the nominal thickness of the layer it entered
 /// (Sand 8 units, Rock 22). It does not subtract depth already excavated in
 /// that column, and it is spent as path length, not vertical depth.
-/// Bedrock stops it outright (DESIGN §4).
+/// Bedrock stops it outright, on contact or wherever the tunnelling shell
+/// reaches it with budget to spare (DESIGN §4).
 fn auger_budget(material: Material) -> f64 {
     match material {
         Material::Sand => SAND_DEPTH,
@@ -549,16 +551,19 @@ pub fn simulate_shell(
         if tunneling {
             // The budget is spent as distance travelled along the path.
             tunnel_left -= dmath::hypot(p.x - prev.x, p.y - prev.y);
-            // `material_at` is the column's surface layer, not the layer at
-            // the shell's depth, so this stops the shell early only where
-            // bedrock is already exposed; otherwise the budget ends it.
-            let material = world.field.material_at(p.x);
-            if material == Material::Bedrock || tunnel_left <= 0.0 {
-                break End::Terrain { pos: p, material };
-            }
             if !inside {
-                // Punched through and came out the far side.
+                // Punched through and came out the far side. Checked first:
+                // a point in the air has no layer, and one over a deep crater
+                // would otherwise read as bedrock and stop the shell there.
                 tunneling = false;
+            } else {
+                // Bedrock stops it at the shell's own depth (DESIGN §4),
+                // which can come before the budget runs out when it entered
+                // Rock.
+                let material = world.field.material_below(p.x, p.y);
+                if material == Material::Bedrock || tunnel_left <= 0.0 {
+                    break End::Terrain { pos: p, material };
+                }
             }
         } else if inside {
             // Refine the contact point between the last two samples so shallow
@@ -710,8 +715,6 @@ fn submunitions(world: &World, parent: &Trace, lo: &Loadout, opts: &FireOptions)
     let base = match parent.end {
         End::Terrain { .. } => {
             let n_hat = normal_at(world.field, pos.x);
-            let last = parent.origin; // direction of travel, reconstructed below
-            let _ = last;
             // Incoming direction from the parent's terminal velocity is not
             // retained, so reflect the vector from apex to impact — the same
             // sign, and stable.
@@ -1064,6 +1067,88 @@ mod tests {
         );
         assert!(!t2.tunneled);
         assert!(t2.end.pos().y > t.end.pos().y);
+    }
+
+    #[test]
+    fn auger_stops_at_bedrock_below_the_surface() {
+        // Dug down 25 units into Rock, 5 short of bedrock. The Rock budget
+        // (22) would carry the shell well past it; bedrock must stop it
+        // where the shell reaches it, not only where it is exposed.
+        let mut f = flat(320, 60.0);
+        f.scar.fill(25.0);
+        f.material.fill(Material::Rock);
+        let mut lo = Loadout::new();
+        lo.take(crate::modifiers::Modifier::Auger);
+        let t = simulate_shell(
+            &world(&f, &[], 0.0),
+            Vec2::new(30.0, 40.0),
+            Shot::new(1400, 600).velocity(&lo),
+            &lo,
+            &FireOptions::default(),
+            1.0,
+            true,
+            true,
+        );
+        assert!(t.tunneled, "auger did not tunnel");
+        let depth = 60.0 - t.end.pos().y;
+        assert!(
+            depth < ROCK_DEPTH + 3.0,
+            "tunnelled {depth} units below the original surface, past bedrock at {ROCK_DEPTH}"
+        );
+        assert!(
+            matches!(
+                t.end,
+                End::Terrain {
+                    material: Material::Bedrock,
+                    ..
+                }
+            ),
+            "{:?}",
+            t.end
+        );
+    }
+
+    #[test]
+    fn auger_leaving_the_ground_does_not_stop_in_the_air() {
+        // A Rock ledge (dug 15 into ground at 60) drops into a pit whose
+        // columns stand on higher ground (90) dug out to 20, so a point in
+        // the pit's air is more than 30 below its column's original surface.
+        // A shell that tunnels out of the ledge must fly on into the pit,
+        // not read that air as bedrock and stop in it.
+        let mut f = flat(320, 60.0);
+        for i in 0..f.len() {
+            if i < 100 {
+                f.scar[i] = 15.0;
+                f.material[i] = Material::Rock;
+            } else {
+                f.base[i] = 90.0;
+                f.scar[i] = 70.0;
+                f.material[i] = Material::Bedrock;
+            }
+        }
+        let mut lo = Loadout::new();
+        lo.take(crate::modifiers::Modifier::Auger);
+        for k in 0..20 {
+            let t = simulate_shell(
+                &world(&f, &[], 0.0),
+                Vec2::new(80.0 + k as f64 * 0.1, 50.0),
+                Vec2::new(180.0, -40.0),
+                &lo,
+                &FireOptions::default(),
+                1.0,
+                true,
+                true,
+            );
+            assert!(t.tunneled, "offset {k}: auger did not tunnel");
+            let p = t.end.pos();
+            assert!(
+                p.y - SHELL_RADIUS <= f.surface_at(p.x) + 1e-9,
+                "offset {k}: stopped in the air at ({}, {}), surface {}",
+                p.x,
+                p.y,
+                f.surface_at(p.x)
+            );
+        }
     }
 
     #[test]
