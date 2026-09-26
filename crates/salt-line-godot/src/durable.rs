@@ -6,6 +6,54 @@
 //!
 //! The save is the leaderboard, and a leaderboard that can be lost to a power
 //! cut at the wrong moment is not a record of anything.
+//!
+//! # The write: temp, fsync, rename, directory fsync
+//!
+//! [`write_atomic`] is the classic write-then-rename replace. Each step is
+//! there for a failure the one before it leaves open:
+//!
+//! ```text
+//! step                          why                          a crash during it leaves
+//! 1 write all of it to <temp>   main is never opened for     main untouched; temp torn
+//!   (create truncates any old)  writing, so is never torn    or zero-filled
+//! 2 fsync <temp> (sync_all)     the data reaches the device  main untouched; temp
+//!                               before any rename can be     possibly still torn
+//!                               committed ahead of it
+//! 3 rename <temp> over main     one atomic swap: a reader    old main or new main,
+//!                               sees old or new, never mix   each whole
+//! 4 fsync the directory         the rename itself reaches    old main or new main,
+//!   (Unix only; errors ignored) the device                   each whole; once it
+//!                                                            returns, the new one
+//! ```
+//!
+//! Step 2 is the one most often left out. A journalling filesystem with
+//! delayed allocation may commit the rename's metadata before the file's
+//! data; power lost in between leaves a file of the right length full of
+//! zeros, or an empty one. That is what the NUL test in [`pick`] catches.
+//!
+//! # The read: which copy to trust
+//!
+//! [`pick`] looks at both files and prefers, in order: a *sound* main, a
+//! sound temp, a merely *legible* main, a legible temp, and otherwise an
+//! empty board. A sound main beats a sound temp even though the temp may be
+//! newer: a temp beside a sound main is a write that did not reach step 3,
+//! and the old save is the one known to be whole. The temp only wins when
+//! main is missing or damaged, as on the very first save.
+//!
+//! # Platform caveats
+//!
+//! `std::fs::rename` replaces the destination in one step on Unix and on
+//! Windows alike. Windows has no directory fsync through `std`, and `std`
+//! does not ask for write-through on the rename, so there step 4 is skipped:
+//! a power cut just after the rename may bring back the old save, never a
+//! torn one. Where `user://` has no real path at all (`save::on_disk`
+//! returns `None`), `save` falls back to Godot's file API, which has no
+//! fsync: write-then-rename still keeps main from being torn by a crash of
+//! the game, but not by a power cut.
+//!
+//! A save written by a newer build is loaded as an empty board and never
+//! written over; that rule is `save_format`'s `from_the_future` flag, and
+//! `save::store` enforces it.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -17,12 +65,13 @@ use std::path::Path;
 /// (`sync_all`) before `temp` is renamed over `main`. Without the flush a
 /// journalling filesystem may commit the rename before the data, and a crash
 /// then leaves an empty save where the old one was. `rename` replaces the
-/// destination atomically on Unix, and via `MoveFileEx(REPLACE_EXISTING)` on
-/// Windows. On Unix the directory is flushed too, so the rename itself
-/// survives; failing that is not worth failing the save over. Windows has no
-/// directory flush through `std` (and `std` does not ask for
-/// `MOVEFILE_WRITE_THROUGH`), so there the swap is atomic but a power cut just
-/// after it may undo it: the old save, never a torn one.
+/// destination atomically on Unix, and on Windows (`std` documents
+/// `MoveFileExW` or `SetFileInformationByHandle`). On Unix the directory is
+/// flushed too, so the rename itself survives; failing that is not worth
+/// failing the save over. Windows has no directory flush through `std` (and
+/// `std` does not ask for `MOVEFILE_WRITE_THROUGH`), so there the swap is
+/// atomic but a power cut just after it may undo it: the old save, never a
+/// torn one. See the module docs for what a crash at each step leaves.
 pub fn write_atomic(main: &Path, temp: &Path, text: &str) -> io::Result<()> {
     {
         let mut f = File::create(temp)?;
@@ -44,8 +93,9 @@ pub fn write_atomic(main: &Path, temp: &Path, text: &str) -> io::Result<()> {
 pub enum Pick {
     /// The save itself.
     Main,
-    /// The temporary file: the game went down between writing it and moving
-    /// it into place, so it is the newest complete copy there is.
+    /// The temporary file: the save is missing or damaged, and the game went
+    /// down between writing the temporary file and moving it into place, so
+    /// it is the best complete copy there is.
     Temp,
     /// Neither: a first launch, or nothing readable. An empty board.
     Empty,
@@ -98,6 +148,7 @@ pub const SETTLE: f64 = 0.5;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Debounce {
     dirty: bool,
+    /// Seconds since the last `touch`.
     idle: f64,
 }
 

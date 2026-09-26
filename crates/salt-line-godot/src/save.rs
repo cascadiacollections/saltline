@@ -3,6 +3,24 @@
 //! This file is the engine side only — finding `user://` on disk. The format
 //! lives in `save_format` and the write/recovery rules in `durable`, with no
 //! engine in either, so both can be tested headless.
+//!
+//! Every write goes through [`write()`], which is `durable::write_atomic`
+//! (write the temporary file, fsync it, rename it over the real one, fsync
+//! the directory; the module docs of `durable` say why each step) wherever
+//! `user://` is a real directory. The same function writes the in-progress
+//! run file for `resume`, and [`rename`] and [`remove`] are the other two
+//! moves `resume`'s run-file protocol needs.
+//!
+//! Two rules sit on top of the atomic write, both in [`store`]:
+//!
+//! - *From the future.* A save whose `version` is newer than this build's
+//!   [`VERSION`], or unreadable, loads as an empty board with
+//!   `from_the_future` set, and is never written over: a player who runs an
+//!   older build for a session keeps the board the newer one wrote. A run
+//!   finished meanwhile cannot reach the board, so its line is kept in the
+//!   run file for a build that can score it (`app::Store::Score`).
+//! - *Not after a panic.* Once the crash hook has fired, nothing replaces the
+//!   last good save (see `crash` and `app::Effect::survives_panic`).
 
 use std::path::PathBuf;
 
@@ -40,8 +58,9 @@ pub fn read(user_path: &str) -> Option<String> {
 }
 
 /// Read the save file. A missing file is an empty board, not an error. If the
-/// save is missing or empty but the temporary file survived — the game went
+/// save is missing or damaged but the temporary file survived — the game went
 /// down between writing it and moving it into place — that is loaded instead.
+/// `durable::pick` makes the choice.
 pub fn load() -> Save {
     let main = read(SAVE_PATH);
     let temp = read(TEMP_PATH);
