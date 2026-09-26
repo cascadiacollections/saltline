@@ -13,23 +13,53 @@
 //!
 //! `encode_log` / `decode_log` give the log a readable text form (DESIGN §9.2,
 //! extended with fuse and offset tokens), used by the golden-run corpus.
+//!
+//! # Event sourcing
+//!
+//! A replay stores inputs, never state. Everything else, from terrain and
+//! craters to the loadout and the shell count, is recomputed by feeding the
+//! log back through the same [`RunState`] methods the live game calls. That
+//! only works because the sim is deterministic to the bit (see the crate
+//! docs), and it is what keeps a whole run to a few kilobytes of text
+//! (DESIGN §9). The trade-off is that a log is only meaningful to a sim that
+//! resolves shots identically, which is what [`crate::SIM_EPOCH`] tracks
+//! (DESIGN §9.3).
+//!
+//! # Verification
+//!
+//! [`state_hash`] folds the run state into one `u64`, floats by bit pattern.
+//! Comparing a live run's hash with its reconstruction's is the determinism
+//! check: the property tests do it for random runs, `bin/determinism.rs`
+//! does it for 200 runs on every CI platform (DESIGN §6), and
+//! `tests/golden_runs.rs` does it against hashes recorded in a checked-in
+//! corpus.
+//!
+//! Status: the game does not yet keep or replay run history (DESIGN §9 is
+//! proposed). Today this module serves those tests and the determinism gate.
 
 use crate::ballistics::Shot;
 use crate::run::{LoggedShot, Phase, RunState};
 
 /// `angle_ticks` sentinel marking a draft pick rather than a shot. Angles are
-/// never negative, so the encoding is unambiguous.
+/// never negative ([`RunState::fire`] clamps logged angles to
+/// `0..=MAX_ANGLE_TICKS`), so the encoding is unambiguous.
 pub const DRAFT_MARK: i32 = -1;
 
 /// A complete, replayable run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replay {
+    /// The run's seed.
     pub run_seed: u64,
+    /// Buffer width the run was played at. A replay must use it whatever the
+    /// current device, because width changes generation (DESIGN §9.2).
     pub width: usize,
+    /// Every shot and draft pick, in order.
     pub log: Vec<LoggedShot>,
 }
 
 impl Replay {
+    /// Snapshot a run's identity and log. Cheap apart from cloning the log;
+    /// valid at any point, since a prefix of a valid log is a valid log.
     pub fn of(state: &RunState) -> Self {
         Self {
             run_seed: state.run_seed,
@@ -42,6 +72,17 @@ impl Replay {
     /// run is over, a draft pick that is not on offer) end the reconstruction
     /// rather than being silently skipped — a log that does not replay cleanly
     /// is a determinism bug, and it should be visible as one.
+    ///
+    /// Each shot entry replays the inputs in the order the live game applies
+    /// them: move the emplacement, set the fuse, fire, then resolve a clear
+    /// at once. Shot values are passed through [`RunState::fire`], which
+    /// quantizes them, so an off-grid angle in a hand-written log replays as
+    /// the quantized shot and is logged that way in the rebuilt state.
+    ///
+    /// # Errors
+    ///
+    /// A [`ReplayError`] naming the index of the first entry that cannot be
+    /// applied. The run up to that entry is discarded.
     pub fn reconstruct(&self) -> Result<RunState, ReplayError> {
         let mut state = RunState::new(self.run_seed, self.width);
         for (i, entry) in self.log.iter().enumerate() {
@@ -90,25 +131,42 @@ impl Replay {
     }
 
     /// Reconstruct and hash. This is the number CI compares across platforms.
+    ///
+    /// # Errors
+    ///
+    /// As [`Replay::reconstruct`].
     pub fn final_hash(&self) -> Result<u64, ReplayError> {
         self.reconstruct().map(|s| state_hash(&s))
     }
 }
 
+/// Why a log failed to replay. `at` is the index into [`Replay::log`] of the
+/// first entry that could not be applied.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReplayError {
+    /// A shot while the run was not in `Phase::Firing`: after it ended, or
+    /// while a draft was open.
     UnexpectedShot {
         at: usize,
     },
+    /// A draft pick while no draft was open.
     UnexpectedDraft {
         at: usize,
     },
+    /// A draft pick whose index has no offer.
     NoSuchOffer {
         at: usize,
     },
+    // `RunState::fire` refused the shot. Not expected after the phase check,
+    // since the run leaves `Firing` as soon as the shells run out; kept so a
+    // refusal is an error rather than a panic. (A plain comment, not a doc
+    // comment: with every variant documented, rustfmt would collapse the
+    // variants onto single lines.)
     ShotRefused {
         at: usize,
     },
+    /// A shot logged against a different screen than the one the run is on:
+    /// the log and the reconstruction have diverged.
     ScreenMismatch {
         at: usize,
         expected: u32,
@@ -202,6 +260,22 @@ pub enum LogError {
 
 /// Parse `encode_log`'s format. Only canonical text is accepted, so for any
 /// text this accepts, `encode_log(&decode_log(text)?)` is the same tokens.
+///
+/// Strict on purpose. A lenient parser would give one log several spellings
+/// (`@01`, a repeated `F5`, a dangling `E3`), so two texts that differ could
+/// name the same run, and a round trip would not be the identity. With one
+/// canonical form a run line can be compared, deduplicated or hashed as
+/// text, and a hand-edited or corrupted line is rejected instead of being
+/// read as something nearby. Whitespace between tokens is the one
+/// allowance: any run of it separates tokens.
+///
+/// Decoding checks the syntax only. Whether the entries make a legal run
+/// (the right screens, picks with something on offer, fuses in range) is
+/// for [`Replay::reconstruct`] to decide.
+///
+/// # Errors
+///
+/// A [`LogError`] for the first token that breaks the format.
 pub fn decode_log(text: &str) -> Result<Vec<LoggedShot>, LogError> {
     let mut toks = text.split_whitespace().enumerate();
     let version = toks
@@ -282,6 +356,8 @@ pub fn decode_log(text: &str) -> Result<Vec<LoggedShot>, LogError> {
 }
 
 /// Parse a number only if it is written exactly as `Display` writes it.
+/// Parse-then-print-and-compare rejects every alternative spelling (`+5`,
+/// `05`, `-0`) without listing them.
 fn canonical<T: core::str::FromStr + ToString>(s: &str) -> Option<T> {
     let v: T = s.parse().ok()?;
     (v.to_string() == s).then_some(v)
@@ -304,27 +380,35 @@ impl Default for Hasher {
 }
 
 impl Hasher {
+    /// A hasher at the FNV-1a offset basis.
     pub fn new() -> Self {
         Self::default()
     }
+    /// The hash of everything written so far.
     pub fn finish(self) -> u64 {
         self.0
     }
+    /// Mix in one byte: the FNV-1a step, xor then multiply.
     pub fn write_u8(&mut self, v: u8) {
         self.0 ^= v as u64;
         self.0 = self.0.wrapping_mul(FNV_PRIME);
     }
+    /// Mix in eight bytes, little-endian whatever the host, so the hash is
+    /// the same on every platform.
     pub fn write_u64(&mut self, v: u64) {
         for b in v.to_le_bytes() {
             self.write_u8(b);
         }
     }
+    /// Sign-extended to 64 bits, then as [`Hasher::write_u64`].
     pub fn write_i32(&mut self, v: i32) {
         self.write_u64(v as i64 as u64);
     }
+    /// Widened to 64 bits, then as [`Hasher::write_u64`].
     pub fn write_u32(&mut self, v: u32) {
         self.write_u64(v as u64);
     }
+    /// Widened to 64 bits, so 32- and 64-bit targets agree.
     pub fn write_usize(&mut self, v: usize) {
         self.write_u64(v as u64);
     }
@@ -387,6 +471,11 @@ pub fn state_hash(s: &RunState) -> u64 {
 }
 
 /// Hash of one screen: terrain, damage, and every structure's state.
+///
+/// What goes in, and in what order, is part of every pinned digest and of
+/// the epoch digest: adding, removing or reordering a field changes them
+/// all, even though no outcome changed, and needs the same `SIM_EPOCH`
+/// procedure as a sim change.
 pub fn hash_screen(h: &mut Hasher, screen: &crate::run::Screen) {
     h.write_u32(screen.index);
     h.write_u64(screen.seed);
@@ -413,8 +502,9 @@ pub fn hash_screen(h: &mut Hasher, screen: &crate::run::Screen) {
     }
 }
 
-/// Hash of a screen generated in isolation — used by the batch harness and by
-/// the "screen 400 without screens 1..399" acceptance test.
+/// Hash of a screen on its own. The pinned screen digests
+/// (`tests/snapshots.rs`), the epoch digest (`tests/golden_runs.rs`) and the
+/// "screen 400 without screens 1..399" acceptance test compare it.
 pub fn screen_hash(screen: &crate::run::Screen) -> u64 {
     let mut h = Hasher::new();
     hash_screen(&mut h, screen);
