@@ -784,3 +784,144 @@ This follows the no-words direction (§5.6) and the touch menus.
   survives, and the seed is what players share.
 - **Export.** A share format for whole runs (`saltline-run:` plus the line) is
   simple, but it waits until there is somewhere to share them.
+
+---
+
+## 10. Sandstorms
+
+**Status: proposed.** Nothing here is built yet. The numbers are starting
+points for the batch harness to tune (§6).
+
+A sandstorm is wind you can see. It fits the salt-flat biome and the core skill
+of reading wind (§2.5), and it works against the second skill, reading the ground
+you have already shot at (§2.6). It comes in two parts that can ship separately:
+**haze**, which is presentation only, and **drift**, which is simulation.
+Wind shear (§10.7) is deliberately deferred.
+
+### 10.1 When a storm happens
+
+A storm is a per-screen condition, rolled from its own stream in the same way as
+caches (§8.2): `storm_seed = splitmix64(screen_seed ^ STORM_SALT)`. Terrain,
+targets and wind are identical with or without a storm, so a storm adds to a
+screen and never changes what was generated.
+
+- **Chance:** 0% in bands 0–1, then 15%, rising by 5% per band to a cap of 35%.
+- **Intensity:** a value from 0.5 to 1.0 from the same stream. It is **not** taken
+  from the wind's magnitude, because haze density would then give away how
+  strong the wind is (§10.3).
+- **Switch:** it starts behind the ruleset bit `SANDSTORM` (§8.1, bit 1), which
+  is opt-in like caches. Once tuned, it becomes part of the default game, and
+  the bit then turns it off (`+CALM`).
+
+### 10.2 Drift
+
+After each shot has resolved, with craters, collapse and claims all done, a
+storm lays sand over the screen:
+
+```
+deposit[i] = intensity · (base_rate · n(i, shot) + fill_rate · max(0, local_mean[i] − surface[i]))
+scar[i]    = max(0, scar[i] − deposit[i])
+```
+
+- `n(i, shot)` is value noise from `storm_seed` and the screen's shot count,
+  biased to fall downwind of rises (the lee side), in the direction of the
+  wind's sign.
+- The `fill_rate` term makes sand collect in low places first, so craters fill
+  before flat ground.
+- **Drift only refills what was dug.** Because it reduces the scar and never
+  goes below zero, the surface never rises above the generated one. The
+  solvability proof (§2.4), made on the generated surface, therefore still holds
+  on every later shot. The only exception is debris mounds (§2.7), which already
+  sit above the surface.
+- Deposited sand is Sand by depth (§2.1), so a refilled bedrock pit digs like
+  sand again. That is the point.
+- It runs between shots, never in flight, so ballistics and the solver need no
+  change. It is drawn as a short settle over the next frames.
+
+**Starting rates:** `base_rate` 0.25 and `fill_rate` 0.35 units per shot, at
+full intensity. A centred Rock hit digs 7.0 units (§8.2), so drift slows
+excavation without stopping it.
+
+**Effects on other systems:**
+
+- **Undermining (§2.7):** sand refills footprint columns, so Demo builds have to
+  dig faster than the storm fills. Collapse is permanent, so a structure that
+  has already fallen stays down.
+- **Caches (§8.3):** partly dug caches get buried again, which punishes slow
+  digging. A claimed cache stays claimed.
+- **Replay and epoch:** drift is simulation. It is part of the screen state and
+  `state_hash`, it needs a `SIM_EPOCH` bump (§9.3), and golden runs must cover a
+  storm screen.
+
+### 10.3 Haze
+
+Haze is presentation only, so it needs no epoch or replay change.
+
+- Blowing sand is drawn as a dithered overlay. It gets denser with distance from
+  the emplacement, scaled by intensity, and at full intensity it hides terrain
+  detail and craters beyond about 60% of the way to the target.
+- **Target silhouettes stay readable.** Structures are drawn over the haze, the
+  terrain under it. The shot trace, chalk marks, the plumb line and the
+  Rangefinder readout are drawn above it: the precision instruments (§4) are
+  exactly the counters to haze.
+- **It must not reveal the wind.**
+  - Particles move in the direction of the wind's sign, which the windsock
+    already shows, at a fixed speed that says nothing about strength.
+  - Under Dead Reckoning, before the first shot, particles swirl with no
+    direction, because the sock is hidden then too.
+- **The dither exception.** §5.2 limits dithering to the sky and material bands.
+  Haze is a deliberate third exception, and uses only existing sand and sky
+  tones. No new colours.
+- **Battery.** The overlay updates at about 10 Hz rather than every frame, so
+  the redraw-on-change loop (`frame::Redraw`) stays mostly idle on a storm
+  screen.
+
+### 10.4 Presentation
+
+- **Screen tell:** a storm screen opens with the haze rolling in over the first
+  second, and a small `≋` storm glyph beside the windsock. No words, in keeping
+  with the HUD direction.
+- **The settle:** after each shot, drift is visible as sand sliding into craters
+  over roughly 0.4 s, within the existing clear-hold timing.
+
+### 10.5 Salt storms
+
+Salt flats are white. From band 10, a storm can be a **salt storm**: the same
+system drawn in the palette's pale tones (`SAND`, `UI_FG`), with denser haze
+and somewhat faster drift. It gives the look of snow without leaving the biome.
+It is the same code with a different colour table and rates, chosen by the
+storm stream.
+
+### 10.6 Tuning targets
+
+Batch harness over the same seeds, comparing storm screens with the same
+screens calm:
+
+| Measure | Target |
+|---|---|
+| Mean shots per screen | +0.2 to +0.4 in storms, no more |
+| Surviving solver candidates | unchanged (drift can't raise terrain) |
+| Demo build (Auger + Cluster) clear rate by undermining | at least 80% of calm |
+| Runs where a storm screen ends the run | within 10% of the average screen |
+
+Levers, in order: chance, intensity range, `fill_rate`, `base_rate`, and the haze
+distance.
+
+### 10.7 Deferred: wind shear
+
+Stronger wind at altitude would add a real lob-versus-flat decision. It also
+attacks readability, which §2.5 protects: it would need a second, readable wind
+display, perhaps a high windsock, and a new closed form. The solver's
+re-simulation would keep screens provably solvable, but candidate generation
+would get less efficient. Revisit it after haze and drift have been played.
+
+### 10.8 Open questions
+
+- **Opt-in or default:** should storms stay a ruleset, or become the default once
+  tuned (with `+CALM` to turn them off)? Recommended: default, once the
+  targets in §10.6 hold.
+- **Storms and the daily run:** same question as caches (§8.6). Probably yes,
+  since storms are seeded and fair to everyone, unlike cache knowledge.
+- **A storm-themed modifier:** for example a RISK card that doubles storm chance
+  for shells, or an instrument that sees through haze. Only once the base
+  system is in.
