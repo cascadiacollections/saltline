@@ -6,65 +6,37 @@
 //! records it under `proptest-regressions/`; commit that file so the case
 //! stays covered.
 
+mod common;
+
+use common::{play, Decision};
 use proptest::prelude::*;
 use salt_line_sim::ballistics::Shot;
 use salt_line_sim::dmath::{self, MAX_ANGLE_TICKS};
 use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::replay::{state_hash, Replay};
 use salt_line_sim::rng::Pcg32;
-use salt_line_sim::run::{Phase, RunState};
 use salt_line_sim::{POWER_TICKS_MAX, SCREEN_W_MAX, SCREEN_W_MIN};
-
-/// One player decision. How it applies depends on the phase it lands in: a
-/// shot while firing, a pick while drafting.
-#[derive(Clone, Debug)]
-struct Decision {
-    angle: i32,
-    power: i32,
-    pick: usize,
-}
 
 fn decisions() -> impl Strategy<Value = Vec<Decision>> {
     prop::collection::vec(
-        (0..=MAX_ANGLE_TICKS, 0..=POWER_TICKS_MAX, 0usize..3)
-            .prop_map(|(angle, power, pick)| Decision { angle, power, pick }),
+        (
+            0..=MAX_ANGLE_TICKS,
+            0..=POWER_TICKS_MAX,
+            0usize..3,
+            prop::bool::weighted(0.7),
+            prop::option::weighted(0.4, -20.0f64..500.0),
+            prop::option::weighted(0.4, -40.0f64..40.0),
+        )
+            .prop_map(|(angle, power, pick, solve, fuse, reposition)| Decision {
+                angle,
+                power,
+                pick,
+                solve,
+                fuse,
+                reposition,
+            }),
         0..40,
     )
-}
-
-/// Play the decisions, checking the run's invariants after every step.
-fn play(seed: u64, width: usize, moves: &[Decision]) -> RunState {
-    let mut state = RunState::new(seed, width);
-    for d in moves {
-        let before = (state.screen_index, state.log.len());
-        match state.phase {
-            Phase::Firing => {
-                if state.fire(Shot::new(d.angle, d.power), false).is_none() {
-                    break;
-                }
-                state.resolve_clear();
-            }
-            Phase::Drafting => {
-                if state
-                    .take_offer(d.pick.min(state.offers.len().saturating_sub(1)))
-                    .is_none()
-                {
-                    state.skip_draft();
-                }
-            }
-            Phase::Cleared => {
-                state.resolve_clear();
-            }
-            Phase::Over(_) => break,
-        }
-        assert!(state.shells >= 0, "shells went negative: {}", state.shells);
-        assert!(
-            state.screen_index >= before.0,
-            "the screen index went backwards"
-        );
-        assert!(state.log.len() >= before.1, "the log lost entries");
-    }
-    state
 }
 
 proptest! {
@@ -185,4 +157,37 @@ fn a_trailing_zero_weight_is_never_picked() {
             assert_ne!(r.weighted(&[2, 3, 0]), 2);
         }
     }
+}
+
+/// The replay property is only as strong as the runs it sees. Check that the
+/// scripted player really reaches Airburst and Enfilade and uses them: shots
+/// fired at several fuse settings with Airburst in the loadout, and shots
+/// fired from a moved emplacement. Without those, a log that drops either
+/// input would still replay.
+#[test]
+fn the_scripted_player_uses_the_fuse_and_enfilade() {
+    let (mut fuse_runs, mut offset_runs) = (0, 0);
+    for seed in 0..24u64 {
+        let played = play(seed, 320, &common::seeded_decisions(seed, 40));
+        let shots: Vec<_> = played.log.iter().filter(|e| e.angle_ticks >= 0).collect();
+        let mut fuses: Vec<_> = shots.iter().map(|e| e.fuse_tenths).collect();
+        fuses.sort_unstable();
+        fuses.dedup();
+        if played.loadout.airburst() && fuses.len() > 2 {
+            fuse_runs += 1;
+        }
+        if shots.iter().any(|e| e.emplacement_offset != 0) {
+            offset_runs += 1;
+        }
+        let rebuilt = Replay::of(&played).reconstruct().expect("replay failed");
+        assert_eq!(state_hash(&played), state_hash(&rebuilt), "seed {seed}");
+    }
+    assert!(
+        fuse_runs >= 3,
+        "only {fuse_runs} runs used the Airburst fuse"
+    );
+    assert!(
+        offset_runs >= 3,
+        "only {offset_runs} runs moved the emplacement"
+    );
 }

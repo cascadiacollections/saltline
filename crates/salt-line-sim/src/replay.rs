@@ -1,13 +1,18 @@
 //! Seed plus shot log to verified reconstruction. DESIGN §3, brief M4.
 //!
 //! Nothing else is persisted. A run is `(run_seed, width, log)`, where each
-//! log entry is the triple `(screen_index, angle_ticks, power_ticks)`.
+//! log entry is `(screen_index, angle_ticks, power_ticks, fuse_tenths,
+//! emplacement_offset)`: the aim, plus the Airburst fuse and Enfilade offset
+//! the shot was fired with.
 //!
-//! Draft picks ride in the same triple: an entry with `angle_ticks ==
+//! Draft picks ride in the same entry: an entry with `angle_ticks ==
 //! DRAFT_MARK` records "took offer `power_ticks`" rather than a shot. A draft
 //! is a player decision, so it has to be in the log for a reconstruction to be
-//! exact — and reusing the triple keeps the persisted form to three small
+//! exact — and reusing the entry keeps the persisted form to a few small
 //! numbers per decision, with no second stream to keep in sync.
+//!
+//! `encode_log` / `decode_log` give the log a readable text form (DESIGN §9.2,
+//! extended with fuse and offset tokens), used by the golden-run corpus.
 
 use crate::ballistics::Shot;
 use crate::run::{LoggedShot, Phase, RunState};
@@ -59,6 +64,19 @@ impl Replay {
                     found: entry.screen_index,
                 });
             }
+            // The emplacement moves only where the rules allow it: with
+            // Enfilade, before the screen's first shot. A logged offset the
+            // run cannot reach is a broken log, not something to skip.
+            if entry.emplacement_offset != state.offset_units()
+                && !(state.reposition(entry.emplacement_offset as f64)
+                    && state.offset_units() == entry.emplacement_offset)
+            {
+                return Err(ReplayError::OffsetRefused { at: i });
+            }
+            state.set_fuse_tenths(entry.fuse_tenths);
+            if state.fuse_tenths() != entry.fuse_tenths {
+                return Err(ReplayError::FuseOutOfRange { at: i });
+            }
             state
                 .fire(Shot::new(entry.angle_ticks, entry.power_ticks), false)
                 .ok_or(ReplayError::ShotRefused { at: i })?;
@@ -93,6 +111,92 @@ pub enum ReplayError {
         expected: u32,
         found: u32,
     },
+    /// The logged emplacement offset cannot be applied: no Enfilade, a shot
+    /// already taken on the screen, or outside the allowed range.
+    OffsetRefused {
+        at: usize,
+    },
+    /// The logged fuse is outside the range `RunState::set_fuse` allows.
+    FuseOutOfRange {
+        at: usize,
+    },
+}
+
+// ------------------------------------------------------------- text form
+
+/// Encode a log as space-separated tokens. DESIGN §9.2, plus two tokens for
+/// the inputs that section predates:
+///
+/// - `@N` sets the screen index for the entries after it.
+/// - `A:P` is a shot at angle ticks `A`, power ticks `P`.
+/// - `DN` is a pick of draft offer `N`.
+/// - `FT` sets the fuse, in tenths of a unit, for the shots after it.
+/// - `EO` sets the emplacement offset, in whole units, for the shots after it.
+///
+/// `@`, `F` and `E` are sticky and written only when they change (the fuse
+/// and offset start unset and at 0), so a run without Airburst or Enfilade
+/// still reads as `@0 900:600 …` apart from one leading `F` per screen.
+pub fn encode_log(log: &[LoggedShot]) -> String {
+    let mut out = Vec::new();
+    let mut screen = None;
+    let mut fuse = None;
+    let mut offset = 0;
+    for e in log {
+        if screen != Some(e.screen_index) {
+            screen = Some(e.screen_index);
+            out.push(format!("@{}", e.screen_index));
+        }
+        if e.angle_ticks == DRAFT_MARK {
+            out.push(format!("D{}", e.power_ticks));
+            continue;
+        }
+        if fuse != Some(e.fuse_tenths) {
+            fuse = Some(e.fuse_tenths);
+            out.push(format!("F{}", e.fuse_tenths));
+        }
+        if offset != e.emplacement_offset {
+            offset = e.emplacement_offset;
+            out.push(format!("E{offset}"));
+        }
+        out.push(format!("{}:{}", e.angle_ticks, e.power_ticks));
+    }
+    out.join(" ")
+}
+
+/// Parse `encode_log`'s format. `None` on any malformed token, or on a shot
+/// or pick before the first `@N`.
+pub fn decode_log(text: &str) -> Option<Vec<LoggedShot>> {
+    let mut log = Vec::new();
+    let mut screen = None;
+    let mut fuse = 0;
+    let mut offset = 0;
+    for tok in text.split_whitespace() {
+        if let Some(n) = tok.strip_prefix('@') {
+            screen = Some(n.parse().ok()?);
+        } else if let Some(t) = tok.strip_prefix('F') {
+            fuse = t.parse().ok()?;
+        } else if let Some(o) = tok.strip_prefix('E') {
+            offset = o.parse().ok()?;
+        } else if let Some(n) = tok.strip_prefix('D') {
+            log.push(LoggedShot {
+                screen_index: screen?,
+                angle_ticks: DRAFT_MARK,
+                power_ticks: n.parse().ok()?,
+                fuse_tenths: 0,
+                emplacement_offset: 0,
+            });
+        } else {
+            let (a, p) = tok.split_once(':')?;
+            log.push(LoggedShot {
+                screen_index: screen?,
+                angle_ticks: a.parse().ok()?,
+                power_ticks: p.parse().ok()?,
+                fuse_tenths: fuse,
+                emplacement_offset: offset,
+            });
+        }
+    }
+    Some(log)
 }
 
 // ----------------------------------------------------------------- hashing
@@ -173,6 +277,8 @@ pub fn state_hash(s: &RunState) -> u64 {
         h.write_u32(entry.screen_index);
         h.write_i32(entry.angle_ticks);
         h.write_i32(entry.power_ticks);
+        h.write_i32(entry.fuse_tenths);
+        h.write_i32(entry.emplacement_offset);
     }
     h.finish()
 }
@@ -308,6 +414,133 @@ mod tests {
         tweaked.log[idx].angle_ticks += 10;
         let h1 = tweaked.final_hash().unwrap();
         assert_ne!(h0, h1, "hash is blind to a changed shot");
+    }
+
+    /// A run on a fixed seed that drafts Enfilade and Airburst and uses both.
+    fn with_enfilade_and_airburst() -> RunState {
+        let mut state = RunState::new(31337, 320);
+        let mut moved = false;
+        let mut fused = false;
+        while !(moved && fused) && state.screen_index < 40 {
+            match state.phase {
+                Phase::Firing => {
+                    if state.reposition(if state.screen_index.is_multiple_of(2) {
+                        9.0
+                    } else {
+                        -6.0
+                    }) {
+                        moved = true;
+                    }
+                    let target = state
+                        .screen
+                        .structures
+                        .iter()
+                        .position(|s| !s.is_down())
+                        .unwrap();
+                    let c = crate::solver::solve_target(&state.screen, &state.loadout, target);
+                    if state.loadout.airburst() {
+                        // A deliberately short fuse: the shot bursts early.
+                        state.set_fuse(state.screen.default_fuse(target).unwrap() * 0.5);
+                        fused = true;
+                    }
+                    state.fire(c[0].shot, false);
+                    state.resolve_clear();
+                }
+                Phase::Drafting => {
+                    let pick = state
+                        .offers
+                        .iter()
+                        .position(|&m| {
+                            m == crate::modifiers::Modifier::Airburst
+                                || m == crate::modifiers::Modifier::Enfilade
+                        })
+                        .unwrap_or(0);
+                    state.take_offer(pick);
+                }
+                _ => break,
+            }
+        }
+        assert!(moved && fused, "the fixed run never drafted both");
+        state
+    }
+
+    #[test]
+    fn the_fuse_and_the_emplacement_are_replayed() {
+        let played = with_enfilade_and_airburst();
+        let replay = Replay::of(&played);
+        assert_eq!(replay.final_hash(), Ok(state_hash(&played)));
+
+        // Either input dropped from the log changes the outcome.
+        let shots = || (0..replay.log.len()).filter(|&i| replay.log[i].angle_ticks >= 0);
+        let moved = shots()
+            .find(|&i| replay.log[i].emplacement_offset != 0)
+            .unwrap();
+        let mut unmoved = replay.clone();
+        unmoved.log[moved].emplacement_offset = 0;
+        assert_ne!(unmoved.final_hash(), Ok(state_hash(&played)));
+        let fused = shots().next_back().unwrap();
+        let mut refused = replay.clone();
+        refused.log[fused].fuse_tenths += 1;
+        assert_ne!(refused.final_hash(), Ok(state_hash(&played)));
+    }
+
+    #[test]
+    fn an_offset_the_rules_forbid_is_an_error() {
+        // No Enfilade on the first screen.
+        let mut state = RunState::new(5, 320);
+        state.fire(shot(900, 500), false);
+        let mut replay = Replay::of(&state);
+        replay.log[0].emplacement_offset = 5;
+        assert_eq!(
+            replay.reconstruct().err(),
+            Some(ReplayError::OffsetRefused { at: 0 })
+        );
+
+        // With Enfilade, not after the screen's first shot.
+        let mut played = with_enfilade_and_airburst();
+        assert!(played.loadout.enfilade_units > 0.0);
+        // Two near-vertical misses on the next screen.
+        played.fire(shot(1780, 60), false);
+        played.fire(shot(1780, 60), false);
+        let i = played.log.len() - 1;
+        assert_eq!(played.log[i - 1].screen_index, played.log[i].screen_index);
+        let mut replay = Replay::of(&played);
+        replay.log[i].emplacement_offset += 1;
+        assert_eq!(
+            replay.reconstruct().err(),
+            Some(ReplayError::OffsetRefused { at: i })
+        );
+        // Out of the modifier's range, even before the first shot.
+        let mut replay = Replay::of(&played);
+        replay.log[i - 1].emplacement_offset = 26;
+        assert_eq!(
+            replay.reconstruct().err(),
+            Some(ReplayError::OffsetRefused { at: i - 1 })
+        );
+
+        let mut replay = Replay::of(&played);
+        let last = replay.log.len() - 1;
+        replay.log[last].fuse_tenths = -1;
+        assert_eq!(
+            replay.reconstruct().err(),
+            Some(ReplayError::FuseOutOfRange { at: last })
+        );
+    }
+
+    #[test]
+    fn the_text_form_round_trips() {
+        for played in [with_enfilade_and_airburst(), play(77, 400, 200)] {
+            let text = encode_log(&played.log);
+            assert_eq!(decode_log(&text).as_ref(), Some(&played.log), "{text}");
+        }
+        let log = decode_log("@0 F1200 900:600 E-5 F800 860:640 @3 D1 @4 700:520").unwrap();
+        assert_eq!(log.len(), 4);
+        assert_eq!((log[1].fuse_tenths, log[1].emplacement_offset), (800, -5));
+        assert_eq!(log[2].angle_ticks, DRAFT_MARK);
+        assert_eq!((log[3].screen_index, log[3].fuse_tenths), (4, 800));
+        for bad in ["900:600", "@0 900", "@x", "@0 Fq 1:2", "@0 D", "@0 1:2:3"] {
+            assert_eq!(decode_log(bad), None, "{bad}");
+        }
     }
 
     #[test]
