@@ -204,7 +204,13 @@ with guessed values.
   (DESIGN §2.7). Auger's bedrock check reads the layer at the shell's depth,
   not the column's surface, so bedrock stops a tunnelling shell wherever it
   reaches it (DESIGN §4); the check is made only while the shell is
-  underground, so one that tunnels out over a deep crater flies on. Screen
+  underground, so one that tunnels out over a deep crater flies on. The
+  terrain-free generation fallback is now gated on the solver like every
+  other rung, with a level, windless single-target rung below it that is
+  solvable by construction (DESIGN §2.4). A screen that reaches the fallback
+  and fails the gate now comes off the level rung instead of being shown
+  unproven; no such screen has been found for any loadout a draft can build,
+  so no pinned screen, golden run or digest moved for it. Otherwise screen
   generation is unchanged — the pinned screen digests did not move — but a
   log that crosses a band start after a supply screen, tunnels with Auger,
   or piles debris over a wreck replays differently. The determinism bin's digest changed from
