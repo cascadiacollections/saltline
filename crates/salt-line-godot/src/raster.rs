@@ -130,6 +130,22 @@ impl Canvas {
         }
     }
 
+    /// An icon from `icons`, with its digits picking from `colors`. `flip`
+    /// mirrors it left to right.
+    pub fn icon(&mut self, x: i32, y: i32, rows: &[&str], colors: &[Rgba], flip: bool) {
+        for (j, row) in rows.iter().enumerate() {
+            let w = row.len() as i32;
+            for (i, b) in row.bytes().enumerate() {
+                let Some(&c) = b.checked_sub(b'1').and_then(|k| colors.get(k as usize)) else {
+                    continue;
+                };
+                let i = i as i32;
+                let dx = if flip { w - 1 - i } else { i };
+                self.put(x + dx, y + j as i32, c);
+            }
+        }
+    }
+
     /// 3x5 text. Returns the x cursor after the string.
     pub fn text_small(&mut self, x: i32, y: i32, s: &str, c: Rgba) -> i32 {
         let mut cx = x;

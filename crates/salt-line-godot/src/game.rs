@@ -2029,7 +2029,7 @@ impl SaltLine {
             Some("CRATERS PERSIST - CORRECT FROM THE LAST SHOT".into())
         } else if learned & LEARN_WIND == 0 {
             wind.filter(|w| w.abs() > 0.01)
-                .map(|_| "READ WIND - CORRECT AGAINST ITS SIGN".into())
+                .map(|_| "READ THE WINDSOCK - CORRECT AGAINST IT".into())
         } else if learned & LEARN_SHELLS == 0 {
             Some("SHELLS ARE THE RUN CLOCK - SPEND CAREFULLY".into())
         } else {
@@ -2056,38 +2056,53 @@ impl SaltLine {
         let w = self.canvas.w;
         let (ex, ey) = self.corner_pad;
 
-        // Wind, top left. Shown as a signed number, never an arrow — reading a
-        // number and converting it to a correction is the core skill
-        // (DESIGN §2.5).
-        let wind_text = match wind {
-            None => "--".to_string(),
-            Some(v) => {
-                if loadout.has_flag(flags::ANEMOMETER) {
-                    format!("{}{:.1}", if v >= 0.0 { "+" } else { "-" }, v.abs())
-                } else {
-                    format!("{}{:.0}", if v >= 0.0 { "+" } else { "-" }, v.abs())
-                }
-            }
+        // Wind, top left: a windsock flying the way the wind blows, then its
+        // strength as a number. The sock never grows with strength, so the
+        // number is still the read (DESIGN §2.5). It hangs limp when there is
+        // no wind to show, or none shown yet (Dead Reckoning).
+        let (wind_text, to_left) = match wind {
+            None => ("--".to_string(), false),
+            Some(v) if loadout.has_flag(flags::ANEMOMETER) => (format!("{:.1}", v.abs()), v < 0.0),
+            Some(v) => (format!("{:.0}", v.abs()), v < 0.0),
         };
+        let calm = !wind_text.bytes().any(|b| (b'1'..=b'9').contains(&b));
+        let sock = if calm {
+            &crate::icons::SOCK_LIMP
+        } else {
+            &crate::icons::SOCK
+        };
+        let sock_w = crate::icons::width(sock);
         self.canvas.plate(
             3 + ex,
             3 + ey,
-            20 + crate::font::big_width(&wind_text) as i32,
+            sock_w + 9 + crate::font::big_width(&wind_text) as i32,
             13,
             &pal,
         );
-        self.canvas.text_small(6 + ex, 5 + ey, "WIND", dim);
-        self.canvas.text_big(6 + ex + 18, 4 + ey, &wind_text, alert);
+        self.canvas
+            .icon(6 + ex, 4 + ey, sock, &[fg, alert, dim], to_left && !calm);
+        self.canvas
+            .text_big(6 + ex + sock_w + 3, 4 + ey, &wind_text, alert);
 
-        // Shells, top right. Alert accent under 10 — the only other place that
-        // colour is allowed (DESIGN §5.2).
+        // Shells, top right: a shell, then the count. Alert accent under 10,
+        // the only other place that colour is allowed (DESIGN §5.2).
         let shell_text = format!("{shells}");
-        let plate_w = 26 + crate::font::big_width(&shell_text) as i32;
+        let shell_w = crate::icons::width(&crate::icons::SHELL);
+        let plate_w = shell_w + 13 + crate::font::big_width(&shell_text) as i32;
         let px = w - plate_w - 3 - ex;
         self.canvas.plate(px, 3 + ey, plate_w, 13, &pal);
-        self.canvas.text_small(px + 3, 5 + ey, "SHELLS", dim);
+        self.canvas.icon(
+            px + 3,
+            4 + ey,
+            &crate::icons::SHELL,
+            &[fg, alert, dim],
+            false,
+        );
+        self.canvas
+            .text_small(px + 3 + shell_w + 2, 6 + ey, "X", dim);
         let c = if shells < 10 { alert } else { fg };
-        self.canvas.text_big(px + 3 + 25, 4 + ey, &shell_text, c);
+        self.canvas
+            .text_big(px + 3 + shell_w + 7, 4 + ey, &shell_text, c);
 
         // Screen index, bottom right, small. No score during the run
         // (DESIGN §1).
