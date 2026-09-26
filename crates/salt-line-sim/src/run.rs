@@ -1690,7 +1690,10 @@ mod tests {
                 break;
             }
         }
-        assert!(screen.structures[0].is_down(), "undermining never felled it");
+        assert!(
+            screen.structures[0].is_down(),
+            "undermining never felled it"
+        );
         let lean = screen.structures[0].lean;
 
         screen

@@ -1091,7 +1091,13 @@ mod tests {
             "tunnelled {depth} units below the original surface, past bedrock at {ROCK_DEPTH}"
         );
         assert!(
-            matches!(t.end, End::Terrain { material: Material::Bedrock, .. }),
+            matches!(
+                t.end,
+                End::Terrain {
+                    material: Material::Bedrock,
+                    ..
+                }
+            ),
             "{:?}",
             t.end
         );
