@@ -291,6 +291,8 @@ impl Save {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     fn entry(screens: u32, shells: i32, shots: u32) -> Entry {
         Entry {
@@ -588,5 +590,55 @@ mod tests {
                 prop_assert_eq!(Save::parse(&back.serialize()), back);
             }
         }
+    }
+
+    #[rstest]
+    #[case(TouchAim::Buttons)]
+    #[case(TouchAim::Drag)]
+    fn touch_aim_tokens_round_trip(#[case] a: TouchAim) {
+        assert_eq!(TouchAim::from_token(a.token()), Some(a));
+    }
+
+    #[rstest]
+    #[case(ArcHint::Short)]
+    #[case(ArcHint::Full)]
+    #[case(ArcHint::Wind)]
+    fn arc_hint_tokens_round_trip(#[case] h: ArcHint) {
+        assert_eq!(ArcHint::from_token(h.token()), Some(h));
+    }
+
+    /// The on-disk format, pinned. Players edit this file by hand, so a change
+    /// to it should be a deliberate one (and usually a VERSION bump).
+    #[test]
+    #[cfg_attr(miri, ignore = "insta opens a socket, which Miri cannot emulate")]
+    fn the_file_format_is_pinned() {
+        let save = Save {
+            unlocked: true,
+            scores: vec![
+                Entry {
+                    seed: 20260907,
+                    screens: 41,
+                    shells: 3,
+                    shots: 88,
+                    daily: true,
+                },
+                Entry {
+                    seed: 7,
+                    screens: 12,
+                    shells: 0,
+                    shots: 30,
+                    daily: false,
+                },
+            ],
+            volume: 65,
+            muted: false,
+            learned: 0b1011,
+            bindings: vec![("fire".into(), "F".into(), "X".into())],
+            touch_aim: Some(TouchAim::Drag),
+            arc_hint: Some(ArcHint::Short),
+            last_arc: Some(false),
+            ..Save::default()
+        };
+        insta::assert_snapshot!(save.serialize());
     }
 }

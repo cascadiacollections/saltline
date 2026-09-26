@@ -228,6 +228,18 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
+    #[case::flat(1.0, 0.0, 0)]
+    #[case::straight_up(0.0, 1.0, MAX_ANGLE_TICKS)]
+    #[case::diagonal(1.0, 1.0, 900)]
+    #[case::behind_and_up(-1.0, 5.0, MAX_ANGLE_TICKS)]
+    #[case::behind_and_down(-1.0, -5.0, 0)]
+    #[case::forward_and_down(3.0, -1.0, 0)]
+    #[case::zero(0.0, 0.0, 0)]
+    fn angle_ticks_at_the_edges(#[case] vx: f64, #[case] vy: f64, #[case] expected: i32) {
+        assert_eq!(angle_ticks_from_dir(vx, vy), expected);
+    }
+
     #[test]
     fn angle_ticks_round_trip() {
         for t in 0..=MAX_ANGLE_TICKS {

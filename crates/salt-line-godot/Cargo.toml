@@ -28,4 +28,7 @@ godot = { version = "0.5", features = ["api-4-7"] }
 salt-line-sim = { path = "../salt-line-sim" }
 
 [dev-dependencies]
+insta = "1"
+pretty_assertions = "1"
+rstest = { version = "0.26", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
