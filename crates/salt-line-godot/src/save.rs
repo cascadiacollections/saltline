@@ -68,6 +68,11 @@ pub fn store(save: &Save) -> bool {
         // newer file with a downgraded build's understanding of it.
         return false;
     }
+    if crate::crash::panicked() {
+        // After a panic the state in memory is not trusted enough to replace
+        // the last good save with. `record` goes through here too.
+        return false;
+    }
     let text = save.serialize();
     if let (Some(main), Some(temp)) = (on_disk(SAVE_PATH), on_disk(TEMP_PATH)) {
         return match durable::write_atomic(&main, &temp, &text) {
@@ -117,6 +122,14 @@ pub struct Recorded {
 
 /// Record a finished run and persist.
 pub fn record(save: &mut Save, entry: Entry) -> Recorded {
+    if crate::crash::panicked() {
+        // A score from a run that panicked is not one to put on the board,
+        // even in memory.
+        return Recorded {
+            place: None,
+            saved: false,
+        };
+    }
     let place = save.place(entry);
     let saved = store(save);
     Recorded { place, saved }

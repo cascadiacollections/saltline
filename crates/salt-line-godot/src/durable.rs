@@ -19,7 +19,10 @@ use std::path::Path;
 /// then leaves an empty save where the old one was. `rename` replaces the
 /// destination atomically on Unix, and via `MoveFileEx(REPLACE_EXISTING)` on
 /// Windows. On Unix the directory is flushed too, so the rename itself
-/// survives; failing that is not worth failing the save over.
+/// survives; failing that is not worth failing the save over. Windows has no
+/// directory flush through `std` (and `std` does not ask for
+/// `MOVEFILE_WRITE_THROUGH`), so there the swap is atomic but a power cut just
+/// after it may undo it: the old save, never a torn one.
 pub fn write_atomic(main: &Path, temp: &Path, text: &str) -> io::Result<()> {
     {
         let mut f = File::create(temp)?;
@@ -49,18 +52,37 @@ pub enum Pick {
 }
 
 /// Choose between the save and its temporary file. `None` is missing or
-/// unreadable. A file of nothing but whitespace counts as unreadable too: it
-/// is what a crash leaves behind on a filesystem that committed the file's
-/// creation but not its data, and it holds no board worth preferring.
+/// unreadable.
 ///
-/// The save wins whenever it has anything in it. A leftover temporary file
-/// beside a good save is a write that failed before the rename, which is the
-/// case the temporary file exists to make harmless.
+/// A copy is *sound* if it has a `version` line and no NUL bytes. NULs are
+/// what a crash leaves on a filesystem that committed a file's length but not
+/// its data (a zero-filled tail, or nothing but zeros); a save without its
+/// header line is torn, or not a save at all. A sound save wins over
+/// anything: a leftover temporary file beside it is a write that failed
+/// before the rename, the case the temporary file exists to make harmless.
+/// Then a sound temporary file.
+///
+/// Failing both, a copy that is merely *legible* — anything besides NULs and
+/// whitespace — still beats an empty board, save first. Files from before the
+/// format had a header (`save_format` reads versionless as version 1) land
+/// here, and load as they always did.
 pub fn pick(main: Option<&str>, temp: Option<&str>) -> Pick {
-    let usable = |t: Option<&str>| t.is_some_and(|t| !t.trim().is_empty());
-    if usable(main) {
+    let sound = |t: Option<&str>| {
+        t.is_some_and(|t| {
+            !t.contains('\0')
+                && t.lines()
+                    .any(|l| l.split_whitespace().next() == Some("version"))
+        })
+    };
+    let legible =
+        |t: Option<&str>| t.is_some_and(|t| t.chars().any(|c| c != '\0' && !c.is_whitespace()));
+    if sound(main) {
         Pick::Main
-    } else if usable(temp) {
+    } else if sound(temp) {
+        Pick::Temp
+    } else if legible(main) {
+        Pick::Main
+    } else if legible(temp) {
         Pick::Temp
     } else {
         Pick::Empty
@@ -164,11 +186,18 @@ mod tests {
     }
 
     #[rstest]
-    #[case::normal(Some("v 3"), None, Pick::Main)]
-    #[case::stale_temp_ignored(Some("v 3"), Some("v 3 newer"), Pick::Main)]
-    #[case::crash_before_rename(None, Some("v 3"), Pick::Temp)]
-    #[case::emptied_by_a_crash(Some(""), Some("v 3"), Pick::Temp)]
-    #[case::whitespace_only(Some(" \n"), Some("v 3"), Pick::Temp)]
+    #[case::normal(Some("version 2\n"), None, Pick::Main)]
+    #[case::stale_temp_ignored(Some("version 2\n"), Some("version 2\nrun 1 2 3 4 0\n"), Pick::Main)]
+    #[case::crash_before_rename(None, Some("version 2\n"), Pick::Temp)]
+    #[case::emptied_by_a_crash(Some(""), Some("version 2\n"), Pick::Temp)]
+    #[case::whitespace_only(Some(" \n"), Some("version 2\n"), Pick::Temp)]
+    #[case::zero_filled(Some("\0\0\0\0"), Some("version 2\n"), Pick::Temp)]
+    #[case::zero_filled_tail(Some("version 2\nvol\0\0\0"), Some("version 2\n"), Pick::Temp)]
+    #[case::headerless_garbage(Some("}{ not a save"), Some("version 2\n"), Pick::Temp)]
+    #[case::versionless_legacy_alone(Some("unlocked 1\n"), None, Pick::Main)]
+    #[case::torn_main_beats_blank_temp(Some("version 2\nvol\0"), Some(""), Pick::Main)]
+    #[case::torn_temp_beats_nothing(None, Some("version 2\nvol\0"), Pick::Temp)]
+    #[case::all_zeros_everywhere(Some("\0\0"), Some("\0"), Pick::Empty)]
     #[case::first_launch(None, None, Pick::Empty)]
     #[case::both_empty(Some(""), Some("\n"), Pick::Empty)]
     fn the_right_copy_is_loaded(

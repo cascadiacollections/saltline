@@ -1,6 +1,6 @@
 ---
 source: crates/salt-line-godot/src/crash.rs
-expression: report(Some(&ctx))
+expression: sample(Some(&ctx))
 ---
 SALT LINE CRASH REPORT
 Paste this into a bug report: https://github.com/cascadiacollections/saltline/issues

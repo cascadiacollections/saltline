@@ -307,8 +307,12 @@ nothing crashed. The files live in Godot's user data folder:
 | Android | App-private; use the in-game copy button |
 
 The save (`salt_line.txt`) is written to a temporary file, flushed to disk and
-renamed over the old one, so a crash or power cut mid-write costs at most the
-newest record; if only the temporary file survives, the next launch loads it.
+renamed over the old one, so a crash mid-write costs at most the newest
+record; if only the temporary file survives, the next launch loads it. On
+Linux, macOS and Android the directory is flushed after the rename as well,
+so the swap survives a power cut. On Windows the rename is atomic but the
+directory is not flushed, so a power cut in the moments after a write could
+still leave the previous save in place.
 
 ## License
 

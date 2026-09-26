@@ -56,7 +56,16 @@ static CONTEXT: Mutex<Context> = Mutex::new(Context {
     run: None,
     mode: "",
 });
+/// A panic has happened. Set first, so the node stops at once.
 static PANICKED: AtomicBool = AtomicBool::new(false);
+/// The report is finished: written to disk (or tried) and held in `REPORT`.
+/// Set last. A panic off the main thread can leave the node looking at a
+/// set `PANICKED` while the hook is still writing; copying before this is
+/// set would hand the player half a report.
+static READY: AtomicBool = AtomicBool::new(false);
+/// Whether our hook is the installed one. Makes `install` idempotent: a hot
+/// reload can run the init stages again.
+static INSTALLED: AtomicBool = AtomicBool::new(false);
 static REPORT: Mutex<Option<String>> = Mutex::new(None);
 static FILE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -114,7 +123,8 @@ pub fn format_report(r: &Report) -> String {
     let _ = writeln!(s, "version: {}", r.version);
     let _ = writeln!(s, "platform: {} {}", r.os, r.arch);
     let _ = writeln!(s, "panic: {}", r.message.replace('\n', "\n  "));
-    let _ = writeln!(s, "at: {}", r.location.as_deref().unwrap_or("unknown"));
+    let at = r.location.as_deref().map_or("unknown", tidy_path);
+    let _ = writeln!(s, "at: {at}");
     let Some(ctx) = r.context else {
         let _ = writeln!(s, "context: unavailable");
         return s;
@@ -157,6 +167,34 @@ pub fn format_report(r: &Report) -> String {
     s
 }
 
+/// A panic location with the build machine taken out of it. Our own crates
+/// already report `crates/...`, relative to the workspace, but a dependency's
+/// or the standard library's path is absolute: `~/.cargo/registry/...` carries
+/// the developer's user name, which has no business in a pasted report. Keep
+/// from the crate directory (the component before the last `src`) onward, or
+/// just the file name if there is no `src`.
+pub fn tidy_path(loc: &str) -> &str {
+    let absolute =
+        loc.starts_with('/') || loc.starts_with('\\') || loc.as_bytes().get(1) == Some(&b':');
+    if !absolute {
+        return loc;
+    }
+    let is_sep = |c: char| c == '/' || c == '\\';
+    let src = [
+        loc.rfind("/src/"),
+        loc.rfind("\\src\\"),
+        loc.rfind("/src\\"),
+        loc.rfind("\\src/"),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    match src {
+        Some(i) => loc[..i].rfind(is_sep).map_or(loc, |j| &loc[j + 1..]),
+        None => loc.rfind(is_sep).map_or(loc, |j| &loc[j + 1..]),
+    }
+}
+
 fn payload_message(info: &PanicHookInfo) -> String {
     let p = info.payload();
     if let Some(s) = p.downcast_ref::<&str>() {
@@ -171,46 +209,63 @@ fn payload_message(info: &PanicHookInfo) -> String {
 /// Install the hook, keeping whatever hook was there (gdext's, which prints
 /// to the Godot console) running first. `report_file` is `user://crash.txt` on
 /// disk, or `None` where there is no disk path, in which case the report is
-/// kept in memory for the error screen only.
+/// kept in memory for the error screen only. A second call does nothing.
 pub fn install(report_file: Option<PathBuf>) {
     if let Some(p) = report_file {
         let _ = FILE.set(p);
     }
+    if INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
-        // Only the first panic is the interesting one; anything after it is
-        // likely fallout, and must not overwrite the report.
-        if PANICKED.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let message = payload_message(info);
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
-        // `try_lock`: a panic while the context is being written would
-        // deadlock on a plain lock.
-        let guard = match CONTEXT.try_lock() {
-            Ok(g) => Some(g),
-            Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
-            Err(TryLockError::WouldBlock) => None,
-        };
-        let text = format_report(&Report {
-            version: env!("CARGO_PKG_VERSION"),
-            os: std::env::consts::OS,
-            arch: std::env::consts::ARCH,
-            message: &message,
-            location,
-            context: guard.as_deref(),
-        });
-        drop(guard);
-        if let Some(path) = FILE.get() {
-            let _ = write_report(path, &text);
-        }
-        if let Ok(mut r) = REPORT.try_lock() {
-            *r = Some(text);
-        }
+        on_panic(info);
     }));
+}
+
+/// Take our hook out again, for an extension unload (hot reload). The hook
+/// is code in this library; left installed, it would outlive it. The hook it
+/// chained to is gdext's, also in this library, so it goes too: the default
+/// hook stands until the reloaded library installs both again.
+pub fn uninstall() {
+    if INSTALLED.swap(false, Ordering::SeqCst) {
+        drop(std::panic::take_hook());
+    }
+}
+
+fn on_panic(info: &PanicHookInfo) {
+    // Only the first panic is the interesting one; anything after it is
+    // likely fallout, and must not overwrite the report.
+    if PANICKED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let message = payload_message(info);
+    let location = info
+        .location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+    // `try_lock`: a panic while the context is being written would deadlock
+    // on a plain lock.
+    let guard = match CONTEXT.try_lock() {
+        Ok(g) => Some(g),
+        Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    };
+    let text = format_report(&Report {
+        version: env!("CARGO_PKG_VERSION"),
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        message: &message,
+        location,
+        context: guard.as_deref(),
+    });
+    drop(guard);
+    if let Some(path) = FILE.get() {
+        let _ = write_report(path, &text);
+    }
+    // A plain lock: nothing holds `REPORT` for longer than a clone.
+    *REPORT.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+    READY.store(true, Ordering::SeqCst);
 }
 
 fn write_report(path: &Path, text: &str) -> std::io::Result<()> {
@@ -230,8 +285,17 @@ pub fn panicked() -> bool {
     PANICKED.load(Ordering::SeqCst)
 }
 
-/// This session's report, for the error screen.
+/// Whether this session's report is finished. Until it is, the error screen
+/// has nothing whole to copy.
+pub fn report_ready() -> bool {
+    READY.load(Ordering::SeqCst)
+}
+
+/// This session's report, for the error screen. `None` until it is ready.
 pub fn report() -> Option<String> {
+    if !report_ready() {
+        return None;
+    }
     REPORT.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -248,7 +312,7 @@ mod tests {
         }
     }
 
-    fn report(context: Option<&Context>) -> String {
+    fn sample(context: Option<&Context>) -> String {
         format_report(&Report {
             version: "0.1.0",
             os: "linux",
@@ -274,7 +338,7 @@ mod tests {
                 log,
             }),
         };
-        insta::assert_snapshot!(report(Some(&ctx)));
+        insta::assert_snapshot!(sample(Some(&ctx)));
     }
 
     #[test]
@@ -283,14 +347,14 @@ mod tests {
             mode: "Title",
             run: None,
         };
-        let text = report(Some(&ctx));
+        let text = sample(Some(&ctx));
         assert!(text.ends_with("mode: Title\nrun: none\n"), "{text}");
-        assert!(report(None).ends_with("context: unavailable\n"));
+        assert!(sample(None).ends_with("context: unavailable\n"));
     }
 
     #[test]
     fn the_report_is_ascii_the_font_and_any_clipboard_can_carry() {
-        let text = report(None);
+        let text = sample(None);
         assert!(text.is_ascii());
     }
 
@@ -313,5 +377,136 @@ mod tests {
 
         note("Title", None, (0, 0));
         assert_eq!(CONTEXT.lock().unwrap().run, None);
+    }
+
+    #[rstest::rstest]
+    #[case::our_crate(
+        "crates/salt-line-sim/src/run.rs:940:9",
+        "crates/salt-line-sim/src/run.rs:940:9"
+    )]
+    #[case::registry_unix(
+        "/home/someone/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/godot-core-0.5.5/src/private.rs:331:5",
+        "godot-core-0.5.5/src/private.rs:331:5"
+    )]
+    #[case::registry_windows(
+        "C:\\Users\\someone\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\godot-core-0.5.5\\src\\private.rs:331:5",
+        "godot-core-0.5.5\\src\\private.rs:331:5"
+    )]
+    #[case::std(
+        "/rustc/0123abcd/library/core/src/panicking.rs:75:14",
+        "core/src/panicking.rs:75:14"
+    )]
+    #[case::nested_src(
+        "/home/someone/w/crates/salt-line-godot/src/bin/src/x.rs:1:1",
+        "bin/src/x.rs:1:1"
+    )]
+    #[case::no_src("/home/someone/build/out/generated.rs:3:1", "generated.rs:3:1")]
+    fn locations_lose_the_build_machine(#[case] loc: &str, #[case] want: &str) {
+        assert_eq!(tidy_path(loc), want);
+    }
+
+    #[test]
+    fn the_report_carries_the_tidied_location() {
+        let text = format_report(&Report {
+            version: "0.1.0",
+            os: "linux",
+            arch: "x86_64",
+            message: "boom",
+            location: Some(
+                "/home/someone/.cargo/registry/src/i/godot-core-0.5.5/src/x.rs:1:2".into(),
+            ),
+            context: None,
+        });
+        assert!(
+            text.contains("at: godot-core-0.5.5/src/x.rs:1:2\n"),
+            "{text}"
+        );
+        assert!(!text.contains("someone"), "{text}");
+    }
+
+    // The hook itself. It is process-wide state, so these need a process
+    // each: cargo-nextest (what CI runs) gives every test its own; under
+    // plain `cargo test` they would share one and see each other's panics,
+    // so they stand down there.
+    fn own_process() -> bool {
+        let yes = std::env::var_os("NEXTEST").is_some();
+        if !yes {
+            eprintln!("skipped: needs cargo-nextest's process-per-test");
+        }
+        yes
+    }
+
+    fn scratch_file(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("salt-line-crash-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("crash.txt")
+    }
+
+    #[test]
+    fn the_first_panic_writes_the_report_and_later_ones_do_not() {
+        if !own_process() {
+            return;
+        }
+        let file = scratch_file("first");
+        install(Some(file.clone()));
+        note("Playing", Some(&RunState::new(20260907, 320)), (900, 600));
+        assert!(!panicked() && !report_ready() && report().is_none());
+
+        let _ = std::panic::catch_unwind(|| panic!("the first one"));
+        assert!(panicked() && report_ready());
+        let on_disk = fs::read_to_string(&file).unwrap();
+        assert_eq!(report().as_deref(), Some(on_disk.as_str()));
+        assert!(on_disk.contains("panic: the first one\n"), "{on_disk}");
+        assert!(on_disk.contains("seed: 20260907\n"), "{on_disk}");
+        assert!(
+            on_disk.contains("at: crates/salt-line-godot/src/crash.rs:"),
+            "{on_disk}"
+        );
+
+        let _ = std::panic::catch_unwind(|| panic!("fallout"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), on_disk);
+        let _ = fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn the_previous_hook_still_runs_and_install_is_idempotent() {
+        if !own_process() {
+            return;
+        }
+        use std::sync::atomic::AtomicU32;
+        static CALLS: AtomicU32 = AtomicU32::new(0);
+        std::panic::set_hook(Box::new(|_| {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }));
+        install(None);
+        // A hot reload runs the init stage again; that must not chain the
+        // hook to itself and report twice.
+        install(None);
+        let _ = std::panic::catch_unwind(|| panic!("chained"));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert!(report().unwrap().contains("panic: chained\n"));
+
+        // Unloading takes ours (and what it chained) out.
+        uninstall();
+        uninstall();
+        let _ = std::panic::catch_unwind(|| panic!("after unload"));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_panic_while_the_context_is_held_reports_it_unavailable() {
+        if !own_process() {
+            return;
+        }
+        std::panic::set_hook(Box::new(|_| {}));
+        install(None);
+        let _ = std::panic::catch_unwind(|| {
+            let _held = CONTEXT.lock().unwrap();
+            panic!("inside note");
+        });
+        let text = report().unwrap();
+        assert!(text.ends_with("context: unavailable\n"), "{text}");
     }
 }
