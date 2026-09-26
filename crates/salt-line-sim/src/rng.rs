@@ -3,8 +3,26 @@
 //! Nothing in the sim may use `rand::thread_rng`, system time, or `HashMap`
 //! iteration order. Every random draw in a state-affecting path comes from one
 //! of the generators below, seeded from `run_seed` and `screen_index` alone.
+//!
+//! Two generators, two jobs. SplitMix64's mixing function ([`mix64`]) turns
+//! related inputs (a run seed and a screen index, a seed and a tag) into
+//! unrelated-looking seeds; it is a bijection, so within one run distinct
+//! screen indices (or distinct tags on one seed) never share a seed. PCG32 ([`Pcg32`]) then produces the stream of draws for one
+//! system. Both are a few lines of wrapping integer arithmetic, so the same
+//! seed gives the same numbers on every platform with no crate dependency.
+//!
+//! The derivation tree is the important idea. Each screen's seed depends only
+//! on `(run_seed, screen_index)` ([`screen_seed`]), and each system on a
+//! screen draws from its own named [`substream`]. A system that starts
+//! drawing one more number shifts only its own stream, so generation stays
+//! stable as the game grows.
 
 /// SplitMix64 step: advances `state` and returns the mixed output.
+///
+/// The state is a Weyl sequence (a counter stepped by the odd constant
+/// 2^64/φ, the golden ratio); the output is that counter run through two
+/// xor-shift-multiply rounds (Stafford's "Mix13" finaliser), which spread
+/// every input bit across the whole word.
 #[inline]
 pub fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -14,8 +32,11 @@ pub fn splitmix64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Stateless 64-bit mix — the finalizer of SplitMix64 applied to `x` directly.
+/// Stateless 64-bit mix: one SplitMix64 step on a copy of `x`.
 /// Used for deriving seeds, never for streams of values.
+///
+/// Equal to one [`splitmix64`] step on a copy of `x`. Every stage is
+/// invertible, so `mix64` is a bijection on `u64`.
 #[inline]
 pub fn mix64(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -27,6 +48,10 @@ pub fn mix64(x: u64) -> u64 {
 /// `screen_seed = splitmix64(run_seed ^ (screen_index * GOLDEN))` — DESIGN §2.2.
 ///
 /// Independent per screen: screen 400 is generatable without screens 1..399.
+///
+/// Multiplying the index by the golden-ratio constant (wrapping) spreads
+/// consecutive indices far apart before they are xored into the run seed.
+/// [`mix64`] is the single `splitmix64` step the formula calls for.
 #[inline]
 pub fn screen_seed(run_seed: u64, screen_index: u32) -> u64 {
     mix64(run_seed ^ (screen_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
@@ -34,22 +59,28 @@ pub fn screen_seed(run_seed: u64, screen_index: u32) -> u64 {
 
 /// A named sub-stream of a screen seed, so adding a draw in one system cannot
 /// shift the values another system sees.
+///
+/// `tag` is any fixed constant naming the consumer; for example run.rs picks
+/// templates from tag `0x5445_4D50`, "TEMP" in ASCII. The tag is mixed before
+/// the xor so that nearby tags do not give nearby seeds.
 #[inline]
 pub fn substream(seed: u64, tag: u64) -> u64 {
     mix64(seed ^ mix64(tag))
 }
 
-/// SplitMix64 as a stream.
+/// SplitMix64 as a stream, period 2^64. Used here to seed [`Pcg32`].
 #[derive(Clone, Debug)]
 pub struct SplitMix64 {
     state: u64,
 }
 
 impl SplitMix64 {
+    /// Start a stream. Any seed, including 0, is valid.
     #[inline]
     pub fn new(seed: u64) -> Self {
         Self { state: seed }
     }
+    /// Next 64 bits of the stream.
     #[inline]
     pub fn next_u64(&mut self) -> u64 {
         splitmix64(&mut self.state)
@@ -57,17 +88,29 @@ impl SplitMix64 {
 }
 
 /// PCG32 (XSH-RR). The workhorse for generation draws.
+///
+/// O'Neill's permuted congruential generator: a 64-bit linear congruential
+/// generator (LCG) whose weak low bits are never output directly. Each 32-bit
+/// output is the high bits of the old state, xor-shifted and then rotated by
+/// an amount taken from the state's top five bits. Period 2^64 per stream.
 #[derive(Clone, Debug)]
 pub struct Pcg32 {
     state: u64,
+    /// LCG increment, which selects the stream. Must be odd.
     inc: u64,
 }
 
+/// The 64-bit LCG multiplier used by the PCG reference implementation (from
+/// Knuth's MMIX).
 const PCG_MULT: u64 = 6364136223846793005;
 
 impl Pcg32 {
     /// Seeded from a single u64; the stream selector is derived so that two
     /// nearby seeds do not produce correlated streams.
+    ///
+    /// SplitMix64 expands the seed into an initial state and a stream
+    /// selector; the steps below then follow the reference `pcg32_srandom_r`
+    /// seeding sequence.
     pub fn new(seed: u64) -> Self {
         let mut s = SplitMix64::new(seed);
         let init = s.next_u64();
@@ -82,8 +125,11 @@ impl Pcg32 {
         r
     }
 
+    /// Next 32 bits of the stream.
     #[inline]
     pub fn next_u32(&mut self) -> u32 {
+        // The output is computed from the old state while the LCG advances,
+        // so the multiply and the permutation do not wait on each other.
         let old = self.state;
         self.state = old.wrapping_mul(PCG_MULT).wrapping_add(self.inc);
         let xorshifted = (((old >> 18) ^ old) >> 27) as u32;
@@ -97,13 +143,15 @@ impl Pcg32 {
         self.next_u32() as f64 * (1.0 / 4294967296.0)
     }
 
-    /// Uniform in `[lo, hi)`.
+    /// Uniform in `[lo, hi)`. Consumes one draw.
     #[inline]
     pub fn range_f64(&mut self, lo: f64, hi: f64) -> f64 {
         lo + (hi - lo) * self.next_f64()
     }
 
-    /// Uniform in `[-m, m]` — signed magnitude draw (wind, elevation delta).
+    /// Uniform in `[-m, m)` — signed magnitude draw (wind, elevation delta).
+    ///
+    /// [`Pcg32::next_f64`] never returns 1, so `+m` itself is never drawn.
     #[inline]
     pub fn signed(&mut self, m: f64) -> f64 {
         (self.next_f64() * 2.0 - 1.0) * m
@@ -111,12 +159,26 @@ impl Pcg32 {
 
     /// Uniform integer in `[lo, hi]` inclusive. Debiased by rejection so the
     /// result does not depend on modulo bias.
+    ///
+    /// A plain `next_u32() % span` would favour small results whenever `span`
+    /// does not divide 2^32. Rejection sampling instead accepts only draws
+    /// from a prefix whose length is a multiple of `span`, so every residue
+    /// is equally likely. On average it takes at most two draws.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `hi < lo`, and for the full range `0..=u32::MAX`,
+    /// where `hi - lo + 1` overflows. The `span == 0` branch is reached only
+    /// in release builds, where that addition wraps.
     pub fn range_u32(&mut self, lo: u32, hi: u32) -> u32 {
         debug_assert!(hi >= lo);
         let span = hi - lo + 1;
         if span == 0 {
             return self.next_u32();
         }
+        // Accept `v <= zone`. When `span` divides 2^32 exactly this rejects
+        // `span` values it need not; the result is still unbiased, and
+        // tightening it would change every stream already recorded.
         let zone = u32::MAX - (u32::MAX % span) - 1;
         loop {
             let v = self.next_u32();
@@ -128,11 +190,21 @@ impl Pcg32 {
 
     /// Index into a weight table. Weights are `u32` so the choice is decided by
     /// integer comparison, never by float accumulation order.
+    ///
+    /// Entry `i` is chosen with probability `weights[i] / sum`. Zero weights
+    /// are never chosen; an all-zero or empty table returns 0 without
+    /// drawing.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if the weights sum past `u32::MAX`.
     pub fn weighted(&mut self, weights: &[u32]) -> usize {
         let total: u32 = weights.iter().sum();
         if total == 0 {
             return 0;
         }
+        // Roll once, then walk the table subtracting each weight until the
+        // roll falls inside one: a linear scan of the cumulative distribution.
         let mut roll = self.range_u32(0, total - 1);
         for (i, w) in weights.iter().enumerate() {
             if roll < *w {
@@ -143,7 +215,11 @@ impl Pcg32 {
         weights.len() - 1
     }
 
-    /// Fisher-Yates over indices — deterministic, no allocation of a hash set.
+    /// Fisher–Yates over indices — deterministic, no allocation of a hash set.
+    ///
+    /// Durstenfeld's in-place form: walk from the back, swapping each slot
+    /// with a uniformly chosen slot at or before it. With an unbiased
+    /// [`Pcg32::range_u32`] every permutation is equally likely.
     pub fn shuffle<T>(&mut self, xs: &mut [T]) {
         if xs.len() < 2 {
             return;

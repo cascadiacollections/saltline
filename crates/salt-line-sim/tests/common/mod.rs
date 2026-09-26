@@ -22,11 +22,17 @@ use salt_line_sim::POWER_TICKS_MAX;
 /// offer, so those inputs matter in as many runs as possible.
 #[derive(Clone, Debug)]
 pub struct Decision {
+    /// Random aim, angle ticks. Used when `solve` is off or finds nothing.
     pub angle: i32,
+    /// Random aim, power ticks.
     pub power: i32,
+    /// Offer index to take when neither Airburst nor Enfilade is offered.
     pub pick: usize,
+    /// Fire a solver candidate instead of the random aim.
     pub solve: bool,
+    /// Fuse to set before the shot, in world units, if any.
     pub fuse: Option<f64>,
+    /// Enfilade offset to request before the shot, in world units, if any.
     pub reposition: Option<f64>,
 }
 
@@ -66,12 +72,18 @@ fn aim(state: &mut RunState, d: &Decision) -> Shot {
 }
 
 /// Play the decisions, checking the run's invariants after every step.
+///
+/// Drives the run the way a headless caller must: every `fire` is followed
+/// by `resolve_clear`, so `Phase::Cleared` is never left waiting. Stops
+/// early when the run ends or a shot is refused.
 pub fn play(seed: u64, width: usize, moves: &[Decision]) -> RunState {
     let mut state = RunState::new(seed, width);
     for d in moves {
         let before = (state.screen_index, state.log.len());
         match state.phase {
             Phase::Firing => {
+                // Move first, since a solver shot's fuse depends on where the
+                // muzzle is.
                 if let Some(off) = d.reposition {
                     state.reposition(off);
                 }

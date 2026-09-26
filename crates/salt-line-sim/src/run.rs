@@ -1,5 +1,55 @@
 //! Screen assembly, structures, damage, economy and the run state machine.
 //! DESIGN §1, §2.3, §2.7.
+//!
+//! This is the top of the sim: the one type the presentation layer drives is
+//! [`RunState`]. The Godot crate calls [`RunState::fire`],
+//! [`RunState::resolve_clear`] and [`RunState::take_offer`] in response to
+//! input and timers, and draws whatever [`Screen`] and [`ShotReport`] say
+//! happened. It never decides an outcome itself (DESIGN §6).
+//!
+//! # Screens
+//!
+//! A screen is generated from nothing but the run seed, its index, the buffer
+//! width and the loadout ([`generate_screen`]). Its seed comes from
+//! [`screen_seed`], a stateless hash of run seed and index (DESIGN §2.2), so
+//! no generator state carries from one screen to the next. Screen 400 needs
+//! none of the screens before it (later bands cost more only because they
+//! try harder templates), which is what lets tests, the batch harness and a
+//! level inspector jump anywhere in a run. Inside a screen, each system (wind, shape, placement, template
+//! choice) draws from its own named [`substream`] of that seed, so adding a
+//! draw to one cannot shift the values another sees.
+//!
+//! Generation is generate-and-test: assemble a candidate, ask
+//! [`solver::validate`] whether it has enough distinct solutions, and on
+//! failure try again with the next seed, then with the `Flat` template, then
+//! with the terrain flattened (DESIGN §2.3 step 6, §2.4).
+//!
+//! # The run state machine
+//!
+//! [`Phase`] is the state; the transitions are:
+//!
+//! ```text
+//! Firing --fire, not cleared, shells left--> Firing
+//! Firing --fire, not cleared, no shells----> Over
+//! Firing --fire, screen cleared------------> Cleared
+//! Cleared --resolve_clear, end of band-----> Drafting
+//! Cleared --resolve_clear, otherwise-------> Firing (next screen) or Over
+//! Drafting --take_offer / skip_draft-------> Firing (next screen) or Over
+//! ```
+//!
+//! Each transition is a method call that returns once the state is settled;
+//! nothing here runs on a clock. `Cleared` exists only so the presentation
+//! layer can animate a collapse on the screen that was cleared before the
+//! run moves on (see [`Phase::Cleared`]).
+//!
+//! # The shot log
+//!
+//! Every player decision that can change an outcome is appended to
+//! [`RunState::log`] as a [`LoggedShot`]: shots with the fuse and emplacement
+//! offset they were fired with, and draft picks. Together with the seed and
+//! width that is the entire persisted run; [`crate::replay`] rebuilds the
+//! rest. This is event sourcing: the state is a fold over the inputs, so
+//! nothing derived ever needs saving.
 
 use crate::ballistics::{
     self, blast_radius, crater_radius, fire, Aabb, End, FireOptions, Shot, Trace, World,
@@ -17,17 +67,26 @@ use crate::{
 // --------------------------------------------------------------- structures
 
 /// Target silhouettes. DESIGN §5.4.
+///
+/// The discriminants are stable: [`crate::replay::hash_screen`] hashes them,
+/// so renumbering a kind changes every pinned screen digest.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum StructureKind {
+    /// Narrow tapering lattice.
     Derrick = 0,
+    /// Thin vertical with guy wires; the narrowest footprint.
     RadioMast = 1,
+    /// A bulb on legs: the most top-heavy, so the easiest to undermine.
     WaterTower = 2,
+    /// Solid cylinder with a domed cap; the least top-heavy.
     Silo = 3,
+    /// Wide-based A-frame; the widest footprint.
     Pylon = 4,
 }
 
 impl StructureKind {
+    /// Every kind in discriminant order, the order `kind_weights` indexes.
     pub const ALL: [StructureKind; 5] = [
         StructureKind::Derrick,
         StructureKind::RadioMast,
@@ -70,6 +129,7 @@ impl StructureKind {
         }
     }
 
+    /// Lower-case display name, for test and harness messages.
     pub const fn name(self) -> &'static str {
         match self {
             StructureKind::Derrick => "derrick",
@@ -81,12 +141,22 @@ impl StructureKind {
     }
 }
 
-/// DESIGN §2.7. `Leaning` is a real state, not a cosmetic one.
+/// Damage state of a structure. DESIGN §2.7. `Leaning` is a real state, not
+/// a cosmetic one.
+///
+/// Derived, never set directly: `resolve_state` recomputes it from
+/// [`Structure::integrity`] and [`Structure::support`] after every shot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum StructState {
+    /// Integrity above 0.35 and support above 0.6.
     Intact = 0,
+    /// Integrity at or below 0.35, or support at or below 0.6, and not
+    /// collapsed. The bounding box shifts toward the weaker side, and the
+    /// screen is not cleared.
     Leaning = 1,
+    /// Integrity at or below 0, or support at or below 0.3. A collapsed
+    /// structure takes no further blast damage.
     Collapsed = 2,
 }
 
@@ -100,8 +170,14 @@ pub const STEEL_BLAST_FACTOR: f64 = 1.15;
 /// Thermal Lance: structures collapse rather than chip (DESIGN §4).
 pub const THERMAL_BLAST_FACTOR: f64 = 2.6;
 
+/// One target on a screen. DESIGN §2.7.
+///
+/// Two independent kill paths meet here: blasts lower `integrity` (direct),
+/// craters in the footprint lower `support` (undermining). Either can collapse
+/// it, and having both is the point of the design.
 #[derive(Clone, Debug)]
 pub struct Structure {
+    /// Silhouette, which fixes footprint, height and top-heaviness.
     pub kind: StructureKind,
     /// Leftmost footprint column.
     pub x0: usize,
@@ -109,18 +185,28 @@ pub struct Structure {
     pub base: f64,
     /// Mean footprint surface elevation at spawn — the denominator for support.
     pub original_mean: f64,
+    /// Structural health, 1.0 at spawn. Each blast subtracts overlap times
+    /// material factor times the shell's damage scale; it can go negative.
     pub integrity: f64,
+    /// How well the ground still holds it up, 0.0..=1.0: the footprint's
+    /// remaining height relative to `original_mean`, with the loss
+    /// multiplied by [`StructureKind::top_heaviness`] (above 1 for top-heavy
+    /// kinds, below 1 for Silo and Pylon), clamped to 0..=1.
     pub support: f64,
+    /// Damage state, derived from `integrity` and `support`.
     pub state: StructState,
     /// -1 leaning left, 0 upright, +1 leaning right.
     pub lean: i8,
 }
 
 impl Structure {
+    /// Footprint width in pixel columns; see [`StructureKind::footprint`].
     pub fn footprint(&self) -> usize {
         self.kind.footprint()
     }
 
+    /// Horizontal centre of the footprint, in world units. Ignores any lean:
+    /// range, fuse and salvage distances are measured from the spawn position.
     pub fn centre_x(&self) -> f64 {
         self.x0 as f64 + self.footprint() as f64 * 0.5
     }
@@ -149,6 +235,8 @@ impl Structure {
         )
     }
 
+    /// Whether it has collapsed. Only collapsed structures count toward
+    /// clearing a screen; leaning ones do not.
     pub fn is_down(&self) -> bool {
         self.state == StructState::Collapsed
     }
@@ -201,8 +289,11 @@ impl Structure {
 pub struct ShotReport {
     /// The shell fired, then any cluster submunitions.
     pub traces: Vec<Trace>,
+    /// Indices into [`Screen::structures`] of structures this shot collapsed.
     pub collapsed: Vec<usize>,
+    /// Indices of structures that went from Intact to Leaning on this shot.
     pub newly_leaning: Vec<usize>,
+    /// Whether the screen is clear after this shot; see [`Screen::cleared`].
     pub cleared: bool,
     /// A miss that cratered close enough for Salvage to refund it.
     pub salvage: bool,
@@ -212,23 +303,44 @@ pub struct ShotReport {
     pub apex: Vec2,
 }
 
+/// One screen: an emplacement, terrain and a target set. DESIGN §1, §2.
+///
+/// Built only by [`generate_screen`], then mutated in place by shots
+/// ([`Screen::apply_shot`]): craters and debris go into the heightfield's
+/// scar buffer, damage into the structures. A screen is discarded when the
+/// run moves on; nothing from it reaches the next one.
 #[derive(Clone, Debug)]
 pub struct Screen {
+    /// Position in the run, from 0.
     pub index: u32,
+    /// The seed this screen was actually built from: the screen seed of
+    /// DESIGN §2.2, offset by a retry if earlier attempts failed validation.
     pub seed: u64,
+    /// Buffer width in world units. Not clamped here; the game clamps it with
+    /// [`buffer_width`] before starting a run.
     pub width: usize,
+    /// Shape template used; `Flat` when generation fell back.
     pub template: Template,
+    /// Heightfield, including every crater and debris mound so far.
     pub field: Heightfield,
+    /// Targets, in placement order. Indices into this are what
+    /// [`ShotReport`] and the solver use.
     pub structures: Vec<Structure>,
     /// Signed wind acceleration, resampled per screen (DESIGN §2.5).
     pub wind: f64,
     /// Wind after Storm Front's mid-flight resample, if held.
     pub wind_late: Option<f64>,
+    /// Emplacement x in world units: `EMPLACEMENT_X` plus any Enfilade offset.
+    /// Set by [`RunState`], which owns the offset.
     pub muzzle_x: f64,
     /// Surviving-candidate count for the hardest target. The difficulty proxy
     /// DESIGN §2.4 asks to be logged.
     pub candidates: usize,
+    /// Generation attempts it took, counting from 1. Above `MAX_GEN_ATTEMPTS`
+    /// means the template attempts all failed; for the batch harness; 0 for
+    /// a supply screen.
     pub attempts: u32,
+    /// Whether generation gave up on the drawn template and used `Flat`.
     pub fell_back: bool,
     /// Scavenger Rites supply screen: no targets, shells instead.
     pub supply: bool,
@@ -258,15 +370,22 @@ impl Screen {
         )
     }
 
-    /// Boxes for every structure still standing, in structure order.
+    /// Boxes for every structure, collapsed ones included as low rubble, in
+    /// structure order, so an index into the result is an index into
+    /// `structures`.
     pub fn target_boxes(&self) -> Vec<Aabb> {
         self.structures.iter().map(|s| s.aabb()).collect()
     }
 
+    /// Whether every structure has collapsed. A supply screen is always
+    /// clear. Leaning does not count (DESIGN §2.7).
     pub fn cleared(&self) -> bool {
         self.supply || self.structures.iter().all(|s| s.is_down())
     }
 
+    /// The view of this screen that ballistics needs, with `boxes` from
+    /// [`Screen::target_boxes`]. The boxes are passed in rather than built
+    /// here so the caller owns them for the lifetime of the `World`.
     pub fn world<'a>(&'a self, boxes: &'a [Aabb]) -> World<'a> {
         World {
             field: &self.field,
@@ -277,7 +396,8 @@ impl Screen {
     }
 
     /// Horizontal distance to the nearest standing target — what Rangefinder
-    /// displays (DESIGN §4).
+    /// displays (DESIGN §4). World units, muzzle to target centre; `None`
+    /// once every target is down.
     pub fn range_to_nearest(&self) -> Option<f64> {
         let m = self.muzzle();
         self.structures
@@ -293,7 +413,8 @@ impl Screen {
     }
 
     /// The fuse an airburst wants for a given target: the horizontal distance
-    /// from the muzzle to its centre.
+    /// from the muzzle to its centre, in world units. `None` if `target` is
+    /// not an index into `structures`.
     pub fn default_fuse(&self, target: usize) -> Option<f64> {
         self.structures
             .get(target)
@@ -323,6 +444,17 @@ impl Screen {
 
     /// Fire a shot and apply everything it does: craters, structural damage,
     /// undermining, collapse and debris.
+    ///
+    /// `shot` is used as given; [`RunState::fire`] quantises it to the
+    /// loadout first, and callers that bypass it (tests, the solver's
+    /// candidates) pass shots already on the grid. `fuse` is the Airburst
+    /// fuse in world units from the muzzle, ignored without Airburst.
+    /// `record_path` keeps the sampled flight path in the traces for the
+    /// renderer; headless callers pass `false` to skip the allocation.
+    ///
+    /// Order matters for determinism and is fixed: every detonation is
+    /// applied (craters, then damage) before support and states are
+    /// resolved once, then debris mounds are added for what collapsed.
     pub fn apply_shot(
         &mut self,
         shot: Shot,
@@ -372,6 +504,8 @@ impl Screen {
 
         // Debris adds a small positive mound where the structure landed, so
         // terrain gets slightly higher where a structure fell (DESIGN §2.7).
+        // The mound goes in after this shot's states were resolved, so any
+        // effect it has on support is seen at the next resolve.
         for &i in &report.collapsed {
             let s = self.structures[i].clone();
             let dir = s.lean as f64;
@@ -383,7 +517,9 @@ impl Screen {
             );
         }
 
-        // Salvage: a miss that still cratered within 30 units of a target.
+        // Salvage: a shot that felled nothing but whose first detonation
+        // landed horizontally within `salvage_radius` (30 units with the modifier) of a
+        // standing target's centre.
         if lo.salvage_radius > 0.0 && report.collapsed.is_empty() {
             if let Some(det) = report.traces.iter().filter_map(|t| t.detonation()).next() {
                 report.salvage = self.salvage_qualifies(det, lo);
@@ -441,7 +577,9 @@ impl Screen {
     }
 
     /// Recompute support from the scar buffer and re-resolve every state.
-    /// DESIGN §2.7: support is recomputed after every detonation.
+    /// Called once per shot, after every detonation (DESIGN §2.7 says after
+    /// each detonation; with Cluster this differs — see NOTES or the
+    /// follow-up issue).
     ///
     /// Public because undermining can happen without a detonation of its own —
     /// debris landing, or a test excavating a footprint directly.
@@ -636,6 +774,10 @@ fn assemble(
     lo: &Loadout,
     force_flat_terrain: bool,
 ) -> Screen {
+    // One named stream per system; the tags are ASCII "WAND", "SHAP" and
+    // "PLAC". Wind, shape and placement each draw from their own generator,
+    // so an extra draw in one (a new shape parameter, say) cannot shift the
+    // values the others draw.
     let mut r_wind = Pcg32::new(substream(seed, 0x5741_4E44));
     let mut r_shape = Pcg32::new(substream(seed, 0x5348_4150));
     let mut r_place = Pcg32::new(substream(seed, 0x504C_4143));
@@ -710,11 +852,32 @@ fn assemble(
     }
 }
 
-/// Build one screen, validated solvable before it is returned.
+/// Build screen `index` of the run seeded `run_seed`, at buffer width `width`
+/// and for loadout `lo`.
 ///
 /// DESIGN §2.3 step 6: reject and regenerate with `screen_seed + 1` on
-/// failure, capped at 8 attempts, then fall back to `Flat`. Nothing leaves
-/// this function without passing `solver::validate`.
+/// failure, capped at 8 attempts, then fall back to `Flat`. The fallback
+/// ladder has three rungs:
+///
+/// 1. Up to `MAX_GEN_ATTEMPTS` drawn templates, each on the next seed.
+/// 2. Up to `MAX_GEN_ATTEMPTS` `Flat` screens on a separate run of seeds.
+/// 3. No template: the screen seed's base ridge flattened to a gentle roll,
+///    cut to one target.
+///
+/// Rungs 1 and 2 return a screen only if it passes [`solver::validate`].
+/// Rung 3 is returned without that gate: it relies on a single target
+/// inside the distance cap on gentle terrain always being reachable, and
+/// records whatever candidate count the solver finds. No test forces rung 3
+/// or asserts that it is solvable; the batch harness's candidate gate would
+/// only notice if a sampled screen happened to reach it. Supply screens
+/// (Scavenger Rites) have no targets and skip validation too.
+///
+/// Pure: the same arguments always give a bit-identical screen, whatever was
+/// generated before. The loadout is an input because it changes what is
+/// reachable ([`reachable_distance`]) and which templates are allowed
+/// ([`template_weights`]). So two runs on the same seed can meet different
+/// screens once their drafts differ; the seed alone fixes the run only
+/// together with the player's picks, which is why picks are logged.
 pub fn generate_screen(run_seed: u64, index: u32, width: usize, lo: &Loadout) -> Screen {
     let band = band_of(index);
     let seed0 = screen_seed(run_seed, index);
@@ -756,7 +919,7 @@ pub fn generate_screen(run_seed: u64, index: u32, width: usize, lo: &Loadout) ->
         }
     }
 
-    // Terrain out of the way entirely, one target. This cannot fail: a target
+    // No template, terrain flattened, one target. This cannot fail: a target
     // inside the distance cap on a gentle roll is always reachable.
     let mut screen = assemble(index, seed0, width, Template::Flat, band, lo, true);
     screen.structures.truncate(1);
@@ -780,7 +943,8 @@ pub fn base_refund(shots: u32) -> i32 {
 }
 
 /// Refund after Quartermaster (+1 to every tier, including 4+) and Forced
-/// March (x2). Applied in that order.
+/// March (x2). Applied in that order. The multiplied value is truncated
+/// toward zero back to whole shells.
 pub fn refund(shots: u32, lo: &Loadout) -> i32 {
     let base = base_refund(shots) + lo.refund_bonus;
     (base as f64 * lo.refund_mult) as i32
@@ -789,10 +953,16 @@ pub fn refund(shots: u32, lo: &Loadout) -> i32 {
 /// Why a run ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RunOver {
+    /// The reserve reached zero. The only way a run ends (DESIGN §1: no
+    /// death, no level select).
     OutOfShells,
 }
 
-/// What the run is waiting for.
+/// What the run is waiting for: the state of the run state machine.
+///
+/// Each variant names the one call that moves the run on, so the
+/// presentation layer can drive the run by matching on it. See the module
+/// docs for the transition table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
     /// Waiting for a shot on the current screen.
@@ -804,13 +974,21 @@ pub enum Phase {
     /// screen it animates on must still be the screen that was cleared. The
     /// sim does not wait on anything, so headless callers (replay, tests, the
     /// batch harness) simply call `resolve_clear` straight away.
+    ///
+    /// Splitting the clear into two calls costs nothing in determinism: no
+    /// logged input can take effect in between (`fire` refuses outside
+    /// `Firing`, `reposition` after the screen's first shot), so the log
+    /// needs no entry for the pause; a fuse set meanwhile is reset when the
+    /// next screen is entered.
     Cleared,
     /// A draft is open; `RunState::take_offer` must be called.
     Drafting,
+    /// The run has ended. Terminal: no call changes the phase again.
     Over(RunOver),
 }
 
-/// One entry in the shot log. DESIGN §3: seed plus this reconstructs a run.
+/// One entry in the shot log. DESIGN §3 and §9.2: the run seed and width plus
+/// the log reconstruct a run.
 ///
 /// Besides the aim, a shot's outcome depends on the Airburst fuse and the
 /// Enfilade emplacement offset, so both are recorded as they stood when the
@@ -819,10 +997,21 @@ pub enum Phase {
 /// grid (`RunState::set_fuse`, `RunState::reposition`), so a replay applies
 /// bit-identical floats. They are recorded on every shot, whether or not the
 /// loadout uses them; a draft entry leaves both at 0.
+///
+/// A draft pick is stored in the same struct, marked by `angle_ticks ==
+/// replay::DRAFT_MARK`, with the offer index in `power_ticks`; see
+/// [`crate::replay`] for why picks belong in the log at all.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LoggedShot {
+    /// Screen the entry was made on. For a draft pick, the screen that was
+    /// just cleared, since the run has not advanced when the pick is made.
     pub screen_index: u32,
+    /// Angle in 0.05-degree ticks, after quantisation to the loadout's
+    /// angle grid and clamping to `0..=MAX_ANGLE_TICKS`. `DRAFT_MARK` for a
+    /// draft pick.
     pub angle_ticks: i32,
+    /// Power ticks, `0..=POWER_TICKS_MAX`, after clamping. The offer index
+    /// for a draft pick.
     pub power_ticks: i32,
     /// Airburst fuse, in tenths of a unit from the muzzle.
     pub fuse_tenths: i32,
@@ -834,37 +1023,68 @@ pub struct LoggedShot {
 pub const FUSE_STEPS_PER_UNIT: i32 = 10;
 
 /// The run state machine. DESIGN §1.
+///
+/// Everything about a run in progress: economy, loadout, the current screen
+/// and the log of every decision so far. [`Phase`] says which call is legal
+/// next; the others refuse and return `None` or `false` rather than panic,
+/// so a replay of a broken log fails cleanly.
+///
+/// Only the current screen is held. The next is generated on arrival from
+/// the seed, its index and the loadout at that moment, so the state never
+/// grows with the length of the run, apart from the log.
+///
+/// Fields are public for the presentation layer and tests to read. Writing
+/// them directly bypasses the rules; the methods are the supported way to
+/// change a run, and only their effects are recorded in the log.
 #[derive(Clone, Debug)]
 pub struct RunState {
+    /// The run's identity, shareable as text via [`format_seed`].
     pub run_seed: u64,
+    /// Buffer width the run is generated at. Part of the run's identity: the
+    /// same seed at another width is a different run (DESIGN §9.2).
     pub width: usize,
+    /// Shell reserve. Never above `loadout.cap()`; 0 ends the run.
     pub shells: i32,
+    /// Index of the current screen, from 0.
     pub screen_index: u32,
+    /// Screens cleared, supply screens included. The score (DESIGN §1).
     pub screens_cleared: u32,
+    /// Shots fired over the whole run.
     pub total_shots: u32,
+    /// Shots fired on the current screen, which sets the refund tier.
     pub shots_on_screen: u32,
+    /// Consecutive screens cleared in one shot, paid by Standing Orders.
     pub one_shot_streak: u32,
+    /// Modifiers held. Changed only by draft picks.
     pub loadout: Loadout,
+    /// The screen being played.
     pub screen: Screen,
+    /// Where the run is in the state machine.
     pub phase: Phase,
     /// Offers on the table while `phase == Drafting`.
     pub offers: Vec<Modifier>,
     /// Airburst fuse, in units from the muzzle. Player-set, always a whole
-    /// number of tenths (see `set_fuse`); `fire` re-quantizes it anyway, so a
+    /// number of tenths (see `set_fuse`); `fire` re-quantises it anyway, so a
     /// direct write cannot put an unloggable value into a shot.
     pub fuse: f64,
     /// Enfilade offset applied to this screen, if any. Always a whole number
     /// of units; only `reposition` should change it.
     pub emplacement_offset: f64,
+    /// Every shot and draft pick so far, in order. With `run_seed` and
+    /// `width`, the whole persisted run ([`crate::replay::Replay`]).
     pub log: Vec<LoggedShot>,
     /// Last landing points, for Chalk Marks.
     pub chalk: Vec<Vec2>,
+    /// Apex of the last shot on this screen, for Plumb Line.
     pub last_apex: Option<Vec2>,
     /// Wind stays hidden until the first shot lands, under Dead Reckoning.
     pub wind_revealed: bool,
 }
 
 impl RunState {
+    /// A fresh run: screen 0, `START_SHELLS` shells, an empty loadout and
+    /// log, in `Phase::Firing`. `width` is used as given; the game clamps it
+    /// with [`buffer_width`] first.
     pub fn new(run_seed: u64, width: usize) -> Self {
         let loadout = Loadout::new();
         let screen = generate_screen(run_seed, 0, width, &loadout);
@@ -898,6 +1118,7 @@ impl RunState {
         (self.screens_cleared, self.shells, self.total_shots)
     }
 
+    /// Whether the run has ended (`Phase::Over`).
     pub fn is_over(&self) -> bool {
         matches!(self.phase, Phase::Over(_))
     }
@@ -914,6 +1135,9 @@ impl RunState {
         }
     }
 
+    /// Per-screen reset. The emplacement returns home and the fuse starts at
+    /// the first target's distance, snapped to the logged grid; neither
+    /// needs a log entry, because a replay performs the same reset.
     fn on_screen_entered(&mut self) {
         self.shots_on_screen = 0;
         self.chalk.clear();
@@ -933,6 +1157,11 @@ impl RunState {
     /// The offset is rounded to whole units, then clamped to the modifier's
     /// range and to keep the emplacement between x = 14 and mid-screen, so
     /// the muzzle always sits on a value the shot log can record exactly.
+    ///
+    /// Returns whether the move was allowed: `false` without Enfilade or
+    /// after the first shot, `true` otherwise, even if the offset was clamped.
+    /// Not logged by itself: the offset in effect is recorded on the next
+    /// shot's [`LoggedShot::emplacement_offset`].
     pub fn reposition(&mut self, offset: f64) -> bool {
         let limit = self.loadout.enfilade_units;
         if limit <= 0.0 || self.shots_on_screen > 0 {
@@ -966,6 +1195,8 @@ impl RunState {
     }
 
     /// Set the fuse directly in tenths of a unit, clamped like `set_fuse`.
+    /// Replay uses this, so a logged value reaches the same float the live
+    /// run held: both are `tenths as f64 / 10.0`.
     pub fn set_fuse_tenths(&mut self, tenths: i32) {
         let max = self.width as i32 * FUSE_STEPS_PER_UNIT * 3 / 2;
         self.fuse = tenths.clamp(0, max) as f64 / FUSE_STEPS_PER_UNIT as f64;
@@ -977,6 +1208,16 @@ impl RunState {
     }
 
     /// Fire. Consumes a shell, applies the shot, advances the run.
+    ///
+    /// The shot is quantised to the loadout's angle grid and clamped to the
+    /// input ranges first, and the logged entry records the quantised values
+    /// with the fuse and offset in effect, so the log holds exactly what
+    /// flew. The entry is appended before the shot resolves.
+    ///
+    /// Afterwards the phase is `Cleared` if every target is down (checked
+    /// first, so a clear on the last shell still pays its refund), else
+    /// `Over` if the reserve is empty, else `Firing`. Returns `None`, and
+    /// changes nothing, outside `Phase::Firing` or with no shells left.
     pub fn fire(&mut self, shot: Shot, record_path: bool) -> Option<ShotReport> {
         if self.phase != Phase::Firing || self.shells <= 0 {
             return None;
@@ -1030,6 +1271,11 @@ impl RunState {
 
     /// Pay for the cleared screen and move on. Idempotent: returns false if
     /// the run is not sitting on a cleared screen.
+    ///
+    /// Leaves the run in `Drafting` at the end of a band, otherwise on the
+    /// next screen in `Firing`, or `Over` if the refund left no shells. The
+    /// Godot layer calls this once its collapse animation and camera pan
+    /// have finished; headless callers call it straight after every `fire`.
     pub fn resolve_clear(&mut self) -> bool {
         if self.phase != Phase::Cleared {
             return false;
@@ -1053,7 +1299,10 @@ impl RunState {
         }
         self.grant(gain);
 
-        // A draft fires at the end of each band (DESIGN §1).
+        // A draft fires at the end of each band (DESIGN §1). The offers come
+        // from the next screen's seed and the loadout, not from a running
+        // generator, so they are fixed by what the log already contains and
+        // a replay meets the same offers.
         let next = self.screen_index + 1;
         if next.is_multiple_of(BAND_LEN) {
             let offers = draft_offers(screen_seed(self.run_seed, next), &self.loadout);
@@ -1067,6 +1316,13 @@ impl RunState {
     }
 
     /// Take one of the three offers. The other two are gone.
+    ///
+    /// `which` indexes [`RunState::offers`]; there can be fewer than three
+    /// once most modifiers are at their stack limit. Logs the pick, applies
+    /// the modifier (including any instant shells and a lowered cap), then
+    /// advances to the next screen. Returns the modifier taken, or `None`,
+    /// changing nothing, outside `Phase::Drafting` or for an index with no
+    /// offer.
     pub fn take_offer(&mut self, which: usize) -> Option<Modifier> {
         if self.phase != Phase::Drafting {
             return None;
@@ -1093,6 +1349,11 @@ impl RunState {
     }
 
     /// Skipping is allowed only when the pool is exhausted.
+    ///
+    /// A safety valve rather than a normal path: `resolve_clear` opens a
+    /// draft only when there is something to offer, so a run does not reach
+    /// `Drafting` with no offers. A skip is not logged, which is safe only
+    /// because of that.
     pub fn skip_draft(&mut self) {
         if self.phase == Phase::Drafting && self.offers.is_empty() {
             self.advance();
@@ -1109,6 +1370,9 @@ impl RunState {
             Phase::Firing
         };
         // A supply screen has nothing to shoot at; walk straight through it.
+        // It counts as cleared (DESIGN §4) and its +6 shells were granted on
+        // entry. Walking through bypasses `clear_screen`, so no refund is
+        // paid and the band-end draft check is not made for this step.
         if self.phase == Phase::Firing && self.screen.supply {
             self.screens_cleared += 1;
             self.advance();
@@ -1117,17 +1381,30 @@ impl RunState {
 }
 
 /// Screens playable before the unlock. DESIGN / brief M6.
+///
+/// Presentation policy rather than a rule of the sim: nothing here reads
+/// it. The Godot layer shows its paywall once `screen_index` reaches this
+/// value, so screens 0..=14 (shown to the player as 1 to 15) are free.
 pub const FREE_SCREENS: u32 = 15;
 
 /// A run seed for a calendar day, so every player gets the same daily run.
 /// Takes the day number rather than reading the clock — nothing in the sim
 /// touches system time.
+///
+/// `days_since_epoch` counts days since the Unix epoch; the caller converts
+/// the date. The constant is the ASCII bytes of "SALTLINE".
 pub fn daily_seed(days_since_epoch: u64) -> u64 {
     crate::rng::mix64(0x5341_4C54_4C49_4E45 ^ days_since_epoch)
 }
 
 /// Parse a shared seed. Accepts decimal, `0x` hex, or any other text, which is
 /// hashed so that every string is a valid seed.
+///
+/// Surrounding whitespace is ignored. Never fails: seed entry is free text,
+/// and a word or phrase is as good a seed as a number. The hash is FNV-1a
+/// over the UTF-8 bytes, then [`crate::rng::mix64`] to spread it. Stable
+/// across platforms and builds, since a typed seed has to name the same run
+/// everywhere; changing it would change which run every word names.
 pub fn parse_seed(text: &str) -> u64 {
     let t = text.trim();
     if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
@@ -1146,7 +1423,8 @@ pub fn parse_seed(text: &str) -> u64 {
     crate::rng::mix64(h)
 }
 
-/// Format a seed for sharing.
+/// Format a seed for sharing: plain decimal, which [`parse_seed`] reads back
+/// to the same value.
 pub fn format_seed(seed: u64) -> String {
     format!("{seed}")
 }
