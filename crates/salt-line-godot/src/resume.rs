@@ -15,6 +15,70 @@
 //! so it is committed and the run resumes with it resolved. A run whose last
 //! shot ended it is not offered to continue: it is a finished run whose score
 //! never reached the board, and is recorded there instead.
+//!
+//! # The run files
+//!
+//! Three `user://` paths carry the run. The core asks for changes as
+//! `app::RunFile` effects; `game.rs` turns them into file operations through
+//! `save::write` (the atomic replace in `durable::write_atomic`),
+//! `save::rename` and `save::remove`.
+//!
+//! ```text
+//! file              written by                       when
+//! run.txt.new       save::write, step 1-2 of the     every RunFile::Write (the log
+//!                   atomic replace                   grew) and RunFile::Keep (a
+//!                                                    finished run's score did not
+//!                                                    reach disk)
+//! run.txt           the rename at step 3 of the      straight after run.txt.new;
+//!                   same replace; RunFile::Restore   Restore once a launch has
+//!                                                    rebuilt the run
+//! run-loading.txt   game.rs moving run.txt (or, if   at launch, before the text
+//!                   that is missing, run.txt.new)    reaches the core, so before
+//!                   aside                            any rebuild
+//! ```
+//!
+//! `RunFile::Discard` deletes all three, and if a file will not go, writes
+//! an empty `run.txt`, which [`judge`] reads as no run.
+//!
+//! What a crash costs, step by step:
+//!
+//! ```text
+//! crash                                     next launch finds    cost
+//! writing run.txt.new                       the previous line    the latest shot or
+//!                                           in run.txt           draft; it resumes
+//!                                                                one entry behind
+//! after the rename                          the new line         nothing
+//! rebuilding at launch (a log that          run-loading.txt      that run, once:
+//! brings the sim down)                                           discarded with a note
+//! after RunFile::Restore                    run.txt              nothing
+//! a run ends: between its Discard and the   no run file          that score, never
+//! Store that puts its score on the board                         scored twice
+//! a run ends: the Store fails (full disk,   run.txt, by way of   nothing; the next
+//! a newer build's save)                     RunFile::Keep        launch scores it
+//! ```
+//!
+//! Two properties fall out of that ordering:
+//!
+//! - **A run is scored at most once.** A finished log lives on disk only
+//!   until the `Discard` that the core always queues before the score's
+//!   `Store` (`app`'s "order is behaviour"), and effects are applied in
+//!   order. By the time a score can be on the board the log is gone, so no
+//!   launch can find it and score it again. A crash in between loses the
+//!   score instead. `Keep` rewrites the log only after a `Store` has failed.
+//! - **A corrupt run file costs one crash, not every launch.** The file is
+//!   moved to `run-loading.txt` before it is parsed or replayed, and is put
+//!   back only once [`judge`] has returned. If the rebuild panics, the
+//!   `Restore` is never applied (no file effect survives a panic, see
+//!   `app::Effect::survives_panic`); the next launch sees
+//!   `run-loading.txt`, never replays it, and throws it away
+//!   (`app::Abandoned::Interrupted`). Text that merely fails
+//!   to parse or replay is caught by [`judge`] as [`Stale`] and discarded
+//!   with a note, without a crash at all.
+//!
+//! `app/disk_tests.rs` holds the first property, and the resumed run
+//! matching the run as played, end to end: it applies the core's effects to
+//! an in-memory disk, kills the process after every effect in turn, and
+//! launches again on what was left.
 
 use salt_line_sim::replay::{decode_log, encode_log, Replay, DRAFT_MARK};
 use salt_line_sim::run::{LoggedShot, RunState};
