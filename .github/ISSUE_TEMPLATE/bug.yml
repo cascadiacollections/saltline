@@ -1,0 +1,45 @@
+name: Bug report
+description: Something broke, looked wrong, or did not do what it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for playing. Salt Line sends nothing anywhere by itself, so
+        this form is the whole report. If the game showed **SOMETHING BROKE**,
+        press **COPY REPORT** (or **COPY LAST CRASH REPORT** on the title
+        screen next launch) and paste it below. Otherwise the run's seed is
+        the next best thing: it rebuilds the level exactly.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and device
+      description: OS and version, and the device or GPU if relevant.
+      placeholder: "Windows 11 on a Snapdragon laptop / Pixel 8, Android 16"
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Crash report or seed
+      description: |
+        Paste the crash report, or the seed and screen number. The report is
+        also in Godot's user data folder as crash.txt or crash-old.txt (see
+        README, "Reporting bugs").
+      render: text
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did just before it happened, if you remember.
+      placeholder: |
+        1. Daily run
+        2. Took Airburst on screen 4
+        3. Fired with the fuse at minimum

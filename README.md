@@ -323,6 +323,35 @@ No code, assets, or naming lineage from any existing artillery game. See
 `design/DESIGN.md` §7 for the pre-release checklist, and `RELEASING.md` for the
 signing, store and clearance work that has to happen outside this repository.
 
+## Reporting bugs
+
+The game has no network code and no telemetry. If the Rust side panics, the
+game stops on a "SOMETHING BROKE" screen instead of carrying on with
+half-updated state, and writes a plain-text report beside the save: version,
+OS and architecture, the panic message and source location, and the run's
+seed, width, screen and shot log (enough to replay it). **COPY REPORT** puts it
+on the clipboard; the next launch offers **COPY LAST CRASH REPORT** on the title
+screen, then keeps the file as `crash-old.txt`. Nothing leaves the device unless
+you paste it somewhere.
+
+Open an issue with the bug template and paste the report, or the seed if
+nothing crashed. The files live in Godot's user data folder:
+
+| Platform | Folder |
+|---|---|
+| Linux | `~/.local/share/godot/app_userdata/Salt Line/` |
+| macOS | `~/Library/Application Support/Godot/app_userdata/Salt Line/` |
+| Windows | `%APPDATA%\Godot\app_userdata\Salt Line\` |
+| Android | App-private; use the in-game copy button |
+
+The save (`salt_line.txt`) is written to a temporary file, flushed to disk and
+renamed over the old one, so a crash mid-write costs at most the newest
+record; if only the temporary file survives, the next launch loads it. On
+Linux, macOS and Android the directory is flushed after the rename as well,
+so the swap survives a power cut. On Windows the rename is atomic but the
+directory is not flushed, so a power cut in the moments after a write could
+still leave the previous save in place.
+
 ## License
 
 MIT. See `LICENSE`.

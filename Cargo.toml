@@ -13,3 +13,8 @@ repository = "https://github.com/cascadiacollections/saltline"
 [profile.release]
 lto = true
 codegen-units = 1
+# The default, spelled out because it is load-bearing: gdext catches a panic
+# in a Godot callback by unwinding, and the crash report and error screen
+# (salt-line-godot `crash`) depend on the game surviving to show them. With
+# `abort` a panic would take the whole process down, report unwritten.
+panic = "unwind"
