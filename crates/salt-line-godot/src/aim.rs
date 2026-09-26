@@ -4,6 +4,23 @@
 //! The result is in the sim's tick space and on the same grid as the keyboard
 //! (the loadout's angle quantum, power in steps of 5), so a dragged shot is
 //! exactly as deterministic as a keyed one.
+//!
+//! # Slingshot aiming
+//!
+//! The finger is the back of a slingshot: the shell flies the opposite way to
+//! the pull. The vector from the current point back to the start gives the
+//! launch direction, and its length gives power, linear up to [`FULL_PULL`].
+//! Floats are fine here because they never reach the sim: they are rounded
+//! to integer ticks first, and the sim only ever sees ticks.
+//!
+//! `game.rs` recomputes the aim every frame while the finger is down, so the
+//! readouts and barrel sprite show exactly what letting go would fire, and
+//! fires on the drop. A pull that ends back inside [`DEAD_ZONE`] cancels and
+//! restores the aim from before the drag.
+//!
+//! [`short_arc_len`] decides how much of the predicted trajectory the Short
+//! arc hint draws, which is the design lever that keeps the preview a hint
+//! rather than a solution (DESIGN §2.5).
 
 use salt_line_sim::dmath::{self, MAX_ANGLE_TICKS};
 use salt_line_sim::POWER_TICKS_MAX;
@@ -13,13 +30,22 @@ use salt_line_sim::POWER_TICKS_MAX;
 pub const DEAD_ZONE: f64 = 6.0;
 /// Pull length, in buffer pixels, that gives full power.
 pub const FULL_PULL: f64 = 100.0;
-/// Power moves in the same steps as a key press.
+/// Power moves in the same steps as a key press, in power ticks.
 const POWER_STEP: i32 = 5;
 
 /// Angle and power ticks for a pull from `start` to `now`, in buffer pixels
 /// with y pointing down. Pulling down and left aims up and right. `None`
 /// inside the dead zone.
+///
+/// The angle is rounded to the nearest multiple of `angle_quantum` (the
+/// loadout's angle step in ticks; values below 1 are treated as 1) and
+/// clamped to `0..=MAX_ANGLE_TICKS`: a launch direction below the horizon
+/// flattens to 0°, and one pointing backwards but upwards stands at 90°.
+/// Power is rounded to the nearest step of 5 and clamped to
+/// `0..=POWER_TICKS_MAX`.
 pub fn pull_to_aim(start: (f32, f32), now: (f32, f32), angle_quantum: i32) -> Option<(i32, i32)> {
+    // Reverse the pull to get the launch direction, and flip y from screen
+    // (down) to world (up) at the same time.
     let dx = (start.0 - now.0) as f64;
     let dy_up = (now.1 - start.1) as f64;
     let len = dx.hypot(dy_up);
@@ -28,6 +54,8 @@ pub fn pull_to_aim(start: (f32, f32), now: (f32, f32), angle_quantum: i32) -> Op
     }
     let q = angle_quantum.max(1);
     let raw = dmath::angle_ticks_from_dir(dx, dy_up);
+    // Round half up to the grid. `raw` is never negative, so integer
+    // division truncating towards zero is a floor here.
     let angle = ((raw + q / 2) / q * q).clamp(0, MAX_ANGLE_TICKS);
     let frac = (len / FULL_PULL).min(1.0);
     let power = (frac * POWER_TICKS_MAX as f64 / POWER_STEP as f64).round() as i32 * POWER_STEP;
@@ -39,6 +67,11 @@ pub fn pull_to_aim(start: (f32, f32), now: (f32, f32), angle_quantum: i32) -> Op
 /// never more than half the flight, so it never shows where the shell lands.
 /// A flat shot peaks at once, so it gets a third of the window, still inside
 /// the first half of the flight.
+///
+/// All three arguments count trajectory samples, one per sim step: `apex` is
+/// the index of the highest sample, `len` the path length and `window` the
+/// preview time converted to steps. The result is at most `window` and at
+/// most `len / 2`.
 pub fn short_arc_len(apex: usize, len: usize, window: usize) -> usize {
     window.min(apex.max(window / 3)).min(len / 2)
 }
