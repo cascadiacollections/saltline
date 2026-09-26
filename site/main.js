@@ -23,6 +23,17 @@
     });
   });
 
+  // ----------------------------------------------- your platform's build
+  // A hint only: every download stays one click away whatever this guesses.
+  const ua = navigator.userAgent;
+  const platform = /Android/i.test(ua) ? "android"
+    : /Windows/i.test(ua) ? "windows"
+    // iPadOS reports itself as a Mac; a touchscreen gives it away.
+    : /Macintosh/i.test(ua) && navigator.maxTouchPoints < 2 ? "mac"
+    : /Linux/i.test(ua) ? "linux"
+    : null;
+  document.querySelector(`.dl [data-platform="${platform}"]`)?.classList.add("yours");
+
   // ------------------------------------------------------------ scrollspy
   const links = [...document.querySelectorAll('.topbar nav a[href^="#"]')];
   const targets = links
