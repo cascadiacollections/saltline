@@ -467,13 +467,16 @@ impl Painter<'_> {
                     self.centred(y, &format!("SEED {}", format_seed(seed)), dim);
                     y += 14;
                 }
-                for (action, text) in [
+                let rows = [
                     (Action::Replay, "SAME SEED AGAIN"),
                     (Action::Copy, "COPY SEED"),
                     (Action::Confirm, "TITLE"),
-                ] {
-                    // Labels padded to ENTER's width, so the texts line up.
-                    let keyed = format!("{:<5}  {text}", self.g.input_label(action));
+                ];
+                let labels: Vec<(String, &str)> = rows
+                    .iter()
+                    .map(|&(action, text)| (self.g.input_label(action), text))
+                    .collect();
+                for (&(action, text), keyed) in rows.iter().zip(keyed_rows(&labels)) {
                     y = self.menu_row(y, action, &keyed, text, fg);
                 }
                 y += 4;
@@ -1212,6 +1215,21 @@ impl Painter<'_> {
     }
 }
 
+/// Menu lines reading "KEY  TEXT", each label padded to the widest of them
+/// and never narrower than ENTER, so the default rows keep their spacing and
+/// a longer rebound name (DPAD_LEFT) widens them all alike.
+fn keyed_rows(rows: &[(String, &str)]) -> Vec<String> {
+    let width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(5);
+    rows.iter()
+        .map(|(label, text)| format!("{label:<width$}  {text}"))
+        .collect()
+}
+
 /// The drag preview's flight, and how much of it the arc hint shows.
 fn preview_path(
     screen: &Screen,
@@ -1375,6 +1393,19 @@ mod tests {
                 assert_ne!(default.bytes(), draw(&g).0.bytes(), "controller labels");
             }
         }
+    }
+
+    #[test]
+    fn keyed_rows_pad_every_label_to_the_widest() {
+        let rows =
+            |labels: [&str; 2]| keyed_rows(&[(labels[0].into(), "ONE"), (labels[1].into(), "TWO")]);
+        // The defaults, as they always read.
+        assert_eq!(rows(["R", "ENTER"]), ["R      ONE", "ENTER  TWO"]);
+        // A longer name widens the column for every row.
+        assert_eq!(
+            rows(["DPAD_LEFT", "A"]),
+            ["DPAD_LEFT  ONE", "A          TWO"]
+        );
     }
 
     #[test]

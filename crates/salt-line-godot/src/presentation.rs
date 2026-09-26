@@ -85,12 +85,18 @@ impl RepeatState {
             return 1;
         }
         self.clock += delta;
-        let mut count = 0;
-        while self.clock >= rate {
-            self.clock -= rate;
-            count += 1;
+        if self.clock < rate {
+            return 0;
         }
-        count.min(MAX_REPEATS)
+        // Every whole interval at once, not one at a time: a delta of any
+        // size costs the same.
+        let whole = (self.clock / rate).floor();
+        self.clock -= whole * rate;
+        if !(0.0..rate).contains(&self.clock) {
+            // A clock too large to subtract from exactly.
+            self.clock = 0.0;
+        }
+        (whole as u64).min(u64::from(MAX_REPEATS)) as u32
     }
 
     /// `tick` for an input that also reports presses as events. A press seen
@@ -174,6 +180,15 @@ mod tests {
         assert_eq!(r.tick(true, 0.016, 0.28, 0.05), 0);
         assert_eq!(r.tick(true, 0.016, 0.28, 0.05), 0);
         assert_eq!(r.tick(true, 0.02, 0.28, 0.05), 1);
+    }
+
+    #[test]
+    fn any_delta_returns_at_once() {
+        let mut r = RepeatState::default();
+        r.tick(true, 0.0, 0.28, 0.05);
+        assert_eq!(r.tick(true, 1e15, 0.28, 0.05), MAX_REPEATS);
+        assert_eq!(r.tick(true, 0.016, 0.28, 0.05), 0);
+        assert_eq!(r.tick(true, f64::MAX, 0.28, 1e-300), MAX_REPEATS);
     }
 
     #[test]
