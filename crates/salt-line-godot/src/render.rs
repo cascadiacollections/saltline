@@ -14,6 +14,33 @@
 //!
 //! Because nothing here needs the engine, a frame can be drawn under
 //! `cargo test` and compared pixel for pixel; see the tests at the end.
+//!
+//! # Techniques
+//!
+//! * **Software rasterising into one buffer.** Every pixel is written by
+//!   this crate into an RGBA byte array of `buffer_w` × `buffer_h`; the node
+//!   uploads it whole as one texture. There is no scene graph, no sprite
+//!   node, and no GPU scaling except the final nearest-neighbour stretch.
+//! * **Painter's order.** Each frame starts from a full fill (sky or plate)
+//!   and draws back to front: sky, terrain, overlays, last arc, structures,
+//!   the emplacement, the shot, effects, the drag preview, HUD, touch
+//!   controls, draft, pause.
+//!   Nothing is erased; the next frame paints over everything, which the
+//!   `every_pixel_of_every_screen_is_painted` test checks.
+//! * **Immediate-mode UI.** A control is laid out by drawing it:
+//!   `draw_touch_button` and `menu_row` paint the plate and push a
+//!   [`Button`] in the same call, so what can be touched is always what is
+//!   on screen, and a menu row has one definition, not a layout plus a
+//!   drawing.
+//! * **Memoisation.** The drag preview flies a whole ballistic path; it is
+//!   kept in [`Cache`] keyed on everything it depends on (`PreviewKey`) and
+//!   recomputed only when one of them changes.
+//! * **Snapshot tests.** Frames are rendered to palette-index text
+//!   (`Canvas::palette_text`) and pinned with `insta`, so a pixel that moves
+//!   shows in review as a text diff.
+//!
+//! Units: every coordinate here is in buffer pixels, `(0, 0)` top left;
+//! world positions go through [`View`] (`sx`, `sy`) with the camera applied.
 
 use salt_line_sim::ballistics::{self, FireOptions, Shot, Trace};
 use salt_line_sim::modifiers::{flags, Loadout, Modifier};
@@ -178,6 +205,8 @@ impl Painter<'_> {
         }
     }
 
+    /// Every menu mode: the title, Controls (touch and keyed layouts), seed
+    /// entry and the result screen, over the game's own sky.
     fn render_menu(&mut self) {
         let pal = self.pal;
         let view = self.g.view();
@@ -598,6 +627,8 @@ impl Painter<'_> {
         self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
     }
 
+    /// A frame of play, back to front: the world, the shot, the HUD, then
+    /// the touch controls, the draft and the pause plate on top.
     fn render_play(&mut self) {
         let pal = self.pal;
         let view = self.g.view();
@@ -734,6 +765,9 @@ impl Painter<'_> {
         raster::draw_trajectory(self.canvas, view, path, *upto, pal);
     }
 
+    /// The targets, as sprites seated on the ground: intact, leaning or
+    /// rubble, each a hand-drawn frame where the art has one (DESIGN §5.4),
+    /// never a rotation.
     fn draw_structures(&mut self, screen: &Screen, view: &View) {
         let toppling = self
             .g
@@ -810,6 +844,8 @@ impl Painter<'_> {
         }
     }
 
+    /// The emplacement: chassis and barrel for the loadout, the barrel at the
+    /// pre-drawn 5° frame nearest the aim (DESIGN §5.3).
     fn draw_player(&mut self, screen: &Screen, loadout: &Loadout, view: &View) {
         let muzzle = screen.muzzle();
         let shot = Shot::new(self.g.play.angle_ticks, self.g.play.power_ticks).quantized(loadout);
@@ -847,6 +883,8 @@ impl Painter<'_> {
         }
     }
 
+    /// The muzzle flash, impact bursts and dust, and the border flash of a
+    /// collapse, timed off the replay clock.
     fn draw_shot_effects(&mut self, view: &View) {
         let Some(anim) = self.g.play.anim.as_ref() else {
             return;
@@ -891,6 +929,9 @@ impl Painter<'_> {
         }
     }
 
+    /// Wind top left, shells top right, screen index bottom right, the
+    /// instruments bottom left, held modifiers, and the status line or the
+    /// next onboarding prompt.
     #[allow(clippy::too_many_arguments)]
     fn render_hud(
         &mut self,
@@ -1060,6 +1101,9 @@ impl Painter<'_> {
         }
     }
 
+    /// The draft: the screen dimmed by a checkerboard (DESIGN §5.1: no
+    /// gradients except through dithering), and one card per offer. On a touchscreen each card is its
+    /// own button.
     fn render_draft(&mut self, offers: &[Modifier], loadout: &Loadout) {
         let pal = self.pal;
         let fg = pal.get(slot::UI_FG);
@@ -1137,6 +1181,7 @@ impl Painter<'_> {
         self.canvas.text_small(hx, top + card_h + 6, hint, fg);
     }
 
+    /// The pause plate over the frozen run.
     fn render_pause(&mut self) {
         let pal = self.pal;
         let fg = pal.get(slot::UI_FG);

@@ -1,9 +1,27 @@
 //! Reading actions from the frame's input, and what each mode does with
 //! them. See `input` for the take-once press rule the order here relies on.
+//!
+//! Game code asks about actions, never devices: `action_pressed(Fire)` is
+//! true for the bound key, the bound pad button or the FIRE touch button
+//! alike. Asking is also what records which device is in use
+//! (`controller_active`, `touch_active`), so prompts name the input the
+//! player last touched.
+//!
+//! # Take-once, and why order matters
+//!
+//! A key or pad press is removed as the first action that asks for it
+//! returns true. Pad X is draft 1, reposition left, COPY and LAST ARC by
+//! default; each mode asks only its own actions, and within a mode the
+//! earlier question wins. That is why the handlers below are written as
+//! `if … else if` chains in a deliberate order, and why moving a check can
+//! change behaviour. Touch presses are not taken: every touch button belongs
+//! to one action, so there is nothing to share.
 
 use super::*;
 
 impl Game {
+    /// The key and pad tokens a `bind` line in the save gives `action`, or
+    /// the defaults passed in when there is none.
     pub(super) fn binding(
         &self,
         action: Action,
@@ -24,7 +42,9 @@ impl Game {
         self.binding(action, defaults.0, defaults.1)
     }
 
-    /// Once per frame, before any action is read.
+    /// Once per frame, before any action is read: publish the presses queued
+    /// since the last frame (edge latching) and advance the touch repeat
+    /// timers.
     pub(super) fn begin_input_frame(&mut self, delta: f64, intents: &Intents) {
         self.input.controls.begin(intents);
         self.input.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
@@ -35,11 +55,13 @@ impl Game {
         self.input.controls.pressed(key)
     }
 
+    /// Shift is held: aim steps are ten times coarser.
     pub(super) fn shift_held(&self) -> bool {
         self.input.controls.held(Key::Shift)
     }
 
-    /// True on the frame the button went down on any joypad.
+    /// True on the frame the button went down on any joypad. Taken, and
+    /// marks the controller as the device in use.
     pub(super) fn pad_pressed(&mut self, button: Pad) -> bool {
         let down = self.input.controls.take_pad(button);
         if down {
@@ -49,6 +71,9 @@ impl Game {
         down
     }
 
+    /// The action was pressed this frame, on any device: its key, its pad
+    /// button, its touch button, or for `Back` the platform's back gesture.
+    /// Key and pad presses are taken, so ask in the order that should win.
     pub(super) fn action_pressed(&mut self, action: Action) -> bool {
         let (key, _) = self.action_binding(action);
         let key_down = Key::from_token(&key)
@@ -72,6 +97,14 @@ impl Game {
             .unwrap_or(false)
     }
 
+    /// Activations of `action` this frame with hold-to-repeat, summed over
+    /// key, pad button, left stick and touch button: 1 on the press, then
+    /// one every `REPEAT_RATE` from `REPEAT_DELAY + REPEAT_RATE` on.
+    ///
+    /// The key and pad repeat state is kept per key and per button; the
+    /// stick has no press to take, so its state is kept per `slot`, one for
+    /// each place that asks (0 to 7). Two places asking with the same slot in
+    /// one frame would tick that state twice.
     pub(super) fn action_repeated(&mut self, slot: usize, action: Action, delta: f64) -> u32 {
         let (key, pad) = self.action_binding(action);
         let keyboard = Key::from_token(&key)
@@ -129,6 +162,8 @@ impl Game {
 // -------------------------------------------------------------- mode input
 
 impl Game {
+    /// Run the current mode's input for this frame. Mute and the F1 overlay
+    /// work in every mode, so they are asked first.
     pub(super) fn handle_mode_input(&mut self, delta: f64) {
         if self.pressed(Key::F1) {
             self.debug = !self.debug;
@@ -145,6 +180,9 @@ impl Game {
         }
         match self.mode {
             Mode::Title => {
+                // With a saved run, confirm is CONTINUE and a new daily run
+                // moves to its own action; without one, confirm starts the
+                // daily.
                 let resumable = self.run_file.resumable.is_some();
                 let confirm = self.action_pressed(Action::Confirm) || self.pressed(Key::KpEnter);
                 let daily = if resumable {
@@ -172,6 +210,8 @@ impl Game {
                 } else if self.action_pressed(Action::Back) {
                     self.fx.push(Effect::Quit);
                 }
+                // Leaving the title disarms a half-confirmed discard, so a
+                // press on a later visit asks again.
                 if self.mode != Mode::Title {
                     self.run_file.discard_armed = None;
                 }
@@ -180,6 +220,8 @@ impl Game {
                 let down = self.action_repeated(0, Action::Left, delta);
                 let up = self.action_repeated(1, Action::Right, delta);
                 if down + up > 0 {
+                    // Five percent a step. The write is debounced
+                    // (`settings.touch`), not made on every repeat.
                     let volume =
                         (self.save.volume as i32 + (up as i32 - down as i32) * 5).clamp(0, 100);
                     self.save.volume = volume as u8;
@@ -216,6 +258,7 @@ impl Game {
                     self.play(Sound::Ui);
                     self.mode = Mode::Playing;
                 } else if self.action_pressed(Action::Replay) {
+                    // Quit to title keeps the run for CONTINUE.
                     self.play(Sound::Ui);
                     self.mode = Mode::Title;
                     self.suspend_run();
@@ -282,6 +325,9 @@ impl Game {
         }
     }
 
+    /// A run in play: pause, draft picks, then aim, fuse, reposition and fire.
+    /// Nothing but pause is read while a shot is being replayed or a clear
+    /// held.
     pub(super) fn handle_play_input(&mut self, delta: f64) {
         if self.action_pressed(Action::Back) {
             self.input.touch.cancel_drag();
@@ -329,6 +375,8 @@ impl Game {
             .unwrap_or(5)
             .max(1);
         let mult = if self.shift_held() { 10 } else { 1 };
+
+        // Stick slots: 0 left, 1 right, 2 down, 3 up, 4 fuse down, 5 fuse up.
 
         let left = self.action_repeated(0, Action::Left, delta) as i32;
         let right = self.action_repeated(1, Action::Right, delta) as i32;
@@ -414,6 +462,8 @@ impl Game {
         }
     }
 
+    /// Start a run on the typed seed; blank starts today's daily seed, but
+    /// not as the daily (it is scored as a seeded run).
     pub(super) fn start_seeded_run(&mut self) {
         let seed = if self.seed_text.trim().is_empty() {
             daily_seed(self.today)
@@ -427,6 +477,7 @@ impl Game {
         self.mode = Mode::Title;
     }
 
+    /// Seed entry, empty, with the keypad focus on its first key.
     pub(crate) fn open_seed_entry(&mut self) {
         self.seed_text.clear();
         self.input.seed_focus = Focus::default();

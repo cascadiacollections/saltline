@@ -1,9 +1,33 @@
 //! A run in play: starting one, firing, replaying the shot, clearing the
 //! screen and scoring the end. The rules are the sim's; this is the pacing.
+//!
+//! # Resolve first, show afterwards
+//!
+//! `fire` hands the shot to the sim, which resolves it completely at once:
+//! craters dug, structures toppled, the screen cleared or the run over.
+//! What follows is presentation. [`Anim`] keeps the recorded paths and a
+//! copy of the screen from before the shot, `step` walks the paths at the
+//! frame's pace, and the renderer shows the old screen until the shell lands.
+//! Frame rate, pausing, or an app killed mid-flight cannot change a result,
+//! and the run's shot log is complete the moment the trigger is pulled: the
+//! log is the run (event sourcing), so `persist_run` can write it on the
+//! same frame and a resumed run replays to the same state (DESIGN §9.6).
+//!
+//! # Timeline of one shot
+//!
+//! ```text
+//!  fire ─► anim.t runs to `longest` ─► shells down: impact and collapse sounds
+//!        ─► `settled` passes TOPPLE_TIME + 0.12 s ─► anim ends
+//!        ─► cleared?  clear_hold = CLEAR_HOLD, camera pans, then next screen
+//!           over?     finish_run: run file discarded, score stored, GameOver
+//! ```
 
 use super::*;
 
 impl Game {
+    /// A new run on `seed`, generated for the device's width, with the aim
+    /// reset and the run file taken over (`begin_persisting`): the next
+    /// frame writes it, replacing any saved run.
     pub(crate) fn start_run(&mut self, seed: u64, daily: bool) {
         // A new run is generated for the device, whatever a resumed one used.
         self.set_run_width(None);
@@ -44,7 +68,12 @@ impl Game {
         self.note(format!("SCREEN {}", index + 1));
     }
 
+    /// Fire the current aim, if the sim takes it (the firing phase, a shell
+    /// left). The sim resolves the shot and logs it now; this starts its
+    /// replay.
     pub(super) fn fire(&mut self) {
+        // Onboarding advances one lesson per shot: wind is learned by firing
+        // with wind showing once craters are, shells by firing after that.
         let learned = self.save.learned;
         if learned & LEARN_WIND != 0 {
             self.learn(LEARN_SHELLS);
@@ -65,6 +94,7 @@ impl Game {
         if run.shells <= 0 {
             return;
         }
+        // Kept for the replay: the renderer draws this until the shell lands.
         let before = run.screen.clone();
         let Some(report) = run.fire(shot, true) else {
             return;
@@ -101,6 +131,9 @@ impl Game {
         }
     }
 
+    /// Advance the presentation by `delta` seconds (already capped): the
+    /// shot replay, the clear hold and its pan, the end of the run, and the
+    /// camera.
     pub(super) fn step(&mut self, delta: f64) {
         if self.mode != Mode::Playing {
             return;
@@ -136,6 +169,8 @@ impl Game {
                     sounds.push(Sound::Collapse);
                 }
             }
+            // A beat after the topple, so the rubble is seen before the
+            // screen moves on.
             let settled = anim.settled;
             let finished = anim.done() && settled > TOPPLE_TIME + 0.12;
             if finished {
@@ -163,6 +198,7 @@ impl Game {
                 }
             }
         } else if let Some(run) = self.play.run.as_ref() {
+            // Over with nothing left to show: score it now.
             if run.is_over() {
                 self.finish_run();
             }
@@ -192,6 +228,8 @@ impl Game {
         self.play.cam_x = self.play.cam_target.round().clamp(0.0, span) as i32;
     }
 
+    /// The run moved to a new screen or a draft: the loadout may have changed
+    /// the buffer (Long Lens), and a draft announces itself.
     pub(super) fn after_screen_change(&mut self) {
         self.apply_buffer_size();
         if self.play.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {

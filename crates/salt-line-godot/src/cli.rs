@@ -8,6 +8,11 @@
 //!
 //! A flag with a value takes it as the next argument or after `=`
 //! (`--salt-seed 42`, `--salt-seed=42`). The first occurrence wins.
+//!
+//! Parsing is kept apart from acting: [`DevArgs`] is plain data, tested here
+//! without an engine, and `Game::start_dev` (in the core) or the node's
+//! `ready` (for what needs the engine: captures and the gallery) act on it.
+//! A number that does not parse is ignored, as if its flag were absent.
 
 use salt_line_sim::run::parse_seed;
 
@@ -21,7 +26,9 @@ pub struct DevArgs {
     /// native resolution, and quit. How the pixel output gets checked without
     /// a human at the keyboard.
     pub shot: Option<String>,
-    /// `--salt-shot-at <seconds>`: when to grab the screenshot.
+    /// `--salt-shot-at <seconds>`: when to grab the screenshot, in seconds
+    /// since the node came up. Counted in capped frame time
+    /// (`resume::frame_delta`), so a slow frame does not skip past it.
     pub shot_at: f64,
     /// `--salt-auto`: play with the solver. See `Game::autopilot`.
     pub auto: bool,
@@ -33,6 +40,8 @@ pub struct DevArgs {
     /// looking at a specific screen. Any text, as seed entry takes it.
     pub seed: Option<u64>,
     /// `--salt-screen <n>`: jump the run forward, for inspecting late bands.
+    /// Zero-based, as the sim counts screens (the HUD shows `n + 1`); only
+    /// read with `--salt-seed`, and a jumped run is not kept for CONTINUE.
     pub screen: Option<u32>,
     /// `--salt-continue`: continue the saved run, as the title's CONTINUE.
     pub continue_run: bool,
@@ -65,6 +74,9 @@ fn flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|a| a == flag)
 }
 
+/// The value of the first occurrence of `flag`: the argument after it, or
+/// the text after `flag=`. `None` if the flag is absent or last. The next
+/// argument is taken whatever it is, even another flag.
 fn value(args: &[String], flag: &str) -> Option<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {

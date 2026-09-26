@@ -5,6 +5,60 @@
 //! gathers the engine's input into `input::Intents`, steps the core, carries
 //! out the `app::Effect`s it returns (audio, `user://` files, the clipboard,
 //! the window), and puts each frame on screen as one texture.
+//!
+//! # The frame loop
+//!
+//! ```text
+//!   Godot callbacks between frames            immediate side channels
+//!   ──────────────────────────────            ───────────────────────
+//!   input():  key down ──► Event::Key         on_notification():
+//!             finger   ──► Event::Finger*       focus out ──► Game::focus_lost ─┐
+//!             pad btn  ──► pad_queue            app paused ─► Game::app_paused ─┤
+//!             stick    ──► pads.motion          close/exit ─► Game::closing ────┤
+//!   on_notification(): back ──► Event::Back     (each takes the queued events   │
+//!             │                                  first, then its effects are    │
+//!             │ queued in `events`               applied at once) ──► apply() ◄─┘
+//!             │                                 focus in / resumed ──►
+//!             │                                  DisplayPoll::invalidate,
+//!             │                                  Redraw::mark
+//!             ▼
+//!   process(delta)
+//!     ├─ crash::panicked()? ──yes──► broken_frame: Game::broken_tick,
+//!     │                               file effects dropped, error screen
+//!     ├─ poll_display       window size every frame, cutout when due
+//!     ├─ gather_intents     events + keys/pads held + stick polled ──► Intents
+//!     ├─ Game::tick_with    events → crash::note (for the report) → timers
+//!     │                     → display → mode input → step → run file → settings
+//!     ├─ apply(effects)     in order; Store ──► save::store ──► Game::stored
+//!     ├─ prune_pads         forget unplugged joypads, once a second
+//!     ├─ frame cap          idle menus at frame::IDLE_FPS
+//!     ├─ redraw.due(busy)?  dirty flag, or anything moving
+//!     │     └─ yes: render::frame ──► Canvas ──► set_buttons ──► upload
+//!     └─ maybe_screenshot   --salt-shot
+//!   draw(): the texture at the origin, 1:1; the viewport stretch scales it
+//! ```
+//!
+//! `input()` marks a redraw on every event except mouse and stick motion.
+//!
+//! Crash handling sits in two places. `crash::install` (in `lib.rs`) chains
+//! a panic hook that writes the report; gdext catches the panic, and the
+//! next `process` sees `crash::panicked()` and runs the error screen instead
+//! of the game. Independently, `apply` drops every file effect once a panic
+//! has happened, because a panic can land between an effect being queued
+//! and being applied. See `app`'s "After a panic".
+//!
+//! # Techniques
+//!
+//! * **Events, not polling, for presses.** A key tapped and released inside
+//!   one frame is invisible to `Input::is_key_pressed`; `input()` records it
+//!   as an event, so it still counts once. Holds are polled, because only
+//!   the state now matters for them.
+//! * **Dirty-flag redraw.** The frame is rasterised in software and uploaded
+//!   whole, so an unchanged frame is skipped (`frame::Redraw`): drawn when an
+//!   effect or an input marked it, while anything moves, and once after.
+//! * **Allocation-free upload.** Two byte buffers alternate, so the one being
+//!   filled is never the one the image still holds, and the texture is
+//!   updated in place (`upload`).
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
@@ -33,6 +87,10 @@ use crate::touch::Button;
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
 
+/// The one Godot node the game needs, registered with the engine as
+/// `SaltLine` and used as the root of `godot/main.tscn`. It owns the core ([`Game`]) and
+/// everything engine-side: the canvas and its texture, the audio players,
+/// the input queues and the frame pacing.
 #[derive(GodotClass)]
 #[class(base = Node2D)]
 pub struct SaltLine {
@@ -69,6 +127,8 @@ pub struct SaltLine {
     /// and pad presses, handed to the core as the next frame's `Intents`.
     /// Polling alone loses a press and release inside one frame.
     events: Vec<Event>,
+    /// Pad buttons that went down since the last frame, in engine terms;
+    /// `gather_intents` translates them to `input::Pad`.
     pad_queue: Vec<JoyButton>,
     /// The frame's input as the core sees it, kept to reuse its buffers.
     intents: Intents,
@@ -79,12 +139,15 @@ pub struct SaltLine {
     pad_prune: f64,
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
+    /// One player per `Sound`, in `Sound::ALL` order, so `sound as usize`
+    /// finds it. `None` where the file failed to load: that sound is silent.
     audio: Vec<Option<Gd<AudioStreamPlayer>>>,
 
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
     /// native resolution, and quit. How the pixel output gets checked without
     /// a human at the keyboard.
     shot_path: Option<String>,
+    /// Frames processed, drawn or not. A capture waits for at least three.
     frames: u64,
     /// Seconds of wall clock since the node came up, for the dev flags below.
     elapsed: f64,
@@ -175,7 +238,7 @@ impl INode2D for SaltLine {
         self.gather_intents();
         // Keep the crash hook's picture of the run current. Taken before this
         // frame's input is acted on, so a panic inside `fire` still reports
-        // the aim it fired.
+        // the aim it fired. The core gets the raw `delta` and caps it itself.
         let fx = self.g.tick_with(delta, &self.intents, |g| {
             crash::note(
                 g.mode_name(),
@@ -294,6 +357,9 @@ impl INode2D for SaltLine {
             }
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
+                // Handled now, not at the next frame, which may be a long
+                // way off. The events queued so far happened first, so they
+                // go with it rather than being taken after it.
                 let pending = std::mem::take(&mut self.events);
                 let fx = self.g.focus_lost(&pending);
                 self.apply(fx);
@@ -371,6 +437,10 @@ impl SaltLine {
                 Effect::Quit => self.base().get_tree().quit(),
                 Effect::Store(why) => {
                     let ok = save::store(&self.g.save_to_store(&why));
+                    // The outcome goes straight back to the core, and what
+                    // it asks for in reply is applied now, ahead of the rest
+                    // of this list: a failed score's `RunFile::Keep` must
+                    // land before anything queued after the score.
                     let fx = self.g.stored(why, ok);
                     self.apply(fx);
                 }
