@@ -5,8 +5,7 @@
 //! in terms that name no engine type: which keys and pad buttons went down
 //! since the last frame, which are held, and where the left stick points,
 //! with the window size, display cutout and date the frame sees. Touch
-//! arrives separately, as it happens, through `app::Game::finger_down` and
-//! its neighbours into [`crate::touch`].
+//! is among the frame's events and reaches [`crate::touch`] through the core.
 //!
 //! Actions are not resolved here but in the core (`app`), because the
 //! bindings are part of the save and because what a press means depends on
@@ -167,6 +166,106 @@ impl Pad {
     }
 }
 
+/// Something the player can do: a bindable action (`fire`, `back`...), or a
+/// touch-only control (the Controls toggles, the seed keypad). Game code asks
+/// about actions, never about keys, pads or buttons, and an enum means an
+/// action spelled wrong does not build rather than never firing.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Action {
+    Left,
+    Right,
+    Up,
+    Down,
+    Fire,
+    FuseDown,
+    FuseUp,
+    RepositionLeft,
+    RepositionRight,
+    Draft1,
+    Draft2,
+    Draft3,
+    Confirm,
+    Back,
+    Copy,
+    Replay,
+    Controls,
+    Mute,
+    LastArc,
+    Seed,
+    NewRun,
+    AimMode,
+    ArcHint,
+    /// A seed keypad key: types its character.
+    Type(char),
+    /// The seed keypad's DEL.
+    Delete,
+}
+
+impl Action {
+    /// Every action a `bind` line can name, in the order the save file and
+    /// the Controls screen know them.
+    pub const BINDABLE: [Action; 21] = [
+        Self::Left,
+        Self::Right,
+        Self::Up,
+        Self::Down,
+        Self::Fire,
+        Self::FuseDown,
+        Self::FuseUp,
+        Self::RepositionLeft,
+        Self::RepositionRight,
+        Self::Draft1,
+        Self::Draft2,
+        Self::Draft3,
+        Self::Confirm,
+        Self::Back,
+        Self::Copy,
+        Self::Replay,
+        Self::Controls,
+        Self::Mute,
+        Self::LastArc,
+        Self::Seed,
+        Self::NewRun,
+    ];
+
+    /// The action's name in a `bind` line (`bind fire SPACE A`). `None` for a
+    /// touch-only control, which no line can bind.
+    pub fn token(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Fire => "fire",
+            Self::FuseDown => "fuse_down",
+            Self::FuseUp => "fuse_up",
+            Self::RepositionLeft => "reposition_left",
+            Self::RepositionRight => "reposition_right",
+            Self::Draft1 => "draft_1",
+            Self::Draft2 => "draft_2",
+            Self::Draft3 => "draft_3",
+            Self::Confirm => "confirm",
+            Self::Back => "back",
+            Self::Copy => "copy",
+            Self::Replay => "replay",
+            Self::Controls => "controls",
+            Self::Mute => "mute",
+            Self::LastArc => "last_arc",
+            Self::Seed => "seed",
+            Self::NewRun => "new_run",
+            Self::AimMode | Self::ArcHint | Self::Type(_) | Self::Delete => return None,
+        })
+    }
+
+    /// Inverse of [`token`](Self::token). `None` for a name no build binds;
+    /// a `bind` line naming it binds nothing.
+    pub fn from_token(token: &str) -> Option<Action> {
+        Self::BINDABLE
+            .into_iter()
+            .find(|a| a.token() == Some(token))
+    }
+}
+
 /// Directions of the left stick, as indices into [`Intents::stick`].
 pub const STICK_LEFT: usize = 0;
 pub const STICK_RIGHT: usize = 1;
@@ -174,60 +273,109 @@ pub const STICK_UP: usize = 2;
 pub const STICK_DOWN: usize = 3;
 
 /// The key and pad tokens an action has until a `bind` line says otherwise.
-pub fn default_binding(action: &str) -> (&'static str, &'static str) {
+pub fn default_binding(action: Action) -> (&'static str, &'static str) {
     match action {
-        "left" => ("LEFT", "DPAD_LEFT"),
-        "right" => ("RIGHT", "DPAD_RIGHT"),
-        "up" => ("UP", "DPAD_UP"),
-        "down" => ("DOWN", "DPAD_DOWN"),
-        "fire" => ("SPACE", "A"),
-        "fuse_down" => ("LBRACKET", "LB"),
-        "fuse_up" => ("RBRACKET", "RB"),
-        "reposition_left" => ("COMMA", "X"),
-        "reposition_right" => ("PERIOD", "Y"),
-        "draft_1" => ("1", "X"),
-        "draft_2" => ("2", "A"),
-        "draft_3" => ("3", "B"),
-        "confirm" => ("ENTER", "A"),
-        "back" => ("ESCAPE", "B"),
-        "copy" => ("C", "X"),
-        "replay" => ("R", "Y"),
-        "controls" => ("V", "BACK"),
-        "mute" => ("M", "START"),
-        "last_arc" => ("L", "X"),
-        "seed" => ("S", "Y"),
+        Action::Left => ("LEFT", "DPAD_LEFT"),
+        Action::Right => ("RIGHT", "DPAD_RIGHT"),
+        Action::Up => ("UP", "DPAD_UP"),
+        Action::Down => ("DOWN", "DPAD_DOWN"),
+        Action::Fire => ("SPACE", "A"),
+        Action::FuseDown => ("LBRACKET", "LB"),
+        Action::FuseUp => ("RBRACKET", "RB"),
+        Action::RepositionLeft => ("COMMA", "X"),
+        Action::RepositionRight => ("PERIOD", "Y"),
+        Action::Draft1 => ("1", "X"),
+        Action::Draft2 => ("2", "A"),
+        Action::Draft3 => ("3", "B"),
+        Action::Confirm => ("ENTER", "A"),
+        Action::Back => ("ESCAPE", "B"),
+        Action::Copy => ("C", "X"),
+        Action::Replay => ("R", "Y"),
+        Action::Controls => ("V", "BACK"),
+        Action::Mute => ("M", "START"),
+        Action::LastArc => ("L", "X"),
+        Action::Seed => ("S", "Y"),
         // Only offered over a saved run, where confirm is CONTINUE and
         // pad Y is already seed entry.
-        "new_run" => ("N", "RB"),
+        Action::NewRun => ("N", "RB"),
         _ => ("", ""),
     }
 }
 
 /// What a prompt calls an action on a touchscreen: the glyph on its on-screen
 /// button, or nothing where the prompt's own line is the button.
-pub fn touch_label(action: &str) -> &'static str {
+pub fn touch_label(action: Action) -> &'static str {
     match action {
-        "left" => "<",
-        "right" => ">",
-        "up" => "+",
-        "down" => "-",
-        "fire" => "FIRE",
-        "fuse_down" => "F-",
-        "fuse_up" => "F+",
-        "reposition_left" => "E<",
-        "reposition_right" => "E>",
-        "draft_1" | "draft_2" | "draft_3" => "TAP",
+        Action::Left => "<",
+        Action::Right => ">",
+        Action::Up => "+",
+        Action::Down => "-",
+        Action::Fire => "FIRE",
+        Action::FuseDown => "F-",
+        Action::FuseUp => "F+",
+        Action::RepositionLeft => "E<",
+        Action::RepositionRight => "E>",
+        Action::Draft1 | Action::Draft2 | Action::Draft3 => "TAP",
         _ => "",
     }
 }
 
-/// One frame of keyboard and joypad input, as the node saw it.
+/// A key typed in seed entry: text comes from the keyboard's characters, not
+/// its bindings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Typed {
+    Backspace,
+    Enter,
+    Escape,
+    /// A printable ASCII character.
+    Char(char),
+}
+
+/// Something the player did between two frames. Kept in order: a key typed
+/// in seed entry must know whether the Enter before it has already started
+/// the run.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Event {
+    /// A key went down. `key` is the key, if the game reads it; `typed` is
+    /// what it types in seed entry, if anything. A press and release inside
+    /// one frame still counts: polling alone would lose it.
+    Key {
+        key: Option<Key>,
+        typed: Option<Typed>,
+    },
+    /// A finger touched down at `(x, y)` in buffer pixels.
+    FingerDown {
+        index: i32,
+        x: f32,
+        y: f32,
+    },
+    FingerMoved {
+        index: i32,
+        x: f32,
+        y: f32,
+    },
+    FingerUp {
+        index: i32,
+    },
+    /// The platform's back gesture (Android).
+    Back,
+}
+
+impl Event {
+    /// A key press that types nothing.
+    pub fn key(key: Key) -> Event {
+        Event::Key {
+            key: Some(key),
+            typed: None,
+        }
+    }
+}
+
+/// One frame of input, as the node saw it.
 #[derive(Clone, Debug, Default)]
 pub struct Intents {
-    /// Keys that went down since the last frame, oldest first, even if they
-    /// came up again before it. Polling alone loses a press and release
-    /// inside one frame, so the node queues them as the events arrive.
-    pub keys: Vec<Key>,
+    /// Everything the player did since the last frame, oldest first.
+    pub events: Vec<Event>,
     /// Keys down now.
     pub keys_held: Vec<Key>,
     /// Pad buttons that went down since the last frame, on any pad.
@@ -251,7 +399,7 @@ pub struct Intents {
 impl Intents {
     /// Nothing pressed or held. The window, cutout and day are kept.
     pub fn clear(&mut self) {
-        self.keys.clear();
+        self.events.clear();
         self.keys_held.clear();
         self.pads.clear();
         self.pads_held.clear();
@@ -263,7 +411,11 @@ impl Intents {
 /// stick slot.
 #[derive(Debug, Default)]
 pub struct Controls {
-    /// This frame's input. Presses are removed as actions take them.
+    /// Key presses since the last frame, oldest first, waiting for it.
+    queued: Vec<Key>,
+    /// This frame's key presses. Removed as actions take them.
+    presses: Vec<Key>,
+    /// This frame's input. Pad presses are removed as actions take them.
     now: Intents,
     /// Hold-to-repeat per key, shared by every action bound to it.
     keys: Vec<(Key, RepeatState)>,
@@ -274,9 +426,21 @@ pub struct Controls {
 }
 
 impl Controls {
+    /// A key went down: it is pressed on the next frame.
+    pub fn queue(&mut self, key: Key) {
+        self.queued.push(key);
+    }
+
+    /// The key typed text instead: forget its presses queued so far.
+    pub fn swallow(&mut self, key: Key) {
+        self.queued.retain(|k| *k != key);
+    }
+
     /// Once per frame, before any action is read: this frame's presses are
     /// the ones queued since the last. Presses no action took are dropped.
     pub fn begin(&mut self, intents: &Intents) {
+        std::mem::swap(&mut self.presses, &mut self.queued);
+        self.queued.clear();
         self.now.clone_from(intents);
     }
 
@@ -284,10 +448,10 @@ impl Controls {
     /// the frame began. The press is taken, so of two actions bound to the
     /// same key only the first one asked fires.
     pub fn pressed(&mut self, key: Key) -> bool {
-        let Some(i) = self.now.keys.iter().position(|k| *k == key) else {
+        let Some(i) = self.presses.iter().position(|k| *k == key) else {
             return false;
         };
-        self.now.keys.swap_remove(i);
+        self.presses.swap_remove(i);
         true
     }
 
@@ -363,45 +527,89 @@ impl Controls {
 mod tests {
     use super::*;
 
-    const ACTIONS: [&str; 21] = [
-        "left",
-        "right",
-        "up",
-        "down",
-        "fire",
-        "fuse_down",
-        "fuse_up",
-        "reposition_left",
-        "reposition_right",
-        "draft_1",
-        "draft_2",
-        "draft_3",
-        "confirm",
-        "back",
-        "copy",
-        "replay",
-        "controls",
-        "mute",
-        "last_arc",
-        "seed",
-        "new_run",
-    ];
-
     #[test]
     fn every_default_binding_names_a_real_key_and_button() {
-        for action in ACTIONS {
+        for action in Action::BINDABLE {
             let (key, pad) = default_binding(action);
-            assert!(Key::from_token(key).is_some(), "{action}: {key}");
-            assert!(Pad::from_token(pad).is_some(), "{action}: {pad}");
+            assert!(Key::from_token(key).is_some(), "{action:?}: {key}");
+            assert!(Pad::from_token(pad).is_some(), "{action:?}: {pad}");
         }
-        assert_eq!(default_binding("no_such_action"), ("", ""));
+        assert_eq!(default_binding(Action::AimMode), ("", ""));
+    }
+
+    #[test]
+    fn every_bindable_action_round_trips_through_its_bind_name() {
+        for action in Action::BINDABLE {
+            let token = action.token().unwrap();
+            assert_eq!(Action::from_token(token), Some(action), "{token}");
+        }
+        // The names existing saves use, spelled out so a rename shows here.
+        let names: Vec<&str> = Action::BINDABLE
+            .iter()
+            .map(|a| a.token().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "left",
+                "right",
+                "up",
+                "down",
+                "fire",
+                "fuse_down",
+                "fuse_up",
+                "reposition_left",
+                "reposition_right",
+                "draft_1",
+                "draft_2",
+                "draft_3",
+                "confirm",
+                "back",
+                "copy",
+                "replay",
+                "controls",
+                "mute",
+                "last_arc",
+                "seed",
+                "new_run",
+            ]
+        );
+    }
+
+    #[test]
+    fn touch_only_controls_cannot_be_bound() {
+        for action in [
+            Action::AimMode,
+            Action::ArcHint,
+            Action::Delete,
+            Action::Type('A'),
+        ] {
+            assert_eq!(action.token(), None);
+        }
+        for name in ["aim_mode", "arc_hint", "del", "A", "Fire", ""] {
+            assert_eq!(Action::from_token(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_swallowed_key_loses_the_presses_queued_before_it_only() {
+        let mut c = Controls::default();
+        c.queue(Key::M);
+        c.queue(Key::Space);
+        c.queue(Key::M);
+        c.swallow(Key::M);
+        c.queue(Key::M);
+        c.begin(&Intents::default());
+        assert!(c.pressed(Key::Space));
+        assert!(c.pressed(Key::M));
+        assert!(!c.pressed(Key::M));
     }
 
     #[test]
     fn a_press_is_taken_by_the_first_asker_only() {
         let mut c = Controls::default();
+        c.queue(Key::Space);
         c.begin(&Intents {
-            keys: vec![Key::Space],
             pads: vec![Pad::A],
             ..Intents::default()
         });
@@ -414,10 +622,9 @@ mod tests {
     #[test]
     fn two_presses_in_one_frame_are_two_presses() {
         let mut c = Controls::default();
-        c.begin(&Intents {
-            keys: vec![Key::Left, Key::Left],
-            ..Intents::default()
-        });
+        c.queue(Key::Left);
+        c.queue(Key::Left);
+        c.begin(&Intents::default());
         assert!(c.pressed(Key::Left));
         assert!(c.pressed(Key::Left));
         assert!(!c.pressed(Key::Left));
@@ -426,10 +633,8 @@ mod tests {
     #[test]
     fn untaken_presses_do_not_carry_into_the_next_frame() {
         let mut c = Controls::default();
-        c.begin(&Intents {
-            keys: vec![Key::M],
-            ..Intents::default()
-        });
+        c.queue(Key::M);
+        c.begin(&Intents::default());
         c.begin(&Intents::default());
         assert!(!c.pressed(Key::M));
     }
@@ -438,8 +643,8 @@ mod tests {
     fn a_held_key_repeats_after_the_delay_then_at_the_rate() {
         let (delay, rate) = (0.28, 0.035);
         let mut c = Controls::default();
+        c.queue(Key::Up);
         c.begin(&Intents {
-            keys: vec![Key::Up],
             keys_held: vec![Key::Up],
             ..Intents::default()
         });

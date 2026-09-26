@@ -15,11 +15,10 @@
 //! `cargo test` and `proptest`. The engine side, in `game.rs`, converts each
 //! `InputEventScreenTouch` / `InputEventScreenDrag` into the node's local
 //! space — which is buffer pixels, because the one canvas texture is drawn
-//! at the origin at 1:1 (DESIGN §5.1) — and forwards it through the core
-//! (`app::Game::finger_down` and its neighbours), which owns the pad. The
-//! node also keeps the list of [`Button`]s the renderer (`render`) pushed
-//! while drawing the last frame and passes that to
-//! [`TouchPad::finger_down`].
+//! at the origin at 1:1 (DESIGN §5.1) — and hands it to the core as one of
+//! the frame's `input::Event`s. The core owns the pad, and the list of
+//! [`Button`]s the renderer (`render`) laid out while drawing the last
+//! frame, which it passes to [`TouchPad::finger_down`].
 //!
 //! # Techniques
 //!
@@ -36,10 +35,11 @@
 //! * **Hold-to-repeat** uses [`RepeatState`], as the gamepad does, with the
 //!   keyboard's delay and rate.
 //!
-//! Actions are `&'static str` names shared with the keyboard bindings
-//! (`"left"`, `"fire"`, `"draft_1"`...), so game code asks one question per
-//! action whatever the input device.
+//! Buttons press [`Action`]s, the same ones the keyboard and pad bindings
+//! resolve to (`Action::Left`, `Action::Fire`, `Action::Draft1`...), so game
+//! code asks one question per action whatever the input device.
 
+use crate::input::Action;
 use crate::presentation::RepeatState;
 
 /// An axis-aligned rectangle in buffer pixels: `x, y` is the top-left corner
@@ -79,7 +79,7 @@ pub struct Button {
     /// Hit area in buffer pixels, normally the plate the button is drawn as.
     pub rect: Rect,
     /// The action a press reports, the same name the keyboard binding uses.
-    pub action: &'static str,
+    pub action: Action,
 }
 
 /// Multi-touch input state: which finger holds which
@@ -99,17 +99,17 @@ pub struct Button {
 #[derive(Default)]
 pub struct TouchPad {
     /// Finger index and the action of the button it went down on, if any.
-    fingers: Vec<(i32, Option<&'static str>)>,
+    fingers: Vec<(i32, Option<Action>)>,
     /// Actions whose button a finger went down on since the last update. Kept
     /// separately so a tap that lifts before the next frame still counts.
-    went_down: Vec<&'static str>,
+    went_down: Vec<Action>,
     /// `went_down` as published by the last update: this frame's presses.
-    pressed: Vec<&'static str>,
+    pressed: Vec<Action>,
     /// Activations this frame, per action, from hold-to-repeat.
-    repeats: Vec<(&'static str, u32)>,
+    repeats: Vec<(Action, u32)>,
     /// One repeat timer per action ever held. Small linear-scanned `Vec`s
     /// rather than maps: there are a few dozen actions at most.
-    repeat_state: Vec<(&'static str, RepeatState)>,
+    repeat_state: Vec<(Action, RepeatState)>,
     drag: Option<Drag>,
     /// A drag that lifted since the last update, as (start, end).
     dropping: Option<((f32, f32), (f32, f32))>,
@@ -200,7 +200,7 @@ impl TouchPad {
     pub fn update(&mut self, delta: f64, delay: f64, rate: f64) {
         self.pressed = std::mem::take(&mut self.went_down);
         self.dropped = self.dropping.take();
-        let mut held: Vec<&'static str> = self.fingers.iter().filter_map(|(_, a)| *a).collect();
+        let mut held: Vec<Action> = self.fingers.iter().filter_map(|(_, a)| *a).collect();
         // A tap that already lifted still counts as held for this one frame,
         // so its repeat timer sees the edge and reports one activation.
         held.extend(self.pressed.iter().copied());
@@ -216,25 +216,25 @@ impl TouchPad {
         for (a, state) in &mut self.repeat_state {
             let n = state.tick(held.contains(a), delta, delay, rate);
             if n > 0 {
-                self.repeats.push((a, n));
+                self.repeats.push((*a, n));
             }
         }
     }
 
     /// True on the frame a finger went down on this action's button.
-    pub fn pressed(&self, action: &str) -> bool {
+    pub fn pressed(&self, action: Action) -> bool {
         self.pressed.contains(&action)
     }
 
     /// A finger is on this action's button right now.
-    pub fn held(&self, action: &str) -> bool {
+    pub fn held(&self, action: Action) -> bool {
         self.fingers.iter().any(|(_, a)| *a == Some(action))
     }
 
     /// Activations this frame, with hold-to-repeat: 1 on the press, 0 during
     /// the delay, then one per `rate` interval elapsed while held (more than
     /// one on a long frame).
-    pub fn repeated(&self, action: &str) -> u32 {
+    pub fn repeated(&self, action: Action) -> u32 {
         self.repeats
             .iter()
             .find(|(a, _)| *a == action)
@@ -276,11 +276,11 @@ mod tests {
         vec![
             Button {
                 rect: Rect::new(0, 0, 20, 20),
-                action: "left",
+                action: Action::Left,
             },
             Button {
                 rect: Rect::new(30, 0, 20, 20),
-                action: "fire",
+                action: Action::Fire,
             },
         ]
     }
@@ -291,11 +291,11 @@ mod tests {
         pad.finger_down(0, 35.0, 5.0, &buttons());
         pad.finger_up(0);
         pad.update(0.016, DELAY, RATE);
-        assert!(pad.pressed("fire"));
-        assert_eq!(pad.repeated("fire"), 1);
+        assert!(pad.pressed(Action::Fire));
+        assert_eq!(pad.repeated(Action::Fire), 1);
         pad.update(0.016, DELAY, RATE);
-        assert!(!pad.pressed("fire"));
-        assert_eq!(pad.repeated("fire"), 0);
+        assert!(!pad.pressed(Action::Fire));
+        assert_eq!(pad.repeated(Action::Fire), 0);
     }
 
     #[test]
@@ -303,12 +303,12 @@ mod tests {
         let mut pad = TouchPad::default();
         pad.finger_down(0, 5.0, 5.0, &buttons());
         pad.update(0.016, DELAY, RATE);
-        assert_eq!(pad.repeated("left"), 1);
+        assert_eq!(pad.repeated(Action::Left), 1);
         pad.update(DELAY - 0.01, DELAY, RATE);
-        assert_eq!(pad.repeated("left"), 0);
+        assert_eq!(pad.repeated(Action::Left), 0);
         pad.update(0.02 + RATE, DELAY, RATE);
-        assert_eq!(pad.repeated("left"), 1);
-        assert!(!pad.pressed("left"));
+        assert_eq!(pad.repeated(Action::Left), 1);
+        assert!(!pad.pressed(Action::Left));
     }
 
     #[test]
@@ -319,12 +319,12 @@ mod tests {
         // The screen changed and a different button now sits under the finger.
         let moved = [Button {
             rect: Rect::new(0, 0, 20, 20),
-            action: "confirm",
+            action: Action::Confirm,
         }];
         pad.finger_down(1, 100.0, 100.0, &moved);
         pad.update(0.016, DELAY, RATE);
-        assert!(!pad.pressed("confirm"));
-        assert_eq!(pad.repeated("confirm"), 0);
+        assert!(!pad.pressed(Action::Confirm));
+        assert_eq!(pad.repeated(Action::Confirm), 0);
     }
 
     #[test]
@@ -333,11 +333,11 @@ mod tests {
         pad.finger_down(0, 5.0, 5.0, &buttons());
         pad.finger_down(1, 35.0, 5.0, &buttons());
         pad.update(0.016, DELAY, RATE);
-        assert!(pad.pressed("left") && pad.pressed("fire"));
+        assert!(pad.pressed(Action::Left) && pad.pressed(Action::Fire));
         pad.finger_up(1);
         pad.update(DELAY + RATE, DELAY, RATE);
-        assert_eq!(pad.repeated("left"), 1);
-        assert_eq!(pad.repeated("fire"), 0);
+        assert_eq!(pad.repeated(Action::Left), 1);
+        assert_eq!(pad.repeated(Action::Fire), 0);
     }
 
     #[test]
@@ -345,21 +345,21 @@ mod tests {
         let mut pad = TouchPad::default();
         pad.finger_down(0, 25.0, 5.0, &buttons());
         pad.update(0.016, DELAY, RATE);
-        assert!(!pad.pressed("left") && !pad.pressed("fire"));
+        assert!(!pad.pressed(Action::Left) && !pad.pressed(Action::Fire));
 
         let stacked = [
             Button {
                 rect: Rect::new(0, 0, 50, 50),
-                action: "back",
+                action: Action::Back,
             },
             Button {
                 rect: Rect::new(10, 10, 10, 10),
-                action: "draft_1",
+                action: Action::Draft1,
             },
         ];
         pad.finger_down(1, 15.0, 15.0, &stacked);
         pad.update(0.016, DELAY, RATE);
-        assert!(pad.pressed("draft_1") && !pad.pressed("back"));
+        assert!(pad.pressed(Action::Draft1) && !pad.pressed(Action::Back));
     }
 
     #[test]
@@ -386,11 +386,11 @@ mod tests {
         let mut pad = TouchPad::default();
         pad.finger_down(0, 5.0, 5.0, &buttons());
         pad.update(0.016, DELAY, RATE);
-        assert!(pad.held("left") && !pad.held("fire"));
+        assert!(pad.held(Action::Left) && !pad.held(Action::Fire));
         pad.release_all();
-        assert!(!pad.held("left"));
+        assert!(!pad.held(Action::Left));
         pad.update(DELAY + RATE, DELAY, RATE);
-        assert_eq!(pad.repeated("left"), 0);
+        assert_eq!(pad.repeated(Action::Left), 0);
     }
 
     #[test]

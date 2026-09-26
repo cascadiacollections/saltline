@@ -40,7 +40,7 @@
 //! A save write ([`Effect::Store`]) is reported back through
 //! [`Game::stored`], which may say so on screen and ask for more. The adapter
 //! applies what `stored` returns at once, before the rest of the list it was
-//! working through: a failed score's [`Effect::KeepRun`] lands straight after
+//! working through: a failed score's `RunFile::Keep` lands straight after
 //! the failed write.
 //!
 //! # After a panic
@@ -53,10 +53,14 @@
 //! [`Game::broken_tick`] has run; `broken_tick` also drops whatever the
 //! crashed frame left queued.
 //!
-//! Environment events that must not wait for the next frame — focus lost,
-//! the app paused by the platform, the window closing, a touch — are methods
-//! the adapter calls as they arrive, and return their effects at once: a
-//! phone may never resume a paused app, so its settings are written now.
+//! Player input comes in with the frame, in [`Intents`]: what is held, and
+//! the events since the last frame in the order they happened (keys, typed
+//! text, touches, the back gesture). Only the notifications that must not
+//! wait for a frame — focus lost, the app paused by the platform, the window
+//! closing — are methods the adapter calls as they arrive, returning their
+//! effects at once: a phone may never resume a paused app, so its settings
+//! are written now. They take the events queued since the last frame first,
+//! so nothing is taken out of order.
 
 use salt_line_sim::ballistics::{End, Shot, Trace};
 use salt_line_sim::dmath;
@@ -68,13 +72,14 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_
 
 use crate::cli::DevArgs;
 use crate::durable::Debounce;
-use crate::input::{self, Controls, Intents, Key, Pad};
+use crate::input::Typed;
+use crate::input::{self, Action, Controls, Event, Intents, Key, Pad};
 use crate::keypad::{self, Focus};
 use crate::presentation::{
     self, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER, LEARN_SHELLS, LEARN_WIND,
 };
 use crate::raster::View;
-use crate::resume::{self, Found, RUN_LOADING_PATH, RUN_PATH};
+use crate::resume::{self, Found};
 use crate::save_format::{ArcHint, Entry, Save, TouchAim};
 use crate::touch::{Button, TouchPad};
 
@@ -209,7 +214,7 @@ pub enum Store {
     /// placed, and `entry` joins the board in memory only once that write
     /// succeeds, so it reaches disk exactly once, here or not at all. If the
     /// board does not reach disk, `keep` (the finished run's line) is written
-    /// back to `user://run.txt` so a later launch can score it. `announce`
+    /// back as the saved run (`RunFile::Keep`) so a later launch can score it. `announce`
     /// says "LAST RUN SCORED" on success: a run scored at launch rather than
     /// at its end.
     Score {
@@ -245,45 +250,60 @@ pub enum Effect {
     /// Write the save as `Game::save_to_store` has it when the effect is
     /// applied (`save::store`), then report the outcome to `Game::stored`.
     Store(Store),
-    /// Write the running run to `user://run.txt`.
-    WriteRun(String),
-    /// Write a finished run back to `user://run.txt` for a later launch to
-    /// score.
-    KeepRun(String),
-    /// Make sure no run file is left to resume or score. If a file cannot be
-    /// deleted, the run file is overwritten with nothing, which
-    /// `resume::judge` reads as no run: a finished log must never survive to
-    /// be scored twice.
-    DiscardRunFile,
-    /// Move a `user://` file (`save::rename`).
-    Rename {
-        from: &'static str,
-        to: &'static str,
-    },
-    /// Delete a `user://` file if it is there.
-    Remove(&'static str),
-    /// The player has copied or moved on from last session's crash report:
-    /// keep it as `crash-old.txt`, not deleted.
-    RetireCrashReport,
-    /// Log a warning.
-    Warn(String),
+    /// Something to do with the run kept on disk for CONTINUE.
+    RunFile(RunFile),
+    /// Something to do with last session's crash report.
+    CrashReport(CrashReport),
+}
+
+/// What to do with the saved run (DESIGN §9.1). Which files that means is the
+/// adapter's business: `game.rs` keeps it in `user://run.txt`, written by way
+/// of `run.txt.new`, and moves it aside to `run-loading.txt` while a launch
+/// rebuilds it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RunFile {
+    /// Save the running run, this line, over whatever was saved.
+    Write(String),
+    /// Save a finished run, this line, for a later launch to score: its
+    /// score did not reach the board.
+    Keep(String),
+    /// The run set aside at launch rebuilt: put it back to be continued.
+    Restore,
+    /// Make sure no run is left to resume or score, the one set aside at
+    /// launch included. If a file cannot be deleted, the run file is
+    /// overwritten with nothing, which `resume::judge` reads as no run: a
+    /// finished log must never survive to be scored twice.
+    Discard,
+    /// `Discard`, for a run this build cannot continue, saying why in the log.
+    Abandon(Abandoned),
+}
+
+/// Why a saved run was thrown away at launch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Abandoned {
+    /// The last launch died rebuilding it.
+    Interrupted,
+    /// It could not be read or replayed by this build.
+    Unreadable(resume::Stale),
+}
+
+/// What to do with last session's crash report.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CrashReport {
+    /// The player has copied it or moved on (started a run): stop offering
+    /// it. It is kept as the old report, not deleted.
+    Retire,
 }
 
 impl Effect {
     /// Whether the adapter still carries this out after a panic. Everything
     /// that writes, moves or deletes a file is dropped: see the module docs.
     /// What is left is what the error screen needs: sound, drawing, the
-    /// clipboard, quitting, warnings.
+    /// clipboard, quitting.
     pub fn survives_panic(&self) -> bool {
         !matches!(
             self,
-            Effect::Store(_)
-                | Effect::WriteRun(_)
-                | Effect::KeepRun(_)
-                | Effect::DiscardRunFile
-                | Effect::Rename { .. }
-                | Effect::Remove(_)
-                | Effect::RetireCrashReport
+            Effect::Store(_) | Effect::RunFile(_) | Effect::CrashReport(_)
         )
     }
 }
@@ -291,23 +311,14 @@ impl Effect {
 /// What the adapter found of a saved run at launch.
 #[derive(Clone, Debug)]
 pub enum SavedRun {
-    /// `user://run-loading.txt` was there: the last launch died rebuilding a
+    /// The copy a launch sets aside was still there: the last launch died rebuilding a
     /// run.
     Interrupted,
-    /// A run file's text, already moved aside to `RUN_LOADING_PATH` so a
-    /// log that brings the sim down costs one crash, not one every launch.
+    /// The saved run's text, already set aside by the adapter so a log that
+    /// brings the sim down costs one crash, not one every launch. The core
+    /// answers with `RunFile::Restore` once it has rebuilt it, or throws it
+    /// away.
     Found(String),
-}
-
-/// A key typed in seed entry: text comes from the keyboard's characters, not
-/// its bindings.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Typed {
-    Backspace,
-    Enter,
-    Escape,
-    /// A printable ASCII character.
-    Char(char),
 }
 
 /// Longest seed entry takes, in characters.
@@ -334,172 +345,207 @@ pub struct FrameState {
     misc: (bool, bool, bool),
 }
 
-/// Everything the game knows that is not the engine's.
+/// Everything the game knows that is not the engine's, grouped by concern.
+///
+/// The fields are the crate's: the node reads what it must show or report
+/// (the mode, the run, the aim) and the renderer reads what it draws, but
+/// only the core changes them, through the methods below. Tests set state
+/// directly.
 pub struct Game {
-    /// Running on a phone or tablet.
-    pub mobile: bool,
-    /// Extra inset (from the sides, from top and bottom) for edge-anchored HUD
-    /// and buttons, in buffer pixels, so nothing crowds a phone's rounded
-    /// screen corners. Zero on desktop.
-    pub corner_pad: (i32, i32),
-    /// The window in screen pixels, and what a display cutout takes from its
-    /// left and right edges, as the adapter last read them.
-    pub window_size: (i32, i32),
-    pub cutout: (i32, i32),
+    pub(crate) mode: Mode,
     /// Days since the Unix epoch, as the adapter last read the clock. The
     /// sim never touches system time.
-    pub today: u64,
-
-    pub buffer_w: i32,
-    pub buffer_h: i32,
-    /// Buffer pixels of black kept clear on the left and right for a display
-    /// cutout (a phone's camera hole in landscape). The game node is offset
-    /// past the left one.
-    pub letterbox: (i32, i32),
-    /// The buffer is at a resumed run's width, not the device's, and the
-    /// window letterboxes it (`set_run_width`).
-    pub kept_width: bool,
-    /// Camera x is an integer, not a rounded float. DESIGN §5.1 wants it
-    /// quantized to whole pixels every frame; keeping the only camera state in
-    /// `i32` means there is no float position to forget to round.
-    pub cam_x: i32,
-    pub cam_target: f64,
-
-    pub mode: Mode,
-    pub run: Option<RunState>,
-    pub anim: Option<Anim>,
-    pub clear_hold: f64,
-    /// Aim inputs, in the sim's tick space.
-    pub angle_ticks: i32,
-    pub power_ticks: i32,
-
-    pub save: Save,
-    pub seed_text: String,
-    pub daily: bool,
-    pub last_seed: u64,
-    pub status: String,
-    pub status_time: f64,
-    pub debug: bool,
-
-    /// This frame's key and pad presses, and hold-to-repeat.
-    pub controls: Controls,
-    /// The controller's place on the seed keypad.
-    pub seed_focus: Focus,
-    pub controller_active: bool,
-    pub touch: TouchPad,
-    /// Showing touch controls. On from the first touch, off again at the next
-    /// key or button press, like `controller_active`.
-    pub touch_active: bool,
-    /// The platform's back gesture (Android), taken as the `back` action.
-    pub back_requested: bool,
-    /// The aim a touch drag started from, put back if the pull is cancelled.
-    pub drag_from: Option<(i32, i32)>,
-    /// The primary shell's path from the last shot. Drawn only while the sim
-    /// still has a `last_apex`, so it goes when the screen does.
-    pub last_arc: Vec<Vec2>,
-    pub low_shell_warned: bool,
-    /// Bumped whenever the drag preview must be worked out afresh for a
-    /// reason its key cannot see (a new loadout, a new run).
-    pub preview_epoch: u32,
-
-    /// `--salt-auto`: fire a solver candidate at the nearest standing target
-    /// and take every draft. Lets a build be watched, or captured, without a
-    /// hand on the keyboard.
-    pub auto: bool,
-    pub auto_cooldown: f64,
-    /// `--salt-miss`: throw the first shot of each screen away, so craters,
-    /// chalk marks and the multi-shot path get exercised too.
-    pub auto_miss: bool,
-    /// `--salt-hold-draft`: leave the draft on screen instead of taking an
-    /// offer, so the cards can be looked at.
-    pub auto_hold_draft: bool,
-    /// `--salt-seed`, for the autopilot's runs.
-    pub auto_seed: Option<u64>,
-    /// `--salt-shot` has a capture still to take. Nobody is watching with
-    /// focus, so focus loss does not pause.
-    pub capturing: bool,
-
+    pub(crate) today: u64,
+    pub(crate) save: Save,
     /// Settings changed but not yet written. See `durable::Debounce`.
-    pub settings: Debounce,
-    /// Last session's crash report, if it left one (`user://crash.txt`).
-    pub last_crash: Option<String>,
-    /// The player has copied `last_crash` this session.
-    pub crash_copied: bool,
+    pub(crate) settings: Debounce,
     /// Told the player this session that their save is from a newer build.
-    pub future_noted: bool,
-    /// Showing the error screen. See `broken_tick`.
-    pub broken: bool,
-    /// The saved run CONTINUE would rebuild, already checked. See `resume`.
-    pub resumable: Option<resume::Saved>,
-    /// Log length last written to `user://run.txt`; `None` before the first
-    /// write of this run.
-    pub run_saved_len: Option<usize>,
-    /// This run is kept in `user://run.txt`. Off for a `--salt-screen` jump,
-    /// which its log cannot rebuild.
-    pub run_persist: bool,
-    /// This run was rebuilt by CONTINUE, for the crash report.
-    pub resumed: bool,
-    /// Which new-run action has been pressed once over a saved run and is
-    /// waiting for the second press. See `confirm_discard`.
-    pub discard_armed: Option<&'static str>,
+    pub(crate) future_noted: bool,
+    pub(crate) seed_text: String,
+    pub(crate) status: String,
+    pub(crate) status_time: f64,
+    pub(crate) debug: bool,
+
+    pub(crate) display: Display,
+    pub(crate) play: Play,
+    pub(crate) input: InputState,
+    pub(crate) run_file: RunFileState,
+    pub(crate) dev: Dev,
+    pub(crate) crash: CrashInfo,
 
     /// Effects asked for since they were last taken.
     fx: Vec<Effect>,
 }
 
+/// The window, the display and the buffer sized for them (DESIGN §5.1).
+pub(crate) struct Display {
+    /// Running on a phone or tablet.
+    pub(crate) mobile: bool,
+    /// Extra inset (from the sides, from top and bottom) for edge-anchored HUD
+    /// and buttons, in buffer pixels, so nothing crowds a phone's rounded
+    /// screen corners. Zero on desktop.
+    pub(crate) corner_pad: (i32, i32),
+    /// The window in screen pixels, and what a display cutout takes from its
+    /// left and right edges, as the adapter last read them.
+    pub(crate) window_size: (i32, i32),
+    pub(crate) cutout: (i32, i32),
+    pub(crate) buffer_w: i32,
+    pub(crate) buffer_h: i32,
+    /// Buffer pixels of black kept clear on the left and right for a display
+    /// cutout (a phone's camera hole in landscape). The game node is offset
+    /// past the left one.
+    pub(crate) letterbox: (i32, i32),
+    /// The buffer is at a resumed run's width, not the device's, and the
+    /// window letterboxes it (`set_run_width`).
+    pub(crate) kept_width: bool,
+}
+
+/// The run on screen and how it is being shown.
+pub(crate) struct Play {
+    pub(crate) run: Option<RunState>,
+    pub(crate) anim: Option<Anim>,
+    pub(crate) clear_hold: f64,
+    /// Aim inputs, in the sim's tick space.
+    pub(crate) angle_ticks: i32,
+    pub(crate) power_ticks: i32,
+    /// Camera x is an integer, not a rounded float. DESIGN §5.1 wants it
+    /// quantized to whole pixels every frame; keeping the only camera state in
+    /// `i32` means there is no float position to forget to round.
+    pub(crate) cam_x: i32,
+    pub(crate) cam_target: f64,
+    pub(crate) daily: bool,
+    pub(crate) last_seed: u64,
+    /// The primary shell's path from the last shot. Drawn only while the sim
+    /// still has a `last_apex`, so it goes when the screen does.
+    pub(crate) last_arc: Vec<Vec2>,
+    pub(crate) low_shell_warned: bool,
+    /// Bumped whenever the drag preview must be worked out afresh for a
+    /// reason its key cannot see (a new loadout, a new run).
+    pub(crate) preview_epoch: u32,
+}
+
+/// What the player's devices are doing.
+pub(crate) struct InputState {
+    /// This frame's key and pad presses, and hold-to-repeat.
+    pub(crate) controls: Controls,
+    /// The controller's place on the seed keypad.
+    pub(crate) seed_focus: Focus,
+    pub(crate) controller_active: bool,
+    pub(crate) touch: TouchPad,
+    /// Showing touch controls. On from the first touch, off again at the next
+    /// key or button press, like `controller_active`.
+    pub(crate) touch_active: bool,
+    /// The platform's back gesture (Android), taken as the `back` action.
+    pub(crate) back_requested: bool,
+    /// The touch buttons on screen. See `set_buttons`.
+    pub(crate) buttons: Vec<Button>,
+    /// The aim a touch drag started from, put back if the pull is cancelled.
+    pub(crate) drag_from: Option<(i32, i32)>,
+}
+
+/// The saved run (DESIGN §9.1): what is on disk and what CONTINUE offers.
+pub(crate) struct RunFileState {
+    /// The saved run CONTINUE would rebuild, already checked. See `resume`.
+    pub(crate) resumable: Option<resume::Saved>,
+    /// Log length last saved; `None` before the first save of this run.
+    pub(crate) run_saved_len: Option<usize>,
+    /// This run is kept as the saved run. Off for a `--salt-screen` jump,
+    /// which its log cannot rebuild.
+    pub(crate) run_persist: bool,
+    /// This run was rebuilt by CONTINUE, for the crash report.
+    pub(crate) resumed: bool,
+    /// Which new-run action has been pressed once over a saved run and is
+    /// waiting for the second press. See `confirm_discard`.
+    pub(crate) discard_armed: Option<&'static str>,
+}
+
+/// The developer flags' state (`cli::DevArgs`).
+#[derive(Default)]
+pub(crate) struct Dev {
+    /// `--salt-auto`: fire a solver candidate at the nearest standing target
+    /// and take every draft. Lets a build be watched, or captured, without a
+    /// hand on the keyboard.
+    pub(crate) auto: bool,
+    pub(crate) auto_cooldown: f64,
+    /// `--salt-miss`: throw the first shot of each screen away, so craters,
+    /// chalk marks and the multi-shot path get exercised too.
+    pub(crate) auto_miss: bool,
+    /// `--salt-hold-draft`: leave the draft on screen instead of taking an
+    /// offer, so the cards can be looked at.
+    pub(crate) auto_hold_draft: bool,
+    /// `--salt-seed`, for the autopilot's runs.
+    pub(crate) auto_seed: Option<u64>,
+    /// `--salt-shot` has a capture still to take. Nobody is watching with
+    /// focus, so focus loss does not pause.
+    pub(crate) capturing: bool,
+}
+
+/// Crash reports: last session's, and whether this one has broken.
+#[derive(Default)]
+pub(crate) struct CrashInfo {
+    /// Last session's crash report, if it left one.
+    pub(crate) last_crash: Option<String>,
+    /// The player has copied `last_crash` this session.
+    pub(crate) crash_copied: bool,
+    /// Showing the error screen. See `broken_tick`.
+    pub(crate) broken: bool,
+}
+
 impl Default for Game {
     fn default() -> Self {
         Game {
-            mobile: false,
-            corner_pad: (0, 0),
-            window_size: (0, 0),
-            cutout: (0, 0),
-            today: 0,
-            buffer_w: 320,
-            buffer_h: SCREEN_H as i32,
-            letterbox: (0, 0),
-            kept_width: false,
-            cam_x: 0,
-            cam_target: 0.0,
             mode: Mode::Title,
-            run: None,
-            anim: None,
-            clear_hold: 0.0,
-            angle_ticks: 900,
-            power_ticks: 600,
+            today: 0,
             save: Save::default(),
+            settings: Debounce::default(),
+            future_noted: false,
             seed_text: String::new(),
-            daily: true,
-            last_seed: 0,
             status: String::new(),
             status_time: 0.0,
             debug: false,
-            controls: Controls::default(),
-            seed_focus: Focus::default(),
-            controller_active: false,
-            touch: TouchPad::default(),
-            touch_active: false,
-            back_requested: false,
-            drag_from: None,
-            last_arc: Vec::new(),
-            low_shell_warned: false,
-            preview_epoch: 0,
-            auto: false,
-            auto_cooldown: 0.0,
-            auto_miss: false,
-            auto_hold_draft: false,
-            auto_seed: None,
-            capturing: false,
-            settings: Debounce::default(),
-            last_crash: None,
-            crash_copied: false,
-            future_noted: false,
-            broken: false,
-            resumable: None,
-            run_saved_len: None,
-            run_persist: false,
-            resumed: false,
-            discard_armed: None,
+            display: Display {
+                mobile: false,
+                corner_pad: (0, 0),
+                window_size: (0, 0),
+                cutout: (0, 0),
+                buffer_w: 320,
+                buffer_h: SCREEN_H as i32,
+                letterbox: (0, 0),
+                kept_width: false,
+            },
+            play: Play {
+                run: None,
+                anim: None,
+                clear_hold: 0.0,
+                angle_ticks: 900,
+                power_ticks: 600,
+                cam_x: 0,
+                cam_target: 0.0,
+                daily: true,
+                last_seed: 0,
+                last_arc: Vec::new(),
+                low_shell_warned: false,
+                preview_epoch: 0,
+            },
+            input: InputState {
+                controls: Controls::default(),
+                seed_focus: Focus::default(),
+                controller_active: false,
+                touch: TouchPad::default(),
+                touch_active: false,
+                back_requested: false,
+                buttons: Vec::new(),
+                drag_from: None,
+            },
+            run_file: RunFileState {
+                resumable: None,
+                run_saved_len: None,
+                run_persist: false,
+                resumed: false,
+                discard_armed: None,
+            },
+            dev: Dev::default(),
+            crash: CrashInfo::default(),
             fx: Vec::new(),
         }
     }
@@ -511,17 +557,28 @@ impl Game {
     /// A game at the title with `save` loaded. Phones and tablets start with
     /// touch controls; desktops show them only once the screen is touched.
     pub fn new(mobile: bool, save: Save) -> Game {
-        Game {
-            mobile,
-            touch_active: mobile,
-            // Rounded screen corners (Pixel 10: 138 px radius at 1080 px
-            // tall): 10 buffer pixels in from the side and 6 down keeps HUD
-            // text and buttons comfortably inside the curve without raising
-            // the buttons off the ground.
-            corner_pad: if mobile { (10, 6) } else { (0, 0) },
+        let mut g = Game {
             save,
             ..Game::default()
-        }
+        };
+        g.display.mobile = mobile;
+        g.input.touch_active = mobile;
+        // Rounded screen corners (Pixel 10: 138 px radius at 1080 px tall):
+        // 10 buffer pixels in from the side and 6 down keeps HUD text and
+        // buttons comfortably inside the curve without raising the buttons
+        // off the ground.
+        g.display.corner_pad = if mobile { (10, 6) } else { (0, 0) };
+        g
+    }
+
+    /// Last session's crash report, found at launch, for the title to offer.
+    pub fn set_last_crash(&mut self, report: Option<String>) {
+        self.crash.last_crash = report;
+    }
+
+    /// The `--salt-shot` capture has been taken: focus loss pauses again.
+    pub fn capture_taken(&mut self) {
+        self.dev.capturing = false;
     }
 
     /// The effects asked for so far, oldest first. Every method below that
@@ -531,21 +588,37 @@ impl Game {
         std::mem::take(&mut self.fx)
     }
 
-    /// One frame: timers, the display, input, the replay, persistence.
+    /// One frame: the events since the last, then timers, the display,
+    /// input, the replay, persistence.
     ///
     /// `delta` is the engine's, uncapped. Animation and timers never jump
     /// more than a tenth of a second, however long the app sat in the
     /// background (`resume::frame_delta`).
     pub fn tick(&mut self, delta: f64, intents: &Intents) -> Vec<Effect> {
-        let delta = resume::frame_delta(delta);
+        self.tick_with(delta, intents, |_| {})
+    }
+
+    /// `tick`, calling `before_frame` once the events are in and before
+    /// anything else: the node keeps the crash report's picture of the game
+    /// current there, so a panic inside `fire` still reports the aim it
+    /// fired.
+    pub fn tick_with(
+        &mut self,
+        delta: f64,
+        intents: &Intents,
+        before_frame: impl FnOnce(&Game),
+    ) -> Vec<Effect> {
         self.today = intents.today;
+        self.events(&intents.events);
+        before_frame(self);
+        let delta = resume::frame_delta(delta);
         self.status_time = (self.status_time - delta).max(0.0);
         self.poll_display(intents.window, intents.cutout);
         let before = self.frame_state();
         self.begin_input_frame(delta, intents);
         self.handle_mode_input(delta);
-        self.back_requested = false;
-        if self.auto {
+        self.input.back_requested = false;
+        if self.dev.auto {
             self.autopilot(delta);
         }
         self.step(delta);
@@ -578,16 +651,18 @@ impl Game {
         intents: &Intents,
         report: impl FnOnce() -> Option<String>,
     ) -> Vec<Effect> {
-        if !self.broken {
+        if !self.crash.broken {
             // Whatever the game last said no longer applies, and whatever the
             // crashed frame asked for is not to be done.
-            self.broken = true;
+            self.crash.broken = true;
             self.status_time = 0.0;
             self.fx.clear();
         }
+        self.today = intents.today;
+        self.events(&intents.events);
         self.status_time = (self.status_time - delta).max(0.0);
         self.begin_input_frame(delta, intents);
-        if self.action_pressed("copy") {
+        if self.action_pressed(Action::Copy) {
             // Only a finished report: a panic off the main thread can stop the
             // game while the hook is still writing, and half a report copied
             // looks like a whole one.
@@ -598,26 +673,26 @@ impl Game {
                 }
                 None => self.note("REPORT NOT READY - TRY AGAIN".into()),
             }
-        } else if self.action_pressed("back") {
+        } else if self.action_pressed(Action::Back) {
             self.fx.push(Effect::Quit);
         }
-        self.back_requested = false;
+        self.input.back_requested = false;
         self.take_effects()
     }
 
     /// Something on screen is moving, so every frame draws. The adapter adds
     /// what only it can see: a stick or key held.
     pub fn busy(&self) -> bool {
-        self.anim.is_some()
-            || self.clear_hold > 0.0
+        self.play.anim.is_some()
+            || self.play.clear_hold > 0.0
             || self.status_time > 0.0
-            || self.auto
-            || self.touch.active()
+            || self.dev.auto
+            || self.input.touch.active()
     }
 
     /// Menus, overlays and the error screen run at the idle frame rate.
     pub fn idle(&self) -> bool {
-        self.broken || self.mode != Mode::Playing
+        self.crash.broken || self.mode != Mode::Playing
     }
 
     /// Every sound player's volume, in dB.
@@ -633,32 +708,70 @@ impl Game {
 // ------------------------------------------------------ environment events
 
 impl Game {
-    /// The platform's back gesture (Android). Taken as the `back` action on
-    /// the next frame.
-    pub fn go_back(&mut self) {
-        self.back_requested = true;
+    /// The touch buttons the frame on screen drew, which the next touches are
+    /// tested against. The node hands them over after every frame it draws.
+    pub fn set_buttons(&mut self, buttons: &[Button]) {
+        self.input.buttons.clear();
+        self.input.buttons.extend_from_slice(buttons);
     }
 
-    /// A finger went down at `(x, y)` in buffer pixels. `buttons` are the
-    /// ones the last frame drew.
-    pub fn finger_down(&mut self, index: i32, x: f32, y: f32, buttons: &[Button]) {
-        self.touch_active = true;
-        self.touch.finger_down(index, x, y, buttons);
+    /// Take the events in the order they happened, as they would have been
+    /// taken the moment they arrived: a touch goes to the touch pad, a key
+    /// press waits for the frame's actions, and a key typed in seed entry is
+    /// typed and not pressed as well, so an M in a seed does not also mute,
+    /// nor the Enter that starts the run fire its first shot.
+    fn events(&mut self, events: &[Event]) {
+        for event in events {
+            match *event {
+                Event::Key { key, typed } => {
+                    if let Some(key) = key {
+                        self.input.controls.queue(key);
+                    }
+                    if let (Some(typed), Mode::SeedEntry) = (typed, self.mode) {
+                        self.typed(typed);
+                        if let Some(key) = key {
+                            self.input.controls.swallow(key);
+                        }
+                    }
+                }
+                Event::FingerDown { index, x, y } => {
+                    self.input.touch_active = true;
+                    self.input
+                        .touch
+                        .finger_down(index, x, y, &self.input.buttons);
+                }
+                Event::FingerMoved { index, x, y } => self.input.touch.finger_moved(index, x, y),
+                Event::FingerUp { index } => {
+                    self.input.touch_active = true;
+                    self.input.touch.finger_up(index);
+                }
+                Event::Back => self.input.back_requested = true,
+            }
+        }
     }
 
-    pub fn finger_up(&mut self, index: i32) {
-        self.touch_active = true;
-        self.touch.finger_up(index);
-    }
-
-    pub fn finger_moved(&mut self, index: i32, x: f32, y: f32) {
-        self.touch.finger_moved(index, x, y);
+    /// A key typed in seed entry.
+    fn typed(&mut self, key: Typed) {
+        match key {
+            Typed::Backspace => {
+                self.seed_text.pop();
+            }
+            Typed::Enter => self.start_seeded_run(),
+            Typed::Escape => self.leave_seed_entry(),
+            Typed::Char(c) => {
+                if self.seed_text.chars().count() < SEED_MAX {
+                    self.seed_text.push(c);
+                }
+            }
+        }
     }
 
     /// Window or application focus lost: every finger is up, a live screen
-    /// pauses, and pending settings go to disk.
-    pub fn focus_lost(&mut self) -> Vec<Effect> {
-        self.touch.release_all();
+    /// pauses, and pending settings go to disk. `pending` are the events
+    /// that arrived since the last frame, which happened first.
+    pub fn focus_lost(&mut self, pending: &[Event]) -> Vec<Effect> {
+        self.events(pending);
+        self.input.touch.release_all();
         self.auto_pause();
         self.flush_settings();
         self.fx.push(Effect::Redraw);
@@ -667,36 +780,17 @@ impl Game {
 
     /// The platform paused the app. Pending settings go to disk before the
     /// app can be killed: a phone may never resume a paused app.
-    pub fn app_paused(&mut self) -> Vec<Effect> {
+    pub fn app_paused(&mut self, pending: &[Event]) -> Vec<Effect> {
+        self.events(pending);
         self.auto_pause();
         self.flush_settings();
         self.take_effects()
     }
 
     /// The window is closing or the node leaving the tree: a close is final.
-    pub fn closing(&mut self) -> Vec<Effect> {
+    pub fn closing(&mut self, pending: &[Event]) -> Vec<Effect> {
+        self.events(pending);
         self.flush_settings();
-        self.take_effects()
-    }
-
-    /// A key typed in seed entry. The adapter only sends them in that mode.
-    /// `today` is for a blank seed, which is today's daily.
-    pub fn typed(&mut self, key: Typed, today: u64) -> Vec<Effect> {
-        match key {
-            Typed::Backspace => {
-                self.seed_text.pop();
-            }
-            Typed::Enter => {
-                self.today = today;
-                self.start_seeded_run();
-            }
-            Typed::Escape => self.leave_seed_entry(),
-            Typed::Char(c) => {
-                if self.seed_text.chars().count() < SEED_MAX {
-                    self.seed_text.push(c);
-                }
-            }
-        }
         self.take_effects()
     }
 
@@ -739,7 +833,7 @@ impl Game {
                     // disk): keep the finished log, so a later launch can
                     // score it.
                     if let Some(line) = keep {
-                        self.fx.push(Effect::KeepRun(line));
+                        self.fx.push(Effect::RunFile(RunFile::Keep(line)));
                     }
                     self.note_not_saved("SCORE NOT SAVED");
                 }
@@ -754,9 +848,9 @@ impl Game {
 impl Game {
     /// Size the buffer for the display at launch.
     pub fn fit_display(&mut self, window: (i32, i32), cutout: (i32, i32)) -> Vec<Effect> {
-        self.window_size = window;
-        self.cutout = cutout;
-        self.buffer_w = self.pick_width();
+        self.display.window_size = window;
+        self.display.cutout = cutout;
+        self.display.buffer_w = self.pick_width();
         self.apply_buffer_size();
         self.take_effects()
     }
@@ -765,11 +859,11 @@ impl Game {
     /// screen, or CONTINUE.
     pub fn start_dev(&mut self, args: &DevArgs, today: u64) -> Vec<Effect> {
         self.today = today;
-        self.capturing = args.shot.is_some();
-        self.auto = args.auto;
-        self.auto_miss = args.miss;
-        self.auto_hold_draft = args.hold_draft;
-        self.auto_seed = args.seed;
+        self.dev.capturing = args.shot.is_some();
+        self.dev.auto = args.auto;
+        self.dev.auto_miss = args.miss;
+        self.dev.auto_hold_draft = args.hold_draft;
+        self.dev.auto_seed = args.seed;
         if let Some(seed) = args.seed {
             self.start_run(seed, false);
             if let Some(n) = args.screen {
@@ -787,32 +881,25 @@ impl Game {
         let text = match found {
             SavedRun::Interrupted => {
                 // The last launch died rebuilding it.
-                self.fx.push(Effect::Warn(format!(
-                    "salt-line: discarding {RUN_LOADING_PATH}: a rebuild did not finish"
-                )));
-                self.fx.push(Effect::Remove(RUN_LOADING_PATH));
-                self.fx.push(Effect::DiscardRunFile);
+                self.fx
+                    .push(Effect::RunFile(RunFile::Abandon(Abandoned::Interrupted)));
                 self.note(resume::Stale::Diverged.note().into());
                 self.status_time = STALE_STATUS_TIME;
                 return self.take_effects();
             }
             SavedRun::Found(text) => text,
         };
-        let back = Effect::Rename {
-            from: RUN_LOADING_PATH,
-            to: RUN_PATH,
-        };
+        let back = Effect::RunFile(RunFile::Restore);
         match resume::judge(Some(&text)) {
             Found::Nothing => self.fx.push(back),
             Found::Continue(saved) => {
                 self.fx.push(back);
-                self.resumable = Some(saved);
+                self.run_file.resumable = Some(saved);
             }
             Found::Finished(saved, run) => {
                 // Gone before the score goes on the board, as in `finish_run`:
                 // a crash in between loses it rather than recording it twice.
-                self.fx.push(Effect::Remove(RUN_LOADING_PATH));
-                self.fx.push(Effect::DiscardRunFile);
+                self.fx.push(Effect::RunFile(RunFile::Discard));
                 let (screens, shells, shots) = run.score();
                 let entry = Entry {
                     seed: saved.seed,
@@ -825,11 +912,10 @@ impl Game {
                 self.record(entry, Some(text), true);
             }
             Found::Discard(why) => {
-                self.fx.push(Effect::Warn(format!(
-                    "salt-line: discarding {RUN_PATH}: {why:?}"
-                )));
-                self.fx.push(Effect::Remove(RUN_LOADING_PATH));
-                self.fx.push(Effect::DiscardRunFile);
+                self.fx
+                    .push(Effect::RunFile(RunFile::Abandon(Abandoned::Unreadable(
+                        why,
+                    ))));
                 self.note(why.note().into());
                 self.status_time = STALE_STATUS_TIME;
             }
@@ -891,7 +977,7 @@ impl Game {
     /// Show one of `gallery`'s runs, as a frame of play with nothing else on
     /// screen.
     pub fn show_gallery_run(&mut self, run: RunState) {
-        self.run = Some(run);
+        self.play.run = Some(run);
         self.mode = Mode::Playing;
         self.status_time = 0.0;
     }
@@ -902,9 +988,9 @@ impl Game {
 impl Game {
     /// Internal buffer width. DESIGN §5.1: fix the height at 180, let the
     /// width float 320..400 by device aspect, and generate terrain to fill it.
-    pub fn pick_width(&self) -> i32 {
-        let size = self.window_size;
-        let (l, r) = self.cutout;
+    pub(crate) fn pick_width(&self) -> i32 {
+        let size = self.display.window_size;
+        let (l, r) = self.display.cutout;
         let usable = size.0 - l - r;
         let aspect = if size.1 > 0 {
             usable as f64 / size.1 as f64
@@ -917,40 +1003,43 @@ impl Game {
 
     /// The cutout in buffer pixels, rounded up so the playfield never reaches
     /// under it.
-    pub fn letterbox_now(&self) -> (i32, i32) {
-        let (l, r) = self.cutout;
-        let win = self.window_size;
-        if win.1 <= 0 || self.buffer_h <= 0 || self.buffer_w <= 0 {
+    pub(crate) fn letterbox_now(&self) -> (i32, i32) {
+        let (l, r) = self.display.cutout;
+        let win = self.display.window_size;
+        if win.1 <= 0 || self.display.buffer_h <= 0 || self.display.buffer_w <= 0 {
             return (0, 0);
         }
         // Buffer pixels per screen pixel: fitted by height, unless the buffer
         // (with the insets beside it) is too wide for the window, as a resumed
         // run from a wider device is, and is fitted by width instead.
         let usable = (win.0 - l - r).max(1) as f64;
-        let scale = (win.1 as f64 / self.buffer_h as f64).min(usable / self.buffer_w as f64);
+        let scale = (win.1 as f64 / self.display.buffer_h as f64)
+            .min(usable / self.display.buffer_w as f64);
         (
             (l as f64 / scale).ceil() as i32,
             (r as f64 / scale).ceil() as i32,
         )
     }
 
-    pub fn long_lens(&self) -> bool {
-        self.run
+    pub(crate) fn long_lens(&self) -> bool {
+        self.play
+            .run
             .as_ref()
             .map(|r| r.loadout.has_flag(flags::LONG_LENS))
             .unwrap_or(false)
     }
 
-    pub fn world_width(&self) -> i32 {
-        self.run
+    pub(crate) fn world_width(&self) -> i32 {
+        self.play
+            .run
             .as_ref()
             .map(|r| r.width as i32)
-            .unwrap_or(self.buffer_w)
+            .unwrap_or(self.display.buffer_w)
     }
 
     /// The lead shell's position in the replay, if one is in the air.
-    pub fn shell_head(&self) -> Option<Vec2> {
-        let anim = self.anim.as_ref()?;
+    pub(crate) fn shell_head(&self) -> Option<Vec2> {
+        let anim = self.play.anim.as_ref()?;
         let primary = anim.traces.first()?;
         let i = (anim.t / DT).floor().max(0.0) as usize;
         primary
@@ -961,16 +1050,17 @@ impl Game {
 
     /// The screen to draw: the pre-shot copy while a shot is being replayed,
     /// so craters and collapses land when the shell does.
-    pub fn shown_screen(&self) -> Option<&Screen> {
-        match (self.anim.as_ref(), self.run.as_ref()) {
+    pub(crate) fn shown_screen(&self) -> Option<&Screen> {
+        match (self.play.anim.as_ref(), self.play.run.as_ref()) {
             (Some(anim), _) if !anim.done() => Some(&anim.before),
             (_, Some(run)) => Some(&run.screen),
             _ => None,
         }
     }
 
-    pub fn view(&self) -> View {
+    pub(crate) fn view(&self) -> View {
         let shake = self
+            .play
             .anim
             .as_ref()
             .filter(|a| a.done())
@@ -979,22 +1069,26 @@ impl Game {
             })
             .unwrap_or(0);
         View {
-            cam_x: self.cam_x - shake,
-            w: self.buffer_w,
-            h: self.buffer_h,
+            cam_x: self.play.cam_x - shake,
+            w: self.display.buffer_w,
+            h: self.display.buffer_h,
         }
     }
 
     /// What a frame shows that input or a step can change, compared across
     /// the frame as a second line of defence behind the explicit redraws.
-    pub fn frame_state(&self) -> FrameState {
+    pub(crate) fn frame_state(&self) -> FrameState {
         FrameState {
             mode: self.mode,
-            aim: (self.angle_ticks, self.power_ticks),
-            cam_x: self.cam_x,
-            buffer: (self.buffer_w, self.buffer_h, self.letterbox),
-            devices: (self.touch_active, self.controller_active),
-            run: self.run.as_ref().map(|r| {
+            aim: (self.play.angle_ticks, self.play.power_ticks),
+            cam_x: self.play.cam_x,
+            buffer: (
+                self.display.buffer_w,
+                self.display.buffer_h,
+                self.display.letterbox,
+            ),
+            devices: (self.input.touch_active, self.input.controller_active),
+            run: self.play.run.as_ref().map(|r| {
                 (
                     r.screen_index,
                     r.phase,
@@ -1004,7 +1098,7 @@ impl Game {
                     r.emplacement_offset.to_bits(),
                 )
             }),
-            seed: (self.seed_text.len(), self.seed_focus),
+            seed: (self.seed_text.len(), self.input.seed_focus),
             settings: (
                 self.save.volume,
                 self.save.muted,
@@ -1013,25 +1107,29 @@ impl Game {
                 self.save.arc_hint,
                 self.save.learned,
             ),
-            misc: (self.debug, self.crash_copied, self.last_crash.is_some()),
+            misc: (
+                self.debug,
+                self.crash.crash_copied,
+                self.crash.last_crash.is_some(),
+            ),
         }
     }
 
-    pub fn last_arc_on(&self) -> bool {
+    pub(crate) fn last_arc_on(&self) -> bool {
         self.save.last_arc.unwrap_or(DEFAULT_LAST_ARC)
     }
 
-    pub fn touch_aim(&self) -> TouchAim {
+    pub(crate) fn touch_aim(&self) -> TouchAim {
         self.save.touch_aim.unwrap_or(DEFAULT_TOUCH_AIM)
     }
 
-    pub fn arc_hint(&self) -> ArcHint {
+    pub(crate) fn arc_hint(&self) -> ArcHint {
         self.save.arc_hint.unwrap_or(DEFAULT_ARC_HINT)
     }
 
     /// Touch aiming is by dragging rather than the angle and power buttons.
-    pub fn drag_aiming(&self) -> bool {
-        self.touch_active && self.touch_aim() == TouchAim::Drag
+    pub(crate) fn drag_aiming(&self) -> bool {
+        self.input.touch_active && self.touch_aim() == TouchAim::Drag
     }
 
     /// The mode as the crash report names it.
@@ -1048,16 +1146,19 @@ impl Game {
 
     /// The prompt that teaches the next thing the player has not done yet
     /// (`presentation`'s `LEARN_*` bits), if any.
-    pub fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
-        if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 && self.touch_active {
+    pub(crate) fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
+        if phase == Phase::Drafting
+            && self.save.learned & LEARN_DRAFT == 0
+            && self.input.touch_active
+        {
             return Some("TAP A CARD  PICK A MODIFIER".into());
         }
         if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 {
             return Some(format!(
                 "{} {} {}  PICK A MODIFIER",
-                self.input_label("draft_1"),
-                self.input_label("draft_2"),
-                self.input_label("draft_3")
+                self.input_label(Action::Draft1),
+                self.input_label(Action::Draft2),
+                self.input_label(Action::Draft3)
             ));
         }
         let learned = self.save.learned;
@@ -1065,7 +1166,7 @@ impl Game {
             && learned & (LEARN_ANGLE | LEARN_POWER | LEARN_FIRE)
                 != LEARN_ANGLE | LEARN_POWER | LEARN_FIRE
         {
-            return Some(if self.touch.drag().is_some() {
+            return Some(if self.input.touch.drag().is_some() {
                 "LET GO TO FIRE  PULL BACK TO CANCEL".into()
             } else {
                 "DRAG BACK FROM OPEN GROUND TO AIM".into()
@@ -1074,21 +1175,21 @@ impl Game {
         if learned & LEARN_ANGLE == 0 {
             Some(format!(
                 "{} / {}  SET ANGLE",
-                self.input_label("left"),
-                self.input_label("right")
+                self.input_label(Action::Left),
+                self.input_label(Action::Right)
             ))
         } else if learned & LEARN_POWER == 0 {
             Some(format!(
                 "{} / {}  SET POWER",
-                self.input_label("up"),
-                self.input_label("down")
+                self.input_label(Action::Up),
+                self.input_label(Action::Down)
             ))
         } else if learned & LEARN_FIRE == 0 {
             // On a touchscreen the button already says FIRE.
-            if self.touch_active {
+            if self.input.touch_active {
                 Some("TAP FIRE".into())
             } else {
-                Some(format!("{}  FIRE", self.input_label("fire")))
+                Some(format!("{}  FIRE", self.input_label(Action::Fire)))
             }
         } else if learned & LEARN_CRATER == 0 {
             Some("CRATERS PERSIST - CORRECT FROM THE LAST SHOT".into())

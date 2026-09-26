@@ -4,25 +4,25 @@
 use super::*;
 
 impl Game {
-    pub fn start_run(&mut self, seed: u64, daily: bool) {
+    pub(crate) fn start_run(&mut self, seed: u64, daily: bool) {
         // A new run is generated for the device, whatever a resumed one used.
         self.set_run_width(None);
         // The world is as wide as the buffer, so the run is generated for it.
-        let width = self.buffer_w as usize;
+        let width = self.display.buffer_w as usize;
         let state = RunState::new(seed, width);
-        self.angle_ticks = 900;
-        self.power_ticks = 600;
-        self.anim = None;
-        self.last_arc.clear();
+        self.play.angle_ticks = 900;
+        self.play.power_ticks = 600;
+        self.play.anim = None;
+        self.play.last_arc.clear();
         self.new_preview();
-        self.clear_hold = 0.0;
-        self.cam_x = 0;
-        self.cam_target = 0.0;
-        self.daily = daily;
-        self.low_shell_warned = false;
-        self.last_seed = seed;
+        self.play.clear_hold = 0.0;
+        self.play.cam_x = 0;
+        self.play.cam_target = 0.0;
+        self.play.daily = daily;
+        self.play.low_shell_warned = false;
+        self.play.last_seed = seed;
         self.retire_last_crash();
-        self.run = Some(state);
+        self.play.run = Some(state);
         self.mode = Mode::Playing;
         self.apply_buffer_size();
         self.begin_persisting();
@@ -32,13 +32,13 @@ impl Game {
     /// Level inspector: drop straight onto a screen index without playing the
     /// ones before it. DESIGN §2.2 is what makes this possible — each screen
     /// generates from its own seed, so screen 400 costs the same as screen 1.
-    pub fn jump_to(&mut self, index: u32) {
-        let Some(run) = self.run.as_mut() else {
+    pub(crate) fn jump_to(&mut self, index: u32) {
+        let Some(run) = self.play.run.as_mut() else {
             return;
         };
         run.screen_index = index;
         // The log cannot rebuild a jump, so the run is not kept for resume.
-        self.run_persist = false;
+        self.run_file.run_persist = false;
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
         self.new_preview();
         self.note(format!("SCREEN {}", index + 1));
@@ -50,6 +50,7 @@ impl Game {
             self.learn(LEARN_SHELLS);
         } else if learned & LEARN_CRATER != 0
             && self
+                .play
                 .run
                 .as_ref()
                 .and_then(|r| r.displayed_wind())
@@ -57,8 +58,10 @@ impl Game {
         {
             self.learn(LEARN_WIND);
         }
-        let shot = Shot::new(self.angle_ticks, self.power_ticks);
-        let Some(run) = self.run.as_mut() else { return };
+        let shot = Shot::new(self.play.angle_ticks, self.play.power_ticks);
+        let Some(run) = self.play.run.as_mut() else {
+            return;
+        };
         if run.shells <= 0 {
             return;
         }
@@ -75,12 +78,12 @@ impl Game {
             .map(|t| t.flight_time)
             .fold(0.0f64, f64::max);
         let collapsed = report.collapsed.clone();
-        self.last_arc = report
+        self.play.last_arc = report
             .traces
             .first()
             .map(|t| t.path.clone())
             .unwrap_or_default();
-        self.anim = Some(Anim {
+        self.play.anim = Some(Anim {
             traces: report.traces,
             before,
             t: 0.0,
@@ -90,9 +93,9 @@ impl Game {
             impact_played: false,
             collapse_played: false,
         });
-        let shells = self.run.as_ref().map(|r| r.shells).unwrap_or(99);
-        if shells < 10 && !self.low_shell_warned {
-            self.low_shell_warned = true;
+        let shells = self.play.run.as_ref().map(|r| r.shells).unwrap_or(99);
+        if shells < 10 && !self.play.low_shell_warned {
+            self.play.low_shell_warned = true;
             self.play(Sound::LowShell);
             self.note("SHELLS ARE YOUR RUN CLOCK".into());
         }
@@ -107,7 +110,7 @@ impl Game {
         // walks the recorded path, so playback speed cannot affect anything.
         let mut sounds = Vec::new();
         let mut learned_impact = false;
-        if let Some(anim) = self.anim.as_mut() {
+        if let Some(anim) = self.play.anim.as_mut() {
             anim.t += delta;
             if anim.done() {
                 anim.settled += delta;
@@ -136,30 +139,30 @@ impl Game {
             let settled = anim.settled;
             let finished = anim.done() && settled > TOPPLE_TIME + 0.12;
             if finished {
-                self.anim = None;
-                let cleared = self.run.as_ref().map(|r| r.phase) == Some(Phase::Cleared);
+                self.play.anim = None;
+                let cleared = self.play.run.as_ref().map(|r| r.phase) == Some(Phase::Cleared);
                 if cleared {
-                    self.clear_hold = CLEAR_HOLD;
-                } else if self.run.as_ref().map(|r| r.is_over()) == Some(true) {
+                    self.play.clear_hold = CLEAR_HOLD;
+                } else if self.play.run.as_ref().map(|r| r.is_over()) == Some(true) {
                     self.finish_run();
                 }
             }
-        } else if self.clear_hold > 0.0 {
+        } else if self.play.clear_hold > 0.0 {
             // Hold on the cleared screen and pan forward, then move on.
-            self.clear_hold -= delta;
-            let span = (self.world_width() - self.buffer_w).max(0) as f64;
-            let t = 1.0 - (self.clear_hold / CLEAR_HOLD).clamp(0.0, 1.0);
-            self.cam_target = span * t;
-            if self.clear_hold <= 0.0 {
-                self.clear_hold = 0.0;
-                self.cam_target = 0.0;
-                self.cam_x = 0;
-                let advanced = self.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
+            self.play.clear_hold -= delta;
+            let span = (self.world_width() - self.display.buffer_w).max(0) as f64;
+            let t = 1.0 - (self.play.clear_hold / CLEAR_HOLD).clamp(0.0, 1.0);
+            self.play.cam_target = span * t;
+            if self.play.clear_hold <= 0.0 {
+                self.play.clear_hold = 0.0;
+                self.play.cam_target = 0.0;
+                self.play.cam_x = 0;
+                let advanced = self.play.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
                 if advanced {
                     self.after_screen_change();
                 }
             }
-        } else if let Some(run) = self.run.as_ref() {
+        } else if let Some(run) = self.play.run.as_ref() {
             if run.is_over() {
                 self.finish_run();
             }
@@ -172,48 +175,50 @@ impl Game {
         }
 
         // Follow the shell when the world is wider than the buffer.
-        if self.anim.is_some() {
+        if self.play.anim.is_some() {
             let head = self.shell_head();
             if let Some(p) = head {
-                let span = (self.world_width() - self.buffer_w).max(0) as f64;
+                let span = (self.world_width() - self.display.buffer_w).max(0) as f64;
                 if span > 0.0 {
-                    self.cam_target = (p.x - self.buffer_w as f64 * 0.5).clamp(0.0, span);
+                    self.play.cam_target =
+                        (p.x - self.display.buffer_w as f64 * 0.5).clamp(0.0, span);
                 }
             }
         }
 
         // The camera is quantized to a whole pixel every frame. Panning with a
         // fractional camera is what makes low-res terrain shimmer.
-        let span = (self.world_width() - self.buffer_w).max(0) as f64;
-        self.cam_x = self.cam_target.round().clamp(0.0, span) as i32;
+        let span = (self.world_width() - self.display.buffer_w).max(0) as f64;
+        self.play.cam_x = self.play.cam_target.round().clamp(0.0, span) as i32;
     }
 
     pub(super) fn after_screen_change(&mut self) {
         self.apply_buffer_size();
-        if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
+        if self.play.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
             self.play(Sound::Draft);
         }
     }
 
     /// The run is over: score it and show the result.
-    pub fn finish_run(&mut self) {
+    pub(crate) fn finish_run(&mut self) {
         // The run file goes before the score is recorded, never after: a
         // crash in between costs this score, where the other order would
         // record it twice (the next launch scores a finished log).
         let line = self
+            .play
             .run
             .as_ref()
-            .filter(|_| self.run_persist)
-            .map(|r| resume::Saved::of(r, self.daily).to_line());
+            .filter(|_| self.run_file.run_persist)
+            .map(|r| resume::Saved::of(r, self.play.daily).to_line());
         self.stop_persisting();
-        if let Some(run) = self.run.as_ref() {
+        if let Some(run) = self.play.run.as_ref() {
             let (screens, shells, shots) = run.score();
             let entry = Entry {
                 seed: run.run_seed,
                 screens,
                 shells,
                 shots,
-                daily: self.daily,
+                daily: self.play.daily,
             };
             self.record(entry, line, false);
         }
@@ -235,43 +240,45 @@ impl Game {
 
     /// Play the game for the camera: aim with the solver, take offer 1.
     pub(super) fn autopilot(&mut self, delta: f64) {
-        self.auto_cooldown -= delta;
+        self.dev.auto_cooldown -= delta;
         if self.mode == Mode::Title {
-            let seed = self.auto_seed.unwrap_or_else(|| daily_seed(self.today));
+            let seed = self.dev.auto_seed.unwrap_or_else(|| daily_seed(self.today));
             self.start_run(seed, false);
             return;
         }
-        if self.mode != Mode::Playing || self.anim.is_some() || self.clear_hold > 0.0 {
+        if self.mode != Mode::Playing || self.play.anim.is_some() || self.play.clear_hold > 0.0 {
             return;
         }
-        if self.auto_cooldown > 0.0 {
+        if self.dev.auto_cooldown > 0.0 {
             return;
         }
-        let phase = self.run.as_ref().map(|r| r.phase);
+        let phase = self.play.run.as_ref().map(|r| r.phase);
         match phase {
             Some(Phase::Drafting) => {
-                if self.auto_hold_draft {
+                if self.dev.auto_hold_draft {
                     return;
                 }
-                self.run.as_mut().map(|r| r.take_offer(0));
+                self.play.run.as_mut().map(|r| r.take_offer(0));
                 self.apply_buffer_size();
-                self.auto_cooldown = 0.4;
+                self.dev.auto_cooldown = 0.4;
             }
             Some(Phase::Cleared) => {
-                self.clear_hold = CLEAR_HOLD;
+                self.play.clear_hold = CLEAR_HOLD;
             }
             Some(Phase::Firing) => {
-                let first = self.run.as_ref().map(|r| r.shots_on_screen) == Some(0);
-                if self.auto_miss && first {
+                let first = self.play.run.as_ref().map(|r| r.shots_on_screen) == Some(0);
+                if self.dev.auto_miss && first {
                     // A high lob that lands short, well clear of any target.
-                    self.angle_ticks = 1400;
-                    self.power_ticks = 330;
+                    self.play.angle_ticks = 1400;
+                    self.play.power_ticks = 330;
                     self.fire();
-                    self.auto_cooldown = 0.35;
+                    self.dev.auto_cooldown = 0.35;
                     return;
                 }
                 let pick = {
-                    let Some(run) = self.run.as_ref() else { return };
+                    let Some(run) = self.play.run.as_ref() else {
+                        return;
+                    };
                     let target = run.screen.structures.iter().position(|s| !s.is_down());
                     target.and_then(|t| {
                         salt_line_sim::solver::solve_target(&run.screen, &run.loadout, t)
@@ -280,15 +287,15 @@ impl Game {
                     })
                 };
                 if let Some((shot, target)) = pick {
-                    self.angle_ticks = shot.angle_ticks;
-                    self.power_ticks = shot.power_ticks;
-                    if let Some(run) = self.run.as_mut() {
+                    self.play.angle_ticks = shot.angle_ticks;
+                    self.play.power_ticks = shot.power_ticks;
+                    if let Some(run) = self.play.run.as_mut() {
                         if let Some(f) = run.screen.default_fuse(target) {
                             run.set_fuse(f);
                         }
                     }
                     self.fire();
-                    self.auto_cooldown = 0.35;
+                    self.dev.auto_cooldown = 0.35;
                 }
             }
             _ => {}
