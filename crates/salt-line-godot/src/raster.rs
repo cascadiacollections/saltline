@@ -194,6 +194,29 @@ impl Canvas {
         self.px[i]
     }
 
+    /// The frame as text for snapshot tests: one character per pixel, the
+    /// palette slot as a hex digit, `.` for untouched and `?` for a colour off
+    /// the palette (a blend). A diff then shows exactly which pixels moved.
+    #[cfg(test)]
+    pub fn palette_text(&self, pal: &crate::palette::Palette) -> String {
+        let mut out = String::with_capacity(((self.w + 1) * self.h) as usize);
+        for row in self.px.as_chunks::<4>().0.chunks(self.w as usize) {
+            for c in row {
+                let ch = if c[3] == 0 {
+                    '.'
+                } else {
+                    (0..16)
+                        .find(|&i| pal.get(i) == *c)
+                        .and_then(|i| char::from_digit(i as u32, 16))
+                        .unwrap_or('?')
+                };
+                out.push(ch);
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     pub fn to_packed(&self) -> PackedByteArray {
         PackedByteArray::from(self.px.as_slice())
     }
@@ -653,5 +676,38 @@ mod tests {
         };
         assert_eq!(tall.sy(0.0), 215);
         assert_eq!(tall.world_row(215), 0);
+    }
+
+    /// A whole frame of a real screen, sky, terrain and a shot's arc, pinned
+    /// pixel for pixel. Stands in for the byte-identical smoke frame check.
+    #[test]
+    #[cfg_attr(miri, ignore = "insta opens a socket, which Miri cannot emulate")]
+    fn a_frame_of_a_real_screen_is_pinned() {
+        use salt_line_sim::ballistics::{fire, FireOptions, Shot};
+        use salt_line_sim::modifiers::Loadout;
+        use salt_line_sim::run::generate_screen;
+
+        let lo = Loadout::default();
+        let screen = generate_screen(20260907, 12, 320, &lo);
+        let pal = Palette::default();
+        let v = view(0, 320);
+        let mut c = Canvas::new(320, SCREEN_H as i32);
+        draw_sky(&mut c, &v, &pal);
+        draw_terrain(&mut c, &v, &screen.field, &pal);
+        let boxes = screen.target_boxes();
+        let opts = FireOptions {
+            record_path: true,
+            ..FireOptions::default()
+        };
+        let traces = fire(
+            &screen.world(&boxes),
+            screen.muzzle(),
+            Shot::new(900, 600),
+            &lo,
+            &opts,
+        );
+        let path = &traces[0].path;
+        draw_trajectory(&mut c, &v, path, path.len(), &pal);
+        insta::assert_snapshot!(c.palette_text(&pal));
     }
 }

@@ -164,6 +164,18 @@ across random inputs: any recorded run replays to the same state, any save
 reads back as written, and drag aim never leaves the grid. On a failure,
 proptest shrinks the input to a minimal case and records it under
 `proptest-regressions/`; commit that file so the case stays covered.
+CI runs the tests with cargo-nextest (`.config/nextest.toml`), plus the
+doctests. `just cov` prints line coverage, which CI also writes to the coverage
+job's summary. `just hygiene` runs typos (spelling), zizmor (workflow security)
+and cargo-machete (unused dependencies), as the hygiene job does.
+Snapshot tests (insta) pin output that should only change on purpose: screen
+digests per seed, the save file format, the HUD icons and a whole rendered
+frame. Frames are stored as text, one palette digit per pixel, so a diff shows
+exactly which pixels moved. After an intended change, run `cargo insta review`
+(or `INSTA_UPDATE=always cargo test`) and commit the updated `.snap` files. A
+changed screen digest is a determinism change and belongs in NOTES.md.
+`just miri` runs the pure modules under Miri, the Rust interpreter that
+catches undefined behaviour.
 `just deny` (cargo-deny, `deny.toml`) checks the dependency tree for security
 advisories, disallowed licences and unknown sources. CI runs it on every pull
 request.

@@ -89,10 +89,18 @@ mod tests {
         assert_eq!(p(80.0), p(200.0));
     }
 
-    #[test]
-    fn short_arc_stops_at_the_window_or_the_apex() {
-        assert_eq!(short_arc_len(200, 600, 36), 36);
-        assert_eq!(short_arc_len(20, 600, 36), 20);
+    #[rstest::rstest]
+    #[case::window_first(200, 600, 36, 36)]
+    #[case::apex_first(20, 600, 36, 20)]
+    #[case::weak_lob_capped_at_half(2, 16, 36, 8)]
+    #[case::flat_shot_stub(0, 600, 36, 12)]
+    fn short_arc_length(
+        #[case] apex: usize,
+        #[case] len: usize,
+        #[case] window: usize,
+        #[case] expected: usize,
+    ) {
+        assert_eq!(short_arc_len(apex, len, window), expected);
     }
 
     #[test]

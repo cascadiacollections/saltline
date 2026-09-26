@@ -37,12 +37,19 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: cargo test -p salt-line-sim (headless, no Godot installed)
-        run: cargo test -p salt-line-sim
-      - name: cargo test -p salt-line-godot (rasteriser, fonts, camera maths)
-        run: cargo test -p salt-line-godot
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-nextest
+      - name: test salt-line-sim (headless, no Godot installed)
+        run: cargo nextest run -p salt-line-sim --profile ci
+      - name: test salt-line-godot (rasteriser, fonts, camera maths)
+        run: cargo nextest run -p salt-line-godot --profile ci
+      - name: doctests
+        run: cargo test --doc --workspace
       - name: build the GDExtension
         run: cargo build -p salt-line-godot
       - name: determinism digest
@@ -95,6 +102,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: 5,000 screens across 50 seeds
@@ -113,6 +122,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
         with:
           components: rustfmt, clippy
@@ -134,6 +145,88 @@ jobs:
           echo "salt-line-sim has no dependencies"
 
 
+
+  # Cheap checks on everything that is not Rust logic: spelling (typos),
+  # workflow security (zizmor) and declared-but-unused dependencies (machete).
+  hygiene:
+    name: typos + zizmor + machete
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: spelling
+        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+      - name: workflow security
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-machete
+      - name: unused dependencies
+        run: cargo machete
+
+  # Line coverage, written to the job summary. Informational: no threshold and
+  # no upload to a coverage service, in keeping with no telemetry.
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: coverage
+        run: |
+          set -eu
+          cargo llvm-cov nextest --workspace --profile ci --summary-only --ignore-filename-regex '/bin/' | tee coverage.txt
+          {
+            echo '## Coverage'
+            echo
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Miri interprets the tests and fails on undefined behaviour. The code has
+  # almost no unsafe today, so this is future-proofing: it covers the pure
+  # modules (trig, RNG, save format, touch, aim, icons), because the whole sim
+  # suite takes far too long interpreted. Snapshot tests opt out (insta uses a
+  # socket Miri cannot emulate).
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: miri
+      - name: miri
+        env:
+          PROPTEST_CASES: "4"
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p salt-line-sim --lib -- dmath:: rng::
+          cargo +nightly miri test -p salt-line-godot --lib -- save_format:: touch:: aim:: icons::
+
   # Advisories, licences, bans and sources for the whole dependency tree
   # (deny.toml). A new RustSec advisory can turn this red with no change here;
   # that is the point, and the fix is usually a Dependabot bump.
@@ -143,6 +236,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
@@ -168,6 +263,8 @@ jobs:
             output: SaltLine.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # v1 hard-links the macOS binary out of its .app bundle, and the kernel
       # SIGKILLs anything run through that link (Killed: 9, exit 137). Fixed in
       # v2.3.0 by using a real symlink.
@@ -369,6 +466,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
           version: 4.7.2
@@ -478,6 +577,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
           version: 4.7.2
