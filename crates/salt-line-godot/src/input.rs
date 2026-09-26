@@ -3,8 +3,10 @@
 //!
 //! The node reads the engine's events and polls; [`Intents`] is the result,
 //! in terms that name no engine type: which keys and pad buttons went down
-//! since the last frame, which are held, and where the left stick points.
-//! Touch arrives separately, as it happens, through [`crate::touch`].
+//! since the last frame, which are held, and where the left stick points,
+//! with the window size, display cutout and date the frame sees. Touch
+//! arrives separately, as it happens, through `app::Game::finger_down` and
+//! its neighbours into [`crate::touch`].
 //!
 //! Actions are not resolved here but in the core (`app`), because the
 //! bindings are part of the save and because what a press means depends on
@@ -235,10 +237,19 @@ pub struct Intents {
     /// The left stick is pushed past its threshold that way, on a pad whose
     /// stick has been seen at rest. Indexed by `STICK_LEFT` and the rest.
     pub stick: [bool; 4],
+
+    /// The window in screen pixels.
+    pub window: (i32, i32),
+    /// Screen pixels a display cutout takes from the window's left and right
+    /// edges: a camera hole on a phone held landscape. Zero on a desktop.
+    pub cutout: (i32, i32),
+    /// Days since the Unix epoch, for the daily seed. The clock is read by
+    /// the node; nothing in the core or the sim touches system time.
+    pub today: u64,
 }
 
 impl Intents {
-    /// Nothing pressed or held.
+    /// Nothing pressed or held. The window, cutout and day are kept.
     pub fn clear(&mut self) {
         self.keys.clear();
         self.keys_held.clear();

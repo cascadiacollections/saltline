@@ -11,6 +11,7 @@ use godot::prelude::*;
 
 pub mod aim;
 pub mod app;
+pub mod cli;
 pub mod crash;
 pub mod durable;
 pub mod font;

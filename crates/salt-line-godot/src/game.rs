@@ -1,8 +1,10 @@
-//! The game node. Rendering, input, UI — no game logic.
+//! The game node: the adapter between Godot and the engine-free core.
 //!
-//! Everything that decides anything lives in `salt-line-sim`. This file draws
-//! what the sim says is true, feeds it integer inputs, and animates the gap
-//! between "the shot has been resolved" and "the player has seen it happen".
+//! Everything that decides anything lives in `app` (the game) and
+//! `salt-line-sim` (the rules); see `app` for how the three fit. This node
+//! gathers the engine's input into `input::Intents`, steps the core, carries
+//! out the `app::Effect`s it returns (audio, `user://` files, the clipboard,
+//! the window), and puts each frame on screen as one texture.
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
@@ -14,27 +16,23 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use salt_line_sim::ballistics::{self, End, FireOptions, Shot, Trace};
-use salt_line_sim::dmath;
+use salt_line_sim::ballistics::{self, FireOptions, Shot, Trace};
 use salt_line_sim::modifiers::{flags, Loadout, Modifier};
-use salt_line_sim::run::{
-    self, daily_seed, format_seed, parse_seed, Phase, RunState, Screen, StructState,
-};
-use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H};
+use salt_line_sim::run::{format_seed, parse_seed, Phase, Screen, StructState};
+use salt_line_sim::{Vec2, DT};
 
 use crate::app::*;
+use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Memo, Redraw};
 use crate::input::{self, Intents};
-use crate::keypad::{self, Focus};
+use crate::keypad;
 use crate::pads::Pads;
 use crate::palette::{slot, Palette};
-use crate::presentation::{
-    self, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER, LEARN_SHELLS, LEARN_WIND,
-};
+use crate::presentation;
 use crate::raster::{self, Canvas, View};
-use crate::resume::{self, Found, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
-use crate::save::{self, Entry};
+use crate::resume::{RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
+use crate::save;
 use crate::save_format::{ArcHint, TouchAim};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
 use crate::touch::{Button, Rect};
@@ -44,7 +42,8 @@ const SPRITE_DIR: &str = "res://art/sprites";
 
 /// Everything the drag preview's trajectory depends on. The terrain and the
 /// targets only change when a shot lands (`shots`) or the screen does
-/// (`seed`, `index`); the muzzle moves with Enfilade (`offset`).
+/// (`seed`, `index`); the muzzle moves with Enfilade (`offset`). A new
+/// loadout or run bumps the core's `preview_epoch`.
 #[derive(PartialEq, Debug)]
 struct PreviewKey {
     angle: i32,
@@ -56,6 +55,7 @@ struct PreviewKey {
     index: u32,
     shots: u32,
     offset: u64,
+    epoch: u32,
 }
 
 /// A cached preview: the primary shell's path and how much of it to draw.
@@ -89,6 +89,7 @@ pub struct SaltLine {
     fps_cap: i32,
     /// When to read the display's safe area again, and what it last said.
     display: DisplayPoll,
+    cutout: (i32, i32),
     /// The drag preview's trajectory, recomputed only when its inputs change.
     preview: Memo<PreviewKey, Preview>,
 
@@ -136,10 +137,11 @@ impl INode2D for SaltLine {
             project_fps: 0,
             fps_cap: 0,
             display: DisplayPoll::default(),
+            cutout: (0, 0),
             preview: Memo::default(),
             key_queue: Vec::new(),
-            intents: Intents::default(),
             pad_queue: Vec::new(),
+            intents: Intents::default(),
             pads: Pads::default(),
             pad_prune: 0.0,
             touch_buttons: Vec::new(),
@@ -147,57 +149,40 @@ impl INode2D for SaltLine {
             shot_path: None,
             frames: 0,
             elapsed: 0.0,
-            shot_at: 0.05,
+            shot_at: crate::cli::DEFAULT_SHOT_AT,
         }
     }
 
     fn ready(&mut self) {
-        // Phones and tablets start with touch controls; desktops show them only
-        // once the screen is actually touched.
-        self.g.mobile = Os::singleton().has_feature("mobile");
-        self.g.touch_active = self.g.mobile;
-        if self.g.mobile {
-            // Rounded screen corners (Pixel 10: 138 px radius at 1080 px tall):
-            // 10 buffer pixels in from the side and 6 down keeps HUD text and
-            // buttons comfortably inside the curve without raising the buttons
-            // off the ground.
-            self.g.corner_pad = (10, 6);
+        let mobile = Os::singleton().has_feature("mobile");
+        if mobile {
             // What shows beside the playfield is a letterbox, not sky.
             RenderingServer::singleton().set_default_clear_color(Color::BLACK);
         }
         self.pal = Palette::load(PALETTE_PATH);
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
-        self.g.save = save::load();
+        self.g = Game::new(mobile, save::load());
         self.find_last_crash();
         self.find_saved_run();
         self.setup_audio();
         self.project_fps = Engine::singleton().get_max_fps();
         self.fps_cap = self.project_fps;
-        self.read_display();
+        let window = Self::window_size();
+        self.cutout = self.cutout_px(window);
         // And again on the first frame: on a phone the safe area may not be
         // settled yet while the scene is still coming up.
         self.display.invalidate();
-        self.g.buffer_w = self.g.pick_width();
-        self.apply_buffer_size();
-        if let Some(dir) = Self::cmdline_value("--salt-gallery") {
-            self.gallery(&dir);
+        let fx = self.g.fit_display(window, self.cutout);
+        self.apply(fx);
+        let args = DevArgs::parse(&Self::cmdline_all());
+        if let Some(dir) = args.gallery.as_deref() {
+            self.gallery(dir);
             return;
         }
-        self.shot_path = Self::screenshot_arg();
-        self.shot_at = Self::cmdline_value("--salt-shot-at")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.05);
-        self.g.auto = Self::cmdline_flag("--salt-auto");
-        self.g.auto_miss = Self::cmdline_flag("--salt-miss");
-        self.g.auto_hold_draft = Self::cmdline_flag("--salt-hold-draft");
-        if let Some(seed) = Self::seed_arg() {
-            self.start_run(seed, false);
-            if let Some(n) = Self::screen_arg() {
-                self.jump_to(n);
-            }
-        } else if Self::cmdline_flag("--salt-continue") {
-            self.continue_run();
-        }
+        self.shot_path = args.shot.clone();
+        self.shot_at = args.shot_at;
+        let fx = self.g.start_dev(&args, Self::today());
+        self.apply(fx);
         if !self.pal.sampled {
             godot_warn!("salt-line: palette not sampled from art; using the built-in fallback");
         }
@@ -208,33 +193,25 @@ impl INode2D for SaltLine {
             self.broken_frame(delta);
             return;
         }
-        self.note_crash_context();
-        // Animation and timers never jump more than a tenth of a second, however
-        // long the app sat in the background. See `resume::frame_delta`. The
-        // dev clock (`--salt-shot-at`) runs on the same time, so a capture on
-        // a slow frame lands at the same point of an animation.
-        let delta = resume::frame_delta(delta);
-        self.elapsed += delta;
-        self.g.status_time = (self.g.status_time - delta).max(0.0);
-        self.poll_display(delta);
-        let before = self.g.frame_state();
-        self.handle_input(delta);
-        if self.g.auto {
-            self.autopilot(delta);
-        }
-        self.step(delta);
-        self.persist_run();
-        self.tick_settings(delta);
-        let after = self.g.frame_state();
-        if after != before {
-            self.redraw.mark();
-            // Between runs the buffer may take a new width: look at the
-            // display afresh rather than wait for the next scheduled read.
-            if after.mode != before.mode && matches!(after.mode, Mode::Title | Mode::GameOver) {
-                self.display.invalidate();
-            }
-        }
-        self.prune_pads(delta);
+        // Keep the crash hook's picture of the run current. Taken before this
+        // frame's input, so a panic inside `fire` still reports the aim it
+        // fired.
+        crash::note(
+            self.g.mode_name(),
+            self.g.run.as_ref(),
+            (self.g.angle_ticks, self.g.power_ticks),
+            self.g.resumed,
+        );
+        // The dev clock (`--salt-shot-at`) runs on the capped time the core
+        // animates by, so a capture on a slow frame lands at the same point
+        // of an animation.
+        let capped = crate::resume::frame_delta(delta);
+        self.elapsed += capped;
+        self.poll_display(capped);
+        self.gather_intents();
+        let fx = self.g.tick(delta, &self.intents);
+        self.apply(fx);
+        self.prune_pads(capped);
         self.apply_frame_cap();
         if self.redraw.due(self.busy()) {
             self.render();
@@ -302,7 +279,7 @@ impl INode2D for SaltLine {
                     .try_cast::<InputEventScreenDrag>()
                     .map(|d| d.get_position())
                     .unwrap_or_else(|_| drag.get_position());
-                self.g.touch.finger_moved(drag.get_index(), pos.x, pos.y);
+                self.g.finger_moved(drag.get_index(), pos.x, pos.y);
                 return;
             }
             Err(event) => event,
@@ -310,7 +287,6 @@ impl INode2D for SaltLine {
         let Ok(touch) = event.try_cast::<InputEventScreenTouch>() else {
             return;
         };
-        self.g.touch_active = true;
         // The one texture is drawn at the origin at 1:1, so the node's local
         // space is buffer pixels whatever the window is scaled to.
         let local = self
@@ -322,25 +298,22 @@ impl INode2D for SaltLine {
             .unwrap_or_else(|_| touch.get_position());
         if touch.is_pressed() {
             self.g
-                .touch
                 .finger_down(touch.get_index(), pos.x, pos.y, &self.touch_buttons);
         } else {
-            self.g.touch.finger_up(touch.get_index());
+            self.g.finger_up(touch.get_index());
         }
     }
 
     fn on_notification(&mut self, what: CanvasItemNotification) {
         match what {
             CanvasItemNotification::WM_GO_BACK_REQUEST => {
-                self.g.back_requested = true;
+                self.g.go_back();
                 self.redraw.mark();
             }
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
-                self.g.touch.release_all();
-                self.auto_pause();
-                self.flush_settings();
-                self.redraw.mark();
+                let fx = self.g.focus_lost();
+                self.apply(fx);
             }
             // The display may have turned, or grown a cutout, while away.
             CanvasItemNotification::WM_WINDOW_FOCUS_IN
@@ -352,11 +325,12 @@ impl INode2D for SaltLine {
             // Pending settings go to disk before the app can be killed: a
             // phone may never resume a paused app, and a close is final.
             CanvasItemNotification::APPLICATION_PAUSED => {
-                self.auto_pause();
-                self.flush_settings();
+                let fx = self.g.app_paused();
+                self.apply(fx);
             }
             CanvasItemNotification::WM_CLOSE_REQUEST | CanvasItemNotification::EXIT_TREE => {
-                self.flush_settings()
+                let fx = self.g.closing();
+                self.apply(fx);
             }
             _ => {}
         }
@@ -374,169 +348,157 @@ impl INode2D for SaltLine {
         }
         let unicode = key.get_unicode();
         let keycode = key.get_keycode();
-        match keycode {
-            Key::BACKSPACE => {
-                self.g.seed_text.pop();
-            }
-            Key::ENTER | Key::KP_ENTER => self.start_seeded_run(),
-            Key::ESCAPE => self.leave_seed_entry(),
-            _ if (32..127).contains(&unicode) => {
-                if self.g.seed_text.chars().count() < 20 {
-                    self.g.seed_text.push(unicode as u8 as char);
-                }
-            }
+        let typed = match keycode {
+            Key::BACKSPACE => Typed::Backspace,
+            Key::ENTER | Key::KP_ENTER => Typed::Enter,
+            Key::ESCAPE => Typed::Escape,
+            _ if (32..127).contains(&unicode) => Typed::Char(unicode as u8 as char),
             // Arrows and the like fall through to move the keypad focus.
             _ => return,
-        }
+        };
+        let fx = self.g.typed(typed, Self::today());
+        self.apply(fx);
         // Typed, not pressed: an M in a seed must not also mute, nor the
         // Enter that starts the run fire its first shot.
         self.key_queue.retain(|k| *k != keycode);
     }
 }
 
-impl SaltLine {
-    // ------------------------------------------------------------- lifecycle
+// ------------------------------------------------------------------ effects
 
+impl SaltLine {
+    /// Carry out what the core asked for, in the order it asked.
+    fn apply(&mut self, fx: Vec<Effect>) {
+        for effect in fx {
+            match effect {
+                Effect::Play(sound) => {
+                    if let Some(player) =
+                        self.audio.get_mut(sound as usize).and_then(Option::as_mut)
+                    {
+                        player.play();
+                    }
+                }
+                Effect::Volume(db) => {
+                    for player in self.audio.iter_mut().flatten() {
+                        player.set_volume_db(db);
+                    }
+                }
+                Effect::Redraw => self.redraw.mark(),
+                Effect::RecheckDisplay => self.display.invalidate(),
+                Effect::Buffer { w, h, letterbox } => {
+                    self.canvas.resize(w, h);
+                    let (l, r) = letterbox;
+                    if let Some(mut window) = self.base().get_window() {
+                        window.set_content_scale_size(Vector2i::new(w + l + r, h));
+                    }
+                    self.base_mut().set_position(Vector2::new(l as f32, 0.0));
+                }
+                Effect::Aspect(aspect) => {
+                    let aspect = match aspect {
+                        Aspect::Expand => ContentScaleAspect::EXPAND,
+                        Aspect::Keep => ContentScaleAspect::KEEP,
+                    };
+                    if let Some(mut window) = self.base().get_window() {
+                        window.set_content_scale_aspect(aspect);
+                    }
+                }
+                Effect::Clipboard(text) => {
+                    DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
+                }
+                Effect::Quit => self.base().get_tree().quit(),
+                Effect::Store { save, why } => {
+                    // After a panic nothing in memory is trusted enough to
+                    // write, and settings say nothing of it. A score still
+                    // hears that it was not saved (`save::store` refuses).
+                    if why == Store::Settings && crash::panicked() {
+                        continue;
+                    }
+                    let ok = save::store(&save);
+                    let fx = self.g.stored(why, ok);
+                    self.apply(fx);
+                }
+                Effect::WriteRun(line) => {
+                    if !crash::panicked() {
+                        save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+                    }
+                }
+                Effect::KeepRun(line) => {
+                    save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+                }
+                Effect::DiscardRunFile => {
+                    save::remove(RUN_TEMP_PATH);
+                    save::remove(RUN_PATH);
+                    if save::read(RUN_PATH).is_some() || save::read(RUN_TEMP_PATH).is_some() {
+                        godot_warn!("salt-line: could not delete {RUN_PATH}; blanking it");
+                        save::write(RUN_PATH, RUN_TEMP_PATH, "");
+                    }
+                }
+                Effect::Rename { from, to } => {
+                    save::rename(from, to);
+                }
+                Effect::Remove(path) => save::remove(path),
+                Effect::RetireCrashReport => {
+                    if let (Some(from), Some(to)) = (
+                        save::on_disk(crash::REPORT_PATH),
+                        save::on_disk(crash::OLD_REPORT_PATH),
+                    ) {
+                        if let Err(e) = std::fs::rename(&from, &to) {
+                            godot_warn!("salt-line: could not move {}: {e}", crash::REPORT_PATH);
+                        }
+                    }
+                }
+                Effect::Warn(text) => godot_warn!("{text}"),
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ launch
+
+impl SaltLine {
     /// Days since the Unix epoch. The clock is read here, in the presentation
     /// layer — nothing in the sim ever touches system time.
-    fn start_seeded_run(&mut self) {
-        let seed = if self.g.seed_text.trim().is_empty() {
-            daily_seed(Self::today())
-        } else {
-            parse_seed(&self.g.seed_text)
-        };
-        self.start_run(seed, false);
-    }
-
-    fn leave_seed_entry(&mut self) {
-        self.g.mode = Mode::Title;
-    }
-
-    fn open_seed_entry(&mut self) {
-        self.g.seed_text.clear();
-        self.g.seed_focus = Focus::default();
-        self.g.mode = Mode::SeedEntry;
-    }
-
     fn today() -> u64 {
         let secs = Time::singleton().get_unix_time_from_system();
         (secs / 86400.0).floor().max(0.0) as u64
     }
 
-    fn apply_buffer_size(&mut self) {
-        let h = if self.g.long_lens() {
-            LONG_LENS_H
-        } else {
-            SCREEN_H as i32
-        };
-        self.g.buffer_h = h;
-        self.canvas.resize(self.g.buffer_w, h);
-        self.g.letterbox = self.g.letterbox_now();
-        let (l, r) = self.g.letterbox;
-        if let Some(mut window) = self.base().get_window() {
-            window.set_content_scale_size(Vector2i::new(self.g.buffer_w + l + r, h));
-        }
-        self.base_mut().set_position(Vector2::new(l as f32, 0.0));
-        self.redraw.mark();
-    }
-
-    /// Read the window size and the cutout it leaves, for `pick_width` and
-    /// `letterbox_now`. Not every frame: see `poll_display`.
-    fn read_display(&mut self) {
-        let size = DisplayServer::singleton().window_get_size();
-        self.g.window_size = (size.x, size.y);
-        self.g.cutout = self.cutout_px();
-    }
-
-    /// Follow the display every frame from the window size, which is cheap,
-    /// and the cutout, which is re-read only when the size changes, focus
-    /// comes back, a run ends or a second has passed: the safe area is a
-    /// platform round trip on a phone.
-    fn poll_display(&mut self, delta: f64) {
-        let size = DisplayServer::singleton().window_get_size();
-        self.g.window_size = (size.x, size.y);
-        if self.display.check((size.x, size.y), delta) {
-            self.g.cutout = self.cutout_px();
-        }
-        let want_w = self.g.pick_width();
-        let in_run = matches!(self.g.mode, Mode::Playing | Mode::Paused);
-        if !in_run && self.g.kept_width {
-            // A resumed run's width is done with: back to the device's.
-            self.set_run_width(None);
-            self.apply_buffer_size();
-        } else if self.g.run.is_none() && want_w != self.g.buffer_w {
-            self.g.buffer_w = want_w;
-            self.apply_buffer_size();
-        } else if self.g.letterbox_now() != self.g.letterbox {
-            self.apply_buffer_size();
-        }
-    }
-
-    /// Screen pixels a display cutout takes from the left and right edges: a
-    /// camera hole on a phone held landscape. Only asked on mobile, where the
-    /// window is the whole display; on a desktop the "safe area" is the
-    /// monitor's, not the window's.
-    fn cutout_px(&self) -> (i32, i32) {
-        if !self.g.mobile {
-            return (0, 0);
-        }
-        let (win_x, _) = self.g.window_size;
-        let safe = DisplayServer::singleton().get_display_safe_area();
-        if safe.size.x <= 0 || safe.size.y <= 0 {
-            return (0, 0);
-        }
-        let l = safe.position.x.clamp(0, win_x / 4);
-        let r = (win_x - safe.position.x - safe.size.x).clamp(0, win_x / 4);
-        (l, r)
-    }
-
-    fn start_run(&mut self, seed: u64, daily: bool) {
-        // A new run is generated for the device, whatever a resumed one used.
-        self.set_run_width(None);
-        // The world is as wide as the buffer, so the run is generated for it.
-        let width = self.g.buffer_w as usize;
-        let state = RunState::new(seed, width);
-        self.g.angle_ticks = 900;
-        self.g.power_ticks = 600;
-        self.g.anim = None;
-        self.g.last_arc.clear();
-        self.preview.clear();
-        self.g.clear_hold = 0.0;
-        self.g.cam_x = 0;
-        self.g.cam_target = 0.0;
-        self.g.daily = daily;
-        self.g.low_shell_warned = false;
-        self.g.last_seed = seed;
-        self.retire_last_crash();
-        self.g.run = Some(state);
-        self.g.mode = Mode::Playing;
-        self.apply_buffer_size();
-        self.begin_persisting();
-        self.note(format!("SEED {}", format_seed(seed)));
-    }
-
-    /// Level inspector: drop straight onto a screen index without playing the
-    /// ones before it. DESIGN §2.2 is what makes this possible — each screen
-    /// generates from its own seed, so screen 400 costs the same as screen 1.
-    fn jump_to(&mut self, index: u32) {
-        let Some(run) = self.g.run.as_mut() else {
+    /// Pick up a report the last session left, for the title screen to offer.
+    fn find_last_crash(&mut self) {
+        let Some(path) = save::on_disk(crash::REPORT_PATH) else {
             return;
         };
-        run.screen_index = index;
-        // The log cannot rebuild a jump, so the run is not kept for resume.
-        self.g.run_persist = false;
-        run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
-        self.preview.clear();
-        self.note(format!("SCREEN {}", index + 1));
+        crash::set_report_file(path.clone());
+        self.g.last_crash = std::fs::read_to_string(path)
+            .ok()
+            .filter(|t| !t.trim().is_empty());
     }
 
-    fn note(&mut self, text: String) {
-        self.g.status = text;
-        self.g.status_time = 2.4;
-        self.redraw.mark();
+    /// Hand the core whatever saved run there is.
+    ///
+    /// The file is moved aside to `RUN_LOADING_PATH` before the core rebuilds
+    /// it, and only put back once the rebuild succeeds, so a log that brings
+    /// the sim down costs one crash, not one every launch.
+    fn find_saved_run(&mut self) {
+        let found = if save::read(RUN_LOADING_PATH).is_some() {
+            SavedRun::Interrupted
+        } else {
+            let (path, text) = match save::read(RUN_PATH) {
+                Some(t) => (RUN_PATH, t),
+                None => match save::read(RUN_TEMP_PATH) {
+                    Some(t) => (RUN_TEMP_PATH, t),
+                    None => return,
+                },
+            };
+            if text.trim().is_empty() {
+                return;
+            }
+            save::rename(path, RUN_LOADING_PATH);
+            SavedRun::Found(text)
+        };
+        let fx = self.g.saved_run(found);
+        self.apply(fx);
     }
-
-    // ----------------------------------------------------------------- input
 
     fn setup_audio(&mut self) {
         self.audio.clear();
@@ -557,31 +519,113 @@ impl SaltLine {
             self.base_mut().add_child(&player);
             self.audio.push(Some(player));
         }
-        self.apply_volume();
+        let db = self.g.volume_db();
+        self.apply(vec![Effect::Volume(db)]);
     }
 
-    fn apply_volume(&mut self) {
-        let db = if self.g.save.muted || self.g.save.volume == 0 {
-            -80.0
-        } else {
-            20.0 * (self.g.save.volume as f32 / 100.0).log10()
-        };
-        for player in self.audio.iter_mut().flatten() {
-            player.set_volume_db(db);
-        }
+    /// Every argument, whether it arrived before or after `--`.
+    fn cmdline_all() -> Vec<String> {
+        let os = Os::singleton();
+        let mut joined: Vec<String> = os
+            .get_cmdline_user_args()
+            .as_slice()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        joined.extend(
+            os.get_cmdline_args()
+                .as_slice()
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        joined
     }
 
-    fn play_sound(&mut self, sound: Sound) {
-        if let Some(player) = self.audio.get_mut(sound as usize).and_then(Option::as_mut) {
-            player.play();
+    /// `--salt-gallery <dir>`: render one frame per shape template, plus a
+    /// damaged variant of each, and quit. See `Game::gallery`.
+    fn gallery(&mut self, dir: &str) {
+        for (name, run) in Game::gallery(self.g.buffer_w as usize) {
+            let Some(run) = run else {
+                godot_warn!("salt-line: no {name} screen found");
+                continue;
+            };
+            self.g.show_gallery_run(run);
+            self.render_play();
+            self.save_canvas(&format!("{dir}/{name}.png"));
         }
+        self.base().get_tree().quit();
+    }
+}
+
+// ---------------------------------------------------------------- per frame
+
+impl SaltLine {
+    fn window_size() -> (i32, i32) {
+        let size = DisplayServer::singleton().window_get_size();
+        (size.x, size.y)
     }
 
-    fn learn(&mut self, bit: u32) {
-        if self.g.save.learned & bit == 0 {
-            self.g.save.learned |= bit;
-            save::store(&self.g.save);
+    /// Follow the display every frame from the window size, which is cheap,
+    /// and the cutout, which is re-read only when the size changes, focus
+    /// comes back, a run ends or a second has passed: the safe area is a
+    /// platform round trip on a phone. The core decides what the buffer
+    /// makes of them.
+    fn poll_display(&mut self, delta: f64) {
+        let size = Self::window_size();
+        if self.display.check(size, delta) {
+            self.cutout = self.cutout_px(size);
         }
+        self.intents.window = size;
+        self.intents.cutout = self.cutout;
+    }
+
+    /// Screen pixels a display cutout takes from the left and right edges: a
+    /// camera hole on a phone held landscape. Only asked on mobile, where the
+    /// window is the whole display; on a desktop the "safe area" is the
+    /// monitor's, not the window's.
+    fn cutout_px(&self, (win_x, _): (i32, i32)) -> (i32, i32) {
+        if !self.g.mobile {
+            return (0, 0);
+        }
+        let safe = DisplayServer::singleton().get_display_safe_area();
+        if safe.size.x <= 0 || safe.size.y <= 0 {
+            return (0, 0);
+        }
+        let l = safe.position.x.clamp(0, win_x / 4);
+        let r = (win_x - safe.position.x - safe.size.x).clamp(0, win_x / 4);
+        (l, r)
+    }
+
+    /// Once per frame, before the core reads any action: this frame's
+    /// presses are the ones queued since the last, with what is held now.
+    fn gather_intents(&mut self) {
+        let input = Input::singleton();
+        let mut i = std::mem::take(&mut self.intents);
+        i.clear();
+        i.keys.extend(self.key_queue.drain(..).filter_map(core_key));
+        i.keys_held.extend(
+            KEYS.iter()
+                .filter(|(_, k)| input.is_key_pressed(*k))
+                .map(|(c, _)| *c),
+        );
+        i.pads.extend(self.pad_queue.drain(..).filter_map(core_pad));
+        for (c, b) in PADS {
+            if self
+                .pads
+                .iter()
+                .any(|p| input.is_joy_button_pressed(p.device, b))
+            {
+                i.pads_held.push(c);
+            }
+        }
+        i.stick = [
+            self.stick_held(JoyAxis::LEFT_X, -1.0),
+            self.stick_held(JoyAxis::LEFT_X, 1.0),
+            self.stick_held(JoyAxis::LEFT_Y, -1.0),
+            self.stick_held(JoyAxis::LEFT_Y, 1.0),
+        ];
+        i.today = Self::today();
+        self.intents = i;
     }
 
     /// Once a second, forget joypads that have been unplugged.
@@ -610,44 +654,6 @@ impl SaltLine {
             .any(|p| input.get_joy_axis(p.device, axis) * sign > 0.45)
     }
 
-    /// Once per frame, before any action is read: this frame's presses are
-    /// the ones queued since the last, with what is held now.
-    fn begin_input_frame(&mut self, delta: f64) {
-        let input = Input::singleton();
-        let mut i = std::mem::take(&mut self.intents);
-        i.clear();
-        i.keys.extend(self.key_queue.drain(..).filter_map(core_key));
-        i.keys_held.extend(
-            KEYS.iter()
-                .filter(|(_, k)| input.is_key_pressed(*k))
-                .map(|(c, _)| *c),
-        );
-        i.pads.extend(self.pad_queue.drain(..).filter_map(core_pad));
-        for (c, b) in PADS {
-            if self
-                .pads
-                .iter()
-                .any(|p| input.is_joy_button_pressed(p.device, b))
-            {
-                i.pads_held.push(c);
-            }
-        }
-        i.stick = [
-            self.stick_held(JoyAxis::LEFT_X, -1.0),
-            self.stick_held(JoyAxis::LEFT_X, 1.0),
-            self.stick_held(JoyAxis::LEFT_Y, -1.0),
-            self.stick_held(JoyAxis::LEFT_Y, 1.0),
-        ];
-        self.g.begin_input_frame(delta, &i);
-        self.intents = i;
-    }
-
-    fn handle_input(&mut self, delta: f64) {
-        self.begin_input_frame(delta);
-        self.handle_mode_input(delta);
-        self.g.back_requested = false;
-    }
-
     /// Something on screen is moving or being held, so every frame draws.
     fn busy(&self) -> bool {
         let stick = [
@@ -658,13 +664,7 @@ impl SaltLine {
         ]
         .into_iter()
         .any(|(axis, sign)| self.stick_held(axis, sign));
-        self.g.anim.is_some()
-            || self.g.clear_hold > 0.0
-            || self.g.status_time > 0.0
-            || self.g.auto
-            || self.g.touch.active()
-            || stick
-            || Input::singleton().is_anything_pressed()
+        self.g.busy() || stick || Input::singleton().is_anything_pressed()
     }
 
     /// Menus, overlays and the error screen run at `frame::IDLE_FPS`; play
@@ -672,483 +672,32 @@ impl SaltLine {
     /// rather than low-processor mode, which would also throttle play and
     /// the shot replay.
     fn apply_frame_cap(&mut self) {
-        let idle = self.g.broken || self.g.mode != Mode::Playing;
-        let cap = frame::frame_cap(idle, self.project_fps);
+        let cap = frame::frame_cap(self.g.idle(), self.project_fps);
         if cap != self.fps_cap {
             self.fps_cap = cap;
             Engine::singleton().set_max_fps(cap);
         }
     }
 
-    fn handle_mode_input(&mut self, delta: f64) {
-        if self.g.pressed(input::Key::F1) {
-            self.g.debug = !self.g.debug;
-        }
-        if self.g.action_pressed(15, "mute") {
-            self.g.save.muted = !self.g.save.muted;
-            self.apply_volume();
-            self.g.settings.touch();
-            self.note(if self.g.save.muted {
-                "SOUND MUTED".into()
-            } else {
-                "SOUND ON".into()
-            });
-        }
-        match self.g.mode {
-            Mode::Title => {
-                let resumable = self.g.resumable.is_some();
-                let confirm =
-                    self.g.action_pressed(0, "confirm") || self.g.pressed(input::Key::KpEnter);
-                let daily = if resumable {
-                    self.g.action_pressed(11, "new_run")
-                } else {
-                    confirm
-                };
-                if resumable && confirm {
-                    self.continue_run();
-                } else if daily {
-                    if self.confirm_discard("daily") {
-                        let seed = daily_seed(Self::today());
-                        self.play_sound(Sound::Ui);
-                        self.start_run(seed, true);
-                    }
-                } else if self.g.action_pressed(17, "seed") {
-                    if self.confirm_discard("seed") {
-                        self.open_seed_entry();
-                    }
-                } else if self.g.last_crash.is_some() && self.g.action_pressed(4, "copy") {
-                    self.copy_last_crash();
-                } else if self.g.action_pressed(1, "controls") {
-                    self.play_sound(Sound::Ui);
-                    self.g.mode = Mode::Controls;
-                } else if self.g.action_pressed(2, "back") {
-                    self.base().get_tree().quit();
-                }
-                if self.g.mode != Mode::Title {
-                    self.g.discard_armed = None;
-                }
-            }
-            Mode::Controls => {
-                let down = self.g.action_repeated(0, "left", delta);
-                let up = self.g.action_repeated(1, "right", delta);
-                if down + up > 0 {
-                    let volume =
-                        (self.g.save.volume as i32 + (up as i32 - down as i32) * 5).clamp(0, 100);
-                    self.g.save.volume = volume as u8;
-                    self.g.save.muted = false;
-                    self.apply_volume();
-                    self.g.settings.touch();
-                    self.play_sound(Sound::Ui);
-                }
-                if self.g.touch.pressed("aim_mode") {
-                    self.g.save.touch_aim = Some(self.g.touch_aim().next());
-                    self.g.settings.touch();
-                    self.play_sound(Sound::Ui);
-                } else if self.g.touch.pressed("arc_hint") {
-                    self.g.save.arc_hint = Some(self.g.arc_hint().next());
-                    self.g.settings.touch();
-                    self.play_sound(Sound::Ui);
-                }
-                if self.g.action_pressed(16, "last_arc") {
-                    self.g.save.last_arc = Some(!self.g.last_arc_on());
-                    self.g.settings.touch();
-                    self.play_sound(Sound::Ui);
-                }
-                if self.g.action_pressed(3, "replay") {
-                    self.g.save.bindings.clear();
-                    self.g.settings.touch();
-                    self.note("DEFAULT BINDINGS RESTORED".into());
-                } else if self.g.action_pressed(2, "back") {
-                    self.play_sound(Sound::Ui);
-                    self.g.mode = Mode::Title;
-                }
-            }
-            Mode::Paused => {
-                if self.g.action_pressed(0, "confirm") || self.g.action_pressed(2, "back") {
-                    self.play_sound(Sound::Ui);
-                    self.g.mode = Mode::Playing;
-                } else if self.g.action_pressed(3, "replay") {
-                    self.play_sound(Sound::Ui);
-                    self.g.mode = Mode::Title;
-                    self.suspend_run();
-                }
-            }
-            Mode::SeedEntry => self.handle_seed_input(delta),
-            Mode::GameOver => {
-                if self.g.action_pressed(4, "copy") {
-                    // Seed sharing: the seed is the whole run, so the
-                    // clipboard is the whole share format.
-                    let seed = format_seed(self.g.last_seed);
-                    DisplayServer::singleton().clipboard_set(&GString::from(seed.as_str()));
-                    self.note(format!("COPIED {seed}"));
-                } else if self.g.action_pressed(0, "confirm") || self.g.action_pressed(2, "back") {
-                    self.g.mode = Mode::Title;
-                } else if self.g.action_pressed(3, "replay") {
-                    let seed = self.g.last_seed;
-                    let daily = self.g.daily;
-                    self.start_run(seed, daily);
-                }
-            }
-            Mode::Playing => self.handle_play_input(delta),
-        }
-    }
-
-    /// Keyboard text comes in through `unhandled_input`. This is the touch
-    /// keypad, and the controller moving a focus over the same keypad: A
-    /// presses the focused key, B deletes, or leaves once nothing is typed.
-    fn handle_seed_input(&mut self, delta: f64) {
-        let dx = self.g.action_repeated(1, "right", delta) as i32
-            - self.g.action_repeated(0, "left", delta) as i32;
-        let dy = self.g.action_repeated(2, "down", delta) as i32
-            - self.g.action_repeated(3, "up", delta) as i32;
-        if dx != 0 || dy != 0 {
-            self.g.seed_focus.step(dx, dy);
-        }
-        let key = if self.g.pad_action_pressed("confirm") {
-            Some(self.g.seed_focus.action())
-        } else if self.g.pad_action_pressed("back") {
-            Some(if self.g.seed_text.is_empty() {
-                "back"
-            } else {
-                keypad::DEL
+    /// A panic has happened: the error screen, every frame. See
+    /// `Game::broken_tick`.
+    fn broken_frame(&mut self, delta: f64) {
+        // Wall clock still runs, for `--salt-shot-at` captures of this screen.
+        self.elapsed += delta;
+        self.gather_intents();
+        let fx = self.g.broken_tick(delta, &self.intents, || {
+            crash::report_ready().then(|| {
+                crash::report()
+                    .unwrap_or_else(|| "SALT LINE CRASH REPORT\n(report unavailable)\n".into())
             })
-        } else if self.g.touch.pressed("back") || self.g.back_requested {
-            Some("back")
-        } else {
-            ["confirm", keypad::DEL]
-                .into_iter()
-                .chain(keypad::KEYS)
-                .find(|k| self.g.touch.pressed(k))
-        };
-        match key {
-            Some("confirm") => self.start_seeded_run(),
-            Some("back") => self.leave_seed_entry(),
-            Some(keypad::DEL) => {
-                self.g.seed_text.pop();
-            }
-            Some(k) if self.g.seed_text.chars().count() < 20 => self.g.seed_text.push_str(k),
-            _ => {}
-        }
-    }
-
-    fn handle_play_input(&mut self, delta: f64) {
-        if self.g.action_pressed(2, "back") {
-            self.g.touch.cancel_drag();
-            self.g.mode = Mode::Paused;
-            return;
-        }
-        let phase = self.g.run.as_ref().map(|r| r.phase);
-        let Some(phase) = phase else { return };
-
-        // A drag only aims on the screen it started on: drafting or a shot in
-        // the air forgets it, so it can never drop into a later shot.
-        if phase != Phase::Firing || self.g.anim.is_some() || self.g.clear_hold > 0.0 {
-            self.g.touch.cancel_drag();
-        }
-
-        if phase == Phase::Drafting {
-            for (i, action) in ["draft_1", "draft_2", "draft_3"].into_iter().enumerate() {
-                if self.g.action_pressed(5 + i, action) {
-                    let taken = self.g.run.as_mut().and_then(|r| r.take_offer(i));
-                    if let Some(m) = taken {
-                        self.preview.clear();
-                        self.learn(LEARN_DRAFT);
-                        self.play_sound(Sound::Draft);
-                        self.note(format!("TOOK {}", m.name()));
-                        self.apply_buffer_size();
-                    }
-                }
-            }
-            return;
-        }
-
-        // Nothing but waiting while a shot is in the air.
-        if self.g.anim.is_some() || self.g.clear_hold > 0.0 {
-            return;
-        }
-
-        let quantum = self
-            .g
-            .run
-            .as_ref()
-            .map(|r| r.loadout.angle_quantum_ticks)
-            .unwrap_or(5)
-            .max(1);
-        let mult = if self.g.shift_held() { 10 } else { 1 };
-
-        let left = self.g.action_repeated(0, "left", delta) as i32;
-        let right = self.g.action_repeated(1, "right", delta) as i32;
-        if left + right != 0 {
-            self.learn(LEARN_ANGLE);
-            self.g.angle_ticks = (self.g.angle_ticks + (right - left) * quantum * mult)
-                .clamp(0, dmath::MAX_ANGLE_TICKS);
-        }
-        let down = self.g.action_repeated(2, "down", delta) as i32;
-        let up = self.g.action_repeated(3, "up", delta) as i32;
-        if up + down != 0 {
-            self.learn(LEARN_POWER);
-            self.g.power_ticks =
-                (self.g.power_ticks + (up - down) * 5 * mult).clamp(0, POWER_TICKS_MAX);
-        }
-
-        // Airburst fuse.
-        let fuse_step = 4.0 * mult as f64;
-        let minus = self.g.action_repeated(4, "fuse_down", delta) as f64;
-        let plus = self.g.action_repeated(5, "fuse_up", delta) as f64;
-        if minus + plus > 0.0 {
-            if let Some(r) = self.g.run.as_mut() {
-                if r.loadout.airburst() {
-                    let f = r.fuse + (plus - minus) * fuse_step;
-                    r.set_fuse(f);
-                }
-            }
-        }
-
-        // Enfilade reposition.
-        let l = self.g.action_pressed(8, "reposition_left");
-        let rr = self.g.action_pressed(9, "reposition_right");
-        if l || rr {
-            let step = if l { -5.0 } else { 5.0 };
-            let ok = self.g.run.as_mut().map(|r| {
-                let target = r.emplacement_offset + step;
-                r.reposition(target)
-            });
-            if ok == Some(false) {
-                self.note("NO ENFILADE".into());
-            }
-        }
-
-        if self.g.action_pressed(10, "fire") || self.g.pressed(input::Key::Enter) {
-            self.fire();
-        }
-
-        if self.g.drag_aiming() {
-            self.handle_drag_aim(quantum);
-        }
-    }
-
-    /// Pull back to aim, let go to fire. The aim follows the finger live, so
-    /// the readouts and barrel show exactly what a release would fire; pulling
-    /// back inside the dead zone puts the old aim back and cancels.
-    fn handle_drag_aim(&mut self, quantum: i32) {
-        let dropped = self.g.touch.dropped();
-        let Some((start, end)) = dropped.or(self.g.touch.drag()) else {
-            // Abandoned (paused, focus lost): put the old aim back.
-            if let Some(before) = self.g.drag_from.take() {
-                (self.g.angle_ticks, self.g.power_ticks) = before;
-            }
-            return;
-        };
-        let before = *self
-            .g
-            .drag_from
-            .get_or_insert((self.g.angle_ticks, self.g.power_ticks));
-        let aim = crate::aim::pull_to_aim(start, end, quantum);
-        match aim {
-            Some((angle, power)) => {
-                self.learn(LEARN_ANGLE);
-                self.learn(LEARN_POWER);
-                (self.g.angle_ticks, self.g.power_ticks) = (angle, power);
-            }
-            None => (self.g.angle_ticks, self.g.power_ticks) = before,
-        }
-        if dropped.is_some() {
-            self.g.drag_from = None;
-            if aim.is_some() {
-                self.fire();
-            }
-        }
-    }
-
-    // ------------------------------------------------------------- run steps
-
-    fn fire(&mut self) {
-        let learned = self.g.save.learned;
-        if learned & LEARN_WIND != 0 {
-            self.learn(LEARN_SHELLS);
-        } else if learned & LEARN_CRATER != 0
-            && self
-                .g
-                .run
-                .as_ref()
-                .and_then(|r| r.displayed_wind())
-                .is_some_and(|w| w.abs() > 0.01)
-        {
-            self.learn(LEARN_WIND);
-        }
-        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks);
-        let Some(run) = self.g.run.as_mut() else {
-            return;
-        };
-        if run.shells <= 0 {
-            return;
-        }
-        let before = run.screen.clone();
-        let Some(report) = run.fire(shot, true) else {
-            return;
-        };
-        self.learn(LEARN_FIRE);
-        self.play_sound(Sound::Fire);
-        self.play_sound(Sound::Flight);
-        let longest = report
-            .traces
-            .iter()
-            .map(|t| t.flight_time)
-            .fold(0.0f64, f64::max);
-        let collapsed = report.collapsed.clone();
-        self.g.last_arc = report
-            .traces
-            .first()
-            .map(|t| t.path.clone())
-            .unwrap_or_default();
-        self.g.anim = Some(Anim {
-            traces: report.traces,
-            before,
-            t: 0.0,
-            longest,
-            collapsed,
-            settled: 0.0,
-            impact_played: false,
-            collapse_played: false,
         });
-        let shells = self.g.run.as_ref().map(|r| r.shells).unwrap_or(99);
-        if shells < 10 && !self.g.low_shell_warned {
-            self.g.low_shell_warned = true;
-            self.play_sound(Sound::LowShell);
-            self.note("SHELLS ARE YOUR RUN CLOCK".into());
-        }
+        self.apply_frame_cap();
+        self.apply(fx);
+        self.render_broken();
+        self.upload();
+        self.maybe_screenshot();
+        self.base_mut().queue_redraw();
     }
-
-    fn step(&mut self, delta: f64) {
-        if self.g.mode != Mode::Playing {
-            return;
-        }
-
-        // Advance the shot replay. The sim ran at a fixed 1/120; this only
-        // walks the recorded path, so playback speed cannot affect anything.
-        let mut sounds = Vec::new();
-        let mut learned_impact = false;
-        if let Some(anim) = self.g.anim.as_mut() {
-            anim.t += delta;
-            if anim.done() {
-                anim.settled += delta;
-                if !anim.impact_played {
-                    anim.impact_played = true;
-                    learned_impact = true;
-                    if let Some(sound) = anim.traces.first().map(|trace| {
-                        if trace.bounces > 0 {
-                            Sound::Ricochet
-                        } else {
-                            match trace.end {
-                                End::Fuse { .. } => Sound::Airburst,
-                                End::Structure { .. } => Sound::Structure,
-                                _ => Sound::Terrain,
-                            }
-                        }
-                    }) {
-                        sounds.push(sound);
-                    }
-                }
-                if !anim.collapse_played && !anim.collapsed.is_empty() {
-                    anim.collapse_played = true;
-                    sounds.push(Sound::Collapse);
-                }
-            }
-            let settled = anim.settled;
-            let finished = anim.done() && settled > TOPPLE_TIME + 0.12;
-            if finished {
-                self.g.anim = None;
-                let cleared = self.g.run.as_ref().map(|r| r.phase) == Some(Phase::Cleared);
-                if cleared {
-                    self.g.clear_hold = CLEAR_HOLD;
-                } else if self.g.run.as_ref().map(|r| r.is_over()) == Some(true) {
-                    self.finish_run();
-                }
-            }
-        } else if self.g.clear_hold > 0.0 {
-            // Hold on the cleared screen and pan forward, then move on.
-            self.g.clear_hold -= delta;
-            let span = (self.g.world_width() - self.g.buffer_w).max(0) as f64;
-            let t = 1.0 - (self.g.clear_hold / CLEAR_HOLD).clamp(0.0, 1.0);
-            self.g.cam_target = span * t;
-            if self.g.clear_hold <= 0.0 {
-                self.g.clear_hold = 0.0;
-                self.g.cam_target = 0.0;
-                self.g.cam_x = 0;
-                let advanced = self.g.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
-                if advanced {
-                    self.after_screen_change();
-                }
-            }
-        } else if let Some(run) = self.g.run.as_ref() {
-            if run.is_over() {
-                self.finish_run();
-            }
-        }
-        if learned_impact {
-            self.learn(LEARN_CRATER);
-        }
-        for sound in sounds {
-            self.play_sound(sound);
-        }
-
-        // Follow the shell when the world is wider than the buffer.
-        if self.g.anim.is_some() {
-            let head = self.g.shell_head();
-            if let Some(p) = head {
-                let span = (self.g.world_width() - self.g.buffer_w).max(0) as f64;
-                if span > 0.0 {
-                    self.g.cam_target = (p.x - self.g.buffer_w as f64 * 0.5).clamp(0.0, span);
-                }
-            }
-        }
-
-        // The camera is quantized to a whole pixel every frame. Panning with a
-        // fractional camera is what makes low-res terrain shimmer.
-        let span = (self.g.world_width() - self.g.buffer_w).max(0) as f64;
-        self.g.cam_x = self.g.cam_target.round().clamp(0.0, span) as i32;
-    }
-
-    fn after_screen_change(&mut self) {
-        self.apply_buffer_size();
-        if self.g.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
-            self.play_sound(Sound::Draft);
-        }
-    }
-
-    fn finish_run(&mut self) {
-        // The run file goes before the score is recorded, never after: a
-        // crash in between costs this score, where the other order would
-        // record it twice (the next launch scores a finished log).
-        let line = self
-            .g
-            .run
-            .as_ref()
-            .filter(|_| self.g.run_persist)
-            .map(|r| resume::Saved::of(r, self.g.daily).to_line());
-        self.stop_persisting();
-        if let Some(run) = self.g.run.as_ref() {
-            let (screens, shells, shots) = run.score();
-            let entry = Entry {
-                seed: run.run_seed,
-                screens,
-                shells,
-                shots,
-                daily: self.g.daily,
-            };
-            if !save::record(&mut self.g.save, entry).saved {
-                // Not on the board (a save from a newer build, a full disk):
-                // keep the finished log, so a later launch can score it.
-                if let Some(line) = line {
-                    save::write(RUN_PATH, RUN_TEMP_PATH, &line);
-                }
-                self.note_not_saved("SCORE NOT SAVED");
-            }
-        }
-        self.g.mode = Mode::GameOver;
-    }
-
-    // --------------------------------------------------------------- drawing
 
     fn render(&mut self) {
         self.touch_buttons.clear();
@@ -1200,132 +749,10 @@ impl SaltLine {
         if self.frames < 3 || self.elapsed < self.shot_at {
             return;
         }
-        let (w, h) = (self.canvas.w, self.canvas.h);
-        let data = self.canvas.to_packed();
-        if let Some(image) =
-            Image::create_from_data(w, h, false, godot::classes::image::Format::RGBA8, &data)
-        {
-            let err = image.save_png(&GString::from(path.as_str()));
-            godot_print!("salt-line: wrote {path} ({w}x{h}) -> {err:?}");
-        }
+        self.save_canvas(&path);
         self.shot_path = None;
+        self.g.capturing = false;
         self.base().get_tree().quit();
-    }
-
-    /// Play the game for the camera: aim with the solver, take offer 1.
-    fn autopilot(&mut self, delta: f64) {
-        self.g.auto_cooldown -= delta;
-        if self.g.mode == Mode::Title {
-            let seed = Self::seed_arg().unwrap_or_else(|| daily_seed(Self::today()));
-            self.start_run(seed, false);
-            return;
-        }
-        if self.g.mode != Mode::Playing || self.g.anim.is_some() || self.g.clear_hold > 0.0 {
-            return;
-        }
-        if self.g.auto_cooldown > 0.0 {
-            return;
-        }
-        let phase = self.g.run.as_ref().map(|r| r.phase);
-        match phase {
-            Some(Phase::Drafting) => {
-                if self.g.auto_hold_draft {
-                    return;
-                }
-                self.g.run.as_mut().map(|r| r.take_offer(0));
-                self.apply_buffer_size();
-                self.g.auto_cooldown = 0.4;
-            }
-            Some(Phase::Cleared) => {
-                self.g.clear_hold = CLEAR_HOLD;
-            }
-            Some(Phase::Firing) => {
-                let first = self.g.run.as_ref().map(|r| r.shots_on_screen) == Some(0);
-                if self.g.auto_miss && first {
-                    // A high lob that lands short, well clear of any target.
-                    self.g.angle_ticks = 1400;
-                    self.g.power_ticks = 330;
-                    self.fire();
-                    self.g.auto_cooldown = 0.35;
-                    return;
-                }
-                let pick = {
-                    let Some(run) = self.g.run.as_ref() else {
-                        return;
-                    };
-                    let target = run.screen.structures.iter().position(|s| !s.is_down());
-                    target.and_then(|t| {
-                        salt_line_sim::solver::solve_target(&run.screen, &run.loadout, t)
-                            .first()
-                            .map(|c| (c.shot, t))
-                    })
-                };
-                if let Some((shot, target)) = pick {
-                    self.g.angle_ticks = shot.angle_ticks;
-                    self.g.power_ticks = shot.power_ticks;
-                    if let Some(run) = self.g.run.as_mut() {
-                        if let Some(f) = run.screen.default_fuse(target) {
-                            run.set_fuse(f);
-                        }
-                    }
-                    self.fire();
-                    self.g.auto_cooldown = 0.35;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Every argument, whether it arrived before or after `--`.
-    fn cmdline_all() -> Vec<String> {
-        let os = Os::singleton();
-        let mut joined: Vec<String> = os
-            .get_cmdline_user_args()
-            .as_slice()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        joined.extend(
-            os.get_cmdline_args()
-                .as_slice()
-                .iter()
-                .map(|s| s.to_string()),
-        );
-        joined
-    }
-
-    /// Presence of a valueless flag.
-    fn cmdline_flag(flag: &str) -> bool {
-        Self::cmdline_all().iter().any(|a| a == flag)
-    }
-
-    fn cmdline_value(flag: &str) -> Option<String> {
-        let joined = Self::cmdline_all();
-        let mut it = joined.iter();
-        while let Some(a) = it.next() {
-            if a == flag {
-                return it.next().cloned();
-            }
-            if let Some(rest) = a.strip_prefix(&format!("{flag}=")) {
-                return Some(rest.to_string());
-            }
-        }
-        None
-    }
-
-    fn screenshot_arg() -> Option<String> {
-        Self::cmdline_value("--salt-shot")
-    }
-
-    /// `--salt-seed <seed>`: start a run immediately, for screenshots and for
-    /// looking at a specific screen.
-    fn seed_arg() -> Option<u64> {
-        Self::cmdline_value("--salt-seed").map(|s| parse_seed(&s))
-    }
-
-    /// `--salt-screen <n>`: jump the run forward, for inspecting late bands.
-    fn screen_arg() -> Option<u32> {
-        Self::cmdline_value("--salt-screen").and_then(|s| s.parse().ok())
     }
 
     /// Write the buffer to a PNG at native resolution.
@@ -1340,66 +767,50 @@ impl SaltLine {
         }
     }
 
-    /// `--salt-gallery <dir>`: render one frame per shape template, plus a
-    /// damaged variant of each, and quit.
-    ///
-    /// This is the art-review and tuning tool. Change a terrain constant, run
-    /// the gallery, look at seven pictures. Beats playing until the template
-    /// you changed happens to come up.
-    fn gallery(&mut self, dir: &str) {
-        // Airburst is held so `Overhang` is on the table at all (DESIGN §2.4).
-        let mut lo = Loadout::new();
-        lo.take(Modifier::Airburst);
-        let width = self.g.buffer_w as usize;
-        let mut run = RunState::new(0, width);
-        run.loadout = lo.clone();
-
-        for t in salt_line_sim::terrain::Template::ALL {
-            let index = t.min_band().max(1) * salt_line_sim::BAND_LEN;
-            let mut found = None;
-            for seed in 0..6000u64 {
-                let sc = run::generate_screen(seed, index, width, &lo);
-                if sc.template == t {
-                    found = Some(sc);
-                    break;
-                }
-            }
-            let Some(screen) = found else {
-                godot_warn!("salt-line: no {} screen found", t.name());
-                continue;
-            };
-
-            // Clean.
-            run.screen = screen.clone();
-            run.screen_index = index;
-            self.g.run = Some(run.clone());
-            self.g.mode = Mode::Playing;
-            self.g.status_time = 0.0;
-            self.render_play();
-            self.save_canvas(&format!("{dir}/template_{}.png", t.name().to_lowercase()));
-
-            // Damaged: undermine the first target's footprint and lob a couple
-            // of craters short of it, so craters, rims, lean and rubble all
-            // appear in one picture.
-            let mut damaged = screen.clone();
-            if let Some(st) = damaged.structures.first().cloned() {
-                for _ in 0..6 {
-                    for i in st.x0..st.x0 + st.footprint() {
-                        damaged.field.crater(i as f64, 5.0);
-                    }
-                }
-                damaged.field.crater(st.centre_x() - 34.0, 9.0);
-                damaged.field.crater(st.centre_x() - 52.0, 6.0);
-                damaged.resolve_structures();
-            }
-            run.screen = damaged;
-            self.g.run = Some(run.clone());
-            self.render_play();
-            self.save_canvas(&format!("{dir}/damaged_{}.png", t.name().to_lowercase()));
+    /// The error screen. See `Game::broken_tick`.
+    fn render_broken(&mut self) {
+        self.touch_buttons.clear();
+        let pal = self.pal.clone();
+        self.canvas.fill(pal.get(slot::UI_BG));
+        let (fg, dim, alert) = (
+            pal.get(slot::UI_FG),
+            pal.get(slot::SKY_LO),
+            pal.get(slot::ALERT),
+        );
+        let mut y = 30;
+        self.centred(y, "SOMETHING BROKE", alert);
+        y += 14;
+        self.centred(y, "THE GAME STOPPED RATHER THAN CARRY ON WRONG.", fg);
+        y += 8;
+        self.centred(
+            y,
+            "A REPORT WAS SAVED ON THIS DEVICE. NOTHING WAS SENT.",
+            dim,
+        );
+        y += 8;
+        self.centred(y, "PASTE IT INTO A BUG REPORT ON GITHUB.", dim);
+        y += 16;
+        let copy = self.g.input_label("copy");
+        y = self.menu_row(
+            y,
+            "copy",
+            &format!("{copy}      COPY REPORT"),
+            "COPY REPORT",
+            fg,
+        );
+        let back = self.g.input_label("back");
+        y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", fg);
+        y += 4;
+        if self.g.status_time > 0.0 {
+            let text = self.g.status.clone();
+            self.centred(y, &text, alert);
         }
-        self.base().get_tree().quit();
     }
+}
 
+// ------------------------------------------------------------------ drawing
+
+impl SaltLine {
     fn render_menu(&mut self) {
         let pal = self.pal.clone();
         let view = self.g.view();
@@ -1666,8 +1077,6 @@ impl SaltLine {
         let x = (self.canvas.w - crate::font::small_width(text) as i32) / 2;
         self.canvas.text_small(x.max(1), y, text, c);
     }
-
-    // ---------------------------------------------------------------- touch
 
     /// Make a rectangle of this frame's buffer a button for the next frame's
     /// touches. Only called while touch controls are showing.
@@ -1944,6 +1353,7 @@ impl SaltLine {
             index: run.screen_index,
             shots: run.shots_on_screen,
             offset: run.emplacement_offset.to_bits(),
+            epoch: self.g.preview_epoch,
         };
         let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks);
         let (path, upto) = self
@@ -2114,61 +1524,6 @@ impl SaltLine {
         }
     }
 
-    fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
-        if phase == Phase::Drafting && self.g.save.learned & LEARN_DRAFT == 0 && self.g.touch_active
-        {
-            return Some("TAP A CARD  PICK A MODIFIER".into());
-        }
-        if phase == Phase::Drafting && self.g.save.learned & LEARN_DRAFT == 0 {
-            return Some(format!(
-                "{} {} {}  PICK A MODIFIER",
-                self.g.input_label("draft_1"),
-                self.g.input_label("draft_2"),
-                self.g.input_label("draft_3")
-            ));
-        }
-        let learned = self.g.save.learned;
-        if self.g.drag_aiming()
-            && learned & (LEARN_ANGLE | LEARN_POWER | LEARN_FIRE)
-                != LEARN_ANGLE | LEARN_POWER | LEARN_FIRE
-        {
-            return Some(if self.g.touch.drag().is_some() {
-                "LET GO TO FIRE  PULL BACK TO CANCEL".into()
-            } else {
-                "DRAG BACK FROM OPEN GROUND TO AIM".into()
-            });
-        }
-        if learned & LEARN_ANGLE == 0 {
-            Some(format!(
-                "{} / {}  SET ANGLE",
-                self.g.input_label("left"),
-                self.g.input_label("right")
-            ))
-        } else if learned & LEARN_POWER == 0 {
-            Some(format!(
-                "{} / {}  SET POWER",
-                self.g.input_label("up"),
-                self.g.input_label("down")
-            ))
-        } else if learned & LEARN_FIRE == 0 {
-            // On a touchscreen the button already says FIRE.
-            if self.g.touch_active {
-                Some("TAP FIRE".into())
-            } else {
-                Some(format!("{}  FIRE", self.g.input_label("fire")))
-            }
-        } else if learned & LEARN_CRATER == 0 {
-            Some("CRATERS PERSIST - CORRECT FROM THE LAST SHOT".into())
-        } else if learned & LEARN_WIND == 0 {
-            wind.filter(|w| w.abs() > 0.01)
-                .map(|_| "READ THE WINDSOCK - CORRECT AGAINST IT".into())
-        } else if learned & LEARN_SHELLS == 0 {
-            Some("SHELLS ARE THE RUN CLOCK - SPEND CAREFULLY".into())
-        } else {
-            None
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn render_hud(
         &mut self,
@@ -2300,7 +1655,7 @@ impl SaltLine {
             let text = self.g.status.clone();
             let x = (w - crate::font::small_width(&text) as i32) / 2;
             self.canvas.text_small(x, 24 + ey, &text, alert);
-        } else if let Some(text) = self.onboarding_prompt(phase, wind) {
+        } else if let Some(text) = self.g.onboarding_prompt(phase, wind) {
             let x = (w - crate::font::small_width(&text) as i32) / 2;
             self.canvas.text_small(x.max(2), 24 + ey, &text, alert);
         }
@@ -2467,412 +1822,6 @@ fn preview_path(
         ArcHint::Full | ArcHint::Wind => path.len(),
     };
     (path, upto)
-}
-
-// ------------------------------------------------- settings and crash reports
-
-impl SaltLine {
-    /// Write pending settings once they settle, or as soon as the player
-    /// leaves Controls. Not every volume repeat: see `durable::Debounce`.
-    fn tick_settings(&mut self, delta: f64) {
-        if self.g.settings.tick(delta, self.g.mode == Mode::Controls) {
-            self.write_settings();
-        }
-    }
-
-    /// Write pending settings now, if there are any: focus loss, pause, close.
-    fn flush_settings(&mut self) {
-        if self.g.settings.take() {
-            self.write_settings();
-        }
-    }
-
-    fn write_settings(&mut self) {
-        // After a panic nothing in memory is trusted enough to write.
-        if crash::panicked() {
-            return;
-        }
-        if !save::store(&self.g.save) {
-            self.note_not_saved("SETTINGS NOT SAVED");
-        }
-    }
-
-    /// Say a write failed. A save from a newer build is never written by this
-    /// one (by design, `save::store`), so every change would fail; that gets
-    /// one note saying why, once a session, instead of a complaint each time.
-    fn note_not_saved(&mut self, what: &str) {
-        if !self.g.save.from_the_future {
-            self.note(what.into());
-        } else if !self.g.future_noted {
-            self.g.future_noted = true;
-            self.note("SAVE IS FROM A NEWER VERSION".into());
-        }
-    }
-
-    /// Keep the crash hook's picture of the run current. Taken before this
-    /// frame's input, so a panic inside `fire` still reports the aim it fired.
-    fn note_crash_context(&self) {
-        crash::note(
-            self.g.mode_name(),
-            self.g.run.as_ref(),
-            (self.g.angle_ticks, self.g.power_ticks),
-            self.g.resumed,
-        );
-    }
-
-    /// Pick up a report the last session left, for the title screen to offer.
-    fn find_last_crash(&mut self) {
-        let Some(path) = save::on_disk(crash::REPORT_PATH) else {
-            return;
-        };
-        crash::set_report_file(path.clone());
-        self.g.last_crash = std::fs::read_to_string(path)
-            .ok()
-            .filter(|t| !t.trim().is_empty());
-    }
-
-    fn copy_last_crash(&mut self) {
-        let Some(text) = self.g.last_crash.clone() else {
-            return;
-        };
-        DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
-        self.play_sound(Sound::Ui);
-        if !self.g.crash_copied {
-            self.g.crash_copied = true;
-            self.retire_crash_file();
-        }
-    }
-
-    /// The player has moved on from last session's report (started a run):
-    /// stop offering it. The file is kept as `crash-old.txt`, not deleted.
-    fn retire_last_crash(&mut self) {
-        if self.g.last_crash.take().is_some() && !self.g.crash_copied {
-            self.retire_crash_file();
-        }
-    }
-
-    fn retire_crash_file(&self) {
-        if let (Some(from), Some(to)) = (
-            save::on_disk(crash::REPORT_PATH),
-            save::on_disk(crash::OLD_REPORT_PATH),
-        ) {
-            if let Err(e) = std::fs::rename(&from, &to) {
-                godot_warn!("salt-line: could not move {}: {e}", crash::REPORT_PATH);
-            }
-        }
-    }
-
-    /// A panic has happened somewhere in the Rust side. gdext caught it, but
-    /// the state it left is not to be trusted, so the game stops here: no sim
-    /// steps, no saves (`save::store` refuses too), just the report and a
-    /// way out.
-    fn broken_frame(&mut self, delta: f64) {
-        // Wall clock still runs, for `--salt-shot-at` captures of this screen.
-        self.elapsed += delta;
-        if !self.g.broken {
-            // Whatever the game last said no longer applies.
-            self.g.broken = true;
-            self.g.status_time = 0.0;
-        }
-        self.g.status_time = (self.g.status_time - delta).max(0.0);
-        self.begin_input_frame(delta);
-        self.apply_frame_cap();
-        if self.g.action_pressed(4, "copy") {
-            // Only a finished report: a panic off the main thread can stop the
-            // game while the hook is still writing, and half a report copied
-            // looks like a whole one.
-            if crash::report_ready() {
-                let text = crash::report()
-                    .unwrap_or_else(|| "SALT LINE CRASH REPORT\n(report unavailable)\n".into());
-                DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
-                self.note("REPORT COPIED".into());
-            } else {
-                self.note("REPORT NOT READY - TRY AGAIN".into());
-            }
-        } else if self.g.action_pressed(2, "back") {
-            self.base().get_tree().quit();
-        }
-        self.g.back_requested = false;
-
-        self.touch_buttons.clear();
-        let pal = self.pal.clone();
-        self.canvas.fill(pal.get(slot::UI_BG));
-        let (fg, dim, alert) = (
-            pal.get(slot::UI_FG),
-            pal.get(slot::SKY_LO),
-            pal.get(slot::ALERT),
-        );
-        let mut y = 30;
-        self.centred(y, "SOMETHING BROKE", alert);
-        y += 14;
-        self.centred(y, "THE GAME STOPPED RATHER THAN CARRY ON WRONG.", fg);
-        y += 8;
-        self.centred(
-            y,
-            "A REPORT WAS SAVED ON THIS DEVICE. NOTHING WAS SENT.",
-            dim,
-        );
-        y += 8;
-        self.centred(y, "PASTE IT INTO A BUG REPORT ON GITHUB.", dim);
-        y += 16;
-        let copy = self.g.input_label("copy");
-        y = self.menu_row(
-            y,
-            "copy",
-            &format!("{copy}      COPY REPORT"),
-            "COPY REPORT",
-            fg,
-        );
-        let back = self.g.input_label("back");
-        y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", fg);
-        y += 4;
-        if self.g.status_time > 0.0 {
-            let text = self.g.status.clone();
-            self.centred(y, &text, alert);
-        }
-        self.upload();
-        self.maybe_screenshot();
-        self.base_mut().queue_redraw();
-    }
-}
-
-// ------------------------------------------------------- lifecycle and resume
-
-impl SaltLine {
-    /// Focus lost, or the operating system paused the app: stop the clock on
-    /// a live screen, so a shot in the air or a clear in progress is still
-    /// there to watch on return. Not during a draft, where nothing moves and
-    /// the cards themselves say where the player was; a pause screen over
-    /// them would only cost a tap. Not for the dev autopilot or screenshots,
-    /// which nobody is watching with focus.
-    fn auto_pause(&mut self) {
-        if self.g.mode != Mode::Playing || self.g.auto || self.shot_path.is_some() {
-            return;
-        }
-        if self.g.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
-            return;
-        }
-        self.g.touch.cancel_drag();
-        self.g.mode = Mode::Paused;
-        // From a notification, outside the frame's before/after compare.
-        self.redraw.mark();
-    }
-
-    /// Size the buffer for a run: the recorded width for a resumed one, the
-    /// device's for anything else. A resumed run generated at another width
-    /// keeps it (DESIGN §9.2: a replay must use it), shown letterboxed
-    /// instead of stretched across the window.
-    fn set_run_width(&mut self, width: Option<usize>) {
-        let device = self.g.pick_width();
-        let want = width.map_or(device, |w| w as i32);
-        self.g.buffer_w = want;
-        self.g.kept_width = want != device;
-        let aspect = if want == device {
-            ContentScaleAspect::EXPAND
-        } else {
-            ContentScaleAspect::KEEP
-        };
-        if let Some(mut window) = self.base().get_window() {
-            window.set_content_scale_aspect(aspect);
-        }
-    }
-
-    /// A new run replaces whatever was saved: it is written on the next
-    /// frame, log and all (empty, at the start).
-    fn begin_persisting(&mut self) {
-        self.g.resumable = None;
-        self.g.discard_armed = None;
-        self.g.run_saved_len = None;
-        self.g.run_persist = true;
-        self.g.resumed = false;
-    }
-
-    /// The run is over and on the board: nothing is left to resume.
-    fn stop_persisting(&mut self) {
-        if self.g.run_persist {
-            self.discard_run_file();
-        }
-        self.g.run_persist = false;
-        self.g.resumable = None;
-    }
-
-    /// Make sure no run file is left to resume or score. If a file cannot be
-    /// deleted, the run file is overwritten with nothing, which `judge` reads
-    /// as no run: a finished log must never survive to be scored twice.
-    fn discard_run_file(&self) {
-        save::remove(RUN_TEMP_PATH);
-        save::remove(RUN_PATH);
-        if save::read(RUN_PATH).is_some() || save::read(RUN_TEMP_PATH).is_some() {
-            godot_warn!("salt-line: could not delete {RUN_PATH}; blanking it");
-            save::write(RUN_PATH, RUN_TEMP_PATH, "");
-        }
-    }
-
-    /// A new run replaces the saved one, so over a saved run the first press
-    /// of a new-run action only asks, and the second goes ahead. Returns
-    /// whether to go ahead.
-    fn confirm_discard(&mut self, what: &'static str) -> bool {
-        if self.g.resumable.is_none() || self.g.discard_armed == Some(what) {
-            self.g.discard_armed = None;
-            return true;
-        }
-        self.g.discard_armed = Some(what);
-        self.play_sound(Sound::Ui);
-        self.redraw.mark();
-        false
-    }
-
-    /// Write `user://run.txt` whenever the log has grown: a shot fired or a
-    /// draft taken (a reposition rides in the next shot's entry). Checked
-    /// every frame, written only on a change.
-    fn persist_run(&mut self) {
-        if !self.g.run_persist || crash::panicked() {
-            return;
-        }
-        let Some(run) = self.g.run.as_ref() else {
-            return;
-        };
-        let len = run.log.len();
-        if self.g.run_saved_len == Some(len) {
-            return;
-        }
-        let line = resume::Saved::of(run, self.g.daily).to_line();
-        // Tried once per change: a failed write is logged by `save::write`,
-        // and the next shot tries again.
-        save::write(RUN_PATH, RUN_TEMP_PATH, &line);
-        self.g.run_saved_len = Some(len);
-    }
-
-    /// Quit to title keeps the run. It is already on disk, so CONTINUE picks
-    /// it up this session exactly as it would after the app was killed; only
-    /// starting another run gives it up. Stepping away should not cost a run
-    /// the player only wanted a break from.
-    ///
-    /// A run that is already over (the last shell was in the air when the
-    /// player paused) is scored now instead, and shows its result: leaving it
-    /// on disk would let the next new run overwrite an unrecorded score.
-    fn suspend_run(&mut self) {
-        if self.g.run.as_ref().is_some_and(|r| r.is_over()) {
-            self.g.anim = None;
-            self.g.clear_hold = 0.0;
-            self.finish_run();
-            return;
-        }
-        if !self.g.run_persist {
-            return;
-        }
-        self.g.resumable = self
-            .g
-            .run
-            .as_ref()
-            .map(|r| resume::Saved::of(r, self.g.daily));
-    }
-
-    /// At launch: offer the saved run, score one that had already ended, or
-    /// throw away one this build must not replay.
-    ///
-    /// The file is moved aside to `RUN_LOADING_PATH` while it is rebuilt and
-    /// only put back once the rebuild succeeds, so a log that brings the sim
-    /// down costs one crash, not one every launch.
-    fn find_saved_run(&mut self) {
-        if save::read(RUN_LOADING_PATH).is_some() {
-            // The last launch died rebuilding it.
-            godot_warn!("salt-line: discarding {RUN_LOADING_PATH}: a rebuild did not finish");
-            save::remove(RUN_LOADING_PATH);
-            self.discard_run_file();
-            self.note(resume::Stale::Diverged.note().into());
-            self.g.status_time = 6.0;
-            return;
-        }
-        let (path, text) = match save::read(RUN_PATH) {
-            Some(t) => (RUN_PATH, t),
-            None => match save::read(RUN_TEMP_PATH) {
-                Some(t) => (RUN_TEMP_PATH, t),
-                None => return,
-            },
-        };
-        if text.trim().is_empty() {
-            return;
-        }
-        save::rename(path, RUN_LOADING_PATH);
-        match resume::judge(Some(&text)) {
-            Found::Nothing => {
-                save::rename(RUN_LOADING_PATH, RUN_PATH);
-            }
-            Found::Continue(saved) => {
-                save::rename(RUN_LOADING_PATH, RUN_PATH);
-                self.g.resumable = Some(saved);
-            }
-            Found::Finished(saved, run) => {
-                // Gone before the score goes on the board, as in `finish_run`:
-                // a crash in between loses it rather than recording it twice.
-                save::remove(RUN_LOADING_PATH);
-                self.discard_run_file();
-                let (screens, shells, shots) = run.score();
-                let entry = Entry {
-                    seed: saved.seed,
-                    screens,
-                    shells,
-                    shots,
-                    daily: saved.daily,
-                };
-                if save::record(&mut self.g.save, entry).saved {
-                    self.note("LAST RUN SCORED".into());
-                } else {
-                    // Kept for a launch that can record it.
-                    save::write(RUN_PATH, RUN_TEMP_PATH, &text);
-                    self.note_not_saved("SCORE NOT SAVED");
-                }
-            }
-            Found::Discard(why) => {
-                godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}");
-                save::remove(RUN_LOADING_PATH);
-                self.discard_run_file();
-                self.note(why.note().into());
-                self.g.status_time = 6.0;
-            }
-        }
-    }
-
-    /// Rebuild the saved run and drop the player back in where it stood.
-    fn continue_run(&mut self) {
-        let Some(saved) = self.g.resumable.take() else {
-            return;
-        };
-        let Some(run) = saved.reconstruct() else {
-            self.discard_run_file();
-            self.note(resume::Stale::Diverged.note().into());
-            return;
-        };
-        self.set_run_width(Some(saved.width));
-        (self.g.angle_ticks, self.g.power_ticks) = saved.aim().unwrap_or((900, 600));
-        self.g.anim = None;
-        self.g.last_arc.clear();
-        self.g.clear_hold = 0.0;
-        self.g.cam_x = 0;
-        self.g.cam_target = 0.0;
-        self.g.daily = saved.daily;
-        self.g.last_seed = saved.seed;
-        self.g.low_shell_warned = run.shells < 10;
-        self.retire_last_crash();
-        let screen = run.screen_index;
-        // What is on disk is this run, as rebuilt.
-        self.g.run_saved_len = Some(run.log.len());
-        self.g.run_persist = true;
-        self.g.resumed = true;
-        self.g.run = Some(run);
-        self.g.mode = Mode::Playing;
-        self.preview.clear();
-        self.redraw.mark();
-        self.play_sound(Sound::Ui);
-        // Buffer size for the loadout.
-        self.after_screen_change();
-        self.note(format!(
-            "SCREEN {}  SEED {}",
-            screen + 1,
-            format_seed(saved.seed)
-        ));
-    }
 }
 
 /// The keys the core reads, and the engine's names for them.
