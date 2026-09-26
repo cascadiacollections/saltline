@@ -18,12 +18,12 @@ use salt_line_sim::ballistics::{self, End, FireOptions, Shot, Trace};
 use salt_line_sim::dmath;
 use salt_line_sim::modifiers::{flags, Loadout, Modifier};
 use salt_line_sim::run::{
-    self, buffer_width, daily_seed, format_seed, parse_seed, Phase, RunState, Screen, StructState,
+    self, daily_seed, format_seed, parse_seed, Phase, RunState, Screen, StructState,
 };
-use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_MIN};
+use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H};
 
+use crate::app::*;
 use crate::crash;
-use crate::durable::Debounce;
 use crate::frame::{self, DisplayPoll, Memo, Redraw};
 use crate::keypad::{self, Focus};
 use crate::pads::Pads;
@@ -34,113 +34,13 @@ use crate::presentation::{
 };
 use crate::raster::{self, Canvas, View};
 use crate::resume::{self, Found, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
-use crate::save::{self, Entry, Save};
+use crate::save::{self, Entry};
 use crate::save_format::{ArcHint, TouchAim};
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
-use crate::touch::{Button, Rect, TouchPad};
+use crate::touch::{Button, Rect};
 
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
-
-/// Long Lens zooms the buffer out one step vertically. DESIGN §5.1: it changes
-/// the internal buffer size, never the sprite scale.
-const LONG_LENS_H: i32 = 216;
-
-/// How long a cleared screen is held before the run moves on.
-const CLEAR_HOLD: f64 = 0.55;
-/// Topple time before the rubble sprite replaces the standing one.
-const TOPPLE_TIME: f64 = 0.22;
-/// Key repeat: delay before repeating, then interval.
-const REPEAT_DELAY: f64 = 0.28;
-
-const REPEAT_RATE: f64 = 0.035;
-
-/// Touch aiming until the player picks one in Controls. Undecided: buttons are
-/// the conservative choice while drag aiming is new.
-const DEFAULT_TOUCH_AIM: TouchAim = TouchAim::Buttons;
-/// The drag arc preview until the player picks one. Short keeps reading the
-/// wind the player's job (DESIGN §2.5).
-const DEFAULT_ARC_HINT: ArcHint = ArcHint::Short;
-/// Seconds of flight the Short preview shows, so its length reads as power.
-const SHORT_ARC_SECONDS: f64 = 0.3;
-/// The last shot's arc stays on screen until the player turns it off.
-const DEFAULT_LAST_ARC: bool = true;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Mode {
-    Title,
-    Controls,
-    SeedEntry,
-    Playing,
-    Paused,
-    GameOver,
-}
-
-/// A shot being replayed to the player. The sim has already resolved it.
-struct Anim {
-    traces: Vec<Trace>,
-    /// The screen as it looked before the shot, so craters appear on impact
-    /// rather than the instant the trigger is pulled.
-    before: Screen,
-    /// Sim seconds elapsed in the replay.
-    t: f64,
-    longest: f64,
-    collapsed: Vec<usize>,
-    /// Time since the last shell landed.
-    settled: f64,
-    impact_played: bool,
-    collapse_played: bool,
-}
-
-#[derive(Clone, Copy)]
-enum Sound {
-    Fire,
-    Flight,
-    Terrain,
-    Structure,
-    Ricochet,
-    Airburst,
-    Collapse,
-    Draft,
-    LowShell,
-    Ui,
-}
-
-impl Sound {
-    const ALL: [Sound; 10] = [
-        Self::Fire,
-        Self::Flight,
-        Self::Terrain,
-        Self::Structure,
-        Self::Ricochet,
-        Self::Airburst,
-        Self::Collapse,
-        Self::Draft,
-        Self::LowShell,
-        Self::Ui,
-    ];
-
-    fn file(self) -> &'static str {
-        match self {
-            Self::Fire => "fire",
-            Self::Flight => "flight",
-            Self::Terrain => "terrain_impact",
-            Self::Structure => "structure_impact",
-            Self::Ricochet => "ricochet",
-            Self::Airburst => "airburst",
-            Self::Collapse => "collapse",
-            Self::Draft => "draft",
-            Self::LowShell => "low_shell",
-            Self::Ui => "ui",
-        }
-    }
-}
-
-impl Anim {
-    fn done(&self) -> bool {
-        self.t >= self.longest
-    }
-}
 
 /// Everything the drag preview's trajectory depends on. The terrain and the
 /// targets only change when a shot lands (`shots`) or the screen does
@@ -161,31 +61,12 @@ struct PreviewKey {
 /// A cached preview: the primary shell's path and how much of it to draw.
 type Preview = (Vec<Vec2>, usize);
 
-/// See `SaltLine::frame_state`.
-#[derive(PartialEq)]
-struct FrameState {
-    mode: Mode,
-    aim: (i32, i32),
-    cam_x: i32,
-    buffer: (i32, i32, (i32, i32)),
-    devices: (bool, bool),
-    run: Option<(u32, Phase, i32, u32, u64, u64)>,
-    seed: (usize, Focus),
-    settings: (
-        u8,
-        bool,
-        Option<bool>,
-        Option<TouchAim>,
-        Option<ArcHint>,
-        u32,
-    ),
-    misc: (bool, bool, bool),
-}
-
 #[derive(GodotClass)]
 #[class(base = Node2D)]
 pub struct SaltLine {
     base: Base<Node2D>,
+    /// Everything the game knows that is not the engine's. See `app`.
+    g: Game,
 
     pal: Palette,
     sprites: Option<Sprites>,
@@ -208,34 +89,8 @@ pub struct SaltLine {
     fps_cap: i32,
     /// When to read the display's safe area again, and what it last said.
     display: DisplayPoll,
-    window_size: Vector2i,
-    cutout: (i32, i32),
     /// The drag preview's trajectory, recomputed only when its inputs change.
     preview: Memo<PreviewKey, Preview>,
-
-    buffer_w: i32,
-    buffer_h: i32,
-    /// Camera x is an integer, not a rounded float. DESIGN §5.1 wants it
-    /// quantized to whole pixels every frame; keeping the only camera state in
-    /// `i32` means there is no float position to forget to round.
-    cam_x: i32,
-    cam_target: f64,
-
-    mode: Mode,
-    run: Option<RunState>,
-    anim: Option<Anim>,
-    clear_hold: f64,
-    /// Aim inputs, in the sim's tick space.
-    angle_ticks: i32,
-    power_ticks: i32,
-
-    save: Save,
-    seed_text: String,
-    daily: bool,
-    last_seed: u64,
-    status: String,
-    status_time: f64,
-    debug: bool,
 
     /// Key hold-to-repeat state.
     keys: Vec<(Key, RepeatState)>,
@@ -254,34 +109,9 @@ pub struct SaltLine {
     pad_keys: Vec<(JoyButton, RepeatState)>,
     /// Hold-to-repeat for the left stick, per action slot.
     pad_repeat: [RepeatState; 8],
-    /// The controller's place on the seed keypad.
-    seed_focus: Focus,
-    controller_active: bool,
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
-    touch: TouchPad,
-    /// The aim a touch drag started from, put back if the pull is cancelled.
-    drag_from: Option<(i32, i32)>,
-    /// The primary shell's path from the last shot. Drawn only while the sim
-    /// still has a `last_apex`, so it goes when the screen does.
-    last_arc: Vec<Vec2>,
-    /// Showing touch controls. On from the first touch, off again at the next
-    /// key or button press, like `controller_active`.
-    touch_active: bool,
-    /// The platform's back gesture (Android), taken as the `back` action.
-    back_requested: bool,
-    /// Running on a phone or tablet.
-    mobile: bool,
-    /// Extra inset (from the sides, from top and bottom) for edge-anchored HUD
-    /// and buttons, in buffer pixels, so nothing crowds a phone's rounded
-    /// screen corners. Zero on desktop.
-    corner_pad: (i32, i32),
-    /// Buffer pixels of black kept clear on the left and right for a display
-    /// cutout (a phone's camera hole in landscape). The game node is offset
-    /// past the left one.
-    letterbox: (i32, i32),
     audio: Vec<Option<Gd<AudioStreamPlayer>>>,
-    low_shell_warned: bool,
 
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
     /// native resolution, and quit. How the pixel output gets checked without
@@ -292,44 +122,6 @@ pub struct SaltLine {
     elapsed: f64,
     /// `--salt-shot-at <seconds>`: when to grab the screenshot.
     shot_at: f64,
-    /// `--salt-auto`: fire a solver candidate at the nearest standing target
-    /// and take every draft. Lets a build be watched, or captured, without a
-    /// hand on the keyboard.
-    auto: bool,
-    auto_cooldown: f64,
-    /// `--salt-miss`: throw the first shot of each screen away, so craters,
-    /// chalk marks and the multi-shot path get exercised too.
-    auto_miss: bool,
-    /// `--salt-hold-draft`: leave the draft on screen instead of taking an
-    /// offer, so the cards can be looked at.
-    auto_hold_draft: bool,
-
-    /// Settings changed but not yet written. See `durable::Debounce`.
-    settings: Debounce,
-    /// Last session's crash report, if it left one (`user://crash.txt`).
-    last_crash: Option<String>,
-    /// The player has copied `last_crash` this session.
-    crash_copied: bool,
-    /// Told the player this session that their save is from a newer build.
-    future_noted: bool,
-    /// Showing the error screen. See `broken_frame`.
-    broken: bool,
-    /// The saved run CONTINUE would rebuild, already checked. See `resume`.
-    resumable: Option<resume::Saved>,
-    /// Log length last written to `user://run.txt`; `None` before the first
-    /// write of this run.
-    run_saved_len: Option<usize>,
-    /// This run is kept in `user://run.txt`. Off for a `--salt-screen` jump,
-    /// which its log cannot rebuild.
-    run_persist: bool,
-    /// This run was rebuilt by CONTINUE, for the crash report.
-    resumed: bool,
-    /// The buffer is at a resumed run's width, not the device's, and the
-    /// window letterboxes it (`set_run_width`).
-    kept_width: bool,
-    /// Which new-run action has been pressed once over a saved run and is
-    /// waiting for the second press. See `confirm_discard`.
-    discard_armed: Option<&'static str>,
 }
 
 #[godot_api]
@@ -337,6 +129,7 @@ impl INode2D for SaltLine {
     fn init(base: Base<Node2D>) -> Self {
         SaltLine {
             base,
+            g: Game::default(),
             pal: Palette::default(),
             sprites: None,
             canvas: Canvas::new(320, 180),
@@ -348,26 +141,7 @@ impl INode2D for SaltLine {
             project_fps: 0,
             fps_cap: 0,
             display: DisplayPoll::default(),
-            window_size: Vector2i::ZERO,
-            cutout: (0, 0),
             preview: Memo::default(),
-            buffer_w: 320,
-            buffer_h: SCREEN_H as i32,
-            cam_x: 0,
-            cam_target: 0.0,
-            mode: Mode::Title,
-            run: None,
-            anim: None,
-            clear_hold: 0.0,
-            angle_ticks: 900,
-            power_ticks: 600,
-            save: Save::default(),
-            seed_text: String::new(),
-            daily: true,
-            last_seed: 0,
-            status: String::new(),
-            status_time: 0.0,
-            debug: false,
             keys: Vec::new(),
             key_queue: Vec::new(),
             key_presses: Vec::new(),
@@ -377,58 +151,32 @@ impl INode2D for SaltLine {
             pad_prune: 0.0,
             pad_keys: Vec::new(),
             pad_repeat: [RepeatState::default(); 8],
-            seed_focus: Focus::default(),
-            controller_active: false,
             touch_buttons: Vec::new(),
-            touch: TouchPad::default(),
-            drag_from: None,
-            last_arc: Vec::new(),
-            touch_active: false,
-            back_requested: false,
-            mobile: false,
-            corner_pad: (0, 0),
-            letterbox: (0, 0),
             audio: Vec::new(),
-            low_shell_warned: false,
             shot_path: None,
             frames: 0,
             elapsed: 0.0,
             shot_at: 0.05,
-            auto: false,
-            auto_cooldown: 0.0,
-            auto_miss: false,
-            auto_hold_draft: false,
-            settings: Debounce::default(),
-            last_crash: None,
-            crash_copied: false,
-            broken: false,
-            future_noted: false,
-            resumable: None,
-            run_saved_len: None,
-            run_persist: false,
-            resumed: false,
-            kept_width: false,
-            discard_armed: None,
         }
     }
 
     fn ready(&mut self) {
         // Phones and tablets start with touch controls; desktops show them only
         // once the screen is actually touched.
-        self.mobile = Os::singleton().has_feature("mobile");
-        self.touch_active = self.mobile;
-        if self.mobile {
+        self.g.mobile = Os::singleton().has_feature("mobile");
+        self.g.touch_active = self.g.mobile;
+        if self.g.mobile {
             // Rounded screen corners (Pixel 10: 138 px radius at 1080 px tall):
             // 10 buffer pixels in from the side and 6 down keeps HUD text and
             // buttons comfortably inside the curve without raising the buttons
             // off the ground.
-            self.corner_pad = (10, 6);
+            self.g.corner_pad = (10, 6);
             // What shows beside the playfield is a letterbox, not sky.
             RenderingServer::singleton().set_default_clear_color(Color::BLACK);
         }
         self.pal = Palette::load(PALETTE_PATH);
         self.sprites = Some(Sprites::load_all(SPRITE_DIR));
-        self.save = save::load();
+        self.g.save = save::load();
         self.find_last_crash();
         self.find_saved_run();
         self.setup_audio();
@@ -438,7 +186,7 @@ impl INode2D for SaltLine {
         // And again on the first frame: on a phone the safe area may not be
         // settled yet while the scene is still coming up.
         self.display.invalidate();
-        self.buffer_w = self.pick_width();
+        self.g.buffer_w = self.g.pick_width();
         self.apply_buffer_size();
         if let Some(dir) = Self::cmdline_value("--salt-gallery") {
             self.gallery(&dir);
@@ -448,9 +196,9 @@ impl INode2D for SaltLine {
         self.shot_at = Self::cmdline_value("--salt-shot-at")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0.05);
-        self.auto = Self::cmdline_flag("--salt-auto");
-        self.auto_miss = Self::cmdline_flag("--salt-miss");
-        self.auto_hold_draft = Self::cmdline_flag("--salt-hold-draft");
+        self.g.auto = Self::cmdline_flag("--salt-auto");
+        self.g.auto_miss = Self::cmdline_flag("--salt-miss");
+        self.g.auto_hold_draft = Self::cmdline_flag("--salt-hold-draft");
         if let Some(seed) = Self::seed_arg() {
             self.start_run(seed, false);
             if let Some(n) = Self::screen_arg() {
@@ -476,17 +224,17 @@ impl INode2D for SaltLine {
         // a slow frame lands at the same point of an animation.
         let delta = resume::frame_delta(delta);
         self.elapsed += delta;
-        self.status_time = (self.status_time - delta).max(0.0);
+        self.g.status_time = (self.g.status_time - delta).max(0.0);
         self.poll_display(delta);
-        let before = self.frame_state();
+        let before = self.g.frame_state();
         self.handle_input(delta);
-        if self.auto {
+        if self.g.auto {
             self.autopilot(delta);
         }
         self.step(delta);
         self.persist_run();
         self.tick_settings(delta);
-        let after = self.frame_state();
+        let after = self.g.frame_state();
         if after != before {
             self.redraw.mark();
             // Between runs the buffer may take a new width: look at the
@@ -563,7 +311,7 @@ impl INode2D for SaltLine {
                     .try_cast::<InputEventScreenDrag>()
                     .map(|d| d.get_position())
                     .unwrap_or_else(|_| drag.get_position());
-                self.touch.finger_moved(drag.get_index(), pos.x, pos.y);
+                self.g.touch.finger_moved(drag.get_index(), pos.x, pos.y);
                 return;
             }
             Err(event) => event,
@@ -571,7 +319,7 @@ impl INode2D for SaltLine {
         let Ok(touch) = event.try_cast::<InputEventScreenTouch>() else {
             return;
         };
-        self.touch_active = true;
+        self.g.touch_active = true;
         // The one texture is drawn at the origin at 1:1, so the node's local
         // space is buffer pixels whatever the window is scaled to.
         let local = self
@@ -582,22 +330,23 @@ impl INode2D for SaltLine {
             .map(|t| t.get_position())
             .unwrap_or_else(|_| touch.get_position());
         if touch.is_pressed() {
-            self.touch
+            self.g
+                .touch
                 .finger_down(touch.get_index(), pos.x, pos.y, &self.touch_buttons);
         } else {
-            self.touch.finger_up(touch.get_index());
+            self.g.touch.finger_up(touch.get_index());
         }
     }
 
     fn on_notification(&mut self, what: CanvasItemNotification) {
         match what {
             CanvasItemNotification::WM_GO_BACK_REQUEST => {
-                self.back_requested = true;
+                self.g.back_requested = true;
                 self.redraw.mark();
             }
             CanvasItemNotification::WM_WINDOW_FOCUS_OUT
             | CanvasItemNotification::APPLICATION_FOCUS_OUT => {
-                self.touch.release_all();
+                self.g.touch.release_all();
                 self.auto_pause();
                 self.flush_settings();
                 self.redraw.mark();
@@ -623,7 +372,7 @@ impl INode2D for SaltLine {
     }
 
     fn unhandled_input(&mut self, event: Gd<InputEvent>) {
-        if self.mode != Mode::SeedEntry {
+        if self.g.mode != Mode::SeedEntry {
             return;
         }
         let Ok(key) = event.try_cast::<InputEventKey>() else {
@@ -636,13 +385,13 @@ impl INode2D for SaltLine {
         let keycode = key.get_keycode();
         match keycode {
             Key::BACKSPACE => {
-                self.seed_text.pop();
+                self.g.seed_text.pop();
             }
             Key::ENTER | Key::KP_ENTER => self.start_seeded_run(),
             Key::ESCAPE => self.leave_seed_entry(),
             _ if (32..127).contains(&unicode) => {
-                if self.seed_text.chars().count() < 20 {
-                    self.seed_text.push(unicode as u8 as char);
+                if self.g.seed_text.chars().count() < 20 {
+                    self.g.seed_text.push(unicode as u8 as char);
                 }
             }
             // Arrows and the like fall through to move the keypad focus.
@@ -660,22 +409,22 @@ impl SaltLine {
     /// Days since the Unix epoch. The clock is read here, in the presentation
     /// layer — nothing in the sim ever touches system time.
     fn start_seeded_run(&mut self) {
-        let seed = if self.seed_text.trim().is_empty() {
+        let seed = if self.g.seed_text.trim().is_empty() {
             daily_seed(Self::today())
         } else {
-            parse_seed(&self.seed_text)
+            parse_seed(&self.g.seed_text)
         };
         self.start_run(seed, false);
     }
 
     fn leave_seed_entry(&mut self) {
-        self.mode = Mode::Title;
+        self.g.mode = Mode::Title;
     }
 
     fn open_seed_entry(&mut self) {
-        self.seed_text.clear();
-        self.seed_focus = Focus::default();
-        self.mode = Mode::SeedEntry;
+        self.g.seed_text.clear();
+        self.g.seed_focus = Focus::default();
+        self.g.mode = Mode::SeedEntry;
     }
 
     fn today() -> u64 {
@@ -683,40 +432,18 @@ impl SaltLine {
         (secs / 86400.0).floor().max(0.0) as u64
     }
 
-    /// Internal buffer width. DESIGN §5.1: fix the height at 180, let the
-    /// width float 320..400 by device aspect, and generate terrain to fill it.
-    fn pick_width(&self) -> i32 {
-        let size = self.window_size;
-        let (l, r) = self.cutout;
-        let usable = size.x - l - r;
-        let aspect = if size.y > 0 {
-            usable as f64 / size.y as f64
-        } else {
-            16.0 / 9.0
-        };
-        let want = (SCREEN_H as f64 * aspect).round() as usize;
-        buffer_width(want.clamp(SCREEN_W_MIN, SCREEN_W_MAX)) as i32
-    }
-
-    fn long_lens(&self) -> bool {
-        self.run
-            .as_ref()
-            .map(|r| r.loadout.has_flag(flags::LONG_LENS))
-            .unwrap_or(false)
-    }
-
     fn apply_buffer_size(&mut self) {
-        let h = if self.long_lens() {
+        let h = if self.g.long_lens() {
             LONG_LENS_H
         } else {
             SCREEN_H as i32
         };
-        self.buffer_h = h;
-        self.canvas.resize(self.buffer_w, h);
-        self.letterbox = self.letterbox_now();
-        let (l, r) = self.letterbox;
+        self.g.buffer_h = h;
+        self.canvas.resize(self.g.buffer_w, h);
+        self.g.letterbox = self.g.letterbox_now();
+        let (l, r) = self.g.letterbox;
         if let Some(mut window) = self.base().get_window() {
-            window.set_content_scale_size(Vector2i::new(self.buffer_w + l + r, h));
+            window.set_content_scale_size(Vector2i::new(self.g.buffer_w + l + r, h));
         }
         self.base_mut().set_position(Vector2::new(l as f32, 0.0));
         self.redraw.mark();
@@ -725,8 +452,9 @@ impl SaltLine {
     /// Read the window size and the cutout it leaves, for `pick_width` and
     /// `letterbox_now`. Not every frame: see `poll_display`.
     fn read_display(&mut self) {
-        self.window_size = DisplayServer::singleton().window_get_size();
-        self.cutout = self.cutout_px();
+        let size = DisplayServer::singleton().window_get_size();
+        self.g.window_size = (size.x, size.y);
+        self.g.cutout = self.cutout_px();
     }
 
     /// Follow the display every frame from the window size, which is cheap,
@@ -735,20 +463,20 @@ impl SaltLine {
     /// platform round trip on a phone.
     fn poll_display(&mut self, delta: f64) {
         let size = DisplayServer::singleton().window_get_size();
-        self.window_size = size;
+        self.g.window_size = (size.x, size.y);
         if self.display.check((size.x, size.y), delta) {
-            self.cutout = self.cutout_px();
+            self.g.cutout = self.cutout_px();
         }
-        let want_w = self.pick_width();
-        let in_run = matches!(self.mode, Mode::Playing | Mode::Paused);
-        if !in_run && self.kept_width {
+        let want_w = self.g.pick_width();
+        let in_run = matches!(self.g.mode, Mode::Playing | Mode::Paused);
+        if !in_run && self.g.kept_width {
             // A resumed run's width is done with: back to the device's.
             self.set_run_width(None);
             self.apply_buffer_size();
-        } else if self.run.is_none() && want_w != self.buffer_w {
-            self.buffer_w = want_w;
+        } else if self.g.run.is_none() && want_w != self.g.buffer_w {
+            self.g.buffer_w = want_w;
             self.apply_buffer_size();
-        } else if self.letterbox_now() != self.letterbox {
+        } else if self.g.letterbox_now() != self.g.letterbox {
             self.apply_buffer_size();
         }
     }
@@ -758,58 +486,39 @@ impl SaltLine {
     /// window is the whole display; on a desktop the "safe area" is the
     /// monitor's, not the window's.
     fn cutout_px(&self) -> (i32, i32) {
-        if !self.mobile {
+        if !self.g.mobile {
             return (0, 0);
         }
-        let win = self.window_size;
+        let (win_x, _) = self.g.window_size;
         let safe = DisplayServer::singleton().get_display_safe_area();
         if safe.size.x <= 0 || safe.size.y <= 0 {
             return (0, 0);
         }
-        let l = safe.position.x.clamp(0, win.x / 4);
-        let r = (win.x - safe.position.x - safe.size.x).clamp(0, win.x / 4);
+        let l = safe.position.x.clamp(0, win_x / 4);
+        let r = (win_x - safe.position.x - safe.size.x).clamp(0, win_x / 4);
         (l, r)
-    }
-
-    /// The cutout in buffer pixels, rounded up so the playfield never reaches
-    /// under it.
-    fn letterbox_now(&self) -> (i32, i32) {
-        let (l, r) = self.cutout;
-        let win = self.window_size;
-        if win.y <= 0 || self.buffer_h <= 0 || self.buffer_w <= 0 {
-            return (0, 0);
-        }
-        // Buffer pixels per screen pixel: fitted by height, unless the buffer
-        // (with the insets beside it) is too wide for the window, as a resumed
-        // run from a wider device is, and is fitted by width instead.
-        let usable = (win.x - l - r).max(1) as f64;
-        let scale = (win.y as f64 / self.buffer_h as f64).min(usable / self.buffer_w as f64);
-        (
-            (l as f64 / scale).ceil() as i32,
-            (r as f64 / scale).ceil() as i32,
-        )
     }
 
     fn start_run(&mut self, seed: u64, daily: bool) {
         // A new run is generated for the device, whatever a resumed one used.
         self.set_run_width(None);
         // The world is as wide as the buffer, so the run is generated for it.
-        let width = self.buffer_w as usize;
+        let width = self.g.buffer_w as usize;
         let state = RunState::new(seed, width);
-        self.angle_ticks = 900;
-        self.power_ticks = 600;
-        self.anim = None;
-        self.last_arc.clear();
+        self.g.angle_ticks = 900;
+        self.g.power_ticks = 600;
+        self.g.anim = None;
+        self.g.last_arc.clear();
         self.preview.clear();
-        self.clear_hold = 0.0;
-        self.cam_x = 0;
-        self.cam_target = 0.0;
-        self.daily = daily;
-        self.low_shell_warned = false;
-        self.last_seed = seed;
+        self.g.clear_hold = 0.0;
+        self.g.cam_x = 0;
+        self.g.cam_target = 0.0;
+        self.g.daily = daily;
+        self.g.low_shell_warned = false;
+        self.g.last_seed = seed;
         self.retire_last_crash();
-        self.run = Some(state);
-        self.mode = Mode::Playing;
+        self.g.run = Some(state);
+        self.g.mode = Mode::Playing;
         self.apply_buffer_size();
         self.begin_persisting();
         self.note(format!("SEED {}", format_seed(seed)));
@@ -819,18 +528,20 @@ impl SaltLine {
     /// ones before it. DESIGN §2.2 is what makes this possible — each screen
     /// generates from its own seed, so screen 400 costs the same as screen 1.
     fn jump_to(&mut self, index: u32) {
-        let Some(run) = self.run.as_mut() else { return };
+        let Some(run) = self.g.run.as_mut() else {
+            return;
+        };
         run.screen_index = index;
         // The log cannot rebuild a jump, so the run is not kept for resume.
-        self.run_persist = false;
+        self.g.run_persist = false;
         run.screen = run::generate_screen(run.run_seed, index, run.width, &run.loadout);
         self.preview.clear();
         self.note(format!("SCREEN {}", index + 1));
     }
 
     fn note(&mut self, text: String) {
-        self.status = text;
-        self.status_time = 2.4;
+        self.g.status = text;
+        self.g.status_time = 2.4;
         self.redraw.mark();
     }
 
@@ -859,10 +570,10 @@ impl SaltLine {
     }
 
     fn apply_volume(&mut self) {
-        let db = if self.save.muted || self.save.volume == 0 {
+        let db = if self.g.save.muted || self.g.save.volume == 0 {
             -80.0
         } else {
-            20.0 * (self.save.volume as f32 / 100.0).log10()
+            20.0 * (self.g.save.volume as f32 / 100.0).log10()
         };
         for player in self.audio.iter_mut().flatten() {
             player.set_volume_db(db);
@@ -876,14 +587,15 @@ impl SaltLine {
     }
 
     fn learn(&mut self, bit: u32) {
-        if self.save.learned & bit == 0 {
-            self.save.learned |= bit;
-            save::store(&self.save);
+        if self.g.save.learned & bit == 0 {
+            self.g.save.learned |= bit;
+            save::store(&self.g.save);
         }
     }
 
     fn binding(&self, action: &str, default_key: &str, default_pad: &str) -> (String, String) {
-        self.save
+        self.g
+            .save
             .bindings
             .iter()
             .find(|(a, _, _)| a == action)
@@ -1016,8 +728,8 @@ impl SaltLine {
     fn pad_pressed(&mut self, button: JoyButton) -> bool {
         let down = self.take_pad_press(button);
         if down {
-            self.controller_active = true;
-            self.touch_active = false;
+            self.g.controller_active = true;
+            self.g.touch_active = false;
         }
         down
     }
@@ -1028,11 +740,12 @@ impl SaltLine {
             .map(|k| self.pressed(k))
             .unwrap_or(false);
         if key_down {
-            self.controller_active = false;
-            self.touch_active = false;
+            self.g.controller_active = false;
+            self.g.touch_active = false;
         }
         let pad_down = self.pad_action_pressed(action);
-        let touch_down = self.touch.pressed(action) || (action == "back" && self.back_requested);
+        let touch_down =
+            self.g.touch.pressed(action) || (action == "back" && self.g.back_requested);
         key_down || pad_down || touch_down
     }
 
@@ -1077,22 +790,22 @@ impl SaltLine {
         let stick_down = axis.is_some_and(|(axis, sign)| self.stick_held(axis, sign));
         let stick = self.pad_repeat[slot].tick(stick_down, delta, REPEAT_DELAY, REPEAT_RATE);
         if keyboard > 0 {
-            self.controller_active = false;
-            self.touch_active = false;
+            self.g.controller_active = false;
+            self.g.touch_active = false;
         }
         if buttons > 0 || stick_down {
-            self.controller_active = true;
-            self.touch_active = false;
+            self.g.controller_active = true;
+            self.g.touch_active = false;
         }
-        keyboard + buttons + stick + self.touch.repeated(action)
+        keyboard + buttons + stick + self.g.touch.repeated(action)
     }
 
     fn input_label(&self, action: &str) -> String {
-        if self.touch_active {
+        if self.g.touch_active {
             return touch_label(action).to_string();
         }
         let (key, pad) = self.action_binding(action);
-        if self.controller_active {
+        if self.g.controller_active {
             pad
         } else {
             key
@@ -1142,13 +855,13 @@ impl SaltLine {
         self.key_queue.clear();
         std::mem::swap(&mut self.pad_presses, &mut self.pad_queue);
         self.pad_queue.clear();
-        self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        self.g.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
     }
 
     fn handle_input(&mut self, delta: f64) {
         self.begin_input_frame(delta);
         self.handle_mode_input(delta);
-        self.back_requested = false;
+        self.g.back_requested = false;
     }
 
     /// Something on screen is moving or being held, so every frame draws.
@@ -1161,45 +874,13 @@ impl SaltLine {
         ]
         .into_iter()
         .any(|(axis, sign)| self.stick_held(axis, sign));
-        self.anim.is_some()
-            || self.clear_hold > 0.0
-            || self.status_time > 0.0
-            || self.auto
-            || self.touch.active()
+        self.g.anim.is_some()
+            || self.g.clear_hold > 0.0
+            || self.g.status_time > 0.0
+            || self.g.auto
+            || self.g.touch.active()
             || stick
             || Input::singleton().is_anything_pressed()
-    }
-
-    /// What a frame shows that input or a step can change, compared across
-    /// the frame as a second line of defence behind the explicit marks.
-    fn frame_state(&self) -> FrameState {
-        FrameState {
-            mode: self.mode,
-            aim: (self.angle_ticks, self.power_ticks),
-            cam_x: self.cam_x,
-            buffer: (self.buffer_w, self.buffer_h, self.letterbox),
-            devices: (self.touch_active, self.controller_active),
-            run: self.run.as_ref().map(|r| {
-                (
-                    r.screen_index,
-                    r.phase,
-                    r.shells,
-                    r.shots_on_screen,
-                    r.fuse.to_bits(),
-                    r.emplacement_offset.to_bits(),
-                )
-            }),
-            seed: (self.seed_text.len(), self.seed_focus),
-            settings: (
-                self.save.volume,
-                self.save.muted,
-                self.save.last_arc,
-                self.save.touch_aim,
-                self.save.arc_hint,
-                self.save.learned,
-            ),
-            misc: (self.debug, self.crash_copied, self.last_crash.is_some()),
-        }
     }
 
     /// Menus, overlays and the error screen run at `frame::IDLE_FPS`; play
@@ -1207,7 +888,7 @@ impl SaltLine {
     /// rather than low-processor mode, which would also throttle play and
     /// the shot replay.
     fn apply_frame_cap(&mut self) {
-        let idle = self.broken || self.mode != Mode::Playing;
+        let idle = self.g.broken || self.g.mode != Mode::Playing;
         let cap = frame::frame_cap(idle, self.project_fps);
         if cap != self.fps_cap {
             self.fps_cap = cap;
@@ -1217,21 +898,21 @@ impl SaltLine {
 
     fn handle_mode_input(&mut self, delta: f64) {
         if self.pressed(Key::F1) {
-            self.debug = !self.debug;
+            self.g.debug = !self.g.debug;
         }
         if self.action_pressed(15, "mute") {
-            self.save.muted = !self.save.muted;
+            self.g.save.muted = !self.g.save.muted;
             self.apply_volume();
-            self.settings.touch();
-            self.note(if self.save.muted {
+            self.g.settings.touch();
+            self.note(if self.g.save.muted {
                 "SOUND MUTED".into()
             } else {
                 "SOUND ON".into()
             });
         }
-        match self.mode {
+        match self.g.mode {
             Mode::Title => {
-                let resumable = self.resumable.is_some();
+                let resumable = self.g.resumable.is_some();
                 let confirm = self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER);
                 let daily = if resumable {
                     self.action_pressed(11, "new_run")
@@ -1250,16 +931,16 @@ impl SaltLine {
                     if self.confirm_discard("seed") {
                         self.open_seed_entry();
                     }
-                } else if self.last_crash.is_some() && self.action_pressed(4, "copy") {
+                } else if self.g.last_crash.is_some() && self.action_pressed(4, "copy") {
                     self.copy_last_crash();
                 } else if self.action_pressed(1, "controls") {
                     self.play_sound(Sound::Ui);
-                    self.mode = Mode::Controls;
+                    self.g.mode = Mode::Controls;
                 } else if self.action_pressed(2, "back") {
                     self.base().get_tree().quit();
                 }
-                if self.mode != Mode::Title {
-                    self.discard_armed = None;
+                if self.g.mode != Mode::Title {
+                    self.g.discard_armed = None;
                 }
             }
             Mode::Controls => {
@@ -1267,43 +948,43 @@ impl SaltLine {
                 let up = self.action_repeated(1, "right", delta);
                 if down + up > 0 {
                     let volume =
-                        (self.save.volume as i32 + (up as i32 - down as i32) * 5).clamp(0, 100);
-                    self.save.volume = volume as u8;
-                    self.save.muted = false;
+                        (self.g.save.volume as i32 + (up as i32 - down as i32) * 5).clamp(0, 100);
+                    self.g.save.volume = volume as u8;
+                    self.g.save.muted = false;
                     self.apply_volume();
-                    self.settings.touch();
+                    self.g.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
-                if self.touch.pressed("aim_mode") {
-                    self.save.touch_aim = Some(self.touch_aim().next());
-                    self.settings.touch();
+                if self.g.touch.pressed("aim_mode") {
+                    self.g.save.touch_aim = Some(self.g.touch_aim().next());
+                    self.g.settings.touch();
                     self.play_sound(Sound::Ui);
-                } else if self.touch.pressed("arc_hint") {
-                    self.save.arc_hint = Some(self.arc_hint().next());
-                    self.settings.touch();
+                } else if self.g.touch.pressed("arc_hint") {
+                    self.g.save.arc_hint = Some(self.g.arc_hint().next());
+                    self.g.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
                 if self.action_pressed(16, "last_arc") {
-                    self.save.last_arc = Some(!self.last_arc_on());
-                    self.settings.touch();
+                    self.g.save.last_arc = Some(!self.g.last_arc_on());
+                    self.g.settings.touch();
                     self.play_sound(Sound::Ui);
                 }
                 if self.action_pressed(3, "replay") {
-                    self.save.bindings.clear();
-                    self.settings.touch();
+                    self.g.save.bindings.clear();
+                    self.g.settings.touch();
                     self.note("DEFAULT BINDINGS RESTORED".into());
                 } else if self.action_pressed(2, "back") {
                     self.play_sound(Sound::Ui);
-                    self.mode = Mode::Title;
+                    self.g.mode = Mode::Title;
                 }
             }
             Mode::Paused => {
                 if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
                     self.play_sound(Sound::Ui);
-                    self.mode = Mode::Playing;
+                    self.g.mode = Mode::Playing;
                 } else if self.action_pressed(3, "replay") {
                     self.play_sound(Sound::Ui);
-                    self.mode = Mode::Title;
+                    self.g.mode = Mode::Title;
                     self.suspend_run();
                 }
             }
@@ -1312,14 +993,14 @@ impl SaltLine {
                 if self.action_pressed(4, "copy") {
                     // Seed sharing: the seed is the whole run, so the
                     // clipboard is the whole share format.
-                    let seed = format_seed(self.last_seed);
+                    let seed = format_seed(self.g.last_seed);
                     DisplayServer::singleton().clipboard_set(&GString::from(seed.as_str()));
                     self.note(format!("COPIED {seed}"));
                 } else if self.action_pressed(0, "confirm") || self.action_pressed(2, "back") {
-                    self.mode = Mode::Title;
+                    self.g.mode = Mode::Title;
                 } else if self.action_pressed(3, "replay") {
-                    let seed = self.last_seed;
-                    let daily = self.daily;
+                    let seed = self.g.last_seed;
+                    let daily = self.g.daily;
                     self.start_run(seed, daily);
                 }
             }
@@ -1336,54 +1017,54 @@ impl SaltLine {
         let dy = self.action_repeated(2, "down", delta) as i32
             - self.action_repeated(3, "up", delta) as i32;
         if dx != 0 || dy != 0 {
-            self.seed_focus.step(dx, dy);
+            self.g.seed_focus.step(dx, dy);
         }
         let key = if self.pad_action_pressed("confirm") {
-            Some(self.seed_focus.action())
+            Some(self.g.seed_focus.action())
         } else if self.pad_action_pressed("back") {
-            Some(if self.seed_text.is_empty() {
+            Some(if self.g.seed_text.is_empty() {
                 "back"
             } else {
                 keypad::DEL
             })
-        } else if self.touch.pressed("back") || self.back_requested {
+        } else if self.g.touch.pressed("back") || self.g.back_requested {
             Some("back")
         } else {
             ["confirm", keypad::DEL]
                 .into_iter()
                 .chain(keypad::KEYS)
-                .find(|k| self.touch.pressed(k))
+                .find(|k| self.g.touch.pressed(k))
         };
         match key {
             Some("confirm") => self.start_seeded_run(),
             Some("back") => self.leave_seed_entry(),
             Some(keypad::DEL) => {
-                self.seed_text.pop();
+                self.g.seed_text.pop();
             }
-            Some(k) if self.seed_text.chars().count() < 20 => self.seed_text.push_str(k),
+            Some(k) if self.g.seed_text.chars().count() < 20 => self.g.seed_text.push_str(k),
             _ => {}
         }
     }
 
     fn handle_play_input(&mut self, delta: f64) {
         if self.action_pressed(2, "back") {
-            self.touch.cancel_drag();
-            self.mode = Mode::Paused;
+            self.g.touch.cancel_drag();
+            self.g.mode = Mode::Paused;
             return;
         }
-        let phase = self.run.as_ref().map(|r| r.phase);
+        let phase = self.g.run.as_ref().map(|r| r.phase);
         let Some(phase) = phase else { return };
 
         // A drag only aims on the screen it started on: drafting or a shot in
         // the air forgets it, so it can never drop into a later shot.
-        if phase != Phase::Firing || self.anim.is_some() || self.clear_hold > 0.0 {
-            self.touch.cancel_drag();
+        if phase != Phase::Firing || self.g.anim.is_some() || self.g.clear_hold > 0.0 {
+            self.g.touch.cancel_drag();
         }
 
         if phase == Phase::Drafting {
             for (i, action) in ["draft_1", "draft_2", "draft_3"].into_iter().enumerate() {
                 if self.action_pressed(5 + i, action) {
-                    let taken = self.run.as_mut().and_then(|r| r.take_offer(i));
+                    let taken = self.g.run.as_mut().and_then(|r| r.take_offer(i));
                     if let Some(m) = taken {
                         self.preview.clear();
                         self.learn(LEARN_DRAFT);
@@ -1397,11 +1078,12 @@ impl SaltLine {
         }
 
         // Nothing but waiting while a shot is in the air.
-        if self.anim.is_some() || self.clear_hold > 0.0 {
+        if self.g.anim.is_some() || self.g.clear_hold > 0.0 {
             return;
         }
 
         let quantum = self
+            .g
             .run
             .as_ref()
             .map(|r| r.loadout.angle_quantum_ticks)
@@ -1413,15 +1095,15 @@ impl SaltLine {
         let right = self.action_repeated(1, "right", delta) as i32;
         if left + right != 0 {
             self.learn(LEARN_ANGLE);
-            self.angle_ticks = (self.angle_ticks + (right - left) * quantum * mult)
+            self.g.angle_ticks = (self.g.angle_ticks + (right - left) * quantum * mult)
                 .clamp(0, dmath::MAX_ANGLE_TICKS);
         }
         let down = self.action_repeated(2, "down", delta) as i32;
         let up = self.action_repeated(3, "up", delta) as i32;
         if up + down != 0 {
             self.learn(LEARN_POWER);
-            self.power_ticks =
-                (self.power_ticks + (up - down) * 5 * mult).clamp(0, POWER_TICKS_MAX);
+            self.g.power_ticks =
+                (self.g.power_ticks + (up - down) * 5 * mult).clamp(0, POWER_TICKS_MAX);
         }
 
         // Airburst fuse.
@@ -1429,7 +1111,7 @@ impl SaltLine {
         let minus = self.action_repeated(4, "fuse_down", delta) as f64;
         let plus = self.action_repeated(5, "fuse_up", delta) as f64;
         if minus + plus > 0.0 {
-            if let Some(r) = self.run.as_mut() {
+            if let Some(r) = self.g.run.as_mut() {
                 if r.loadout.airburst() {
                     let f = r.fuse + (plus - minus) * fuse_step;
                     r.set_fuse(f);
@@ -1442,7 +1124,7 @@ impl SaltLine {
         let rr = self.action_pressed(9, "reposition_right");
         if l || rr {
             let step = if l { -5.0 } else { 5.0 };
-            let ok = self.run.as_mut().map(|r| {
+            let ok = self.g.run.as_mut().map(|r| {
                 let target = r.emplacement_offset + step;
                 r.reposition(target)
             });
@@ -1455,7 +1137,7 @@ impl SaltLine {
             self.fire();
         }
 
-        if self.drag_aiming() {
+        if self.g.drag_aiming() {
             self.handle_drag_aim(quantum);
         }
     }
@@ -1464,59 +1146,44 @@ impl SaltLine {
     /// the readouts and barrel show exactly what a release would fire; pulling
     /// back inside the dead zone puts the old aim back and cancels.
     fn handle_drag_aim(&mut self, quantum: i32) {
-        let dropped = self.touch.dropped();
-        let Some((start, end)) = dropped.or(self.touch.drag()) else {
+        let dropped = self.g.touch.dropped();
+        let Some((start, end)) = dropped.or(self.g.touch.drag()) else {
             // Abandoned (paused, focus lost): put the old aim back.
-            if let Some(before) = self.drag_from.take() {
-                (self.angle_ticks, self.power_ticks) = before;
+            if let Some(before) = self.g.drag_from.take() {
+                (self.g.angle_ticks, self.g.power_ticks) = before;
             }
             return;
         };
         let before = *self
+            .g
             .drag_from
-            .get_or_insert((self.angle_ticks, self.power_ticks));
+            .get_or_insert((self.g.angle_ticks, self.g.power_ticks));
         let aim = crate::aim::pull_to_aim(start, end, quantum);
         match aim {
             Some((angle, power)) => {
                 self.learn(LEARN_ANGLE);
                 self.learn(LEARN_POWER);
-                (self.angle_ticks, self.power_ticks) = (angle, power);
+                (self.g.angle_ticks, self.g.power_ticks) = (angle, power);
             }
-            None => (self.angle_ticks, self.power_ticks) = before,
+            None => (self.g.angle_ticks, self.g.power_ticks) = before,
         }
         if dropped.is_some() {
-            self.drag_from = None;
+            self.g.drag_from = None;
             if aim.is_some() {
                 self.fire();
             }
         }
     }
 
-    fn last_arc_on(&self) -> bool {
-        self.save.last_arc.unwrap_or(DEFAULT_LAST_ARC)
-    }
-
-    fn touch_aim(&self) -> TouchAim {
-        self.save.touch_aim.unwrap_or(DEFAULT_TOUCH_AIM)
-    }
-
-    fn arc_hint(&self) -> ArcHint {
-        self.save.arc_hint.unwrap_or(DEFAULT_ARC_HINT)
-    }
-
-    /// Touch aiming is by dragging rather than the angle and power buttons.
-    fn drag_aiming(&self) -> bool {
-        self.touch_active && self.touch_aim() == TouchAim::Drag
-    }
-
     // ------------------------------------------------------------- run steps
 
     fn fire(&mut self) {
-        let learned = self.save.learned;
+        let learned = self.g.save.learned;
         if learned & LEARN_WIND != 0 {
             self.learn(LEARN_SHELLS);
         } else if learned & LEARN_CRATER != 0
             && self
+                .g
                 .run
                 .as_ref()
                 .and_then(|r| r.displayed_wind())
@@ -1524,8 +1191,10 @@ impl SaltLine {
         {
             self.learn(LEARN_WIND);
         }
-        let shot = Shot::new(self.angle_ticks, self.power_ticks);
-        let Some(run) = self.run.as_mut() else { return };
+        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks);
+        let Some(run) = self.g.run.as_mut() else {
+            return;
+        };
         if run.shells <= 0 {
             return;
         }
@@ -1542,12 +1211,12 @@ impl SaltLine {
             .map(|t| t.flight_time)
             .fold(0.0f64, f64::max);
         let collapsed = report.collapsed.clone();
-        self.last_arc = report
+        self.g.last_arc = report
             .traces
             .first()
             .map(|t| t.path.clone())
             .unwrap_or_default();
-        self.anim = Some(Anim {
+        self.g.anim = Some(Anim {
             traces: report.traces,
             before,
             t: 0.0,
@@ -1557,16 +1226,16 @@ impl SaltLine {
             impact_played: false,
             collapse_played: false,
         });
-        let shells = self.run.as_ref().map(|r| r.shells).unwrap_or(99);
-        if shells < 10 && !self.low_shell_warned {
-            self.low_shell_warned = true;
+        let shells = self.g.run.as_ref().map(|r| r.shells).unwrap_or(99);
+        if shells < 10 && !self.g.low_shell_warned {
+            self.g.low_shell_warned = true;
             self.play_sound(Sound::LowShell);
             self.note("SHELLS ARE YOUR RUN CLOCK".into());
         }
     }
 
     fn step(&mut self, delta: f64) {
-        if self.mode != Mode::Playing {
+        if self.g.mode != Mode::Playing {
             return;
         }
 
@@ -1574,7 +1243,7 @@ impl SaltLine {
         // walks the recorded path, so playback speed cannot affect anything.
         let mut sounds = Vec::new();
         let mut learned_impact = false;
-        if let Some(anim) = self.anim.as_mut() {
+        if let Some(anim) = self.g.anim.as_mut() {
             anim.t += delta;
             if anim.done() {
                 anim.settled += delta;
@@ -1603,30 +1272,30 @@ impl SaltLine {
             let settled = anim.settled;
             let finished = anim.done() && settled > TOPPLE_TIME + 0.12;
             if finished {
-                self.anim = None;
-                let cleared = self.run.as_ref().map(|r| r.phase) == Some(Phase::Cleared);
+                self.g.anim = None;
+                let cleared = self.g.run.as_ref().map(|r| r.phase) == Some(Phase::Cleared);
                 if cleared {
-                    self.clear_hold = CLEAR_HOLD;
-                } else if self.run.as_ref().map(|r| r.is_over()) == Some(true) {
+                    self.g.clear_hold = CLEAR_HOLD;
+                } else if self.g.run.as_ref().map(|r| r.is_over()) == Some(true) {
                     self.finish_run();
                 }
             }
-        } else if self.clear_hold > 0.0 {
+        } else if self.g.clear_hold > 0.0 {
             // Hold on the cleared screen and pan forward, then move on.
-            self.clear_hold -= delta;
-            let span = (self.world_width() - self.buffer_w).max(0) as f64;
-            let t = 1.0 - (self.clear_hold / CLEAR_HOLD).clamp(0.0, 1.0);
-            self.cam_target = span * t;
-            if self.clear_hold <= 0.0 {
-                self.clear_hold = 0.0;
-                self.cam_target = 0.0;
-                self.cam_x = 0;
-                let advanced = self.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
+            self.g.clear_hold -= delta;
+            let span = (self.g.world_width() - self.g.buffer_w).max(0) as f64;
+            let t = 1.0 - (self.g.clear_hold / CLEAR_HOLD).clamp(0.0, 1.0);
+            self.g.cam_target = span * t;
+            if self.g.clear_hold <= 0.0 {
+                self.g.clear_hold = 0.0;
+                self.g.cam_target = 0.0;
+                self.g.cam_x = 0;
+                let advanced = self.g.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
                 if advanced {
                     self.after_screen_change();
                 }
             }
-        } else if let Some(run) = self.run.as_ref() {
+        } else if let Some(run) = self.g.run.as_ref() {
             if run.is_over() {
                 self.finish_run();
             }
@@ -1639,25 +1308,25 @@ impl SaltLine {
         }
 
         // Follow the shell when the world is wider than the buffer.
-        if self.anim.is_some() {
-            let head = self.shell_head();
+        if self.g.anim.is_some() {
+            let head = self.g.shell_head();
             if let Some(p) = head {
-                let span = (self.world_width() - self.buffer_w).max(0) as f64;
+                let span = (self.g.world_width() - self.g.buffer_w).max(0) as f64;
                 if span > 0.0 {
-                    self.cam_target = (p.x - self.buffer_w as f64 * 0.5).clamp(0.0, span);
+                    self.g.cam_target = (p.x - self.g.buffer_w as f64 * 0.5).clamp(0.0, span);
                 }
             }
         }
 
         // The camera is quantized to a whole pixel every frame. Panning with a
         // fractional camera is what makes low-res terrain shimmer.
-        let span = (self.world_width() - self.buffer_w).max(0) as f64;
-        self.cam_x = self.cam_target.round().clamp(0.0, span) as i32;
+        let span = (self.g.world_width() - self.g.buffer_w).max(0) as f64;
+        self.g.cam_x = self.g.cam_target.round().clamp(0.0, span) as i32;
     }
 
     fn after_screen_change(&mut self) {
         self.apply_buffer_size();
-        if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
+        if self.g.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
             self.play_sound(Sound::Draft);
         }
     }
@@ -1667,21 +1336,22 @@ impl SaltLine {
         // crash in between costs this score, where the other order would
         // record it twice (the next launch scores a finished log).
         let line = self
+            .g
             .run
             .as_ref()
-            .filter(|_| self.run_persist)
-            .map(|r| resume::Saved::of(r, self.daily).to_line());
+            .filter(|_| self.g.run_persist)
+            .map(|r| resume::Saved::of(r, self.g.daily).to_line());
         self.stop_persisting();
-        if let Some(run) = self.run.as_ref() {
+        if let Some(run) = self.g.run.as_ref() {
             let (screens, shells, shots) = run.score();
             let entry = Entry {
                 seed: run.run_seed,
                 screens,
                 shells,
                 shots,
-                daily: self.daily,
+                daily: self.g.daily,
             };
-            if !save::record(&mut self.save, entry).saved {
+            if !save::record(&mut self.g.save, entry).saved {
                 // Not on the board (a save from a newer build, a full disk):
                 // keep the finished log, so a later launch can score it.
                 if let Some(line) = line {
@@ -1690,42 +1360,14 @@ impl SaltLine {
                 self.note_not_saved("SCORE NOT SAVED");
             }
         }
-        self.mode = Mode::GameOver;
-    }
-
-    fn world_width(&self) -> i32 {
-        self.run
-            .as_ref()
-            .map(|r| r.width as i32)
-            .unwrap_or(self.buffer_w)
-    }
-
-    /// The lead shell's position in the replay, if one is in the air.
-    fn shell_head(&self) -> Option<Vec2> {
-        let anim = self.anim.as_ref()?;
-        let primary = anim.traces.first()?;
-        let i = (anim.t / DT).floor().max(0.0) as usize;
-        primary
-            .path
-            .get(i.min(primary.path.len().saturating_sub(1)))
-            .copied()
-    }
-
-    /// The screen to draw: the pre-shot copy while a shot is being replayed,
-    /// so craters and collapses land when the shell does.
-    fn shown_screen(&self) -> Option<&Screen> {
-        match (self.anim.as_ref(), self.run.as_ref()) {
-            (Some(anim), _) if !anim.done() => Some(&anim.before),
-            (_, Some(run)) => Some(&run.screen),
-            _ => None,
-        }
+        self.g.mode = Mode::GameOver;
     }
 
     // --------------------------------------------------------------- drawing
 
     fn render(&mut self) {
         self.touch_buttons.clear();
-        match self.mode {
+        match self.g.mode {
             Mode::Playing | Mode::Paused => self.render_play(),
             _ => self.render_menu(),
         }
@@ -1787,43 +1429,45 @@ impl SaltLine {
 
     /// Play the game for the camera: aim with the solver, take offer 1.
     fn autopilot(&mut self, delta: f64) {
-        self.auto_cooldown -= delta;
-        if self.mode == Mode::Title {
+        self.g.auto_cooldown -= delta;
+        if self.g.mode == Mode::Title {
             let seed = Self::seed_arg().unwrap_or_else(|| daily_seed(Self::today()));
             self.start_run(seed, false);
             return;
         }
-        if self.mode != Mode::Playing || self.anim.is_some() || self.clear_hold > 0.0 {
+        if self.g.mode != Mode::Playing || self.g.anim.is_some() || self.g.clear_hold > 0.0 {
             return;
         }
-        if self.auto_cooldown > 0.0 {
+        if self.g.auto_cooldown > 0.0 {
             return;
         }
-        let phase = self.run.as_ref().map(|r| r.phase);
+        let phase = self.g.run.as_ref().map(|r| r.phase);
         match phase {
             Some(Phase::Drafting) => {
-                if self.auto_hold_draft {
+                if self.g.auto_hold_draft {
                     return;
                 }
-                self.run.as_mut().map(|r| r.take_offer(0));
+                self.g.run.as_mut().map(|r| r.take_offer(0));
                 self.apply_buffer_size();
-                self.auto_cooldown = 0.4;
+                self.g.auto_cooldown = 0.4;
             }
             Some(Phase::Cleared) => {
-                self.clear_hold = CLEAR_HOLD;
+                self.g.clear_hold = CLEAR_HOLD;
             }
             Some(Phase::Firing) => {
-                let first = self.run.as_ref().map(|r| r.shots_on_screen) == Some(0);
-                if self.auto_miss && first {
+                let first = self.g.run.as_ref().map(|r| r.shots_on_screen) == Some(0);
+                if self.g.auto_miss && first {
                     // A high lob that lands short, well clear of any target.
-                    self.angle_ticks = 1400;
-                    self.power_ticks = 330;
+                    self.g.angle_ticks = 1400;
+                    self.g.power_ticks = 330;
                     self.fire();
-                    self.auto_cooldown = 0.35;
+                    self.g.auto_cooldown = 0.35;
                     return;
                 }
                 let pick = {
-                    let Some(run) = self.run.as_ref() else { return };
+                    let Some(run) = self.g.run.as_ref() else {
+                        return;
+                    };
                     let target = run.screen.structures.iter().position(|s| !s.is_down());
                     target.and_then(|t| {
                         salt_line_sim::solver::solve_target(&run.screen, &run.loadout, t)
@@ -1832,15 +1476,15 @@ impl SaltLine {
                     })
                 };
                 if let Some((shot, target)) = pick {
-                    self.angle_ticks = shot.angle_ticks;
-                    self.power_ticks = shot.power_ticks;
-                    if let Some(run) = self.run.as_mut() {
+                    self.g.angle_ticks = shot.angle_ticks;
+                    self.g.power_ticks = shot.power_ticks;
+                    if let Some(run) = self.g.run.as_mut() {
                         if let Some(f) = run.screen.default_fuse(target) {
                             run.set_fuse(f);
                         }
                     }
                     self.fire();
-                    self.auto_cooldown = 0.35;
+                    self.g.auto_cooldown = 0.35;
                 }
             }
             _ => {}
@@ -1921,7 +1565,7 @@ impl SaltLine {
         // Airburst is held so `Overhang` is on the table at all (DESIGN §2.4).
         let mut lo = Loadout::new();
         lo.take(Modifier::Airburst);
-        let width = self.buffer_w as usize;
+        let width = self.g.buffer_w as usize;
         let mut run = RunState::new(0, width);
         run.loadout = lo.clone();
 
@@ -1943,9 +1587,9 @@ impl SaltLine {
             // Clean.
             run.screen = screen.clone();
             run.screen_index = index;
-            self.run = Some(run.clone());
-            self.mode = Mode::Playing;
-            self.status_time = 0.0;
+            self.g.run = Some(run.clone());
+            self.g.mode = Mode::Playing;
+            self.g.status_time = 0.0;
             self.render_play();
             self.save_canvas(&format!("{dir}/template_{}.png", t.name().to_lowercase()));
 
@@ -1964,32 +1608,16 @@ impl SaltLine {
                 damaged.resolve_structures();
             }
             run.screen = damaged;
-            self.run = Some(run.clone());
+            self.g.run = Some(run.clone());
             self.render_play();
             self.save_canvas(&format!("{dir}/damaged_{}.png", t.name().to_lowercase()));
         }
         self.base().get_tree().quit();
     }
 
-    fn view(&self) -> View {
-        let shake = self
-            .anim
-            .as_ref()
-            .filter(|a| a.done())
-            .map(|a| {
-                presentation::shake_offset(a.settled, if a.collapsed.is_empty() { 1 } else { 2 }).0
-            })
-            .unwrap_or(0);
-        View {
-            cam_x: self.cam_x - shake,
-            w: self.buffer_w,
-            h: self.buffer_h,
-        }
-    }
-
     fn render_menu(&mut self) {
         let pal = self.pal.clone();
-        let view = self.view();
+        let view = self.g.view();
         // A calm sky behind the menus, with the same dither as the game.
         raster::draw_sky(&mut self.canvas, &view, &pal);
         let fg = pal.get(slot::UI_FG);
@@ -2011,7 +1639,7 @@ impl SaltLine {
         }
         y += 12;
 
-        match self.mode {
+        match self.g.mode {
             Mode::Title => {
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
@@ -2019,7 +1647,7 @@ impl SaltLine {
                 // With a saved run, confirm continues it and a new run is a
                 // separate action that asks twice (`confirm_discard`).
                 let again = "PRESS AGAIN - SAVED RUN IS LOST";
-                if self.resumable.is_some() {
+                if self.g.resumable.is_some() {
                     y = self.menu_row(
                         y,
                         "confirm",
@@ -2028,7 +1656,7 @@ impl SaltLine {
                         alert,
                     );
                     let key = self.input_label("new_run");
-                    let text = if self.discard_armed == Some("daily") {
+                    let text = if self.g.discard_armed == Some("daily") {
                         again
                     } else {
                         "NEW DAILY RUN"
@@ -2044,7 +1672,7 @@ impl SaltLine {
                     );
                 }
                 let seed = self.input_label("seed");
-                let seed_text = if self.discard_armed == Some("seed") {
+                let seed_text = if self.g.discard_armed == Some("seed") {
                     again
                 } else {
                     "SEED ENTRY"
@@ -2066,8 +1694,8 @@ impl SaltLine {
                 );
                 let back = self.input_label("back");
                 y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", dim);
-                if self.last_crash.is_some() {
-                    let text = if self.crash_copied {
+                if self.g.last_crash.is_some() {
+                    let text = if self.g.crash_copied {
                         "CRASH REPORT COPIED"
                     } else {
                         "COPY LAST CRASH REPORT"
@@ -2076,12 +1704,12 @@ impl SaltLine {
                     y = self.menu_row(y, "copy", &format!("{copy}      {text}"), text, alert);
                 }
                 y += 6;
-                if self.status_time > 0.0 {
-                    let text = self.status.clone();
+                if self.g.status_time > 0.0 {
+                    let text = self.g.status.clone();
                     self.centred(y, &text, alert);
                     y += 10;
                 }
-                let best = self.save.best().copied();
+                let best = self.g.save.best().copied();
                 if let Some(b) = best {
                     self.centred(
                         y,
@@ -2095,13 +1723,13 @@ impl SaltLine {
                 self.centred(y, "DEVELOPMENT PREVIEW - NOT FOR SALE", alert);
                 y += 8;
                 let room = ((self.canvas.h - y - 12) / 7).max(0) as usize;
-                let n = self.save.scores.len().min(5).min(room);
+                let n = self.g.save.scores.len().min(5).min(room);
                 if n > 0 {
                     y += 4;
                     self.centred(y, "LOCAL BOARD", dim);
                     y += 8;
                     for i in 0..n {
-                        let e = self.save.scores[i];
+                        let e = self.g.save.scores[i];
                         let line = format!(
                             "{}. {:>3} SCREENS  {:>3} SHELLS  {}",
                             i + 1,
@@ -2114,32 +1742,32 @@ impl SaltLine {
                     }
                 }
             }
-            Mode::Controls if self.touch_active => {
+            Mode::Controls if self.g.touch_active => {
                 self.centred(y, "CONTROLS / AUDIO", fg);
                 y += 16;
-                let muted = if self.save.muted { " MUTED" } else { "" };
-                let text = format!("VOLUME {}%{muted}", self.save.volume);
+                let muted = if self.g.save.muted { " MUTED" } else { "" };
+                let text = format!("VOLUME {}%{muted}", self.g.save.volume);
                 let tw = crate::font::small_width(&text) as i32;
                 let tx = (w - tw) / 2;
                 self.canvas.text_small(tx, y, &text, alert);
                 self.draw_touch_button(tx - 26, y - 6, 20, 17, "-", "left");
                 self.draw_touch_button(tx + tw + 6, y - 6, 20, 17, "+", "right");
                 y += 20;
-                let mute = if self.save.muted { "UNMUTE" } else { "MUTE" };
+                let mute = if self.g.save.muted { "UNMUTE" } else { "MUTE" };
                 y = self.menu_row(y, "mute", "", mute, fg);
-                let last = if self.last_arc_on() {
+                let last = if self.g.last_arc_on() {
                     "LAST ARC: ON"
                 } else {
                     "LAST ARC: OFF"
                 };
                 y = self.menu_row(y, "last_arc", "", last, fg);
-                let aim = match self.touch_aim() {
+                let aim = match self.g.touch_aim() {
                     TouchAim::Buttons => "AIM: BUTTONS",
                     TouchAim::Drag => "AIM: DRAG",
                 };
                 y = self.menu_row(y, "aim_mode", "", aim, fg);
-                if self.touch_aim() == TouchAim::Drag {
-                    let arc = match self.arc_hint() {
+                if self.g.touch_aim() == TouchAim::Drag {
+                    let arc = match self.g.arc_hint() {
                         ArcHint::Short => "ARC: SHORT",
                         ArcHint::Full => "ARC: FULL",
                         ArcHint::Wind => "ARC: FULL + WIND",
@@ -2157,10 +1785,10 @@ impl SaltLine {
             Mode::Controls => {
                 self.centred(y, "CONTROLS / AUDIO", fg);
                 y += 12;
-                let muted = if self.save.muted { " MUTED" } else { "" };
+                let muted = if self.g.save.muted { " MUTED" } else { "" };
                 self.centred(
                     y,
-                    &format!("< >  VOLUME {}%{muted}", self.save.volume),
+                    &format!("< >  VOLUME {}%{muted}", self.g.save.volume),
                     alert,
                 );
                 y += 10;
@@ -2184,7 +1812,7 @@ impl SaltLine {
                 y += 4;
                 self.centred(y, "M / START  MUTE     R / Y  RESET", dim);
                 y += 7;
-                let on = if self.last_arc_on() { "ON" } else { "OFF" };
+                let on = if self.g.last_arc_on() { "ON" } else { "OFF" };
                 let toggle = format!("{}  LAST ARC: {on}", self.input_label("last_arc"));
                 self.centred(y, &toggle, fg);
                 y += 9;
@@ -2198,7 +1826,7 @@ impl SaltLine {
             Mode::SeedEntry => {
                 self.centred(y, "ENTER A SEED", dim);
                 y += 14;
-                let text = self.seed_text.clone();
+                let text = self.g.seed_text.clone();
                 let shown = format!("> {text}");
                 self.centred(y, &shown, fg);
                 y += 10;
@@ -2217,7 +1845,7 @@ impl SaltLine {
                     let seed = parse_seed(&text);
                     self.centred(y, &format!("SEED {}", format_seed(seed)), alert);
                     y += 8;
-                    let prior = self.save.best_on(seed).copied();
+                    let prior = self.g.save.best_on(seed).copied();
                     if let Some(p) = prior {
                         self.centred(y, &format!("YOUR BEST HERE {} SCREENS", p.screens), dim);
                     }
@@ -2226,7 +1854,7 @@ impl SaltLine {
             Mode::GameOver => {
                 self.centred(y, "OUT OF SHELLS", alert);
                 y += 14;
-                if let Some(run) = self.run.as_ref() {
+                if let Some(run) = self.g.run.as_ref() {
                     let (screens, shells, shots) = run.score();
                     let seed = run.run_seed;
                     self.centred(y, &format!("{screens} SCREENS CLEARED"), fg);
@@ -2240,8 +1868,8 @@ impl SaltLine {
                 y = self.menu_row(y, "copy", "C      COPY SEED", "COPY SEED", fg);
                 y = self.menu_row(y, "confirm", "ENTER  TITLE", "TITLE", fg);
                 y += 4;
-                if self.status_time > 0.0 {
-                    let text = self.status.clone();
+                if self.g.status_time > 0.0 {
+                    let text = self.g.status.clone();
                     self.centred(y, &text, alert);
                 }
             }
@@ -2318,20 +1946,20 @@ impl SaltLine {
     /// Menu lines are plates rather than "KEY  TEXT": on a touchscreen, and
     /// for a controller on the seed keypad, where the focus moves over them.
     fn plated(&self) -> bool {
-        self.touch_active || (self.controller_active && self.mode == Mode::SeedEntry)
+        self.g.touch_active || (self.g.controller_active && self.g.mode == Mode::SeedEntry)
     }
 
     /// The controller's keypad focus is on this action's plate.
     fn focused(&self, action: &str) -> bool {
-        self.mode == Mode::SeedEntry
-            && self.controller_active
-            && !self.touch_active
-            && self.seed_focus.action() == action
+        self.g.mode == Mode::SeedEntry
+            && self.g.controller_active
+            && !self.g.touch_active
+            && self.g.seed_focus.action() == action
     }
 
     /// A plate's label lights while a finger is on it or the focus is.
     fn lit(&self, action: &str) -> bool {
-        self.touch.held(action) || self.focused(action)
+        self.g.touch.held(action) || self.focused(action)
     }
 
     /// A menu line. With a keyboard or controller it reads "KEY  TEXT"; on a
@@ -2375,14 +2003,14 @@ impl SaltLine {
     /// clear of the wind and shells plates.
     fn draw_play_controls(&mut self, loadout: &Loadout) {
         let (w, h) = (self.canvas.w, self.canvas.h);
-        let (ex, ey) = self.corner_pad;
+        let (ex, ey) = self.g.corner_pad;
         let (bw, bh) = (22, 18);
         let y = h - bh - 3 - ey;
         // Right of the ANG/PWR readouts in the bottom-left corner.
         let x0 = 44 + ex;
         // Drag aiming: the open screen is the control, so only the modifier
         // buttons stay, dropped to the bottom row.
-        let y2 = if self.drag_aiming() {
+        let y2 = if self.g.drag_aiming() {
             y
         } else {
             self.draw_touch_button(x0, y, bw, bh, "<", "left");
@@ -2407,11 +2035,13 @@ impl SaltLine {
 
     fn render_play(&mut self) {
         let pal = self.pal.clone();
-        let view = self.view();
-        let Some(screen) = self.shown_screen().cloned() else {
+        let view = self.g.view();
+        let Some(screen) = self.g.shown_screen().cloned() else {
             return;
         };
-        let Some(run) = self.run.as_ref() else { return };
+        let Some(run) = self.g.run.as_ref() else {
+            return;
+        };
         let loadout = run.loadout.clone();
         let chalk = run.chalk.clone();
         let apex = run.last_apex;
@@ -2439,15 +2069,15 @@ impl SaltLine {
         }
 
         // Under the structures and emplacement, so it never hides either.
-        if self.anim.is_none() && apex.is_some() && self.last_arc_on() {
-            raster::draw_last_arc(&mut self.canvas, &view, &self.last_arc, &pal);
+        if self.g.anim.is_none() && apex.is_some() && self.g.last_arc_on() {
+            raster::draw_last_arc(&mut self.canvas, &view, &self.g.last_arc, &pal);
         }
 
         self.draw_structures(&screen, &view);
         self.draw_player(&screen, &loadout, &view);
 
         // The shot in flight.
-        if let Some(anim) = self.anim.as_ref() {
+        if let Some(anim) = self.g.anim.as_ref() {
             let upto = (anim.t / DT).floor().max(0.0) as usize;
             let traces: Vec<&Trace> = anim.traces.iter().collect();
             for t in traces {
@@ -2458,21 +2088,21 @@ impl SaltLine {
             }
         }
         self.draw_shot_effects(&view);
-        if self.anim.is_none() && phase == Phase::Firing && self.mode == Mode::Playing {
+        if self.g.anim.is_none() && phase == Phase::Firing && self.g.mode == Mode::Playing {
             self.draw_drag_preview(&screen, &loadout, wind_shown, &view);
         }
 
         self.render_hud(
             shells, index, wind_shown, range, fuse, &loadout, &screen, phase,
         );
-        if self.touch_active && self.mode == Mode::Playing && phase != Phase::Drafting {
+        if self.g.touch_active && self.g.mode == Mode::Playing && phase != Phase::Drafting {
             self.draw_play_controls(&loadout);
         }
 
         if phase == Phase::Drafting {
             self.render_draft(&offers, &loadout);
         }
-        if self.mode == Mode::Paused {
+        if self.g.mode == Mode::Paused {
             self.render_pause();
         }
     }
@@ -2487,10 +2117,10 @@ impl SaltLine {
         wind_shown: Option<f64>,
         view: &View,
     ) {
-        if !self.drag_aiming() {
+        if !self.g.drag_aiming() {
             return;
         }
-        let Some((start, now)) = self.touch.drag() else {
+        let Some((start, now)) = self.g.touch.drag() else {
             return;
         };
         let pal = self.pal.clone();
@@ -2504,23 +2134,25 @@ impl SaltLine {
         }
         self.canvas
             .rect(sx - 1, sy - 1, 3, 3, pal.get(slot::SKY_LO));
-        if self.drag_from.is_none()
+        if self.g.drag_from.is_none()
             || crate::aim::pull_to_aim(start, now, loadout.angle_quantum_ticks).is_none()
         {
             return;
         }
 
-        let hint = self.arc_hint();
+        let hint = self.g.arc_hint();
         let wind = match hint {
             ArcHint::Wind => wind_shown.unwrap_or(0.0),
             ArcHint::Short | ArcHint::Full => 0.0,
         };
-        let Some(run) = self.run.as_ref() else { return };
+        let Some(run) = self.g.run.as_ref() else {
+            return;
+        };
         // A whole ballistic flight per frame while a finger is held still is
         // wasted: the path only changes when one of these does.
         let key = PreviewKey {
-            angle: self.angle_ticks,
-            power: self.power_ticks,
+            angle: self.g.angle_ticks,
+            power: self.g.power_ticks,
             hint,
             wind: wind.to_bits(),
             seed: run.run_seed,
@@ -2528,7 +2160,7 @@ impl SaltLine {
             shots: run.shots_on_screen,
             offset: run.emplacement_offset.to_bits(),
         };
-        let shot = Shot::new(self.angle_ticks, self.power_ticks);
+        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks);
         let (path, upto) = self
             .preview
             .get_or(key, || preview_path(screen, loadout, shot, hint, wind));
@@ -2537,11 +2169,13 @@ impl SaltLine {
 
     fn draw_structures(&mut self, screen: &Screen, view: &View) {
         let toppling = self
+            .g
             .anim
             .as_ref()
             .map(|a| a.done() && a.settled < TOPPLE_TIME && !a.collapsed.is_empty())
             .unwrap_or(false);
         let collapsed_now: Vec<usize> = self
+            .g
             .anim
             .as_ref()
             .map(|a| a.collapsed.clone())
@@ -2616,7 +2250,7 @@ impl SaltLine {
 
     fn draw_player(&mut self, screen: &Screen, loadout: &Loadout, view: &View) {
         let muzzle = screen.muzzle();
-        let shot = Shot::new(self.angle_ticks, self.power_ticks).quantized(loadout);
+        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks).quantized(loadout);
         let frame = shot.barrel_frame();
 
         let (tank, pivot, barrel) = match self.sprites.as_ref() {
@@ -2652,7 +2286,7 @@ impl SaltLine {
     }
 
     fn draw_shot_effects(&mut self, view: &View) {
-        let Some(anim) = self.anim.as_ref() else {
+        let Some(anim) = self.g.anim.as_ref() else {
             return;
         };
         let alert = self.pal.get(slot::ALERT);
@@ -2696,10 +2330,11 @@ impl SaltLine {
     }
 
     fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
-        if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 && self.touch_active {
+        if phase == Phase::Drafting && self.g.save.learned & LEARN_DRAFT == 0 && self.g.touch_active
+        {
             return Some("TAP A CARD  PICK A MODIFIER".into());
         }
-        if phase == Phase::Drafting && self.save.learned & LEARN_DRAFT == 0 {
+        if phase == Phase::Drafting && self.g.save.learned & LEARN_DRAFT == 0 {
             return Some(format!(
                 "{} {} {}  PICK A MODIFIER",
                 self.input_label("draft_1"),
@@ -2707,12 +2342,12 @@ impl SaltLine {
                 self.input_label("draft_3")
             ));
         }
-        let learned = self.save.learned;
-        if self.drag_aiming()
+        let learned = self.g.save.learned;
+        if self.g.drag_aiming()
             && learned & (LEARN_ANGLE | LEARN_POWER | LEARN_FIRE)
                 != LEARN_ANGLE | LEARN_POWER | LEARN_FIRE
         {
-            return Some(if self.touch.drag().is_some() {
+            return Some(if self.g.touch.drag().is_some() {
                 "LET GO TO FIRE  PULL BACK TO CANCEL".into()
             } else {
                 "DRAG BACK FROM OPEN GROUND TO AIM".into()
@@ -2732,7 +2367,7 @@ impl SaltLine {
             ))
         } else if learned & LEARN_FIRE == 0 {
             // On a touchscreen the button already says FIRE.
-            if self.touch_active {
+            if self.g.touch_active {
                 Some("TAP FIRE".into())
             } else {
                 Some(format!("{}  FIRE", self.input_label("fire")))
@@ -2766,7 +2401,7 @@ impl SaltLine {
         let dim = pal.get(slot::SKY_LO);
         let alert = pal.get(slot::ALERT);
         let w = self.canvas.w;
-        let (ex, ey) = self.corner_pad;
+        let (ex, ey) = self.g.corner_pad;
 
         // Wind, top left: a windsock flying the way the wind blows, then its
         // strength as a number. The sock never grows with strength, so the
@@ -2824,7 +2459,7 @@ impl SaltLine {
 
         // Instruments, bottom left.
         let mut y = self.canvas.h - 8 - ey;
-        let shot = Shot::new(self.angle_ticks, self.power_ticks).quantized(loadout);
+        let shot = Shot::new(self.g.angle_ticks, self.g.power_ticks).quantized(loadout);
         let angle = if loadout.angle_quantum_ticks == 1 {
             format!("ANG {:.2}", shot.angle_degrees())
         } else {
@@ -2849,6 +2484,7 @@ impl SaltLine {
         if loadout.enfilade_units > 0.0 {
             y -= 7;
             let off = self
+                .g
                 .run
                 .as_ref()
                 .map(|r| r.emplacement_offset)
@@ -2875,8 +2511,8 @@ impl SaltLine {
             self.canvas.text_small(3 + ex, 18 + ey, &line, dim);
         }
 
-        if self.status_time > 0.0 {
-            let text = self.status.clone();
+        if self.g.status_time > 0.0 {
+            let text = self.g.status.clone();
             let x = (w - crate::font::small_width(&text) as i32) / 2;
             self.canvas.text_small(x, 24 + ey, &text, alert);
         } else if let Some(text) = self.onboarding_prompt(phase, wind) {
@@ -2888,21 +2524,21 @@ impl SaltLine {
         // the instant the trigger is pulled, and announcing it while the shot
         // is still visibly in the air gives the result away.
         let _ = phase;
-        if self.clear_hold > 0.0 {
+        if self.g.clear_hold > 0.0 {
             let text = "SCREEN CLEAR";
             let x = (w - crate::font::small_width(text) as i32) / 2;
             self.canvas.text_small(x, 34 + ey, text, fg);
         }
 
-        if self.debug {
+        if self.g.debug {
             let m = screen.field.material_at(screen.muzzle().x);
             let lines = [
                 format!("TPL {}", screen.template.name()),
                 format!("CND {}", screen.candidates.min(999)),
                 format!("ATT {}", screen.attempts),
                 format!("MAT {}", raster::material_name(m)),
-                format!("CAM {}", self.cam_x),
-                format!("BUF {}X{}", self.buffer_w, self.buffer_h),
+                format!("CAM {}", self.g.cam_x),
+                format!("BUF {}X{}", self.g.buffer_w, self.g.buffer_h),
                 format!("WND {:.3}", screen.wind),
             ];
             let mut dy = 42;
@@ -2942,7 +2578,7 @@ impl SaltLine {
         for (i, m) in offers.iter().enumerate() {
             let x = gap + i as i32 * (card_w + gap);
             self.canvas.plate(x, top, card_w, card_h, &pal);
-            if self.touch_active {
+            if self.g.touch_active {
                 let action = ["draft_1", "draft_2", "draft_3"][i.min(2)];
                 self.touch_button(Rect::new(x, top, card_w, card_h), action);
             }
@@ -2981,7 +2617,7 @@ impl SaltLine {
             }
         }
 
-        let hint = if self.touch_active {
+        let hint = if self.g.touch_active {
             "TAP A CARD"
         } else {
             "1 2 3  CHOOSE"
@@ -2995,7 +2631,7 @@ impl SaltLine {
         let fg = pal.get(slot::UI_FG);
         let dim = pal.get(slot::SKY_LO);
         let (w, h) = (self.canvas.w, self.canvas.h);
-        if self.touch_active {
+        if self.g.touch_active {
             let top = (h - 64) / 2;
             self.canvas.plate((w - 150) / 2, top, 150, 64, &pal);
             self.centred(top + 8, "PAUSED", fg);
@@ -3072,14 +2708,14 @@ impl SaltLine {
     /// Write pending settings once they settle, or as soon as the player
     /// leaves Controls. Not every volume repeat: see `durable::Debounce`.
     fn tick_settings(&mut self, delta: f64) {
-        if self.settings.tick(delta, self.mode == Mode::Controls) {
+        if self.g.settings.tick(delta, self.g.mode == Mode::Controls) {
             self.write_settings();
         }
     }
 
     /// Write pending settings now, if there are any: focus loss, pause, close.
     fn flush_settings(&mut self) {
-        if self.settings.take() {
+        if self.g.settings.take() {
             self.write_settings();
         }
     }
@@ -3089,7 +2725,7 @@ impl SaltLine {
         if crash::panicked() {
             return;
         }
-        if !save::store(&self.save) {
+        if !save::store(&self.g.save) {
             self.note_not_saved("SETTINGS NOT SAVED");
         }
     }
@@ -3098,22 +2734,11 @@ impl SaltLine {
     /// one (by design, `save::store`), so every change would fail; that gets
     /// one note saying why, once a session, instead of a complaint each time.
     fn note_not_saved(&mut self, what: &str) {
-        if !self.save.from_the_future {
+        if !self.g.save.from_the_future {
             self.note(what.into());
-        } else if !self.future_noted {
-            self.future_noted = true;
+        } else if !self.g.future_noted {
+            self.g.future_noted = true;
             self.note("SAVE IS FROM A NEWER VERSION".into());
-        }
-    }
-
-    fn mode_name(&self) -> &'static str {
-        match self.mode {
-            Mode::Title => "Title",
-            Mode::Controls => "Controls",
-            Mode::SeedEntry => "SeedEntry",
-            Mode::Playing => "Playing",
-            Mode::Paused => "Paused",
-            Mode::GameOver => "GameOver",
         }
     }
 
@@ -3121,10 +2746,10 @@ impl SaltLine {
     /// frame's input, so a panic inside `fire` still reports the aim it fired.
     fn note_crash_context(&self) {
         crash::note(
-            self.mode_name(),
-            self.run.as_ref(),
-            (self.angle_ticks, self.power_ticks),
-            self.resumed,
+            self.g.mode_name(),
+            self.g.run.as_ref(),
+            (self.g.angle_ticks, self.g.power_ticks),
+            self.g.resumed,
         );
     }
 
@@ -3134,19 +2759,19 @@ impl SaltLine {
             return;
         };
         crash::set_report_file(path.clone());
-        self.last_crash = std::fs::read_to_string(path)
+        self.g.last_crash = std::fs::read_to_string(path)
             .ok()
             .filter(|t| !t.trim().is_empty());
     }
 
     fn copy_last_crash(&mut self) {
-        let Some(text) = self.last_crash.clone() else {
+        let Some(text) = self.g.last_crash.clone() else {
             return;
         };
         DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
         self.play_sound(Sound::Ui);
-        if !self.crash_copied {
-            self.crash_copied = true;
+        if !self.g.crash_copied {
+            self.g.crash_copied = true;
             self.retire_crash_file();
         }
     }
@@ -3154,7 +2779,7 @@ impl SaltLine {
     /// The player has moved on from last session's report (started a run):
     /// stop offering it. The file is kept as `crash-old.txt`, not deleted.
     fn retire_last_crash(&mut self) {
-        if self.last_crash.take().is_some() && !self.crash_copied {
+        if self.g.last_crash.take().is_some() && !self.g.crash_copied {
             self.retire_crash_file();
         }
     }
@@ -3177,12 +2802,12 @@ impl SaltLine {
     fn broken_frame(&mut self, delta: f64) {
         // Wall clock still runs, for `--salt-shot-at` captures of this screen.
         self.elapsed += delta;
-        if !self.broken {
+        if !self.g.broken {
             // Whatever the game last said no longer applies.
-            self.broken = true;
-            self.status_time = 0.0;
+            self.g.broken = true;
+            self.g.status_time = 0.0;
         }
-        self.status_time = (self.status_time - delta).max(0.0);
+        self.g.status_time = (self.g.status_time - delta).max(0.0);
         self.begin_input_frame(delta);
         self.apply_frame_cap();
         if self.action_pressed(4, "copy") {
@@ -3200,7 +2825,7 @@ impl SaltLine {
         } else if self.action_pressed(2, "back") {
             self.base().get_tree().quit();
         }
-        self.back_requested = false;
+        self.g.back_requested = false;
 
         self.touch_buttons.clear();
         let pal = self.pal.clone();
@@ -3234,8 +2859,8 @@ impl SaltLine {
         let back = self.input_label("back");
         y = self.menu_row(y, "back", &format!("{back}  QUIT"), "QUIT", fg);
         y += 4;
-        if self.status_time > 0.0 {
-            let text = self.status.clone();
+        if self.g.status_time > 0.0 {
+            let text = self.g.status.clone();
             self.centred(y, &text, alert);
         }
         self.upload();
@@ -3254,14 +2879,14 @@ impl SaltLine {
     /// them would only cost a tap. Not for the dev autopilot or screenshots,
     /// which nobody is watching with focus.
     fn auto_pause(&mut self) {
-        if self.mode != Mode::Playing || self.auto || self.shot_path.is_some() {
+        if self.g.mode != Mode::Playing || self.g.auto || self.shot_path.is_some() {
             return;
         }
-        if self.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
+        if self.g.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {
             return;
         }
-        self.touch.cancel_drag();
-        self.mode = Mode::Paused;
+        self.g.touch.cancel_drag();
+        self.g.mode = Mode::Paused;
         // From a notification, outside the frame's before/after compare.
         self.redraw.mark();
     }
@@ -3271,10 +2896,10 @@ impl SaltLine {
     /// keeps it (DESIGN §9.2: a replay must use it), shown letterboxed
     /// instead of stretched across the window.
     fn set_run_width(&mut self, width: Option<usize>) {
-        let device = self.pick_width();
+        let device = self.g.pick_width();
         let want = width.map_or(device, |w| w as i32);
-        self.buffer_w = want;
-        self.kept_width = want != device;
+        self.g.buffer_w = want;
+        self.g.kept_width = want != device;
         let aspect = if want == device {
             ContentScaleAspect::EXPAND
         } else {
@@ -3288,20 +2913,20 @@ impl SaltLine {
     /// A new run replaces whatever was saved: it is written on the next
     /// frame, log and all (empty, at the start).
     fn begin_persisting(&mut self) {
-        self.resumable = None;
-        self.discard_armed = None;
-        self.run_saved_len = None;
-        self.run_persist = true;
-        self.resumed = false;
+        self.g.resumable = None;
+        self.g.discard_armed = None;
+        self.g.run_saved_len = None;
+        self.g.run_persist = true;
+        self.g.resumed = false;
     }
 
     /// The run is over and on the board: nothing is left to resume.
     fn stop_persisting(&mut self) {
-        if self.run_persist {
+        if self.g.run_persist {
             self.discard_run_file();
         }
-        self.run_persist = false;
-        self.resumable = None;
+        self.g.run_persist = false;
+        self.g.resumable = None;
     }
 
     /// Make sure no run file is left to resume or score. If a file cannot be
@@ -3320,11 +2945,11 @@ impl SaltLine {
     /// of a new-run action only asks, and the second goes ahead. Returns
     /// whether to go ahead.
     fn confirm_discard(&mut self, what: &'static str) -> bool {
-        if self.resumable.is_none() || self.discard_armed == Some(what) {
-            self.discard_armed = None;
+        if self.g.resumable.is_none() || self.g.discard_armed == Some(what) {
+            self.g.discard_armed = None;
             return true;
         }
-        self.discard_armed = Some(what);
+        self.g.discard_armed = Some(what);
         self.play_sound(Sound::Ui);
         self.redraw.mark();
         false
@@ -3334,19 +2959,21 @@ impl SaltLine {
     /// draft taken (a reposition rides in the next shot's entry). Checked
     /// every frame, written only on a change.
     fn persist_run(&mut self) {
-        if !self.run_persist || crash::panicked() {
+        if !self.g.run_persist || crash::panicked() {
             return;
         }
-        let Some(run) = self.run.as_ref() else { return };
+        let Some(run) = self.g.run.as_ref() else {
+            return;
+        };
         let len = run.log.len();
-        if self.run_saved_len == Some(len) {
+        if self.g.run_saved_len == Some(len) {
             return;
         }
-        let line = resume::Saved::of(run, self.daily).to_line();
+        let line = resume::Saved::of(run, self.g.daily).to_line();
         // Tried once per change: a failed write is logged by `save::write`,
         // and the next shot tries again.
         save::write(RUN_PATH, RUN_TEMP_PATH, &line);
-        self.run_saved_len = Some(len);
+        self.g.run_saved_len = Some(len);
     }
 
     /// Quit to title keeps the run. It is already on disk, so CONTINUE picks
@@ -3358,16 +2985,20 @@ impl SaltLine {
     /// player paused) is scored now instead, and shows its result: leaving it
     /// on disk would let the next new run overwrite an unrecorded score.
     fn suspend_run(&mut self) {
-        if self.run.as_ref().is_some_and(|r| r.is_over()) {
-            self.anim = None;
-            self.clear_hold = 0.0;
+        if self.g.run.as_ref().is_some_and(|r| r.is_over()) {
+            self.g.anim = None;
+            self.g.clear_hold = 0.0;
             self.finish_run();
             return;
         }
-        if !self.run_persist {
+        if !self.g.run_persist {
             return;
         }
-        self.resumable = self.run.as_ref().map(|r| resume::Saved::of(r, self.daily));
+        self.g.resumable = self
+            .g
+            .run
+            .as_ref()
+            .map(|r| resume::Saved::of(r, self.g.daily));
     }
 
     /// At launch: offer the saved run, score one that had already ended, or
@@ -3383,7 +3014,7 @@ impl SaltLine {
             save::remove(RUN_LOADING_PATH);
             self.discard_run_file();
             self.note(resume::Stale::Diverged.note().into());
-            self.status_time = 6.0;
+            self.g.status_time = 6.0;
             return;
         }
         let (path, text) = match save::read(RUN_PATH) {
@@ -3403,7 +3034,7 @@ impl SaltLine {
             }
             Found::Continue(saved) => {
                 save::rename(RUN_LOADING_PATH, RUN_PATH);
-                self.resumable = Some(saved);
+                self.g.resumable = Some(saved);
             }
             Found::Finished(saved, run) => {
                 // Gone before the score goes on the board, as in `finish_run`:
@@ -3418,7 +3049,7 @@ impl SaltLine {
                     shots,
                     daily: saved.daily,
                 };
-                if save::record(&mut self.save, entry).saved {
+                if save::record(&mut self.g.save, entry).saved {
                     self.note("LAST RUN SCORED".into());
                 } else {
                     // Kept for a launch that can record it.
@@ -3431,14 +3062,14 @@ impl SaltLine {
                 save::remove(RUN_LOADING_PATH);
                 self.discard_run_file();
                 self.note(why.note().into());
-                self.status_time = 6.0;
+                self.g.status_time = 6.0;
             }
         }
     }
 
     /// Rebuild the saved run and drop the player back in where it stood.
     fn continue_run(&mut self) {
-        let Some(saved) = self.resumable.take() else {
+        let Some(saved) = self.g.resumable.take() else {
             return;
         };
         let Some(run) = saved.reconstruct() else {
@@ -3447,23 +3078,23 @@ impl SaltLine {
             return;
         };
         self.set_run_width(Some(saved.width));
-        (self.angle_ticks, self.power_ticks) = saved.aim().unwrap_or((900, 600));
-        self.anim = None;
-        self.last_arc.clear();
-        self.clear_hold = 0.0;
-        self.cam_x = 0;
-        self.cam_target = 0.0;
-        self.daily = saved.daily;
-        self.last_seed = saved.seed;
-        self.low_shell_warned = run.shells < 10;
+        (self.g.angle_ticks, self.g.power_ticks) = saved.aim().unwrap_or((900, 600));
+        self.g.anim = None;
+        self.g.last_arc.clear();
+        self.g.clear_hold = 0.0;
+        self.g.cam_x = 0;
+        self.g.cam_target = 0.0;
+        self.g.daily = saved.daily;
+        self.g.last_seed = saved.seed;
+        self.g.low_shell_warned = run.shells < 10;
         self.retire_last_crash();
         let screen = run.screen_index;
         // What is on disk is this run, as rebuilt.
-        self.run_saved_len = Some(run.log.len());
-        self.run_persist = true;
-        self.resumed = true;
-        self.run = Some(run);
-        self.mode = Mode::Playing;
+        self.g.run_saved_len = Some(run.log.len());
+        self.g.run_persist = true;
+        self.g.resumed = true;
+        self.g.run = Some(run);
+        self.g.mode = Mode::Playing;
         self.preview.clear();
         self.redraw.mark();
         self.play_sound(Sound::Ui);
