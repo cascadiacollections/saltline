@@ -46,6 +46,9 @@ impl Replay {
         let mut state = RunState::new(self.run_seed, self.width);
         for (i, entry) in self.log.iter().enumerate() {
             if entry.angle_ticks == DRAFT_MARK {
+                if entry.fuse_tenths != 0 || entry.emplacement_offset != 0 {
+                    return Err(ReplayError::MalformedDraft { at: i });
+                }
                 if state.phase != Phase::Drafting {
                     return Err(ReplayError::UnexpectedDraft { at: i });
                 }
@@ -120,24 +123,37 @@ pub enum ReplayError {
     FuseOutOfRange {
         at: usize,
     },
+    /// A draft entry with a fuse or offset: `take_offer` logs both as 0.
+    MalformedDraft {
+        at: usize,
+    },
 }
 
 // ------------------------------------------------------------- text form
 
-/// Encode a log as space-separated tokens. DESIGN §9.2, plus two tokens for
-/// the inputs that section predates:
+/// Version of the text form. `encode_log` writes it as a leading `v2` token
+/// and `decode_log` accepts no other: a log from before the fuse and offset
+/// were recorded has no way to say what they were, and guessing would replay
+/// it as a different run.
+pub const LOG_FORMAT: u32 = 2;
+
+/// Encode a log as space-separated tokens. DESIGN §9.2, plus a version and
+/// two tokens for the inputs that section predates:
 ///
+/// - `v2` comes first: the format version, `LOG_FORMAT`.
 /// - `@N` sets the screen index for the entries after it.
 /// - `A:P` is a shot at angle ticks `A`, power ticks `P`.
 /// - `DN` is a pick of draft offer `N`.
 /// - `FT` sets the fuse, in tenths of a unit, for the shots after it.
 /// - `EO` sets the emplacement offset, in whole units, for the shots after it.
 ///
-/// `@`, `F` and `E` are sticky and written only when they change (the fuse
-/// and offset start unset and at 0), so a run without Airburst or Enfilade
-/// still reads as `@0 900:600 …` apart from one leading `F` per screen.
+/// `@`, `F` and `E` are sticky and written only when they change, in that
+/// order, immediately before the entry that needs them. The fuse has no
+/// starting value, so the first shot always carries an `F`; the offset
+/// starts at 0. A draft entry's fuse and offset are not written (a valid log
+/// has them at 0, and `Replay::reconstruct` rejects any other).
 pub fn encode_log(log: &[LoggedShot]) -> String {
-    let mut out = Vec::new();
+    let mut out = vec![format!("v{LOG_FORMAT}")];
     let mut screen = None;
     let mut fuse = None;
     let mut offset = 0;
@@ -163,40 +179,112 @@ pub fn encode_log(log: &[LoggedShot]) -> String {
     out.join(" ")
 }
 
-/// Parse `encode_log`'s format. `None` on any malformed token, or on a shot
-/// or pick before the first `@N`.
-pub fn decode_log(text: &str) -> Option<Vec<LoggedShot>> {
+/// Why a text log was rejected. `at` is the token index, counting the
+/// version token as 0.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LogError {
+    /// The text does not start with a `vN` token.
+    MissingVersion,
+    /// A version other than `LOG_FORMAT` — typically a log from an earlier
+    /// build, which cannot be replayed.
+    UnsupportedVersion(u32),
+    /// Not a token of the format, or a number out of range or not written
+    /// the way `encode_log` writes it (`+5`, `05`, `-0`).
+    BadToken { at: usize },
+    /// A shot or pick before any `@N`.
+    NoScreen { at: usize },
+    /// A shot before any `F`: its fuse is unknown.
+    NoFuse { at: usize },
+    /// `@`, `F` or `E` repeated, restating the current value, out of order,
+    /// or not followed by an entry that uses it.
+    StrayToken { at: usize },
+}
+
+/// Parse `encode_log`'s format. Only canonical text is accepted, so for any
+/// text this accepts, `encode_log(&decode_log(text)?)` is the same tokens.
+pub fn decode_log(text: &str) -> Result<Vec<LoggedShot>, LogError> {
+    let mut toks = text.split_whitespace().enumerate();
+    let version = toks
+        .next()
+        .and_then(|(_, t)| t.strip_prefix('v'))
+        .ok_or(LogError::MissingVersion)?;
+    let version: u32 = canonical(version).ok_or(LogError::MissingVersion)?;
+    if version != LOG_FORMAT {
+        return Err(LogError::UnsupportedVersion(version));
+    }
+
     let mut log = Vec::new();
-    let mut screen = None;
-    let mut fuse = 0;
+    let mut screen: Option<u32> = None;
+    let mut fuse: Option<i32> = None;
     let mut offset = 0;
-    for tok in text.split_whitespace() {
+    // Sticky tokens seen since the last entry, as a bitmask in their
+    // required order (@ = 1, F = 2, E = 4), with the index of the first.
+    let mut pending = 0u8;
+    let mut pending_at = 0;
+    for (at, tok) in toks {
+        let bad = LogError::BadToken { at };
+        let mut sticky = |bit: u8, changed: bool| {
+            // Each at most once per entry, in order, and only on a change.
+            if pending >= bit || !changed {
+                return Err(LogError::StrayToken { at });
+            }
+            if pending == 0 {
+                pending_at = at;
+            }
+            pending |= bit;
+            Ok(())
+        };
         if let Some(n) = tok.strip_prefix('@') {
-            screen = Some(n.parse().ok()?);
+            let n = canonical(n).ok_or(bad)?;
+            sticky(1, screen != Some(n))?;
+            screen = Some(n);
         } else if let Some(t) = tok.strip_prefix('F') {
-            fuse = t.parse().ok()?;
+            let t = canonical(t).ok_or(bad)?;
+            sticky(2, fuse != Some(t))?;
+            fuse = Some(t);
         } else if let Some(o) = tok.strip_prefix('E') {
-            offset = o.parse().ok()?;
+            let o = canonical(o).ok_or(bad)?;
+            sticky(4, offset != o)?;
+            offset = o;
         } else if let Some(n) = tok.strip_prefix('D') {
+            if pending & !1 != 0 {
+                // A fuse or offset change is only ever written before a shot.
+                return Err(LogError::StrayToken { at: pending_at });
+            }
             log.push(LoggedShot {
-                screen_index: screen?,
+                screen_index: screen.ok_or(LogError::NoScreen { at })?,
                 angle_ticks: DRAFT_MARK,
-                power_ticks: n.parse().ok()?,
+                power_ticks: canonical(n).ok_or(bad)?,
                 fuse_tenths: 0,
                 emplacement_offset: 0,
             });
+            pending = 0;
         } else {
-            let (a, p) = tok.split_once(':')?;
+            let (a, p) = tok.split_once(':').ok_or(bad)?;
+            let angle_ticks = canonical(a).ok_or(bad)?;
+            if angle_ticks == DRAFT_MARK {
+                return Err(bad);
+            }
             log.push(LoggedShot {
-                screen_index: screen?,
-                angle_ticks: a.parse().ok()?,
-                power_ticks: p.parse().ok()?,
-                fuse_tenths: fuse,
+                screen_index: screen.ok_or(LogError::NoScreen { at })?,
+                angle_ticks,
+                power_ticks: canonical(p).ok_or(bad)?,
+                fuse_tenths: fuse.ok_or(LogError::NoFuse { at })?,
                 emplacement_offset: offset,
             });
+            pending = 0;
         }
     }
-    Some(log)
+    if pending != 0 {
+        return Err(LogError::StrayToken { at: pending_at });
+    }
+    Ok(log)
+}
+
+/// Parse a number only if it is written exactly as `Display` writes it.
+fn canonical<T: core::str::FromStr + ToString>(s: &str) -> Option<T> {
+    let v: T = s.parse().ok()?;
+    (v.to_string() == s).then_some(v)
 }
 
 // ----------------------------------------------------------------- hashing
@@ -250,6 +338,21 @@ impl Hasher {
 ///
 /// Every float goes in as its bit pattern: the point of this hash is to catch
 /// a determinism leak, so it must not tolerate a one-ULP drift.
+///
+/// It is meant to be compared at replay boundaries: a live run right after a
+/// logged entry (a shot resolved, a pick taken) against its reconstruction
+/// from the log so far. That is where CI, the golden runs and the property
+/// tests compare it. Covered: the economy, phase, loadout, offers, the whole
+/// current screen (terrain, damage, structures, and `muzzle_x`, so the
+/// Enfilade offset in effect) and the full log, which carries every shot's
+/// fuse and offset. Not covered: the live `fuse`, chalk marks, the last apex
+/// and whether the wind is revealed. The fuse is left out deliberately: it
+/// is a pending input, not an outcome — the player can turn it after the
+/// last shot and the log cannot know — and what a shot flew with is already
+/// in its log entry. The others are derived from the log and the screen, or
+/// only affect what the HUD shows. For the same reason a live run whose
+/// player has repositioned but not yet fired (a pending `muzzle_x`) does not
+/// match its reconstruction until that shot is logged.
 pub fn state_hash(s: &RunState) -> u64 {
     let mut h = Hasher::new();
     h.write_u64(s.run_seed);
@@ -531,15 +634,76 @@ mod tests {
     fn the_text_form_round_trips() {
         for played in [with_enfilade_and_airburst(), play(77, 400, 200)] {
             let text = encode_log(&played.log);
-            assert_eq!(decode_log(&text).as_ref(), Some(&played.log), "{text}");
+            assert!(text.starts_with("v2 @0 F"), "{text}");
+            assert_eq!(decode_log(&text).as_ref(), Ok(&played.log), "{text}");
         }
-        let log = decode_log("@0 F1200 900:600 E-5 F800 860:640 @3 D1 @4 700:520").unwrap();
+        assert_eq!(encode_log(&[]), "v2");
+        assert_eq!(decode_log("v2"), Ok(vec![]));
+        let log = decode_log("v2 @0 F1200 900:600 F800 E-5 860:640 @3 D1 @4 700:520").unwrap();
         assert_eq!(log.len(), 4);
         assert_eq!((log[1].fuse_tenths, log[1].emplacement_offset), (800, -5));
         assert_eq!(log[2].angle_ticks, DRAFT_MARK);
         assert_eq!((log[3].screen_index, log[3].fuse_tenths), (4, 800));
-        for bad in ["900:600", "@0 900", "@x", "@0 Fq 1:2", "@0 D", "@0 1:2:3"] {
-            assert_eq!(decode_log(bad), None, "{bad}");
+        assert_eq!(log[3].emplacement_offset, -5, "the offset is sticky too");
+    }
+
+    #[test]
+    fn the_text_form_rejects_anything_it_would_not_write() {
+        use LogError::*;
+        let cases: &[(&str, LogError)] = &[
+            // Versions: an epoch-1 log has no fuse to give its shots.
+            ("", MissingVersion),
+            ("@0 F10 900:600", MissingVersion),
+            ("v+2 @0", MissingVersion),
+            ("v1 @0 900:600", UnsupportedVersion(1)),
+            ("v3", UnsupportedVersion(3)),
+            // Entries without their context.
+            ("v2 900:600", NoScreen { at: 1 }),
+            ("v2 D0", NoScreen { at: 1 }),
+            ("v2 @0 900:600", NoFuse { at: 2 }),
+            // Malformed or non-canonical numbers.
+            ("v2 @x", BadToken { at: 1 }),
+            ("v2 @0 Fq 1:2", BadToken { at: 2 }),
+            ("v2 @0 D", BadToken { at: 2 }),
+            ("v2 @0 F1 1:2:3", BadToken { at: 3 }),
+            ("v2 @+1", BadToken { at: 1 }),
+            ("v2 @01", BadToken { at: 1 }),
+            ("v2 @0 F10 E+5 1:2", BadToken { at: 3 }),
+            ("v2 @0 F10 E-0 1:2", BadToken { at: 3 }),
+            ("v2 @0 F-10 -1:2", BadToken { at: 3 }),
+            ("v2 @4294967296", BadToken { at: 1 }),
+            // Sticky tokens repeated, restated, out of order or dangling.
+            ("v2 @0 @1 F1 1:2", StrayToken { at: 2 }),
+            ("v2 @0 F1 1:2 @0 3:4", StrayToken { at: 4 }),
+            ("v2 @0 F1 F2 1:2", StrayToken { at: 3 }),
+            ("v2 @0 F1 1:2 F1 3:4", StrayToken { at: 4 }),
+            ("v2 @0 F1 E0 1:2", StrayToken { at: 3 }),
+            ("v2 @0 E5 F1 1:2", StrayToken { at: 3 }),
+            ("v2 @0 F1 1:2 @1", StrayToken { at: 4 }),
+            ("v2 @0 F1 1:2 F3", StrayToken { at: 4 }),
+            ("v2 @0 F1 1:2 F3 D0", StrayToken { at: 4 }),
+        ];
+        for (text, err) in cases {
+            assert_eq!(decode_log(text), Err(*err), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_draft_entry_with_a_fuse_or_offset_is_an_error() {
+        let played = with_enfilade_and_airburst();
+        let d = played
+            .log
+            .iter()
+            .position(|e| e.angle_ticks == DRAFT_MARK)
+            .unwrap();
+        for (fuse, offset) in [(1, 0), (0, -3)] {
+            let mut replay = Replay::of(&played);
+            replay.log[d].fuse_tenths = fuse;
+            replay.log[d].emplacement_offset = offset;
+            assert_eq!(
+                replay.reconstruct().err(),
+                Some(ReplayError::MalformedDraft { at: d })
+            );
         }
     }
 

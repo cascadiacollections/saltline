@@ -38,8 +38,10 @@ fuzz_target!(|input: Input| {
             .collect(),
     };
     if let Ok(state) = replay.reconstruct() {
-        let again = replay.reconstruct().expect("a log that replayed once failed the second time");
+        let again = replay
+            .reconstruct()
+            .expect("a log that replayed once failed the second time");
         assert_eq!(state_hash(&state), state_hash(&again));
-        assert_eq!(decode_log(&encode_log(&state.log)).as_ref(), Some(&state.log));
+        assert_eq!(decode_log(&encode_log(&state.log)).as_ref(), Ok(&state.log));
     }
 });

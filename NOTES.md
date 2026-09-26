@@ -173,8 +173,15 @@ Programmer art, per the brief, but two gaps affect play rather than polish:
 `SIM_EPOCH` (`salt-line-sim/src/lib.rs`) versions the sim's outcomes, as
 DESIGN §9.3 proposes. `tests/golden_runs.rs` hashes the pinned screen digests
 together with the golden-run corpus (`tests/golden_runs.txt`) and asserts the
-result is `EPOCH_DIGEST`; when it fails, bump the epoch, regenerate the corpus,
-update the digest and add a line here.
+result is the current epoch's entry in `EPOCHS`. When it fails: bump
+`SIM_EPOCH`, regenerate the corpus, append `(epoch, digest)` to `EPOCHS`
+(never edit an existing entry) and add a line here with the digest; a test
+checks that every digest in `EPOCHS` appears in this section.
+
+Saved logs use the text form of `replay::encode_log`, which starts with a
+format version (`v2`). The parser rejects any other version, so an epoch-1
+log, which has no fuse or offset to give, is refused rather than replayed
+with guessed values.
 
 - **Epoch 1:** everything before epoch 2. Shot logs held only screen, angle
   and power, so a run that used Airburst or Enfilade did not replay: the
@@ -186,4 +193,4 @@ update the digest and add a line here.
   exactly the values that flew. Screen generation is unchanged — the pinned
   screen digests did not move — but every run's final hash did, and the
   determinism bin's digest changed from `0xe58dfc4036186a6a` to
-  `0x6d19f4bc6cd194fa`.
+  `0x6d19f4bc6cd194fa`. Epoch digest: `0xce60de848487e4a5`.

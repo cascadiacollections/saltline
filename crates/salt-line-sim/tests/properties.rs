@@ -13,7 +13,7 @@ use proptest::prelude::*;
 use salt_line_sim::ballistics::Shot;
 use salt_line_sim::dmath::{self, MAX_ANGLE_TICKS};
 use salt_line_sim::modifiers::Loadout;
-use salt_line_sim::replay::{state_hash, Replay};
+use salt_line_sim::replay::{decode_log, encode_log, state_hash, Replay};
 use salt_line_sim::rng::Pcg32;
 use salt_line_sim::{POWER_TICKS_MAX, SCREEN_W_MAX, SCREEN_W_MIN};
 
@@ -55,8 +55,40 @@ proptest! {
         let rebuilt = replay.reconstruct().expect("a recorded run failed to replay");
         prop_assert_eq!(state_hash(&played), state_hash(&rebuilt));
         prop_assert_eq!(&played.log, &rebuilt.log);
+        prop_assert_eq!(decode_log(&encode_log(&played.log)), Ok(played.log.clone()));
         prop_assert_eq!(played.shells, rebuilt.shells);
         prop_assert_eq!(played.screens_cleared, rebuilt.screens_cleared);
+    }
+}
+
+/// Token soup for the text-form parser: mostly well-formed tokens, some
+/// repeats and contradictions, a few non-canonical numbers.
+fn log_text() -> impl Strategy<Value = String> {
+    let token = prop::sample::select(vec![
+        "@0", "@1", "@2", "@7", "F0", "F5", "F1095", "E0", "E3", "E-16", "D0", "D2", "900:600",
+        "1:2", "0:0", "@+1", "@01", "F+5", "E-0", "-1:3", "1:", "v2", "x",
+    ]);
+    (
+        prop::sample::select(vec!["v2", "v2", "v2", "v1", "v02", ""]),
+        prop::collection::vec(token, 0..16),
+    )
+        .prop_map(|(v, toks)| {
+            let mut all = vec![v];
+            all.extend(toks);
+            all.join(" ")
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2048))]
+
+    /// Only canonical text is accepted, so whatever parses encodes back to
+    /// the same tokens: one run, one text.
+    #[test]
+    fn an_accepted_log_text_encodes_back_to_itself(text in log_text()) {
+        if let Ok(log) = decode_log(&text) {
+            prop_assert_eq!(encode_log(&log), text.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
     }
 }
 
@@ -160,34 +192,27 @@ fn a_trailing_zero_weight_is_never_picked() {
 }
 
 /// The replay property is only as strong as the runs it sees. Check that the
-/// scripted player really reaches Airburst and Enfilade and uses them: shots
-/// fired at several fuse settings with Airburst in the loadout, and shots
-/// fired from a moved emplacement. Without those, a log that drops either
-/// input would still replay.
+/// scripted player really reaches Airburst and Enfilade and that they decide
+/// shots: a shot fired with Airburst whose fuse, changed, changes how the run
+/// turns out, and likewise a shot fired from a moved emplacement. Without
+/// those, a replay that ignored either input would still pass.
 #[test]
 fn the_scripted_player_uses_the_fuse_and_enfilade() {
     let (mut fuse_runs, mut offset_runs) = (0, 0);
     for seed in 0..24u64 {
         let played = play(seed, 320, &common::seeded_decisions(seed, 40, 0.7));
-        let shots: Vec<_> = played.log.iter().filter(|e| e.angle_ticks >= 0).collect();
-        let mut fuses: Vec<_> = shots.iter().map(|e| e.fuse_tenths).collect();
-        fuses.sort_unstable();
-        fuses.dedup();
-        if played.loadout.airburst() && fuses.len() > 2 {
-            fuse_runs += 1;
-        }
-        if shots.iter().any(|e| e.emplacement_offset != 0) {
-            offset_runs += 1;
-        }
-        let rebuilt = Replay::of(&played).reconstruct().expect("replay failed");
+        let replay = Replay::of(&played);
+        let rebuilt = replay.reconstruct().expect("replay failed");
         assert_eq!(state_hash(&played), state_hash(&rebuilt), "seed {seed}");
+        fuse_runs += common::fuse_matters(&replay) as u32;
+        offset_runs += common::offset_matters(&replay) as u32;
     }
     assert!(
         fuse_runs >= 3,
-        "only {fuse_runs} runs used the Airburst fuse"
+        "only {fuse_runs} runs had a shot whose Airburst fuse mattered"
     );
     assert!(
         offset_runs >= 3,
-        "only {offset_runs} runs moved the emplacement"
+        "only {offset_runs} runs had a shot whose Enfilade offset mattered"
     );
 }
