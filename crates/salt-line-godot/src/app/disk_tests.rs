@@ -6,20 +6,15 @@
 //! board at most once, a saved run that is offered is the run as it was
 //! played, and last session's crash report is never lost.
 
-use std::collections::BTreeMap;
-
 use super::*;
 use pretty_assertions::assert_eq;
 use salt_line_sim::run::Phase;
 
-use crate::crash;
 use crate::input::{Intents, Key};
-use crate::resume::{RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
 
 const FRAME: f64 = 1.0 / 60.0;
 const WINDOW: (i32, i32) = (1280, 720);
 const TODAY: u64 = 20_000;
-const SAVE: &str = "user://salt_line.txt";
 
 fn idle() -> Intents {
     Intents {
@@ -37,12 +32,18 @@ fn keys(keys: &[Key]) -> Intents {
     }
 }
 
-/// `user://` in memory. Every write is atomic, as `durable::write_atomic`
-/// makes it. `budget` is how many more operations happen before the process
-/// dies; after that nothing reaches the disk.
+/// The game's files, in memory: the save, the run kept for CONTINUE (and
+/// the copy a launch sets aside while it rebuilds it), and the crash
+/// reports. Each effect is one operation, as the node carries it out.
+/// `budget` is how many more operations happen before the process dies;
+/// after that nothing reaches the disk.
 #[derive(Clone, Default)]
 struct FakeDisk {
-    files: BTreeMap<&'static str, String>,
+    save: Option<String>,
+    run: Option<String>,
+    set_aside: Option<String>,
+    crash_report: Option<String>,
+    old_crash_report: Option<String>,
     budget: Option<usize>,
     /// Operations carried out, for sizing the crash loop.
     done: usize,
@@ -63,12 +64,6 @@ impl FakeDisk {
         true
     }
 
-    fn rename(&mut self, from: &'static str, to: &'static str) {
-        if let Some(text) = self.files.remove(from) {
-            self.files.insert(to, text);
-        }
-    }
-
     /// Carry out effects as `game.rs`'s `apply` does, `stored` feedback
     /// first.
     fn apply(&mut self, g: &mut Game, fx: Vec<Effect>) {
@@ -83,26 +78,28 @@ impl FakeDisk {
                         self.fail_scores -= 1;
                         false
                     } else {
-                        let text = g.save_to_store(&why).serialize();
-                        self.files.insert(SAVE, text);
+                        self.save = Some(g.save_to_store(&why).serialize());
                         true
                     };
                     let more = g.stored(why, ok);
                     self.apply(g, more);
                 }
-                Effect::WriteRun(line) | Effect::KeepRun(line) => {
-                    self.files.insert(RUN_PATH, line);
+                Effect::RunFile(RunFile::Write(line) | RunFile::Keep(line)) => {
+                    self.run = Some(line);
                 }
-                Effect::DiscardRunFile => {
-                    self.files.remove(RUN_TEMP_PATH);
-                    self.files.remove(RUN_PATH);
+                Effect::RunFile(RunFile::Restore) => {
+                    if let Some(text) = self.set_aside.take() {
+                        self.run = Some(text);
+                    }
                 }
-                Effect::Rename { from, to } => self.rename(from, to),
-                Effect::Remove(path) => {
-                    self.files.remove(path);
+                Effect::RunFile(RunFile::Discard | RunFile::Abandon(_)) => {
+                    self.set_aside = None;
+                    self.run = None;
                 }
-                Effect::RetireCrashReport => {
-                    self.rename(crash::REPORT_PATH, crash::OLD_REPORT_PATH);
+                Effect::CrashReport(CrashReport::Retire) => {
+                    if let Some(text) = self.crash_report.take() {
+                        self.old_crash_report = Some(text);
+                    }
                 }
                 _ => {}
             }
@@ -111,24 +108,16 @@ impl FakeDisk {
 
     /// Launch the game on what is on disk, as the node's `ready` does.
     fn launch(&mut self) -> Game {
-        let save = self
-            .files
-            .get(SAVE)
-            .map(|t| Save::parse(t))
-            .unwrap_or_default();
+        let save = self.save.as_deref().map(Save::parse).unwrap_or_default();
         let mut g = Game::new(false, save);
-        g.last_crash = self.files.get(crash::REPORT_PATH).cloned();
-        let found = if self.files.contains_key(RUN_LOADING_PATH) {
+        g.last_crash = self.crash_report.clone();
+        let found = if self.set_aside.is_some() {
             Some(SavedRun::Interrupted)
         } else {
-            let path = [RUN_PATH, RUN_TEMP_PATH]
-                .into_iter()
-                .find(|p| self.files.contains_key(p));
-            match path {
-                Some(p) if !self.files[p].trim().is_empty() => {
-                    let text = self.files[p].clone();
+            match self.run.clone() {
+                Some(text) if !text.trim().is_empty() => {
                     if self.alive() {
-                        self.rename(p, RUN_LOADING_PATH);
+                        self.set_aside = self.run.take();
                     }
                     Some(SavedRun::Found(text))
                 }
@@ -145,8 +134,8 @@ impl FakeDisk {
     }
 
     fn board(&self) -> Vec<Entry> {
-        self.files
-            .get(SAVE)
+        self.save
+            .as_deref()
             .map(|t| Save::parse(t).scores)
             .unwrap_or_default()
     }
@@ -249,11 +238,7 @@ impl FakeDisk {
     /// The same session going on after its failed score, not a relaunch:
     /// the board in memory is what the failed write left.
     fn launch_without_scoring(&mut self) -> Game {
-        let save = self
-            .files
-            .get(SAVE)
-            .map(|t| Save::parse(t))
-            .unwrap_or_default();
+        let save = self.save.as_deref().map(Save::parse).unwrap_or_default();
         let mut g = Game::new(false, save);
         g.fit_display(WINDOW, (0, 0));
         g
@@ -262,10 +247,10 @@ impl FakeDisk {
 
 /// A disk with last session's crash report on it.
 fn with_crash_report() -> FakeDisk {
-    let mut disk = FakeDisk::default();
-    disk.files
-        .insert(crash::REPORT_PATH, "SALT LINE CRASH REPORT".into());
-    disk
+    FakeDisk {
+        crash_report: Some("SALT LINE CRASH REPORT".into()),
+        ..FakeDisk::default()
+    }
 }
 
 /// Run `flow` on `start` once through, then again with the process killed
@@ -297,10 +282,9 @@ fn crash_everywhere(start: FakeDisk, flow: fn(&mut FakeDisk) -> Played) {
             .filter(|e| e.seed == played.seed)
             .count();
         assert!(scored <= 1, "crash after {k}: scored {scored} times");
-        if start.files.contains_key(crash::REPORT_PATH) {
+        if start.crash_report.is_some() {
             assert!(
-                disk.files.contains_key(crash::REPORT_PATH)
-                    || disk.files.contains_key(crash::OLD_REPORT_PATH),
+                disk.crash_report.is_some() || disk.old_crash_report.is_some(),
                 "crash after {k}: the crash report went"
             );
         }
@@ -313,7 +297,7 @@ fn a_finished_run_is_scored_once_and_its_file_goes() {
     let played = finish_a_run(&mut disk);
     assert_eq!(disk.board().len(), 1);
     assert_eq!(disk.board()[0].seed, played.seed);
-    assert!(!disk.files.contains_key(RUN_PATH));
+    assert!(disk.run.is_none());
     disk.launch();
     assert_eq!(disk.board().len(), 1);
 }
@@ -351,10 +335,7 @@ fn a_score_that_cannot_be_written_is_scored_once_later() {
     let played = score_write_fails(&mut disk);
     // The settings write did not take the score with it.
     assert!(disk.board().is_empty());
-    assert!(
-        disk.files.contains_key(RUN_PATH),
-        "the finished run was kept"
-    );
+    assert!(disk.run.is_some(), "the finished run was kept");
     let g = disk.launch();
     assert_eq!(g.status, "LAST RUN SCORED");
     disk.launch();
@@ -390,15 +371,12 @@ fn nothing_queued_before_a_panic_is_replayed_after_it() {
 fn the_node_drops_every_file_effect_after_a_panic() {
     let dropped = [
         Effect::Store(Store::Settings),
-        Effect::WriteRun(String::new()),
-        Effect::KeepRun(String::new()),
-        Effect::DiscardRunFile,
-        Effect::Rename {
-            from: RUN_LOADING_PATH,
-            to: RUN_PATH,
-        },
-        Effect::Remove(RUN_LOADING_PATH),
-        Effect::RetireCrashReport,
+        Effect::RunFile(RunFile::Write(String::new())),
+        Effect::RunFile(RunFile::Keep(String::new())),
+        Effect::RunFile(RunFile::Discard),
+        Effect::RunFile(RunFile::Restore),
+        Effect::RunFile(RunFile::Abandon(Abandoned::Interrupted)),
+        Effect::CrashReport(CrashReport::Retire),
     ];
     assert!(dropped.iter().all(|e| !e.survives_panic()));
     let kept = [
@@ -406,7 +384,6 @@ fn the_node_drops_every_file_effect_after_a_panic() {
         Effect::Redraw,
         Effect::Clipboard(String::new()),
         Effect::Quit,
-        Effect::Warn(String::new()),
     ];
     assert!(kept.iter().all(Effect::survives_panic));
 }

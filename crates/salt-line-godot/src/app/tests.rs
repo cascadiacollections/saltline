@@ -6,7 +6,7 @@ use pretty_assertions::assert_eq;
 use salt_line_sim::run::Phase;
 
 use crate::input::{Intents, Key, Pad};
-use crate::resume::{Saved, RUN_LOADING_PATH, RUN_PATH};
+use crate::resume::Saved;
 
 /// A 60 Hz frame.
 const FRAME: f64 = 1.0 / 60.0;
@@ -98,7 +98,7 @@ fn is_settings(e: &Effect) -> bool {
 }
 
 fn is_run_write(e: &Effect) -> bool {
-    matches!(e, Effect::WriteRun(_))
+    matches!(e, Effect::RunFile(RunFile::Write(_)))
 }
 
 fn entry(seed: u64) -> Entry {
@@ -219,7 +219,7 @@ fn quitting_to_the_title_keeps_the_run_for_continue() {
     let fx = tick(&mut g, keys(&[Key::R]));
     assert_eq!(g.mode, Mode::Title);
     assert!(g.resumable.is_some());
-    assert!(!fx.contains(&Effect::DiscardRunFile));
+    assert!(!fx.contains(&Effect::RunFile(RunFile::Discard)));
     // Entering the title looks at the display again.
     assert!(fx.contains(&Effect::RecheckDisplay));
 
@@ -473,7 +473,7 @@ fn the_last_shell_ends_the_run_and_it_is_scored_exactly_once() {
     // The run file goes first, then the board.
     let discard = fx
         .iter()
-        .position(|e| *e == Effect::DiscardRunFile)
+        .position(|e| *e == Effect::RunFile(RunFile::Discard))
         .unwrap();
     let score = fx.iter().position(is_score).unwrap();
     assert!(discard < score);
@@ -541,7 +541,7 @@ fn a_board_that_cannot_be_written_keeps_the_run_and_says_so() {
         },
         false,
     );
-    assert_eq!(fx[0], Effect::KeepRun("line".into()));
+    assert_eq!(fx[0], Effect::RunFile(RunFile::Keep("line".into())));
     assert_eq!(g.status, "SCORE NOT SAVED");
     assert!(
         g.save.scores.is_empty(),
@@ -768,13 +768,22 @@ fn last_sessions_crash_report_is_copied_once_and_retired() {
     g.last_crash = Some("SALT LINE CRASH REPORT".into());
     let fx = tick(&mut g, keys(&[Key::C]));
     assert!(fx.contains(&Effect::Clipboard("SALT LINE CRASH REPORT".into())));
-    assert_eq!(count(&fx, |e| *e == Effect::RetireCrashReport), 1);
+    assert_eq!(
+        count(&fx, |e| *e == Effect::CrashReport(CrashReport::Retire)),
+        1
+    );
     let fx = tick(&mut g, keys(&[Key::C]));
-    assert_eq!(count(&fx, |e| *e == Effect::RetireCrashReport), 0);
+    assert_eq!(
+        count(&fx, |e| *e == Effect::CrashReport(CrashReport::Retire)),
+        0
+    );
     // Starting a run stops offering it; the file was already moved.
     let fx = tick(&mut g, keys(&[Key::Enter]));
     assert!(g.last_crash.is_none());
-    assert_eq!(count(&fx, |e| *e == Effect::RetireCrashReport), 0);
+    assert_eq!(
+        count(&fx, |e| *e == Effect::CrashReport(CrashReport::Retire)),
+        0
+    );
 }
 
 #[test]
@@ -782,7 +791,10 @@ fn starting_a_run_retires_an_uncopied_report() {
     let mut g = game();
     g.last_crash = Some("report".into());
     let fx = tick(&mut g, keys(&[Key::Enter]));
-    assert_eq!(count(&fx, |e| *e == Effect::RetireCrashReport), 1);
+    assert_eq!(
+        count(&fx, |e| *e == Effect::CrashReport(CrashReport::Retire)),
+        1
+    );
 }
 
 #[test]
@@ -806,9 +818,10 @@ fn the_error_screen_copies_only_a_finished_report() {
 fn a_rebuild_that_never_finished_is_thrown_away() {
     let mut g = game();
     let fx = g.saved_run(SavedRun::Interrupted);
-    assert!(matches!(fx[0], Effect::Warn(_)));
-    assert_eq!(fx[1], Effect::Remove(RUN_LOADING_PATH));
-    assert_eq!(fx[2], Effect::DiscardRunFile);
+    assert_eq!(
+        fx[0],
+        Effect::RunFile(RunFile::Abandon(Abandoned::Interrupted))
+    );
     assert_eq!(g.status, resume::Stale::Diverged.note());
     assert_eq!(g.status_time, STALE_STATUS_TIME);
     assert!(g.resumable.is_none());
@@ -821,13 +834,7 @@ fn a_saved_run_is_offered_and_its_file_put_back() {
     let line = Saved::of(&run, true).to_line();
     let mut g = game();
     let fx = g.saved_run(SavedRun::Found(line));
-    assert_eq!(
-        fx,
-        vec![Effect::Rename {
-            from: RUN_LOADING_PATH,
-            to: RUN_PATH
-        }]
-    );
+    assert_eq!(fx, vec![Effect::RunFile(RunFile::Restore)]);
     assert_eq!(g.resumable.as_ref().map(|s| s.seed), Some(42));
 
     let fx = tick(&mut g, keys(&[Key::Enter]));
@@ -862,10 +869,9 @@ fn a_saved_run_that_had_ended_is_scored_at_launch() {
     let line = Saved::of(&run, false).to_line();
     let mut g = game();
     let fx = g.saved_run(SavedRun::Found(line.clone()));
-    assert_eq!(fx[0], Effect::Remove(RUN_LOADING_PATH));
-    assert_eq!(fx[1], Effect::DiscardRunFile);
-    let Effect::Store(why) = fx[2].clone() else {
-        panic!("{:?}", fx[2])
+    assert_eq!(fx[0], Effect::RunFile(RunFile::Discard));
+    let Effect::Store(why) = fx[1].clone() else {
+        panic!("{:?}", fx[1])
     };
     match &why {
         Store::Score { keep, announce, .. } => {
@@ -884,9 +890,10 @@ fn a_saved_run_that_had_ended_is_scored_at_launch() {
 fn a_run_file_this_build_cannot_read_is_discarded() {
     let mut g = game();
     let fx = g.saved_run(SavedRun::Found("not a run".into()));
-    assert!(matches!(fx[0], Effect::Warn(_)));
-    assert_eq!(fx[1], Effect::Remove(RUN_LOADING_PATH));
-    assert_eq!(fx[2], Effect::DiscardRunFile);
+    assert!(matches!(
+        fx[0],
+        Effect::RunFile(RunFile::Abandon(Abandoned::Unreadable(_)))
+    ));
     assert_eq!(g.status_time, STALE_STATUS_TIME);
     assert!(g.resumable.is_none());
 }
@@ -905,7 +912,7 @@ fn continue_that_cannot_rebuild_drops_the_run() {
     });
     g.resumable = Some(saved);
     let fx = tick(&mut g, keys(&[Key::Enter]));
-    assert!(fx.contains(&Effect::DiscardRunFile));
+    assert!(fx.contains(&Effect::RunFile(RunFile::Discard)));
     assert_eq!(g.mode, Mode::Title);
     assert_eq!(g.status, resume::Stale::Diverged.note());
 }

@@ -16,7 +16,9 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Aspect, Effect, Game, Mode, SavedRun, Sound, Typed};
+use crate::app::{
+    Abandoned, Aspect, CrashReport, Effect, Game, Mode, RunFile, SavedRun, Sound, Typed,
+};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
@@ -389,25 +391,25 @@ impl SaltLine {
                     let fx = self.g.stored(why, ok);
                     self.apply(fx);
                 }
-                Effect::WriteRun(line) => {
+                Effect::RunFile(RunFile::Write(line) | RunFile::Keep(line)) => {
                     save::write(RUN_PATH, RUN_TEMP_PATH, &line);
                 }
-                Effect::KeepRun(line) => {
-                    save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+                Effect::RunFile(RunFile::Restore) => {
+                    save::rename(RUN_LOADING_PATH, RUN_PATH);
                 }
-                Effect::DiscardRunFile => {
-                    save::remove(RUN_TEMP_PATH);
-                    save::remove(RUN_PATH);
-                    if save::read(RUN_PATH).is_some() || save::read(RUN_TEMP_PATH).is_some() {
-                        godot_warn!("salt-line: could not delete {RUN_PATH}; blanking it");
-                        save::write(RUN_PATH, RUN_TEMP_PATH, "");
+                Effect::RunFile(RunFile::Discard) => Self::discard_run_file(),
+                Effect::RunFile(RunFile::Abandon(why)) => {
+                    match why {
+                        Abandoned::Interrupted => godot_warn!(
+                            "salt-line: discarding {RUN_LOADING_PATH}: a rebuild did not finish"
+                        ),
+                        Abandoned::Unreadable(why) => {
+                            godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}")
+                        }
                     }
+                    Self::discard_run_file();
                 }
-                Effect::Rename { from, to } => {
-                    save::rename(from, to);
-                }
-                Effect::Remove(path) => save::remove(path),
-                Effect::RetireCrashReport => {
+                Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (
                         save::on_disk(crash::REPORT_PATH),
                         save::on_disk(crash::OLD_REPORT_PATH),
@@ -417,13 +419,28 @@ impl SaltLine {
                         }
                     }
                 }
-                Effect::Warn(text) => godot_warn!("{text}"),
             }
         }
     }
 }
 
 // ------------------------------------------------------------------ launch
+
+impl SaltLine {
+    /// Leave no run to resume or score: the copy set aside at launch, the
+    /// temporary file and the run file. If a file cannot be deleted, the run
+    /// file is overwritten with nothing, which `resume::judge` reads as no
+    /// run.
+    fn discard_run_file() {
+        save::remove(RUN_LOADING_PATH);
+        save::remove(RUN_TEMP_PATH);
+        save::remove(RUN_PATH);
+        if save::read(RUN_PATH).is_some() || save::read(RUN_TEMP_PATH).is_some() {
+            godot_warn!("salt-line: could not delete {RUN_PATH}; blanking it");
+            save::write(RUN_PATH, RUN_TEMP_PATH, "");
+        }
+    }
+}
 
 impl SaltLine {
     /// Days since the Unix epoch. The clock is read here, in the presentation

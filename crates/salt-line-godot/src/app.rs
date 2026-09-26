@@ -40,7 +40,7 @@
 //! A save write ([`Effect::Store`]) is reported back through
 //! [`Game::stored`], which may say so on screen and ask for more. The adapter
 //! applies what `stored` returns at once, before the rest of the list it was
-//! working through: a failed score's [`Effect::KeepRun`] lands straight after
+//! working through: a failed score's `RunFile::Keep` lands straight after
 //! the failed write.
 //!
 //! # After a panic
@@ -74,7 +74,7 @@ use crate::presentation::{
     self, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER, LEARN_SHELLS, LEARN_WIND,
 };
 use crate::raster::View;
-use crate::resume::{self, Found, RUN_LOADING_PATH, RUN_PATH};
+use crate::resume::{self, Found};
 use crate::save_format::{ArcHint, Entry, Save, TouchAim};
 use crate::touch::{Button, TouchPad};
 
@@ -209,7 +209,7 @@ pub enum Store {
     /// placed, and `entry` joins the board in memory only once that write
     /// succeeds, so it reaches disk exactly once, here or not at all. If the
     /// board does not reach disk, `keep` (the finished run's line) is written
-    /// back to `user://run.txt` so a later launch can score it. `announce`
+    /// back as the saved run (`RunFile::Keep`) so a later launch can score it. `announce`
     /// says "LAST RUN SCORED" on success: a run scored at launch rather than
     /// at its end.
     Score {
@@ -245,45 +245,60 @@ pub enum Effect {
     /// Write the save as `Game::save_to_store` has it when the effect is
     /// applied (`save::store`), then report the outcome to `Game::stored`.
     Store(Store),
-    /// Write the running run to `user://run.txt`.
-    WriteRun(String),
-    /// Write a finished run back to `user://run.txt` for a later launch to
-    /// score.
-    KeepRun(String),
-    /// Make sure no run file is left to resume or score. If a file cannot be
-    /// deleted, the run file is overwritten with nothing, which
-    /// `resume::judge` reads as no run: a finished log must never survive to
-    /// be scored twice.
-    DiscardRunFile,
-    /// Move a `user://` file (`save::rename`).
-    Rename {
-        from: &'static str,
-        to: &'static str,
-    },
-    /// Delete a `user://` file if it is there.
-    Remove(&'static str),
-    /// The player has copied or moved on from last session's crash report:
-    /// keep it as `crash-old.txt`, not deleted.
-    RetireCrashReport,
-    /// Log a warning.
-    Warn(String),
+    /// Something to do with the run kept on disk for CONTINUE.
+    RunFile(RunFile),
+    /// Something to do with last session's crash report.
+    CrashReport(CrashReport),
+}
+
+/// What to do with the saved run (DESIGN §9.1). Which files that means is the
+/// adapter's business: `game.rs` keeps it in `user://run.txt`, written by way
+/// of `run.txt.new`, and moves it aside to `run-loading.txt` while a launch
+/// rebuilds it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RunFile {
+    /// Save the running run, this line, over whatever was saved.
+    Write(String),
+    /// Save a finished run, this line, for a later launch to score: its
+    /// score did not reach the board.
+    Keep(String),
+    /// The run set aside at launch rebuilt: put it back to be continued.
+    Restore,
+    /// Make sure no run is left to resume or score, the one set aside at
+    /// launch included. If a file cannot be deleted, the run file is
+    /// overwritten with nothing, which `resume::judge` reads as no run: a
+    /// finished log must never survive to be scored twice.
+    Discard,
+    /// `Discard`, for a run this build cannot continue, saying why in the log.
+    Abandon(Abandoned),
+}
+
+/// Why a saved run was thrown away at launch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Abandoned {
+    /// The last launch died rebuilding it.
+    Interrupted,
+    /// It could not be read or replayed by this build.
+    Unreadable(resume::Stale),
+}
+
+/// What to do with last session's crash report.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CrashReport {
+    /// The player has copied it or moved on (started a run): stop offering
+    /// it. It is kept as the old report, not deleted.
+    Retire,
 }
 
 impl Effect {
     /// Whether the adapter still carries this out after a panic. Everything
     /// that writes, moves or deletes a file is dropped: see the module docs.
     /// What is left is what the error screen needs: sound, drawing, the
-    /// clipboard, quitting, warnings.
+    /// clipboard, quitting.
     pub fn survives_panic(&self) -> bool {
         !matches!(
             self,
-            Effect::Store(_)
-                | Effect::WriteRun(_)
-                | Effect::KeepRun(_)
-                | Effect::DiscardRunFile
-                | Effect::Rename { .. }
-                | Effect::Remove(_)
-                | Effect::RetireCrashReport
+            Effect::Store(_) | Effect::RunFile(_) | Effect::CrashReport(_)
         )
     }
 }
@@ -291,11 +306,13 @@ impl Effect {
 /// What the adapter found of a saved run at launch.
 #[derive(Clone, Debug)]
 pub enum SavedRun {
-    /// `user://run-loading.txt` was there: the last launch died rebuilding a
+    /// The copy a launch sets aside was still there: the last launch died rebuilding a
     /// run.
     Interrupted,
-    /// A run file's text, already moved aside to `RUN_LOADING_PATH` so a
-    /// log that brings the sim down costs one crash, not one every launch.
+    /// The saved run's text, already set aside by the adapter so a log that
+    /// brings the sim down costs one crash, not one every launch. The core
+    /// answers with `RunFile::Restore` once it has rebuilt it, or throws it
+    /// away.
     Found(String),
 }
 
@@ -431,10 +448,10 @@ pub struct Game {
     pub broken: bool,
     /// The saved run CONTINUE would rebuild, already checked. See `resume`.
     pub resumable: Option<resume::Saved>,
-    /// Log length last written to `user://run.txt`; `None` before the first
+    /// Log length last written to the saved run; `None` before the first
     /// write of this run.
     pub run_saved_len: Option<usize>,
-    /// This run is kept in `user://run.txt`. Off for a `--salt-screen` jump,
+    /// This run is kept as the saved run. Off for a `--salt-screen` jump,
     /// which its log cannot rebuild.
     pub run_persist: bool,
     /// This run was rebuilt by CONTINUE, for the crash report.
@@ -739,7 +756,7 @@ impl Game {
                     // disk): keep the finished log, so a later launch can
                     // score it.
                     if let Some(line) = keep {
-                        self.fx.push(Effect::KeepRun(line));
+                        self.fx.push(Effect::RunFile(RunFile::Keep(line)));
                     }
                     self.note_not_saved("SCORE NOT SAVED");
                 }
@@ -787,21 +804,15 @@ impl Game {
         let text = match found {
             SavedRun::Interrupted => {
                 // The last launch died rebuilding it.
-                self.fx.push(Effect::Warn(format!(
-                    "salt-line: discarding {RUN_LOADING_PATH}: a rebuild did not finish"
-                )));
-                self.fx.push(Effect::Remove(RUN_LOADING_PATH));
-                self.fx.push(Effect::DiscardRunFile);
+                self.fx
+                    .push(Effect::RunFile(RunFile::Abandon(Abandoned::Interrupted)));
                 self.note(resume::Stale::Diverged.note().into());
                 self.status_time = STALE_STATUS_TIME;
                 return self.take_effects();
             }
             SavedRun::Found(text) => text,
         };
-        let back = Effect::Rename {
-            from: RUN_LOADING_PATH,
-            to: RUN_PATH,
-        };
+        let back = Effect::RunFile(RunFile::Restore);
         match resume::judge(Some(&text)) {
             Found::Nothing => self.fx.push(back),
             Found::Continue(saved) => {
@@ -811,8 +822,7 @@ impl Game {
             Found::Finished(saved, run) => {
                 // Gone before the score goes on the board, as in `finish_run`:
                 // a crash in between loses it rather than recording it twice.
-                self.fx.push(Effect::Remove(RUN_LOADING_PATH));
-                self.fx.push(Effect::DiscardRunFile);
+                self.fx.push(Effect::RunFile(RunFile::Discard));
                 let (screens, shells, shots) = run.score();
                 let entry = Entry {
                     seed: saved.seed,
@@ -825,11 +835,10 @@ impl Game {
                 self.record(entry, Some(text), true);
             }
             Found::Discard(why) => {
-                self.fx.push(Effect::Warn(format!(
-                    "salt-line: discarding {RUN_PATH}: {why:?}"
-                )));
-                self.fx.push(Effect::Remove(RUN_LOADING_PATH));
-                self.fx.push(Effect::DiscardRunFile);
+                self.fx
+                    .push(Effect::RunFile(RunFile::Abandon(Abandoned::Unreadable(
+                        why,
+                    ))));
                 self.note(why.note().into());
                 self.status_time = STALE_STATUS_TIME;
             }

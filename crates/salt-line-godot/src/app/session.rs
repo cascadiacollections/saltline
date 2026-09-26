@@ -121,7 +121,7 @@ impl Game {
         self.play(Sound::Ui);
         if !self.crash_copied {
             self.crash_copied = true;
-            self.fx.push(Effect::RetireCrashReport);
+            self.fx.push(Effect::CrashReport(CrashReport::Retire));
         }
     }
 
@@ -129,7 +129,7 @@ impl Game {
     /// stop offering it.
     pub(super) fn retire_last_crash(&mut self) {
         if self.last_crash.take().is_some() && !self.crash_copied {
-            self.fx.push(Effect::RetireCrashReport);
+            self.fx.push(Effect::CrashReport(CrashReport::Retire));
         }
     }
 }
@@ -169,7 +169,7 @@ impl Game {
     /// The run is over and on the board: nothing is left to resume.
     pub(super) fn stop_persisting(&mut self) {
         if self.run_persist {
-            self.fx.push(Effect::DiscardRunFile);
+            self.fx.push(Effect::RunFile(RunFile::Discard));
         }
         self.run_persist = false;
         self.resumable = None;
@@ -189,7 +189,7 @@ impl Game {
         false
     }
 
-    /// Write `user://run.txt` whenever the log has grown: a shot fired or a
+    /// Save the run whenever the log has grown: a shot fired or a
     /// draft taken (a reposition rides in the next shot's entry). Checked
     /// every frame, written only on a change.
     pub(super) fn persist_run(&mut self) {
@@ -204,7 +204,7 @@ impl Game {
         let line = resume::Saved::of(run, self.daily).to_line();
         // Tried once per change: a failed write is logged by `save::write`,
         // and the next shot tries again.
-        self.fx.push(Effect::WriteRun(line));
+        self.fx.push(Effect::RunFile(RunFile::Write(line)));
         self.run_saved_len = Some(len);
     }
 
@@ -235,7 +235,7 @@ impl Game {
             return;
         };
         let Some(run) = saved.reconstruct() else {
-            self.fx.push(Effect::DiscardRunFile);
+            self.fx.push(Effect::RunFile(RunFile::Discard));
             self.note(resume::Stale::Diverged.note().into());
             return;
         };
