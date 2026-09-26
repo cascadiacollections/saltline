@@ -27,6 +27,7 @@ use crate::crash;
 use crate::durable::Debounce;
 use crate::frame::{self, DisplayPoll, Memo, Redraw};
 use crate::keypad::{self, Focus};
+use crate::pads::Pads;
 use crate::palette::{slot, Palette};
 use crate::presentation::{
     self, RepeatState, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER,
@@ -249,8 +250,14 @@ pub struct SaltLine {
     key_presses: Vec<Key>,
     pad_queue: Vec<JoyButton>,
     pad_presses: Vec<JoyButton>,
-    /// Every joypad that has sent an event. Any of them drives the game.
-    pads: Vec<i32>,
+    /// The joypads that drive the game: any that has pressed a button or
+    /// shown a stick at rest. See `pads::Pads`.
+    pads: Pads,
+    /// Seconds until the joypad list is checked against the connected ones.
+    pad_prune: f64,
+    /// Hold-to-repeat per pad button, shared by every action bound to it.
+    pad_keys: Vec<(JoyButton, RepeatState)>,
+    /// Hold-to-repeat for the left stick, per action slot.
     pad_repeat: [RepeatState; 8],
     /// The controller's place on the seed keypad.
     seed_focus: Focus,
@@ -354,7 +361,9 @@ impl INode2D for SaltLine {
             key_presses: Vec::new(),
             pad_queue: Vec::new(),
             pad_presses: Vec::new(),
-            pads: Vec::new(),
+            pads: Pads::default(),
+            pad_prune: 0.0,
+            pad_keys: Vec::new(),
             pad_repeat: [RepeatState::default(); 8],
             seed_focus: Focus::default(),
             controller_active: false,
@@ -407,6 +416,9 @@ impl INode2D for SaltLine {
         self.project_fps = Engine::singleton().get_max_fps();
         self.fps_cap = self.project_fps;
         self.read_display();
+        // And again on the first frame: on a phone the safe area may not be
+        // settled yet while the scene is still coming up.
+        self.display.invalidate();
         self.buffer_w = self.pick_width();
         self.apply_buffer_size();
         if let Some(dir) = Self::cmdline_value("--salt-gallery") {
@@ -447,9 +459,16 @@ impl INode2D for SaltLine {
         }
         self.step(delta);
         self.tick_settings(delta);
-        if self.frame_state() != before {
+        let after = self.frame_state();
+        if after != before {
             self.redraw.mark();
+            // Between runs the buffer may take a new width: look at the
+            // display afresh rather than wait for the next scheduled read.
+            if after.mode != before.mode && matches!(after.mode, Mode::Title | Mode::GameOver) {
+                self.display.invalidate();
+            }
         }
+        self.prune_pads(delta);
         self.apply_frame_cap();
         if self.redraw.due(self.busy()) {
             self.render();
@@ -477,7 +496,13 @@ impl INode2D for SaltLine {
             // Stick deflection is polled; `busy` keeps frames coming while
             // one is held over.
             Ok(motion) => {
-                self.note_pad(motion.get_device());
+                let axis = match motion.get_axis() {
+                    JoyAxis::LEFT_X => 0,
+                    JoyAxis::LEFT_Y => 1,
+                    _ => usize::MAX,
+                };
+                self.pads
+                    .motion(motion.get_device(), axis, motion.get_axis_value());
                 return;
             }
             Err(event) => event,
@@ -494,8 +519,8 @@ impl INode2D for SaltLine {
         };
         let event = match event.try_cast::<InputEventJoypadButton>() {
             Ok(button) => {
-                self.note_pad(button.get_device());
                 if button.is_pressed() {
+                    self.pads.button(button.get_device());
                     self.pad_queue.push(button.get_button_index());
                 }
                 return;
@@ -672,15 +697,16 @@ impl SaltLine {
         self.cutout = self.cutout_px();
     }
 
-    /// Re-read the display when the window changes size, focus comes back or
-    /// a second has passed, and follow it if the buffer should change. The
-    /// safe area is a platform round trip on a phone; the size is not.
+    /// Follow the display every frame from the window size, which is cheap,
+    /// and the cutout, which is re-read only when the size changes, focus
+    /// comes back, a run ends or a second has passed: the safe area is a
+    /// platform round trip on a phone.
     fn poll_display(&mut self, delta: f64) {
         let size = DisplayServer::singleton().window_get_size();
-        if !self.display.check((size.x, size.y), delta) {
-            return;
+        self.window_size = size;
+        if self.display.check((size.x, size.y), delta) {
+            self.cutout = self.cutout_px();
         }
-        self.read_display();
         let want_w = self.pick_width();
         if self.run.is_none() && want_w != self.buffer_w {
             self.buffer_w = want_w;
@@ -895,11 +921,19 @@ impl SaltLine {
         self.binding(action, defaults.0, defaults.1)
     }
 
-    /// A joypad has sent an event, so it counts from now on.
-    fn note_pad(&mut self, device: i32) {
-        if !self.pads.contains(&device) {
-            self.pads.push(device);
+    /// Once a second, forget joypads that have been unplugged.
+    fn prune_pads(&mut self, delta: f64) {
+        self.pad_prune -= delta;
+        if self.pad_prune > 0.0 {
+            return;
         }
+        self.pad_prune = 1.0;
+        let connected: Vec<i32> = Input::singleton()
+            .get_connected_joypads()
+            .iter_shared()
+            .map(|d| d as i32)
+            .collect();
+        self.pads.retain_connected(&connected);
     }
 
     /// The button is held on any joypad.
@@ -907,20 +941,34 @@ impl SaltLine {
         let input = Input::singleton();
         self.pads
             .iter()
-            .any(|&d| input.is_joy_button_pressed(d, button))
+            .any(|p| input.is_joy_button_pressed(p.device, button))
     }
 
-    /// The stick is pushed past the threshold on any joypad.
+    /// The stick is pushed past the threshold on any joypad whose stick has
+    /// been seen at rest.
     fn stick_held(&self, axis: JoyAxis, sign: f32) -> bool {
+        let slot = if axis == JoyAxis::LEFT_X { 0 } else { 1 };
         let input = Input::singleton();
         self.pads
             .iter()
-            .any(|&d| input.get_joy_axis(d, axis) * sign > 0.45)
+            .filter(|p| p.armed[slot])
+            .any(|p| input.get_joy_axis(p.device, axis) * sign > 0.45)
+    }
+
+    /// Take this frame's press of a pad button, if it had one. Taken, so a
+    /// second action bound to the same button in the same mode does not
+    /// fire as well: the first one asked wins.
+    fn take_pad_press(&mut self, button: JoyButton) -> bool {
+        let Some(i) = self.pad_presses.iter().position(|b| *b == button) else {
+            return false;
+        };
+        self.pad_presses.swap_remove(i);
+        true
     }
 
     /// True on the frame the button went down on any joypad.
     fn pad_pressed(&mut self, button: JoyButton) -> bool {
-        let down = self.pad_presses.contains(&button);
+        let down = self.take_pad_press(button);
         if down {
             self.controller_active = true;
             self.touch_active = false;
@@ -955,9 +1003,23 @@ impl SaltLine {
         let keyboard = Self::key_token(&key)
             .map(|k| self.repeated(k, delta))
             .unwrap_or(0);
-        let button = Self::pad_token(&pad);
-        let pad_press = button.is_some_and(|b| self.pad_presses.contains(&b));
-        let mut pad_down = button.is_some_and(|b| self.pad_held(b));
+        let buttons = match Self::pad_token(&pad) {
+            Some(b) => {
+                let press = self.take_pad_press(b);
+                let down = self.pad_held(b);
+                let i = match self.pad_keys.iter().position(|(k, _)| *k == b) {
+                    Some(i) => i,
+                    None => {
+                        self.pad_keys.push((b, RepeatState::default()));
+                        self.pad_keys.len() - 1
+                    }
+                };
+                self.pad_keys[i]
+                    .1
+                    .tick_pressed(press, down, delta, REPEAT_DELAY, REPEAT_RATE)
+            }
+            None => 0,
+        };
         // Left stick is always available in addition to remappable D-pad.
         let axis = match action {
             "left" => Some((JoyAxis::LEFT_X, -1.0)),
@@ -966,26 +1028,17 @@ impl SaltLine {
             "down" => Some((JoyAxis::LEFT_Y, 1.0)),
             _ => None,
         };
-        if let Some((axis, sign)) = axis {
-            pad_down |= self.stick_held(axis, sign);
-        }
+        let stick_down = axis.is_some_and(|(axis, sign)| self.stick_held(axis, sign));
+        let stick = self.pad_repeat[slot].tick(stick_down, delta, REPEAT_DELAY, REPEAT_RATE);
         if keyboard > 0 {
             self.controller_active = false;
             self.touch_active = false;
         }
-        if pad_down || pad_press {
+        if buttons > 0 || stick_down {
             self.controller_active = true;
             self.touch_active = false;
         }
-        keyboard
-            + self.pad_repeat[slot].tick_pressed(
-                pad_press,
-                pad_down,
-                delta,
-                REPEAT_DELAY,
-                REPEAT_RATE,
-            )
-            + self.touch.repeated(action)
+        keyboard + buttons + stick + self.touch.repeated(action)
     }
 
     fn input_label(&self, action: &str) -> String {
@@ -1010,14 +1063,20 @@ impl SaltLine {
     }
 
     /// True on the frame a key goes down, even if it came up again before
-    /// the frame began.
+    /// the frame began. The press is taken, so of two actions bound to the
+    /// same key only the first one asked fires.
     fn pressed(&mut self, key: Key) -> bool {
-        self.key_presses.contains(&key)
+        let Some(i) = self.key_presses.iter().position(|k| *k == key) else {
+            return false;
+        };
+        self.key_presses.swap_remove(i);
+        true
     }
 
-    /// Number of activations this frame, with hold-to-repeat.
+    /// Number of activations this frame, with hold-to-repeat. The repeat
+    /// state is per key, so actions sharing a key share its repeats.
     fn repeated(&mut self, key: Key, delta: f64) -> u32 {
-        let pressed = self.key_presses.contains(&key);
+        let pressed = self.pressed(key);
         let down = Input::singleton().is_key_pressed(key);
         let i = self.key_slot(key);
         self.keys[i]
