@@ -155,6 +155,14 @@ exactly which pixels moved. After an intended change, run `cargo insta review`
 changed screen digest is a determinism change and belongs in NOTES.md.
 `just miri` runs the pure modules under Miri, the Rust interpreter that
 catches undefined behaviour.
+`just bench` runs the divan benchmarks. On this machine a whole screen,
+solvability proof included, takes 40–105 µs, and a shot takes under a
+microsecond. Two slower checks run weekly (`.github/workflows/weekly.yml`)
+rather than on every pull request. Mutation testing (cargo-mutants,
+`.cargo/mutants.toml`) reports code changes that no test notices; run it on one
+file with `just mutants <file>`. Fuzzing (cargo-fuzz, `fuzz/`) runs the save
+parser, the seed parser and replay reconstruction; run one locally with
+`just fuzz <target>`.
 `just deny` (cargo-deny, `deny.toml`) checks the dependency tree for security
 advisories, disallowed licences and unknown sources. CI runs it on every pull
 request.

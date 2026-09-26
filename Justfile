@@ -81,3 +81,15 @@ cov:
 miri:
     PROPTEST_CASES=4 MIRIFLAGS=-Zmiri-disable-isolation rustup run nightly cargo miri test -p salt-line-sim --lib -- dmath:: rng::
     PROPTEST_CASES=4 MIRIFLAGS=-Zmiri-disable-isolation rustup run nightly cargo miri test -p salt-line-godot --lib -- save_format:: touch:: aim:: icons::
+
+# Benchmarks: screen generation, the solvability proof, a shot, a replay (divan).
+bench:
+    cargo bench -p salt-line-sim --bench sim
+
+# Fuzz one target for a while (nightly + cargo-fuzz): save_parse, seed_parse or replay.
+fuzz target="save_parse" seconds="60":
+    cd fuzz && rustup run nightly cargo fuzz run {{ target }} -- -max_total_time={{ seconds }}
+
+# Mutation testing for one file (cargo-mutants); the weekly workflow runs the lot.
+mutants file:
+    cargo mutants -f {{ file }}

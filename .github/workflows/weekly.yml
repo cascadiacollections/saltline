@@ -1,0 +1,107 @@
+# Slow, deep checks that are not worth paying for on every pull request:
+# mutation testing (cargo-mutants) and coverage-guided fuzzing (cargo-fuzz).
+# Both report rather than gate; a finding is a task, not a red main.
+name: weekly
+
+on:
+  schedule:
+    - cron: "17 9 * * 1" # Mondays, 09:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Mutates the code and reports each change no test notices. Sharded, since a
+  # full pass rebuilds and retests once per mutant. Config: .cargo/mutants.toml.
+  mutants:
+    name: mutants (shard ${{ matrix.shard }} of 4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: mutants
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-mutants,cargo-nextest
+      - name: mutants
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set +e
+          cargo mutants --in-place --shard "$SHARD/4"
+          code=$?
+          set -e
+          count() { if [ -f "mutants.out/$1.txt" ]; then wc -l < "mutants.out/$1.txt"; else echo 0; fi; }
+          {
+            echo "## Mutants, shard $SHARD of 4"
+            echo
+            echo "| caught | missed | timeout | unviable |"
+            echo "|---|---|---|---|"
+            echo "| $(count caught) | $(count missed) | $(count timeout) | $(count unviable) |"
+            echo
+            echo "### Missed (no test noticed these changes)"
+            echo '```'
+            cat mutants.out/missed.txt 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # 0 all caught, 2 some missed, 3 some timed out: report, don't fail.
+          # Anything else means the tool or the unmutated baseline failed.
+          case "$code" in 0|2|3) exit 0 ;; *) exit "$code" ;; esac
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: mutants.out
+          if-no-files-found: ignore
+
+  # Each target runs for ten minutes from a corpus cached week to week, so the
+  # fuzzer keeps building on what it found before. Targets: fuzz/fuzz_targets.
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [save_parse, seed_parse, replay]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-fuzz
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: fuzz
+        working-directory: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo +nightly fuzz run "$TARGET" -- -max_total_time=600
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore
