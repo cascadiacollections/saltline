@@ -710,8 +710,6 @@ fn submunitions(world: &World, parent: &Trace, lo: &Loadout, opts: &FireOptions)
     let base = match parent.end {
         End::Terrain { .. } => {
             let n_hat = normal_at(world.field, pos.x);
-            let last = parent.origin; // direction of travel, reconstructed below
-            let _ = last;
             // Incoming direction from the parent's terminal velocity is not
             // retained, so reflect the vector from apex to impact — the same
             // sign, and stable.

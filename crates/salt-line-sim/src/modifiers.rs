@@ -143,9 +143,6 @@ pub struct Effect {
     pub crater_mult: f64,
     /// Multiplier on blast radius.
     pub blast_mult: f64,
-    /// Multiplier on shell mass. Folded into [`Loadout::mass`], which
-    /// nothing reads.
-    pub mass_mult: f64,
     /// Divisor applied to angle quantization per stack (`1` is neutral).
     pub angle_quantum: i32,
     /// Ricochets allowed per shell.
@@ -182,7 +179,6 @@ impl Effect {
         muzzle_mult: 1.0,
         crater_mult: 1.0,
         blast_mult: 1.0,
-        mass_mult: 1.0,
         angle_quantum: 1,
         ricochet_bounces: 0,
         cluster_submunitions: 0,
@@ -247,10 +243,11 @@ pub static POOL: [Entry; MODIFIER_COUNT] = [
         Tag::Drift,
         Category::Shell,
         2,
+        // The x1.6 mass is how the card explains the effect; the effect
+        // itself is the wind and power multipliers.
         Effect {
             wind_mult: 0.5,
             power_mult: 0.8,
-            mass_mult: 1.6,
             ..Effect::NONE
         },
     ),
@@ -573,11 +570,6 @@ impl Modifier {
     pub fn all() -> impl Iterator<Item = Modifier> {
         POOL.iter().map(|e| e.modifier)
     }
-    /// Recover a modifier from its discriminant, for replay decoding.
-    /// `None` past the end of the pool.
-    pub fn from_index(i: usize) -> Option<Modifier> {
-        POOL.get(i).map(|e| e.modifier)
-    }
 }
 
 /// The folded effect of everything held. Ballistics, the solver and the
@@ -598,9 +590,6 @@ pub struct Loadout {
     pub crater_scale: f64,
     /// Multiplier on blast radius (Airburst ×1.8).
     pub blast_scale: f64,
-    /// Shell mass relative to the default (Ballast ×1.6). Tracked, but read
-    /// by nothing: Ballast's wind resistance is carried by `wind_scale`.
-    pub mass: f64,
     /// Angle input step in 0.05° ticks: 10 (0.5°), then 2 (0.1°) and 1
     /// (0.05°) with one and two Vernier stacks.
     pub angle_quantum_ticks: i32,
@@ -638,7 +627,6 @@ impl Default for Loadout {
             muzzle_scale: 1.0,
             crater_scale: 1.0,
             blast_scale: 1.0,
-            mass: 1.0,
             angle_quantum_ticks: ANGLE_QUANTUM_TICKS,
             ricochet_bounces: 0,
             cluster_submunitions: 0,
@@ -713,7 +701,6 @@ impl Loadout {
             muzzle_scale: 1.0,
             crater_scale: 1.0,
             blast_scale: 1.0,
-            mass: 1.0,
             angle_quantum_ticks: ANGLE_QUANTUM_TICKS,
             ricochet_bounces: 0,
             cluster_submunitions: 0,
@@ -742,7 +729,6 @@ impl Loadout {
                 self.muzzle_scale *= e.muzzle_mult;
                 self.crater_scale *= e.crater_mult;
                 self.blast_scale *= e.blast_mult;
-                self.mass *= e.mass_mult;
                 self.refund_mult *= e.refund_mult;
             }
             let n32 = n as i32;
@@ -882,7 +868,6 @@ mod tests {
         l.take(Modifier::Ballast);
         assert_eq!(l.wind_scale, 0.5);
         assert_eq!(l.power_scale, 0.8);
-        assert_eq!(l.mass, 1.6);
         l.take(Modifier::Ballast);
         assert_eq!(l.wind_scale, 0.25);
         // Max 2 stacks — the third is refused.
