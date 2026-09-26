@@ -5,7 +5,7 @@
 //! `art/scene_native_320x180.png`, so they are reproduced exactly rather than
 //! re-derived. The one change is orientation: the generator works in screen
 //! space (y down, `base_y = 128`), the sim works in world space (y up from the
-//! world floor), so `elevation = 180 - screen_y` and `BASE_ELEVATION = 52`.
+//! bottom of the screen buffer, y = 0), so `elevation = 180 - screen_y` and `BASE_ELEVATION = 52`.
 //!
 //! Buffers are `f64`, not `f32` as DESIGN §2.1 says: the brief's determinism
 //! constraint ("`f64` throughout the sim") is non-negotiable and outranks it.
@@ -14,9 +14,10 @@
 //! The module covers steps 1–4 of the DESIGN §2.3 pipeline:
 //!
 //! ```text
-//! base_ridge   value-noise fBm, domain-warped        (steps 1, 2)
-//! shape        template multiplier curve, clamped    (step 3)
-//! Heightfield  base + scar + material buffers        (§2.1, step 4)
+//! base_ridge   value-noise fBm, domain-warped                  (steps 1, 2)
+//! shape        template: damped relief plus added features,
+//!              clamped                                         (step 3)
+//! Heightfield  base + scar + material buffers                  (§2.1, step 4)
 //! ```
 //!
 //! Target placement and the solvability gate (steps 5 and 6) live in `run.rs`
@@ -180,7 +181,7 @@ fn field_seeds(screen_seed: u64) -> (u32, u32, u32) {
 }
 
 /// Steps 1 and 2 of DESIGN §2.3: base ridge plus domain warp. Returns
-/// elevation above the world floor, one sample per pixel column.
+/// elevation above y = 0, one sample per pixel column.
 ///
 /// `amp` is the band's terrain amplitude multiplier (DESIGN §2.5, 1.0 rising
 /// to 2.2). Heights run from [`BASE_ELEVATION`] up to
@@ -386,7 +387,7 @@ pub struct Heightfield {
     pub base: Vec<f64>,
     /// Accumulated subtraction. Negative entries are debris mounds (DESIGN §2.7).
     pub scar: Vec<f64>,
-    /// Layer id at the surface, recomputed from `base - scar`.
+    /// Layer id at the surface, recomputed from excavation depth (`scar`).
     pub material: Vec<Material>,
 }
 
@@ -496,6 +497,10 @@ impl Heightfield {
     /// scaled by the radius, so depth at the centre equals the radius and the
     /// walls meet the ground with zero slope: a rounded bowl rather than a
     /// V-shaped notch.
+    ///
+    /// The clamp is at [`WORLD_FLOOR`], not at bedrock: DESIGN §2.6 says to
+    /// "cap total scar depth at bedrock", but a column can be dug on into
+    /// bedrock, down to the floor.
     pub fn crater(&mut self, cx: f64, radius: f64) {
         if radius <= 0.0 || self.is_empty() {
             return;
@@ -563,7 +568,7 @@ impl Heightfield {
         }
     }
 
-    /// Mean surface across a footprint, normalized to the original heights.
+    /// Mean surface across a footprint, normalised to the original heights.
     /// This is the support fraction of DESIGN §2.7.
     ///
     /// `original_mean` is the mean surface across the footprint when the

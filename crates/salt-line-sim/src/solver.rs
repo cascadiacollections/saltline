@@ -17,8 +17,8 @@
 //! quantized inputs the player would dial in.
 //!
 //! A candidate survives if firing it would leave the target reading
-//! `Collapsed`. With more than one target a single shell cannot clear the
-//! screen, so the requirement is per target: each standing structure needs at
+//! `Collapsed`. With more than one target a single shell is not required to
+//! clear the screen, so the requirement is per target: each standing structure needs at
 //! least `MIN_SOLUTIONS` shots that would fell it.
 //!
 //! Each target is tried from three aim points ([`aim_points`]): the box
@@ -26,12 +26,18 @@
 //! footprint base and the upper box for the undermining and toppling kill
 //! paths. Duplicate dialable shots are simulated once.
 //!
-//! Verification is deliberately expensive: every candidate is fired with
-//! [`fire`] and then applied to a clone of the screen with
+//! Verification is deliberately expensive: every candidate that survives a
+//! cheap proximity filter is applied to a clone of the screen with
 //! [`Screen::apply_shot`], so the solver judges a shot by the game's own
-//! damage model rather than a copy of it. A cheap proximity filter discards
-//! most candidates before the clone. [`validate`] also stops counting at
+//! damage model rather than a copy of it. [`validate`] also stops counting at
 //! [`GATE_CAP`], which is all [`crate::run::generate_screen`] needs.
+//!
+//! The closed form is exact physics; the integrator is not. After time `t`,
+//! semi-implicit Euler lands `½·g·t·DT` lower (and `½·w·t·DT` further
+//! downwind) than the closed form, and quantizing angle and power adds more
+//! error. The closed form also knows nothing of Storm Front, Airburst,
+//! ricochet or tunnelling; only the re-simulation sees them. Hence every
+//! candidate is re-simulated.
 
 use crate::ballistics::{
     blast_radius, fire, power_ticks_for_speed, speed_bounds, End, FireOptions, Shot,
@@ -164,8 +170,9 @@ fn fells_target(screen: &Screen, lo: &Loadout, shot: Shot, target: usize) -> Opt
         End::Structure { index, .. } => index == target,
         End::Terrain { pos, .. } | End::Fuse { pos } => {
             target_box.distance_to(pos) < blast_radius(lo, t.damage_scale)
-                // Undermining: a crater inside the footprint counts even when
-                // the blast never touches the structure (DESIGN §2.7).
+                // Undermining: a detonation within 8 units of the box's x-span
+                // counts even when the blast never touches the structure
+                // (DESIGN §2.7).
                 || (pos.x >= target_box.x0 - 8.0 && pos.x <= target_box.x1 + 8.0)
         }
         _ => false,
@@ -281,8 +288,8 @@ pub fn solve_target(screen: &Screen, lo: &Loadout, target: usize) -> Vec<Candida
 }
 
 /// Validate a whole screen. DESIGN §2.4: accept only if at least three
-/// candidates survive — per target, since one shell cannot clear a screen
-/// holding three structures.
+/// candidates survive — per target, since one shell is not expected to clear
+/// a screen holding three structures.
 ///
 /// Supply screens pass trivially. A screen with no structures reports zero
 /// candidates and so is not solvable.

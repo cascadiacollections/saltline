@@ -6,8 +6,8 @@
 //!
 //! Two generators, two jobs. SplitMix64's mixing function ([`mix64`]) turns
 //! related inputs (a run seed and a screen index, a seed and a tag) into
-//! unrelated-looking seeds; it is a bijection, so distinct inputs never
-//! collide. PCG32 ([`Pcg32`]) then produces the stream of draws for one
+//! unrelated-looking seeds; it is a bijection, so within one run distinct
+//! screen indices (or distinct tags on one seed) never share a seed. PCG32 ([`Pcg32`]) then produces the stream of draws for one
 //! system. Both are a few lines of wrapping integer arithmetic, so the same
 //! seed gives the same numbers on every platform with no crate dependency.
 //!
@@ -32,7 +32,7 @@ pub fn splitmix64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Stateless 64-bit mix — the finalizer of SplitMix64 applied to `x` directly.
+/// Stateless 64-bit mix: one SplitMix64 step on a copy of `x`.
 /// Used for deriving seeds, never for streams of values.
 ///
 /// Equal to one [`splitmix64`] step on a copy of `x`. Every stage is
@@ -149,10 +149,9 @@ impl Pcg32 {
         lo + (hi - lo) * self.next_f64()
     }
 
-    /// Uniform in `[-m, m]` — signed magnitude draw (wind, elevation delta).
+    /// Uniform in `[-m, m)` — signed magnitude draw (wind, elevation delta).
     ///
-    /// Strictly `[-m, m)`: [`Pcg32::next_f64`] never returns 1, so `+m`
-    /// itself is never drawn.
+    /// [`Pcg32::next_f64`] never returns 1, so `+m` itself is never drawn.
     #[inline]
     pub fn signed(&mut self, m: f64) -> f64 {
         (self.next_f64() * 2.0 - 1.0) * m
@@ -216,7 +215,7 @@ impl Pcg32 {
         weights.len() - 1
     }
 
-    /// Fisher-Yates over indices — deterministic, no allocation of a hash set.
+    /// Fisher–Yates over indices — deterministic, no allocation of a hash set.
     ///
     /// Durstenfeld's in-place form: walk from the back, swapping each slot
     /// with a uniformly chosen slot at or before it. With an unbiased

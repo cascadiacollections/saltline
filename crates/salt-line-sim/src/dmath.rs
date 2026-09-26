@@ -169,7 +169,7 @@ pub fn smoothstep(f: f64) -> f64 {
     f * f * (3.0 - 2.0 * f)
 }
 
-/// Compact-support bump on `[-1, 1]`, peak 1 at 0, C1 at the edges.
+/// Compact-support bump on `[-radius, radius]`, peak 1 at 0, C1 at the edges.
 /// Stands in for a Gaussian everywhere in terrain shaping so that no `exp`
 /// call ever enters a state-affecting path.
 ///

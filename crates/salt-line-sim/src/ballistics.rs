@@ -21,7 +21,8 @@
 //! returns [`Trace`]s saying how each flight ended; cratering and damage are
 //! the caller's job.
 //!
-//! Units: world units are pixels, y up from the world floor; time is in
+//! Units: world units are pixels, y up from the bottom of the screen buffer
+//! (y = 0); time is in
 //! seconds; velocities are units/s; gravity and wind are units/s².
 //!
 //! Each step, in order: accelerate and move, then test the Airburst fuse, the
@@ -139,7 +140,7 @@ pub fn speed_bounds(lo: &Loadout) -> (f64, f64) {
 ///
 /// Target placement is clamped against this: DESIGN §2.4 requires every screen
 /// to be clearable with the player's *current* loadout, and no amount of
-/// terrain reshaping can fix a target that is simply out of range. Two stacks
+/// terrain reshaping can fix a target that is out of range. Two stacks
 /// of Ballast cut the power range by 36%, which puts the band-20 distance past
 /// what the shell can physically cover.
 pub fn max_flat_range(lo: &Loadout) -> f64 {
@@ -223,7 +224,8 @@ impl Aabb {
     }
 }
 
-/// Liang-Barsky segment/box overlap. A step can be up to ~3 units long, and a
+/// Liang–Barsky segment/box overlap. A step is 2.5 units at full base power,
+/// about 4.4 with Featherweight and one Sabot and about 5.5 with two, and a
 /// radio mast is 5px wide — a point-in-box test would let shells tunnel
 /// through thin structures.
 ///
@@ -313,7 +315,7 @@ pub enum End {
     /// The Airburst fuse ran out.
     Fuse { pos: Vec2 },
     /// Left the playfield: more than [`MISS_WIDTH_FACTOR`] screen widths past
-    /// either edge, or more than a screen height below the world floor.
+    /// either edge, or more than a screen height below y = 0.
     OffScreen { pos: Vec2 },
     /// Hit the [`MAX_SHELL_STEPS`] cap without ending any other way.
     Timeout { pos: Vec2 },
@@ -366,7 +368,8 @@ pub struct Trace {
     ///
     /// The origin, then one sample per step, so `path.len() == steps + 1` and
     /// `path[k]` is the position after `k` steps (`k * DT` seconds). The Godot
-    /// layer relies on this to play a flight back in real time.
+    /// layer relies on this to play a flight back in real time. On a ricochet
+    /// step the sample is the pre-lift position.
     pub path: Vec<Vec2>,
 }
 
@@ -499,7 +502,7 @@ pub fn simulate_shell(
         // Semi-implicit Euler: accelerate, then move. Wind is acceleration.
         // Explicit Euler would move with the old velocity instead. The order
         // is part of the replay contract: swapping it shifts every trajectory
-        // slightly and invalidates recorded runs (DESIGN §9.3).
+        // slightly and so needs a `SIM_EPOCH` bump (DESIGN §9.3).
         v.x += wind * lo.wind_scale * DT;
         v.y -= GRAVITY * DT;
         let prev = p;
@@ -593,7 +596,7 @@ pub fn simulate_shell(
                 }
             }
 
-            // Then tunneling: at most once per shell, and only into a layer
+            // Then tunnelling: at most once per shell, and only into a layer
             // with a budget. Bedrock and Steel fall through to detonation.
             if allow_tunnel && lo.auger() && !tunneled && material.is_tunnelable() {
                 tunnel_left = auger_budget(material);
@@ -615,7 +618,7 @@ pub fn simulate_shell(
         if p.x < -miss_x || p.x > world.width as f64 + miss_x {
             break End::OffScreen { pos: p };
         }
-        // A shell that has fallen far below the world floor is gone.
+        // A shell that has fallen far below y = 0 is gone.
         if p.y < -(crate::SCREEN_H as f64) {
             break End::OffScreen { pos: p };
         }
@@ -687,7 +690,7 @@ pub fn fire(
 
 /// Cluster split: `n` submunitions fanned across +/-15 degrees, each carrying
 /// 40% damage. DESIGN §4. Submunitions do not split again, and carry neither
-/// ricochet nor tunneling.
+/// ricochet nor tunnelling.
 ///
 /// `n` is [`Loadout::cluster_submunitions`]: 3 per Cluster stack, so two
 /// stacks fan six across the same spread.

@@ -19,8 +19,9 @@
 //!
 //! The report has three parts: surviving direct-aim candidates by band and
 //! by template, a solver-assisted economy model (see the comment above its
-//! printout), and totals. Screen generation already retries until a screen
-//! passes, so a failure here means even the fallback screen failed.
+//! printout), and totals. Screen generation tries eight seeds, then eight
+//! Flat seeds, then a terrain-free single-target fallback returned without
+//! gating; a failure here means that last fallback failed.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::screen_seed;
