@@ -119,8 +119,8 @@ impl FakeDisk {
                     let more = g.stored(why, ok);
                     self.apply(g, more);
                 }
-                Effect::RunFile(RunFile::Write(line) | RunFile::Keep(line)) => {
-                    self.write(RUN_PATH, RUN_TEMP_PATH, &line);
+                Effect::RunFile(RunFile::Write(text)) => {
+                    resume::replace(self, &text);
                 }
                 Effect::RunFile(RunFile::Restore) => {
                     self.rename(RUN_LOADING_PATH, RUN_PATH);
@@ -247,10 +247,23 @@ fn throw_all(g: &mut Game, disk: &mut FakeDisk) {
     }
 }
 
-/// What a flow leaves to check: the run it played.
+/// What a flow leaves to check: the run it played, and the run a launch
+/// may offer to continue if that is another one.
 struct Played {
     seed: u64,
     log: Vec<salt_line_sim::run::LoggedShot>,
+    live: Option<(u64, Vec<salt_line_sim::run::LoggedShot>)>,
+}
+
+impl Played {
+    fn of(g: &Game) -> Played {
+        let run = g.play.run.as_ref().unwrap();
+        Played {
+            seed: run.run_seed,
+            log: run.log.clone(),
+            live: None,
+        }
+    }
 }
 
 /// Launch, start today's daily, throw every shell away.
@@ -258,11 +271,7 @@ fn finish_a_run(disk: &mut FakeDisk) -> Played {
     let mut g = disk.launch();
     tick(&mut g, disk, keys(&[Key::Enter]));
     throw_all(&mut g, disk);
-    let run = g.play.run.as_ref().unwrap();
-    Played {
-        seed: run.run_seed,
-        log: run.log.clone(),
-    }
+    Played::of(&g)
 }
 
 /// Launch, start a run, fire twice, quit to the title.
@@ -274,11 +283,7 @@ fn quit_mid_run(disk: &mut FakeDisk) -> Played {
     tick(&mut g, disk, keys(&[Key::Escape]));
     tick(&mut g, disk, keys(&[Key::R]));
     assert_eq!(g.mode, Mode::Title);
-    let run = g.play.run.as_ref().unwrap();
-    Played {
-        seed: run.run_seed,
-        log: run.log.clone(),
-    }
+    Played::of(&g)
 }
 
 /// Launch over a saved run, continue it, and throw every shell left.
@@ -286,11 +291,42 @@ fn continue_and_finish(disk: &mut FakeDisk) -> Played {
     let mut g = disk.launch();
     tick(&mut g, disk, keys(&[Key::Enter]));
     throw_all(&mut g, disk);
-    let run = g.play.run.as_ref().unwrap();
-    Played {
-        seed: run.run_seed,
-        log: run.log.clone(),
-    }
+    Played::of(&g)
+}
+
+/// Another run, on its own seed, in the same session.
+const NEXT_SEED: u64 = 777;
+
+/// A finished run whose score cannot be written, then, the same session,
+/// another run started and two shots into it: its writes must not lose the
+/// kept log.
+fn score_fails_then_play_on(disk: &mut FakeDisk) -> Played {
+    disk.fail_scores = 1;
+    let mut g = disk.launch();
+    tick(&mut g, disk, keys(&[Key::Enter]));
+    throw_all(&mut g, disk);
+    let mut played = Played::of(&g);
+    g.start_run(NEXT_SEED, false);
+    throw_one(&mut g, disk);
+    throw_one(&mut g, disk);
+    let next = g.play.run.as_ref().unwrap();
+    played.live = Some((next.run_seed, next.log.clone()));
+    played
+}
+
+/// As `score_fails_then_play_on`, and the second run is played out too:
+/// its score takes the first one's onto the board with it.
+fn score_fails_then_finish_another(disk: &mut FakeDisk) -> Played {
+    disk.fail_scores = 1;
+    let mut g = disk.launch();
+    tick(&mut g, disk, keys(&[Key::Enter]));
+    throw_all(&mut g, disk);
+    let mut played = Played::of(&g);
+    g.start_run(NEXT_SEED, false);
+    throw_all(&mut g, disk);
+    let next = g.play.run.as_ref().unwrap();
+    played.live = Some((next.run_seed, next.log.clone()));
+    played
 }
 
 /// A finished run whose score cannot be written, then a settings change
@@ -340,10 +376,13 @@ fn crash_everywhere(start: FakeDisk, flow: fn(&mut FakeDisk) -> Played) {
         disk.stuck = false;
         let first = disk.launch();
         if let Some(saved) = first.run_file.resumable.as_ref() {
-            assert_eq!(saved.seed, played.seed, "crash after {k}");
+            // Either run, as far as it got before the crash.
+            let as_played = std::iter::once((played.seed, &played.log))
+                .chain(played.live.as_ref().map(|(s, l)| (*s, l)))
+                .any(|(seed, log)| saved.seed == seed && log.starts_with(&saved.log));
             assert!(
-                played.log.starts_with(&saved.log),
-                "crash after {k}: the offered run is not the one played"
+                as_played,
+                "crash after {k}: the offered run is not one that was played"
             );
         }
         disk.launch();
@@ -421,6 +460,46 @@ fn a_failed_score_survives_a_crash_anywhere() {
     crash_everywhere(FakeDisk::default(), score_write_fails);
 }
 
+#[test]
+fn a_failed_score_outlives_the_next_run_of_the_session() {
+    let mut disk = FakeDisk::default();
+    let played = score_fails_then_play_on(&mut disk);
+    assert!(disk.board().is_empty());
+    let g = disk.launch();
+    assert_eq!(g.status, "LAST RUN SCORED");
+    let offered = g
+        .run_file
+        .resumable
+        .as_ref()
+        .expect("the new run is offered");
+    assert_eq!(offered.seed, NEXT_SEED);
+    assert_eq!(Some(&offered.log), played.live.as_ref().map(|(_, l)| l));
+    disk.launch();
+    let board = disk.board();
+    assert_eq!(board.len(), 1);
+    assert_eq!(board[0].seed, played.seed);
+}
+
+#[test]
+fn a_failed_score_goes_on_the_board_with_the_next_one() {
+    let mut disk = FakeDisk::default();
+    let played = score_fails_then_finish_another(&mut disk);
+    let mut seeds: Vec<u64> = disk.board().iter().map(|e| e.seed).collect();
+    seeds.sort();
+    let mut want = vec![played.seed, NEXT_SEED];
+    want.sort();
+    assert_eq!(seeds, want);
+    assert!(disk.run.is_none());
+    disk.launch();
+    assert_eq!(disk.board().len(), 2);
+}
+
+#[test]
+fn a_failed_score_and_the_next_run_survive_a_crash_anywhere() {
+    crash_everywhere(FakeDisk::default(), score_fails_then_play_on);
+    crash_everywhere(FakeDisk::default(), score_fails_then_finish_another);
+}
+
 /// Launch, start today's daily and throw every shell away, but from the
 /// last shot on `run.txt` will not go: the finished log it now holds can be
 /// neither deleted nor blanked, so the score must not be written either.
@@ -446,11 +525,7 @@ fn finish_with_the_file_stuck(disk: &mut FakeDisk) -> Played {
         }
         tick(&mut g, disk, idle());
     }
-    let run = g.play.run.as_ref().unwrap();
-    Played {
-        seed: run.run_seed,
-        log: run.log.clone(),
-    }
+    Played::of(&g)
 }
 
 #[test]
@@ -497,7 +572,6 @@ fn the_node_drops_every_file_effect_after_a_panic() {
     let dropped = [
         Effect::Store(Store::Settings),
         Effect::RunFile(RunFile::Write(String::new())),
-        Effect::RunFile(RunFile::Keep(String::new())),
         Effect::RunFile(RunFile::Discard),
         Effect::RunFile(RunFile::Restore),
         Effect::RunFile(RunFile::Abandon(Abandoned::Interrupted)),

@@ -80,7 +80,7 @@ use crate::pads::Pads;
 use crate::palette::Palette;
 use crate::raster::Canvas;
 use crate::render::{self, Art, Cache};
-use crate::resume::{self, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
+use crate::resume::{self, RUN_LOADING_PATH, RUN_PATH};
 use crate::save;
 use crate::sprites::Sprites;
 use crate::touch::Button;
@@ -452,13 +452,14 @@ impl SaltLine {
                     let ok = cleared && save::store(&self.g.save_to_store(&why));
                     // The outcome goes straight back to the core, and what
                     // it asks for in reply is applied now, ahead of the rest
-                    // of this list: a failed score's `RunFile::Keep` must
-                    // land before anything queued after the score.
+                    // of this list: a failed score's `RunFile::Write`, which
+                    // keeps its log, must land before anything queued after
+                    // the score.
                     let fx = self.g.stored(why, ok);
                     self.apply(fx);
                 }
-                Effect::RunFile(RunFile::Write(line) | RunFile::Keep(line)) => {
-                    save::write(RUN_PATH, RUN_TEMP_PATH, &line);
+                Effect::RunFile(RunFile::Write(text)) => {
+                    resume::replace(&mut UserFiles, &text);
                 }
                 Effect::RunFile(RunFile::Restore) => {
                     save::rename(RUN_LOADING_PATH, RUN_PATH);

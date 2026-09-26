@@ -251,7 +251,6 @@ impl Game {
             self.mode = Mode::GameOver;
             return;
         };
-        let line = persisted.then(|| resume::Saved::of(run, self.play.daily).to_line());
         let (screens, shells, shots) = run.score();
         let entry = Entry {
             seed: run.run_seed,
@@ -260,27 +259,32 @@ impl Game {
             shots,
             daily: self.play.daily,
         };
-        self.record(entry, persisted.then(String::new), line, false);
+        if persisted {
+            // Scored with any earlier runs still waiting in the run file.
+            let line = resume::Saved::of(run, self.play.daily).to_line();
+            self.run_file.unscored.push(Unscored { entry, line });
+            self.score_unscored(false);
+        } else {
+            // Never in the run file (a `--salt-screen` jump): nothing to
+            // clear, and nothing kept if the board cannot be written.
+            self.fx.push(Effect::Store(Store::Score {
+                entries: vec![entry],
+                clear: None,
+                announce: false,
+            }));
+        }
         self.mode = Mode::GameOver;
     }
 
-    /// Ask for a finished run to go on the board. `clear` is what the run
-    /// file must hold first (`""` for none), when it holds the finished log;
-    /// `keep` is that log's line, for a later launch to score if the board
-    /// does not reach disk. The entry is only placed in memory once it is on
-    /// disk (`stored`): placed first, a later settings write would carry it
-    /// to disk while the kept line scored it again at the next launch.
-    pub(super) fn record(
-        &mut self,
-        entry: Entry,
-        clear: Option<String>,
-        keep: Option<String>,
-        announce: bool,
-    ) {
+    /// Ask for every run in `RunFileState::unscored` to go on the board,
+    /// once the run file holds only the run kept for CONTINUE, if any. The
+    /// entries are only placed in memory once they are on disk (`stored`):
+    /// placed first, a later settings write would carry them to disk while
+    /// their kept lines scored them again at the next launch.
+    pub(super) fn score_unscored(&mut self, announce: bool) {
         self.fx.push(Effect::Store(Store::Score {
-            entry,
-            clear,
-            keep,
+            entries: self.run_file.unscored.iter().map(|u| u.entry).collect(),
+            clear: Some(self.kept_line().unwrap_or_default()),
             announce,
         }));
     }

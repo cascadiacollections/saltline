@@ -6,6 +6,12 @@
 //! every time the log grows. On launch the line is rebuilt with
 //! `Replay::reconstruct` and the title screen offers CONTINUE.
 //!
+//! The file may also start with the lines of finished runs whose score did
+//! not reach the board (a full disk, a save from a newer build): one line a
+//! run, the same format, kept until a score or a launch gets them there
+//! (`app::RunFileState::unscored`). [`judge`] reads one line; the core
+//! splits the file.
+//!
 //! Engine-free: the file format and the decision (offer it, score it, or
 //! throw it away) live here, where they can be tested headless. `game` does
 //! the reading, writing and the menu.
@@ -28,9 +34,8 @@
 //! ```text
 //! file              written by                       when
 //! run.txt.new       save::write, step 1-2 of the     every RunFile::Write (the log
-//!                   atomic replace                   grew) and RunFile::Keep (a
-//!                                                    finished run's score did not
-//!                                                    reach disk)
+//!                   atomic replace                   grew, or a finished run's
+//!                                                    score did not reach disk)
 //! run.txt           the rename at step 3 of the      straight after run.txt.new;
 //!                   same replace; RunFile::Restore   Restore once a launch has
 //!                                                    rebuilt the run
@@ -69,9 +74,9 @@
 //!     cost   nothing: the board was not written, so it is scored by the
 //!            first launch that can clear it
 //! a run ends: the Store fails (full disk, a newer build's save)
-//!     finds  run.txt, by way of RunFile::Keep
-//!     cost   nothing, unless the Keep write fails or a new run starts this
-//!            session: its first Write replaces the kept line
+//!     finds  run.txt, its line kept by a RunFile::Write, and carried at
+//!            the top of every later Write this session
+//!     cost   nothing, unless that write fails too
 //! ```
 //!
 //! Two properties fall out of that ordering:
@@ -82,7 +87,8 @@
 //!   score can be on the board the log is gone, so no launch can find it
 //!   and score it again. A crash in between loses the score instead; a log
 //!   that will not go keeps its score off the board until a launch can
-//!   clear it. `Keep` rewrites the log only after a `Store` has failed.
+//!   clear it. A finished log is written back only after its `Store` has
+//!   failed, so never beside a board that holds it.
 //!   Against a power cut it also needs the deletes to be durable before the
 //!   save's rename: on Unix the directory fsync after that rename covers
 //!   them (same directory); on Windows nothing forces it.
@@ -284,7 +290,7 @@ pub enum Found {
     Discard(Stale),
 }
 
-/// Decide what a saved run's text is worth. `None` is no file.
+/// Decide what one line of the run file is worth. `None` is no file.
 pub fn judge(text: Option<&str>) -> Found {
     let Some(text) = text.filter(|t| !t.trim().is_empty()) else {
         return Found::Nothing;

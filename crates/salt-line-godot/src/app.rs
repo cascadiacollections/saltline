@@ -72,8 +72,8 @@
 //! A save write ([`Effect::Store`]) is reported back through
 //! [`Game::stored`], which may say so on screen and ask for more. The adapter
 //! applies what `stored` returns at once, before the rest of the list it was
-//! working through: a failed score's `RunFile::Keep` lands straight after
-//! the failed write.
+//! working through: a failed score's `RunFile::Write`, which keeps its log,
+//! lands straight after the failed write.
 //!
 //! # After a panic
 //!
@@ -112,9 +112,8 @@
 //! | `Quit` | back on the title or the error screen | `SceneTree::quit` | no | no |
 //! | `Store(Learned)` | an onboarding step done for the first time | `save::store`, then [`Game::stored`] | yes, ignored | yes |
 //! | `Store(Settings)` | settings once they settle (`durable::Debounce`) or on leaving Controls; at once on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
-//! | `Store(Score)` | a run finished, or a finished run found at launch | `resume::replace` with its `clear` text, then, only if that is confirmed, `save::store` with the entry placed; then [`Game::stored`] | yes: placed in memory on success, `RunFile::Keep` on failure | yes |
-//! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft) | atomic write of `user://run.txt` | no | yes |
-//! | `RunFile(Keep)` | [`Game::stored`], for a score that did not reach disk | atomic write of `user://run.txt` | no | yes |
+//! | `Store(Score)` | a run finished, or a finished run found at launch | `resume::replace` with its `clear` text, then, only if that is confirmed, `save::store` with the entry placed; then [`Game::stored`] | yes: placed in memory on success; on failure the run file is rewritten with the finished runs kept (`RunFile::Write`) | yes |
+//! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft); [`Game::stored`], for a score that did not reach disk; launch or CONTINUE, dropping a line that will not replay | `resume::replace`: the run file becomes the text (`Game::run_file_text`: finished runs still to score, then the live run) | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
 //! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why, then as `Discard` | no | yes |
@@ -141,8 +140,11 @@
 //!    settings write would carry it to disk while a kept run file (rule 3)
 //!    scored it again.
 //! 3. **A failed score keeps its log.** If the board cannot be written, the
-//!    finished run's line goes back as the saved run (`RunFile::Keep`), and a
-//!    later launch scores it through the same two rules.
+//!    finished run waits in `RunFileState::unscored`, and its line stays at
+//!    the top of the run file (`RunFile::Write`), carried along by every
+//!    later write of it: a new run started this session does not overwrite
+//!    it. The next score this session takes it onto the board with its own,
+//!    or else the next launch does, through the same two rules.
 //!
 //! At launch the adapter moves the saved run aside before the core replays
 //! it, and puts it back (`RunFile::Restore`) only once it rebuilt. A log that
@@ -385,22 +387,24 @@ pub enum Store {
     Learned,
     /// Settings changed.
     Settings,
-    /// A finished run goes on the board: the save is written with `entry`
-    /// placed, and `entry` joins the board in memory only once that write
-    /// succeeds, so it reaches disk exactly once, here or not at all.
+    /// Finished runs go on the board: the save is written with `entries`
+    /// placed, and they join the board in memory only once that write
+    /// succeeds, so each reaches disk exactly once, here or not at all.
+    /// Usually one run; more when earlier scores failed and their runs were
+    /// still waiting in the run file (`RunFileState::unscored`).
     ///
     /// `clear`, if set, is what the run file must hold before the board may
-    /// be written (`resume::replace`; `""` is no run): the finished log goes
+    /// be written (`resume::replace`; `""` is no run): the finished logs go
     /// first. If that cannot be confirmed the save is not written and the
-    /// score counts as failed. If the board does not reach disk, `keep` (the
-    /// finished run's line) is written back as the saved run
-    /// (`RunFile::Keep`) so a later launch can score it. `announce` says
-    /// "LAST RUN SCORED" on success: a run scored at launch rather than at
-    /// its end. See "Scoring at most once" in the module docs.
+    /// score counts as failed. If the board does not reach disk, the
+    /// finished runs stay in the run file (`RunFile::Write`), beside any run
+    /// kept for CONTINUE, until a later score or launch gets them on the
+    /// board. `announce` says "LAST RUN SCORED" on success: a run scored at
+    /// launch rather than at its end. See "Scoring at most once" in the
+    /// module docs.
     Score {
-        entry: Entry,
+        entries: Vec<Entry>,
         clear: Option<String>,
-        keep: Option<String>,
         announce: bool,
     },
 }
@@ -459,11 +463,11 @@ pub enum Effect {
 /// rebuilds it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RunFile {
-    /// Save the running run, this line, over whatever was saved.
+    /// Make the saved run this text, replacing whatever was saved
+    /// (`resume::replace`): the running run's line, after the lines of any
+    /// finished runs whose score has not reached the board
+    /// (`Game::run_file_text`).
     Write(String),
-    /// Save a finished run, this line, for a later launch to score: its
-    /// score did not reach the board.
-    Keep(String),
     /// The run set aside at launch rebuilt: put it back to be continued.
     Restore,
     /// Make sure no run is left to resume or score, the one set aside at
@@ -688,6 +692,19 @@ pub(crate) struct RunFileState {
     /// Which new-run action has been pressed once over a saved run and is
     /// waiting for the second press. See `confirm_discard`.
     pub(crate) discard_armed: Option<&'static str>,
+    /// Finished runs whose score did not reach the board, oldest first. Their
+    /// lines ride at the top of the run file, whatever run follows them, and
+    /// they go on the board with the next score, or at the next launch.
+    pub(crate) unscored: Vec<Unscored>,
+}
+
+/// A finished run waiting for the board. See `RunFileState::unscored`.
+#[derive(Clone, Debug)]
+pub(crate) struct Unscored {
+    /// Its board entry.
+    pub(crate) entry: Entry,
+    /// Its line in the run file (`resume::Saved::to_line`).
+    pub(crate) line: String,
 }
 
 /// The developer flags' state (`cli::DevArgs`).
@@ -776,6 +793,7 @@ impl Default for Game {
                 run_persist: false,
                 resumed: false,
                 discard_armed: None,
+                unscored: Vec::new(),
             },
             dev: Dev::default(),
             crash: CrashInfo::default(),
@@ -1042,9 +1060,11 @@ impl Game {
     /// `stored`, once the write has succeeded.
     pub fn save_to_store(&self, why: &Store) -> std::borrow::Cow<'_, Save> {
         match why {
-            Store::Score { entry, .. } => {
+            Store::Score { entries, .. } => {
                 let mut save = self.save.clone();
-                save.place(*entry);
+                for entry in entries {
+                    save.place(*entry);
+                }
                 std::borrow::Cow::Owned(save)
             }
             Store::Learned | Store::Settings => std::borrow::Cow::Borrowed(&self.save),
@@ -1063,22 +1083,27 @@ impl Game {
                 }
             }
             Store::Score {
-                entry,
-                keep,
-                announce,
-                ..
+                entries, announce, ..
             } => {
                 if ok {
-                    self.save.place(entry);
+                    for entry in entries {
+                        self.save.place(entry);
+                        let unscored = &mut self.run_file.unscored;
+                        if let Some(i) = unscored.iter().position(|u| u.entry == entry) {
+                            unscored.remove(i);
+                        }
+                    }
                     if announce {
                         self.note("LAST RUN SCORED".into());
                     }
                 } else {
                     // Not on the board (a save from a newer build, a full
                     // disk, a finished log that would not go): keep the
-                    // finished log, so a later launch can score it.
-                    if let Some(line) = keep {
-                        self.fx.push(Effect::RunFile(RunFile::Keep(line)));
+                    // finished logs in the run file, so a later score or
+                    // launch can get them there.
+                    if !self.run_file.unscored.is_empty() {
+                        self.fx
+                            .push(Effect::RunFile(RunFile::Write(self.run_file_text())));
                     }
                     self.note_not_saved("SCORE NOT SAVED");
                 }
@@ -1134,35 +1159,55 @@ impl Game {
             }
             SavedRun::Found(text) => text,
         };
-        let back = Effect::RunFile(RunFile::Restore);
-        match resume::judge(Some(&text)) {
-            Found::Nothing => self.fx.push(back),
-            Found::Continue(saved) => {
-                self.fx.push(back);
-                self.run_file.resumable = Some(saved);
+        // One line a run: finished runs whose score never reached the board,
+        // then the run to continue, if there is one.
+        let mut stale = None;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match resume::judge(Some(line)) {
+                Found::Nothing => {}
+                Found::Continue(saved) => self.run_file.resumable = Some(saved),
+                Found::Finished(saved, run) => {
+                    let (screens, shells, shots) = run.score();
+                    let entry = Entry {
+                        seed: saved.seed,
+                        screens,
+                        shells,
+                        shots,
+                        daily: saved.daily,
+                    };
+                    self.run_file.unscored.push(Unscored {
+                        entry,
+                        line: saved.to_line(),
+                    });
+                }
+                Found::Discard(why) => {
+                    stale.get_or_insert(why);
+                }
             }
-            Found::Finished(saved, run) => {
-                let (screens, shells, shots) = run.score();
-                let entry = Entry {
-                    seed: saved.seed,
-                    screens,
-                    shells,
-                    shots,
-                    daily: saved.daily,
-                };
-                // Its file gone before the score goes on the board, as in
-                // `finish_run`; kept for a launch that can record it, if
-                // this one cannot.
-                self.record(entry, Some(String::new()), Some(text), true);
-            }
-            Found::Discard(why) => {
-                self.fx
-                    .push(Effect::RunFile(RunFile::Abandon(Abandoned::Unreadable(
-                        why,
-                    ))));
-                self.note(why.note().into());
-                self.status_time = STALE_STATUS_TIME;
-            }
+        }
+        if !self.run_file.unscored.is_empty() {
+            // Their lines gone before the scores go on the board, as in
+            // `finish_run`; kept for a launch that can record them, if this
+            // one cannot. The clear rewrites the file without anything
+            // stale in it.
+            self.score_unscored(true);
+        } else if self.run_file.resumable.is_some() {
+            self.fx.push(Effect::RunFile(if stale.is_some() {
+                RunFile::Write(self.run_file_text())
+            } else {
+                RunFile::Restore
+            }));
+        } else if let Some(why) = stale {
+            self.fx
+                .push(Effect::RunFile(RunFile::Abandon(Abandoned::Unreadable(
+                    why,
+                ))));
+        } else {
+            self.fx.push(Effect::RunFile(RunFile::Restore));
+        }
+        if let Some(why) = stale {
+            self.note(why.note().into());
+            self.status_time = STALE_STATUS_TIME;
         }
         self.take_effects()
     }

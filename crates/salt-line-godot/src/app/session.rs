@@ -231,11 +231,35 @@ impl Game {
         if self.run_file.run_saved_len == Some(len) {
             return;
         }
-        let line = resume::Saved::of(run, self.play.daily).to_line();
         // Tried once per change: a failed write is logged by `save::write`,
         // and the next shot tries again.
-        self.fx.push(Effect::RunFile(RunFile::Write(line)));
+        self.fx
+            .push(Effect::RunFile(RunFile::Write(self.run_file_text())));
         self.run_file.run_saved_len = Some(len);
+    }
+
+    /// The run file as it should be now: the lines of finished runs whose
+    /// score has not reached the board, then the run kept for CONTINUE.
+    pub(super) fn run_file_text(&self) -> String {
+        let mut text: String = self
+            .run_file
+            .unscored
+            .iter()
+            .map(|u| u.line.as_str())
+            .collect();
+        text.push_str(&self.kept_line().unwrap_or_default());
+        text
+    }
+
+    /// The line of the run kept for CONTINUE: the one being played, if it
+    /// is kept on disk, else the one found at launch.
+    pub(super) fn kept_line(&self) -> Option<String> {
+        if self.run_file.run_persist {
+            let run = self.play.run.as_ref()?;
+            Some(resume::Saved::of(run, self.play.daily).to_line())
+        } else {
+            self.run_file.resumable.as_ref().map(resume::Saved::to_line)
+        }
     }
 
     /// Quit to title keeps the run. It is already on disk, so CONTINUE picks
@@ -269,7 +293,13 @@ impl Game {
             return;
         };
         let Some(run) = saved.reconstruct() else {
-            self.fx.push(Effect::RunFile(RunFile::Discard));
+            // Only the finished runs waiting for the board stay.
+            let text = self.run_file_text();
+            self.fx.push(Effect::RunFile(if text.is_empty() {
+                RunFile::Discard
+            } else {
+                RunFile::Write(text)
+            }));
             self.note(resume::Stale::Diverged.note().into());
             return;
         };
