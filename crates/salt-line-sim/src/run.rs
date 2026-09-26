@@ -533,6 +533,11 @@ impl Screen {
     }
 
     /// One detonation: crater the ground, damage what the blast overlaps.
+    ///
+    /// The crater is sized by the surface layer of the detonation's column
+    /// (Steel for a direct hit), not by [`End::Terrain`]'s `material`: a
+    /// tunnelling shell that stops in a deeper layer still craters as the
+    /// surface above it does.
     fn detonate(&mut self, end: End, damage_scale: f64, lo: &Loadout) {
         let pos = end.pos();
         let direct = match end {
