@@ -9,6 +9,7 @@
 
 use godot::prelude::*;
 
+pub mod aim;
 pub mod font;
 pub mod game;
 pub mod palette;

@@ -4,6 +4,10 @@
 //! is hit-tested against them. A finger belongs to the button it went down on
 //! until it lifts, so a finger held through a screen change never presses
 //! whatever new button happens to appear under it.
+//!
+//! A finger that goes down off every button is a free drag instead (drag
+//! aiming). Only one drag runs at a time; lifting it reports a drop for one
+//! frame.
 
 use crate::presentation::RepeatState;
 
@@ -46,6 +50,16 @@ pub struct TouchPad {
     pressed: Vec<&'static str>,
     repeats: Vec<(&'static str, u32)>,
     repeat_state: Vec<(&'static str, RepeatState)>,
+    drag: Option<Drag>,
+    /// A drag that lifted since the last update, as (start, end).
+    dropping: Option<((f32, f32), (f32, f32))>,
+    dropped: Option<((f32, f32), (f32, f32))>,
+}
+
+struct Drag {
+    index: i32,
+    start: (f32, f32),
+    now: (f32, f32),
 }
 
 impl TouchPad {
@@ -59,23 +73,52 @@ impl TouchPad {
             .map(|b| b.action);
         self.fingers.retain(|(i, _)| *i != index);
         self.fingers.push((index, action));
-        if let Some(a) = action {
-            self.went_down.push(a);
+        match action {
+            Some(a) => self.went_down.push(a),
+            None if self.drag.is_none() => {
+                self.drag = Some(Drag {
+                    index,
+                    start: (x, y),
+                    now: (x, y),
+                })
+            }
+            None => {}
+        }
+    }
+
+    pub fn finger_moved(&mut self, index: i32, x: f32, y: f32) {
+        if let Some(d) = self.drag.as_mut().filter(|d| d.index == index) {
+            d.now = (x, y);
         }
     }
 
     pub fn finger_up(&mut self, index: i32) {
         self.fingers.retain(|(i, _)| *i != index);
+        if self.drag.as_ref().is_some_and(|d| d.index == index) {
+            let d = self.drag.take().unwrap();
+            self.dropping = Some((d.start, d.now));
+        }
     }
 
-    /// Lift every finger, e.g. when the app loses focus mid-touch.
+    /// Lift every finger, e.g. when the app loses focus mid-touch. A drag in
+    /// progress is abandoned, not dropped.
     pub fn release_all(&mut self) {
         self.fingers.clear();
+        self.cancel_drag();
+    }
+
+    /// Forget the current drag so it never drops, e.g. when the screen it
+    /// started on no longer takes aim.
+    pub fn cancel_drag(&mut self) {
+        self.drag = None;
+        self.dropping = None;
+        self.dropped = None;
     }
 
     /// Once per frame, before any action is read.
     pub fn update(&mut self, delta: f64, delay: f64, rate: f64) {
         self.pressed = std::mem::take(&mut self.went_down);
+        self.dropped = self.dropping.take();
         let mut held: Vec<&'static str> = self.fingers.iter().filter_map(|(_, a)| *a).collect();
         held.extend(self.pressed.iter().copied());
         held.sort_unstable();
@@ -112,6 +155,16 @@ impl TouchPad {
             .find(|(a, _)| *a == action)
             .map(|(_, n)| *n)
             .unwrap_or(0)
+    }
+
+    /// The free drag in progress, as (start, now).
+    pub fn drag(&self) -> Option<((f32, f32), (f32, f32))> {
+        self.drag.as_ref().map(|d| (d.start, d.now))
+    }
+
+    /// A free drag lifted this frame, as (start, end).
+    pub fn dropped(&self) -> Option<((f32, f32), (f32, f32))> {
+        self.dropped
     }
 }
 
@@ -222,5 +275,50 @@ mod tests {
         assert!(!pad.held("left"));
         pad.update(DELAY + RATE, DELAY, RATE);
         assert_eq!(pad.repeated("left"), 0);
+    }
+
+    #[test]
+    fn a_finger_off_every_button_drags_and_drops_once() {
+        let mut pad = TouchPad::default();
+        pad.finger_down(0, 100.0, 50.0, &buttons());
+        pad.finger_moved(0, 80.0, 70.0);
+        pad.update(0.016, DELAY, RATE);
+        assert_eq!(pad.drag(), Some(((100.0, 50.0), (80.0, 70.0))));
+        assert_eq!(pad.dropped(), None);
+        pad.finger_up(0);
+        pad.update(0.016, DELAY, RATE);
+        assert_eq!(pad.drag(), None);
+        assert_eq!(pad.dropped(), Some(((100.0, 50.0), (80.0, 70.0))));
+        pad.update(0.016, DELAY, RATE);
+        assert_eq!(pad.dropped(), None);
+    }
+
+    #[test]
+    fn a_button_finger_never_drags_and_a_second_free_finger_is_ignored() {
+        let mut pad = TouchPad::default();
+        let b = buttons();
+        let r = b[0].rect;
+        pad.finger_down(0, r.x as f32, r.y as f32, &b);
+        pad.finger_moved(0, 200.0, 170.0);
+        assert_eq!(pad.drag(), None);
+        pad.finger_down(1, 150.0, 40.0, &b);
+        pad.finger_down(2, 160.0, 60.0, &b);
+        pad.finger_moved(2, 10.0, 10.0);
+        pad.finger_moved(1, 140.0, 50.0);
+        assert_eq!(pad.drag(), Some(((150.0, 40.0), (140.0, 50.0))));
+    }
+
+    #[test]
+    fn a_cancelled_or_abandoned_drag_never_drops() {
+        let mut pad = TouchPad::default();
+        pad.finger_down(0, 100.0, 50.0, &buttons());
+        pad.finger_up(0);
+        pad.cancel_drag();
+        pad.update(0.016, DELAY, RATE);
+        assert_eq!(pad.dropped(), None);
+        pad.finger_down(0, 100.0, 50.0, &buttons());
+        pad.release_all();
+        pad.update(0.016, DELAY, RATE);
+        assert_eq!((pad.drag(), pad.dropped()), (None, None));
     }
 }

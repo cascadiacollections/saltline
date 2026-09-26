@@ -38,6 +38,76 @@ impl Entry {
     }
 }
 
+/// How touch aims: on-screen buttons, or pulling back on the playfield.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TouchAim {
+    Buttons,
+    Drag,
+}
+
+impl TouchAim {
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Buttons => "buttons",
+            Self::Drag => "drag",
+        }
+    }
+
+    pub fn from_token(s: &str) -> Option<Self> {
+        match s {
+            "buttons" => Some(Self::Buttons),
+            "drag" => Some(Self::Drag),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Buttons => Self::Drag,
+            Self::Drag => Self::Buttons,
+        }
+    }
+}
+
+/// How much of the trajectory the drag aim previews.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArcHint {
+    /// The first stretch of the still-air arc: direction and power, never the
+    /// landing. Reading the wind stays the player's job (DESIGN 2.5).
+    Short,
+    /// The whole arc in still air.
+    Full,
+    /// The whole arc with the wind as displayed.
+    Wind,
+}
+
+impl ArcHint {
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Short => "short",
+            Self::Full => "full",
+            Self::Wind => "wind",
+        }
+    }
+
+    pub fn from_token(s: &str) -> Option<Self> {
+        match s {
+            "short" => Some(Self::Short),
+            "full" => Some(Self::Full),
+            "wind" => Some(Self::Wind),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Short => Self::Full,
+            Self::Full => Self::Wind,
+            Self::Wind => Self::Short,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
     pub unlocked: bool,
@@ -51,6 +121,10 @@ pub struct Save {
     /// User-editable action bindings: action, keyboard token, pad token.
     /// Missing actions fall back to the built-in defaults.
     pub bindings: Vec<(String, String, String)>,
+    /// Touch settings. `None` until the player picks one, so the built-in
+    /// default can change without overriding anyone's choice.
+    pub touch_aim: Option<TouchAim>,
+    pub arc_hint: Option<ArcHint>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
@@ -66,6 +140,8 @@ impl Default for Save {
             muted: false,
             learned: 0,
             bindings: Vec::new(),
+            touch_aim: None,
+            arc_hint: None,
             from_the_future: false,
         }
     }
@@ -97,6 +173,8 @@ impl Save {
                     }
                 }
                 Some("muted") => save.muted = it.next() == Some("1"),
+                Some("touch_aim") => save.touch_aim = it.next().and_then(TouchAim::from_token),
+                Some("arc_hint") => save.arc_hint = it.next().and_then(ArcHint::from_token),
                 Some("learned") => {
                     if let Some(v) = it.next().and_then(|s| s.parse::<u32>().ok()) {
                         save.learned = v;
@@ -151,6 +229,12 @@ impl Save {
         out.push_str(&format!("volume {}\n", self.volume.min(100)));
         out.push_str(&format!("muted {}\n", if self.muted { 1 } else { 0 }));
         out.push_str(&format!("learned {}\n", self.learned));
+        if let Some(a) = self.touch_aim {
+            out.push_str(&format!("touch_aim {}\n", a.token()));
+        }
+        if let Some(h) = self.arc_hint {
+            out.push_str(&format!("arc_hint {}\n", h.token()));
+        }
         for (action, key, pad) in &self.bindings {
             out.push_str(&format!("bind {action} {key} {pad}\n"));
         }
@@ -365,5 +449,23 @@ mod tests {
         assert_eq!(s.learned, 37);
         assert_eq!(s.bindings, vec![("fire".into(), "F".into(), "X".into())]);
         assert_eq!(Save::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn touch_settings_are_saved_only_once_chosen() {
+        let fresh = Save::default().serialize();
+        assert!(!fresh.contains("touch_aim") && !fresh.contains("arc_hint"));
+
+        let chosen = Save {
+            touch_aim: Some(TouchAim::Drag),
+            arc_hint: Some(ArcHint::Wind),
+            ..Save::default()
+        };
+        let back = Save::parse(&chosen.serialize());
+        assert_eq!(back.touch_aim, Some(TouchAim::Drag));
+        assert_eq!(back.arc_hint, Some(ArcHint::Wind));
+
+        let junk = Save::parse("touch_aim sideways\narc_hint everything\n");
+        assert_eq!((junk.touch_aim, junk.arc_hint), (None, None));
     }
 }
