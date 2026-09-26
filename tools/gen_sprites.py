@@ -141,6 +141,84 @@ def text(buf, s, x, y, c):
     return cx
 
 
+
+# The game's 5x7 digits and HUD icons (crates/salt-line-godot/src/font.rs,
+# icons.rs), so the site's HUD matches the game pixel for pixel.
+BIG = {
+    "0": "01110 10001 10001 10001 10001 10001 01110",
+    "1": "00100 01100 00100 00100 00100 00100 01110",
+    "2": "01110 10001 00001 00010 00100 01000 11111",
+    "3": "11111 00010 00100 00010 00001 10001 01110",
+    "4": "00010 00110 01010 10010 11111 00010 00010",
+    "5": "11111 10000 11110 00001 00001 10001 01110",
+    "6": "00110 01000 10000 11110 10001 10001 01110",
+    "7": "11111 00001 00010 00100 01000 01000 01000",
+    "8": "01110 10001 10001 01110 10001 10001 01110",
+    "9": "01110 10001 10001 01111 00001 00010 01100",
+    "-": "00000 00000 00000 11111 00000 00000 00000",
+    ".": "00000 00000 00000 00000 00000 01100 01100",
+}
+ICON_SHELL = ".11. 1111 1111 1111 1111 3333 1111".split()
+ICON_SOCK = ("3........ 3222111.. 322211111 3222111.. "
+             "3........ 3........ 3........").split()
+ICON_SOCK_LIMP = ("3........ 32....... 322...... 321...... "
+                  "321...... 31....... 3........").split()
+
+
+def text_big(buf, s, x, y, c):
+    for k, ch in enumerate(s):
+        for j, row in enumerate(BIG[ch].split()):
+            for i, bit in enumerate(row):
+                if bit == "1":
+                    buf.set(x + k * 6 + i, y + j, c)
+
+
+def big_width(s):
+    return len(s) * 6 - 1 if s else 0
+
+
+def icon(buf, rows, x, y, colors, flip=False):
+    w = len(rows[0])
+    for j, row in enumerate(rows):
+        for i, ch in enumerate(row):
+            if ch != ".":
+                buf.set(x + (w - 1 - i if flip else i), y + j, colors[int(ch) - 1])
+
+
+def plate(buf, x, y, w, h):
+    buf.rect(x, y, w, h, rgba("ui_bg"))
+    for i in range(w):
+        buf.set(x + i, y, rgba("shadow"))
+        buf.set(x + i, y + h - 1, rgba("shadow"))
+    for j in range(h):
+        buf.set(x, y + j, rgba("shadow"))
+        buf.set(x + w - 1, y + j, rgba("shadow"))
+
+
+def hud(buf, width, height, wind, shells, screen):
+    """The in-game HUD: windsock and strength top left, shell count top right,
+    screen index bottom right. Mirrors `render_hud` in game.rs."""
+    fg, alert, dim = rgba("ui_fg"), rgba("alert"), rgba("sky_lo")
+    wt = "--" if wind is None else f"{abs(wind):.0f}"
+    calm = not any(c in "123456789" for c in wt)
+    sock = ICON_SOCK_LIMP if calm else ICON_SOCK
+    sw = len(sock[0])
+    plate(buf, 3, 3, sw + 9 + big_width(wt), 13)
+    icon(buf, sock, 6, 4, (fg, alert, dim), flip=(not calm and wind < 0))
+    text_big(buf, wt, 6 + sw + 3, 4, alert)
+
+    st = str(shells)
+    iw = len(ICON_SHELL[0])
+    pw = iw + 13 + big_width(st)
+    px = width - pw - 3
+    plate(buf, px, 3, pw, 13)
+    icon(buf, ICON_SHELL, px + 3, 4, (fg, alert, dim))
+    text(buf, "X", px + 3 + iw + 2, 6, dim)
+    text_big(buf, st, px + 3 + iw + 7, 4, alert if shells < 10 else fg)
+
+    text(buf, screen, width - len(screen) * 4 - 2, height - 8, fg)
+
+
 # ---------------------------------------------------------------- noise
 def h1(n, seed):
     n = (n ^ seed) & 0xFFFFFFFF
@@ -498,11 +576,7 @@ def scene(width=320, height=180, seed=20260907):
     b.set(cm, int(hs[cm]) - 4, rgba("alert"))
 
     # UI, same buffer, same resolution (§5.1)
-    b.rect(3, 3, 41, 9, rgba("ui_bg"))
-    text(b, "WIND +2.4", 5, 5, rgba("alert"))
-    b.rect(width - 42, 3, 39, 9, rgba("ui_bg"))
-    text(b, "SHELLS 28", width - 40, 5, rgba("ui_fg"))
-    text(b, "34", width - 11, height - 8, rgba("ui_fg"))
+    hud(b, width, height, 2.4, 28, "34")
     return b
 
 

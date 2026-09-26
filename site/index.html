@@ -30,6 +30,7 @@
     <span>SALT&nbsp;LINE</span>
   </a>
   <nav aria-label="Sections">
+    <a href="#download">Download</a>
     <a href="#what">What it is</a>
     <a href="#media">Media</a>
     <a href="#modifiers">Modifiers</a>
@@ -61,13 +62,13 @@
     </ul>
 
     <div class="cta">
-      <a class="btn primary" href="https://github.com/cascadiacollections/saltline">Get the source</a>
-      <a class="btn" href="#build">Build &amp; play</a>
+      <a class="btn primary" href="#download">Download a dev build</a>
+      <a class="btn" href="https://github.com/cascadiacollections/saltline">Get the source</a>
       <a class="btn ghost" href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Read the design doc</a>
     </div>
 
-    <p class="fineprint">Linux · macOS · Windows &nbsp;—&nbsp; builds from source today, packaged
-      builds when the alpha stops moving.</p>
+    <p class="fineprint">Android · Windows · macOS · Linux &nbsp;—&nbsp; rolling dev builds to
+      sideload today, a proper release when the alpha stops moving.</p>
   </div>
 </section>
 
@@ -100,6 +101,51 @@
     <p class="note">This is an <strong>alpha</strong>. Things move, saves are just
       seeds, and the art is honest programmer art awaiting a hand-drawn pass.</p>
   </div>
+</section>
+
+<!-- ------------------------------------------------------------- download -->
+<section id="download" aria-labelledby="dl-h">
+  <h2 id="dl-h">Download a dev build</h2>
+  <p class="small">Rebuilt from <code>main</code> on every merge, so expect the odd rough edge.
+    The builds are unsigned, so each platform will ask you to confirm once.</p>
+  <div class="cards dl">
+    <article class="card" data-platform="android">
+      <h3>Android <span class="arch">arm64</span></h3>
+      <ol>
+        <li>Download the APK on your phone.</li>
+        <li>Open it, and let your browser install unknown apps when asked.</li>
+        <li>It installs over any earlier dev build. Touch controls are built in.</li>
+      </ol>
+      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-android-arm64.apk">Download APK</a>
+    </article>
+    <article class="card" data-platform="windows">
+      <h3>Windows <span class="arch">x64 · ARM64</span></h3>
+      <ol>
+        <li>Unzip, then run <code>SaltLine.exe</code> (<code>SaltLine-arm64.exe</code> on ARM).</li>
+        <li>If SmartScreen stops it: <em>More info</em>, then <em>Run anyway</em>.</li>
+      </ol>
+      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-windows-x86_64.zip">Download x64</a>
+      <a class="btn" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-windows-arm64.zip">Download ARM64</a>
+    </article>
+    <article class="card" data-platform="mac">
+      <h3>macOS <span class="arch">Apple silicon · Intel</span></h3>
+      <ol>
+        <li>Unzip and open <code>SaltLine.app</code>.</li>
+        <li>If Gatekeeper blocks it: <em>System Settings → Privacy &amp; Security → Open Anyway</em>.</li>
+      </ol>
+      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-macos.zip">Download for macOS</a>
+    </article>
+    <article class="card" data-platform="linux">
+      <h3>Linux <span class="arch">x86_64</span></h3>
+      <ol>
+        <li>Unzip, then run <code>./SaltLine.x86_64</code>.</li>
+        <li>One self-contained binary. No Godot install needed.</li>
+      </ol>
+      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-linux-x86_64.zip">Download for Linux</a>
+    </article>
+  </div>
+  <p class="small">Verify with <a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SHA256SUMS">SHA256SUMS</a> ·
+    <a href="https://github.com/cascadiacollections/saltline/releases/tag/dev">all dev build files</a></p>
 </section>
 
 <!-- ------------------------------------------------------------- what -->
@@ -247,7 +293,7 @@ godot --path .                   # play</code></pre>
     <aside class="reqs panel">
       <h3>System requirements</h3>
       <dl>
-        <dt>OS</dt><dd>Linux, macOS, Windows</dd>
+        <dt>OS</dt><dd>Android, Linux, macOS, Windows</dd>
         <dt>Engine</dt><dd>Godot 4 (presentation only)</dd>
         <dt>Toolchain</dt><dd>Rust, stable</dd>
         <dt>Internal res</dt><dd>320×180, integer-scaled</dd>

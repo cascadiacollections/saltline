@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PIL import Image
 
 import gen_sprites as G
-from gen_sprites import BAYER, Buf, rgba, text
+from gen_sprites import BAYER, Buf, hud, rgba, text
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ART = os.path.join(ROOT, "art")
@@ -138,14 +138,6 @@ def with_barrel(b, tank_xy, pivot, angle_deg):
     bar, bp = G.barrel(angle_deg)
     b.blit(bar, px + pivot[0] - bp[0], py + pivot[1] - bp[1])
     b.blit(tk, px, py)
-
-
-def hud(b, width, height, wind, shells, screen):
-    b.rect(3, 3, 41, 9, rgba("ui_bg"))
-    text(b, wind, 5, 5, rgba("alert"))
-    b.rect(width - 42, 3, 39, 9, rgba("ui_bg"))
-    text(b, shells, width - 40, 5, rgba("ui_fg"))
-    text(b, screen, width - 11, height - 8, rgba("ui_fg"))
 
 
 # ---------------------------------------------------------------- ballistics
@@ -267,7 +259,7 @@ def hero_wide(scale=2):
     _, path, hit, ang, _ = shot
     with_barrel(b, tank_xy, pivot, ang)
     tracer(b, path, hit)
-    hud(b, width, height, "WIND +4.0", "SHELLS 31", "27")
+    hud(b, width, height, 4.0, 31, "27")
     return b.image(scale)
 
 
@@ -289,7 +281,7 @@ def shot_gif(scale=2, path_out=None):
     err = abs(hit[0] - target)
 
     with_barrel(b, tank_xy, pivot, ang)
-    hud(b, width, height, "WIND +3.2", "SHELLS 28", "34")
+    hud(b, width, height, 3.2, 28, "34")
     base = b.image(1)
 
     # after: the same screen after the sim applies the impact, tower down
@@ -302,7 +294,7 @@ def shot_gif(scale=2, path_out=None):
         terrain_heights=after_hs,
     )
     with_barrel(ab, atank, apivot, ang)
-    hud(ab, width, height, "WIND +3.2", "SHELLS 27", "34")
+    hud(ab, width, height, 3.2, 27, "34")
     after = ab.image(1)
 
     fg = tuple(G.P["ui_fg"]) + (255,)
