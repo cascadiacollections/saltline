@@ -1,11 +1,34 @@
 //! Salt Line — deterministic simulation core.
 //!
-//! Invariants (see design/DESIGN.md and IMPLEMENTATION_PROMPT.md):
+//! This crate is the whole game: terrain generation, ballistics, damage, the
+//! shell economy, the modifier draft and the run state machine. The Godot
+//! crate (`salt-line-godot`) renders what this crate says is true, reads
+//! input and plays sound (DESIGN §6). Keeping every rule on this side of the
+//! split is what makes a run reproducible from its seed and its inputs, and
+//! what lets the rules be tested headless, in bulk, without an engine.
+//!
+//! Invariants (see design/DESIGN.md):
 //!   * No Godot dependency. Builds and tests headless.
 //!   * Fixed timestep `DT`, semi-implicit Euler, `f64` throughout.
 //!   * Explicit PRNG only. No thread_rng, no HashMap iteration order,
 //!     no system time in any state-affecting path.
 //!   * Wind is an acceleration, never a velocity offset.
+//!
+//! Where to start reading:
+//!
+//! - [`run`]: a run as a state machine (DESIGN §1), and how each screen is
+//!   assembled and validated from its own seed (§2.2, §2.3).
+//! - [`replay`]: a run persisted as seed plus input log and rebuilt from it,
+//!   and the state hash that catches determinism leaks (§6, §9).
+//! - [`SIM_EPOCH`] and [`EPOCHS`]: how a change to the sim's outcomes is
+//!   detected and versioned instead of silently breaking old logs (§9.3).
+//!
+//! Units used throughout: world units are pixels of the internal buffer, y
+//! up; angles are integer ticks of 0.05 degrees; power is an integer tick
+//! count, `0..=POWER_TICKS_MAX`; time is seconds, stepped by [`DT`].
+//!
+//! Comments cite "brief M1" to "brief M6": milestones of the brief the first
+//! build was written against, which is no longer in the repository.
 
 pub mod ballistics; // M1 — integration, collision
 pub mod dmath; // platform-stable trig, so the sim never calls libm
@@ -60,6 +83,7 @@ pub const START_SHELLS: i32 = 40;
 /// Narrowest and widest internal buffer. DESIGN §5.1: fix the height, let the
 /// width float, generate terrain to fill whatever the device reports.
 pub const SCREEN_W_MIN: usize = 320;
+/// Widest internal buffer; see [`SCREEN_W_MIN`].
 pub const SCREEN_W_MAX: usize = 400;
 /// The width the design table in DESIGN §2.5 is tuned against.
 pub const SCREEN_W_REF: usize = 320;
@@ -74,7 +98,10 @@ pub const FAR_EDGE_X: f64 = 310.0;
 /// Gravity, world units per second squared.
 pub const GRAVITY: f64 = 140.0;
 /// Muzzle velocity at power tick 0 and at full power, before loadout scaling.
+/// World units per second.
 pub const POWER_MIN: f64 = 30.0;
+/// Muzzle velocity at [`POWER_TICKS_MAX`], world units per second, before
+/// loadout scaling; see [`POWER_MIN`]. Speed is linear in power ticks between.
 pub const POWER_MAX: f64 = 300.0;
 /// Power is an integer tick count so a shot is exactly reproducible.
 pub const POWER_TICKS_MAX: i32 = 1000;
@@ -117,11 +144,14 @@ pub const fn band_of(screen_index: u32) -> u32 {
 /// A point in world space, y up, one unit per pixel.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Vec2 {
+    /// World units rightward from the screen's left edge.
     pub x: f64,
+    /// World units upward.
     pub y: f64,
 }
 
 impl Vec2 {
+    /// A point at `(x, y)`, in world units.
     #[inline]
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
