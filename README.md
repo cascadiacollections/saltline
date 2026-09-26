@@ -101,7 +101,8 @@ Touch aiming has two modes, chosen with AIM on the CONTROLS / AUDIO screen:
   The direction of the pull sets the angle and its length sets the power, both
   on the same grid as the keys. Let go to fire, or pull back to where you
   started to cancel. ARC chooses the preview shown while you pull. **Short**
-  shows only the first stretch of flight, never the landing. **Full** shows the
+  shows only the first stretch of flight, never past the apex or half the
+  flight, so never the landing. **Full** shows the
   whole arc without wind. **Full + wind** adds the wind the HUD shows, which is
   none under Dead Reckoning. Short is the default: reading wind stays the
   player's job (DESIGN §2.5).

@@ -2000,8 +2000,6 @@ impl SaltLine {
             return;
         };
         let upto = match hint {
-            // Never past the apex, so it shows where the shell is going and
-            // how hard, never where it lands.
             ArcHint::Short => {
                 let apex = path
                     .iter()
@@ -2009,7 +2007,7 @@ impl SaltLine {
                     .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
                     .map_or(0, |(i, _)| i);
                 let window = (SHORT_ARC_SECONDS / DT) as usize;
-                window.min(apex.max(window / 3))
+                crate::aim::short_arc_len(apex, path.len(), window)
             }
             ArcHint::Full | ArcHint::Wind => path.len(),
         };

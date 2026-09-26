@@ -34,6 +34,15 @@ pub fn pull_to_aim(start: (f32, f32), now: (f32, f32), angle_quantum: i32) -> Op
     Some((angle, power.clamp(0, POWER_TICKS_MAX)))
 }
 
+/// How many samples of a `len`-sample path the Short preview draws: a fixed
+/// time `window`, so its length reads as power, but never past the apex and
+/// never more than half the flight, so it never shows where the shell lands.
+/// A flat shot peaks at once, so it gets a third of the window, still inside
+/// the first half of the flight.
+pub fn short_arc_len(apex: usize, len: usize, window: usize) -> usize {
+    window.min(apex.max(window / 3)).min(len / 2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +87,24 @@ mod tests {
         };
         assert!(p(20.0) < p(40.0));
         assert_eq!(p(80.0), p(200.0));
+    }
+
+    #[test]
+    fn short_arc_stops_at_the_window_or_the_apex() {
+        assert_eq!(short_arc_len(200, 600, 36), 36);
+        assert_eq!(short_arc_len(20, 600, 36), 20);
+    }
+
+    #[test]
+    fn short_arc_never_reaches_the_landing() {
+        // A lob barely off the muzzle: apex early, whole flight short.
+        assert_eq!(short_arc_len(2, 16, 36), 8);
+        // A flat shot peaks at once but still shows a stub.
+        assert_eq!(short_arc_len(0, 600, 36), 12);
+        for len in 0..80 {
+            for apex in 0..len.max(1) {
+                assert!(short_arc_len(apex, len, 36) <= len / 2);
+            }
+        }
     }
 }
