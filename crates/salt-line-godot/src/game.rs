@@ -26,6 +26,7 @@
 //!     ├─ crash::panicked()? ──yes──► broken_frame: Game::broken_tick,
 //!     │                               file effects dropped, error screen
 //!     ├─ poll_display       window size every frame, cutout when due
+//!     ├─ watch_drift        disarm a stick axis held over too long (pads)
 //!     ├─ gather_intents     events + keys/pads held + stick polled ──► Intents
 //!     ├─ Game::tick_with    events → crash::note (for the report) → timers
 //!     │                     → display → mode input → step → run file → settings
@@ -235,6 +236,7 @@ impl INode2D for SaltLine {
         let capped = crate::resume::frame_delta(delta);
         self.elapsed += capped;
         self.poll_display(capped);
+        self.watch_drift(capped);
         self.gather_intents();
         // Keep the crash hook's picture of the run current. Taken before this
         // frame's input is acted on, so a panic inside `fire` still reports
@@ -690,6 +692,20 @@ impl SaltLine {
         self.pads.retain_connected(&connected);
     }
 
+    /// Disarm a stick axis that has sat pushed too long to be a hand on it
+    /// (`Pads::tick`), before this frame reads the stick.
+    fn watch_drift(&mut self, delta: f64) {
+        let input = Input::singleton();
+        self.pads.tick(delta, |device, slot| {
+            let axis = if slot == 0 {
+                JoyAxis::LEFT_X
+            } else {
+                JoyAxis::LEFT_Y
+            };
+            input.get_joy_axis(device, axis)
+        });
+    }
+
     /// The stick is pushed past the threshold on any joypad whose stick has
     /// been seen at rest.
     fn stick_held(&self, axis: JoyAxis, sign: f32) -> bool {
@@ -698,7 +714,7 @@ impl SaltLine {
         self.pads
             .iter()
             .filter(|p| p.armed[slot])
-            .any(|p| input.get_joy_axis(p.device, axis) * sign > 0.45)
+            .any(|p| input.get_joy_axis(p.device, axis) * sign > crate::pads::PUSH)
     }
 
     /// Something on screen is moving or being held, so every frame draws.
