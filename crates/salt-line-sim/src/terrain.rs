@@ -473,6 +473,21 @@ impl Heightfield {
         self.material[i]
     }
 
+    /// Layer at the point `(x, y)`, from its depth below the original
+    /// surface of the nearest column (DESIGN §2.3 step 4). Unlike
+    /// [`Heightfield::material_at`] this reads underground: a tunnelling
+    /// shell meets bedrock at its own depth, whatever the surface is.
+    ///
+    /// Points above the original surface read Sand, like a debris mound. An
+    /// empty field reads Sand.
+    pub fn material_below(&self, x: f64, y: f64) -> Material {
+        if self.is_empty() {
+            return Material::Sand;
+        }
+        let i = clamp(dmath::round(x), 0.0, (self.len() - 1) as f64) as usize;
+        Material::at_depth(self.base[i] - y)
+    }
+
     fn recompute_material(&mut self, from: usize, to: usize) {
         // Excavation depth is the scar itself. Negative scar is a debris mound
         // piled on top, which is loose material and reads as Sand.

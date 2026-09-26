@@ -137,6 +137,12 @@ pub fn analytic_shots(
     out
 }
 
+/// Horizontal margin, world units, either side of a target box's x-span
+/// within which a detonation passes [`fells_target`]'s cheap filter as a
+/// possible undermining shot, even outside blast range (DESIGN §2.7). Only a
+/// filter: the damage model still decides.
+const UNDERMINE_MARGIN: f64 = 8.0;
+
 /// Would this shot fell `target`? Simulated, then confirmed against the real
 /// damage model on a scratch copy of the screen.
 ///
@@ -170,10 +176,11 @@ fn fells_target(screen: &Screen, lo: &Loadout, shot: Shot, target: usize) -> Opt
         End::Structure { index, .. } => index == target,
         End::Terrain { pos, .. } | End::Fuse { pos } => {
             target_box.distance_to(pos) < blast_radius(lo, t.damage_scale)
-                // Undermining: a detonation within 8 units of the box's x-span
-                // counts even when the blast never touches the structure
-                // (DESIGN §2.7).
-                || (pos.x >= target_box.x0 - 8.0 && pos.x <= target_box.x1 + 8.0)
+                // Undermining: a detonation within `UNDERMINE_MARGIN` of the
+                // box's x-span counts even when the blast never touches the
+                // structure (DESIGN §2.7).
+                || (pos.x >= target_box.x0 - UNDERMINE_MARGIN
+                    && pos.x <= target_box.x1 + UNDERMINE_MARGIN)
         }
         _ => false,
     });
@@ -223,9 +230,8 @@ fn solve_from_aim(
     let wind_accel = screen.wind * lo.wind_scale;
     let mut found = 0usize;
     for (shot, solved_time) in analytic_shots(origin, aim, wind_accel, lo) {
-        if let Some(prior) = seen.iter().position(|s| *s == shot) {
+        if seen.contains(&shot) {
             // Already simulated: count it here if it worked.
-            let _ = prior;
             if out.iter().any(|c| c.shot == shot) {
                 found += 1;
             }

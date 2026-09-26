@@ -22,7 +22,9 @@
 //! Generation is generate-and-test: assemble a candidate, ask
 //! [`solver::validate`] whether it has enough distinct solutions, and on
 //! failure try again with the next seed, then with the `Flat` template, then
-//! with the terrain flattened (DESIGN §2.3 step 6, §2.4).
+//! with the terrain flattened, then on level ground in calm air (DESIGN §2.3
+//! step 6, §2.4). Every rung of that ladder passes through the same gate, so
+//! no screen with targets is shown unproven.
 //!
 //! # The run state machine
 //!
@@ -145,7 +147,8 @@ impl StructureKind {
 /// a cosmetic one.
 ///
 /// Derived, never set directly: `resolve_state` recomputes it from
-/// [`Structure::integrity`] and [`Structure::support`] after every shot.
+/// [`Structure::integrity`] and [`Structure::support`] after every shot,
+/// until the structure collapses. Collapse is final.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum StructState {
@@ -156,7 +159,7 @@ pub enum StructState {
     /// screen is not cleared.
     Leaning = 1,
     /// Integrity at or below 0, or support at or below 0.3. A collapsed
-    /// structure takes no further blast damage.
+    /// structure takes no further blast damage and is never re-resolved.
     Collapsed = 2,
 }
 
@@ -193,7 +196,8 @@ pub struct Structure {
     /// multiplied by [`StructureKind::top_heaviness`] (above 1 for top-heavy
     /// kinds, below 1 for Silo and Pylon), clamped to 0..=1.
     pub support: f64,
-    /// Damage state, derived from `integrity` and `support`.
+    /// Damage state, derived from `integrity` and `support`; fixed once
+    /// `Collapsed`.
     pub state: StructState,
     /// -1 leaning left, 0 upright, +1 leaning right.
     pub lean: i8,
@@ -342,6 +346,10 @@ pub struct Screen {
     pub attempts: u32,
     /// Whether generation gave up on the drawn template and used `Flat`.
     pub fell_back: bool,
+    /// Which rung of the generation ladder produced the screen (see
+    /// [`generate_screen`]); `None` for a supply screen, which is not
+    /// generated against the gate. Not hashed, like `attempts`.
+    pub rung: Option<Rung>,
     /// Scavenger Rites supply screen: no targets, shells instead.
     pub supply: bool,
 }
@@ -531,6 +539,11 @@ impl Screen {
     }
 
     /// One detonation: crater the ground, damage what the blast overlaps.
+    ///
+    /// The crater is sized by the surface layer of the detonation's column
+    /// (Steel for a direct hit), not by [`End::Terrain`]'s `material`: a
+    /// tunnelling shell that stops in a deeper layer still craters as the
+    /// surface above it does.
     fn detonate(&mut self, end: End, damage_scale: f64, lo: &Loadout) {
         let pos = end.pos();
         let direct = match end {
@@ -576,15 +589,22 @@ impl Screen {
         }
     }
 
-    /// Recompute support from the scar buffer and re-resolve every state.
-    /// Called once per shot, after every detonation (DESIGN §2.7 says after
-    /// each detonation; with Cluster this differs — see NOTES or the
-    /// follow-up issue).
+    /// Recompute support from the scar buffer and re-resolve the state of
+    /// every standing structure. Called once per shot, after every
+    /// detonation (DESIGN §2.7 says after each detonation; with Cluster this
+    /// differs — see NOTES or the follow-up issue).
+    ///
+    /// Collapse is permanent: a collapsed structure is skipped, so its
+    /// support, state and lean stay as they were when it fell, even if debris
+    /// later refills its footprint.
     ///
     /// Public because undermining can happen without a detonation of its own —
     /// debris landing, or a test excavating a footprint directly.
     pub fn resolve_structures(&mut self) {
         for s in self.structures.iter_mut() {
+            if s.is_down() {
+                continue;
+            }
             let raw = self
                 .field
                 .support_fraction(s.x0, s.kind.footprint(), s.original_mean);
@@ -592,19 +612,16 @@ impl Screen {
             // makes undermining the water tower legible.
             let loss = (1.0 - raw) * s.kind.top_heaviness();
             s.support = clamp(1.0 - loss, 0.0, 1.0);
-            let was_down = s.state == StructState::Collapsed;
             s.resolve_state();
-            if !was_down {
-                if s.state == StructState::Collapsed {
-                    if s.lean == 0 {
-                        s.lean = s.lean_direction(&self.field);
-                        if s.lean == 0 {
-                            s.lean = 1;
-                        }
-                    }
-                } else if s.state == StructState::Leaning {
+            if s.state == StructState::Collapsed {
+                if s.lean == 0 {
                     s.lean = s.lean_direction(&self.field);
+                    if s.lean == 0 {
+                        s.lean = 1;
+                    }
                 }
+            } else if s.state == StructState::Leaning {
+                s.lean = s.lean_direction(&self.field);
             }
         }
     }
@@ -733,27 +750,31 @@ fn place_structures(
             continue;
         }
         let kind = StructureKind::ALL[rng.weighted(&kind_weights(band))];
-        let fp = kind.footprint();
-        let x0 = clamp(x - fp as f64 * 0.5, 1.0, (width - fp - 1) as f64) as usize;
-        // Seat on the highest footprint column so nothing floats.
-        let base = field.seat(x0, fp);
-        let mut sum = 0.0;
-        for i in x0..x0 + fp {
-            sum += field.surface(i);
-        }
-        let original_mean = sum / fp as f64;
-        out.push(Structure {
-            kind,
-            x0,
-            base,
-            original_mean,
-            integrity: 1.0,
-            support: 1.0,
-            state: StructState::Intact,
-            lean: 0,
-        });
+        out.push(seat_structure(field, kind, x, width));
     }
     out
+}
+
+/// An intact structure of `kind` centred as near `x` as the buffer allows,
+/// seated on the highest column of its footprint so nothing floats.
+fn seat_structure(field: &Heightfield, kind: StructureKind, x: f64, width: usize) -> Structure {
+    let fp = kind.footprint();
+    let x0 = clamp(x - fp as f64 * 0.5, 1.0, (width - fp - 1) as f64) as usize;
+    let base = field.seat(x0, fp);
+    let mut sum = 0.0;
+    for i in x0..x0 + fp {
+        sum += field.surface(i);
+    }
+    Structure {
+        kind,
+        x0,
+        base,
+        original_mean: sum / fp as f64,
+        integrity: 1.0,
+        support: 1.0,
+        state: StructState::Intact,
+        lean: 0,
+    }
 }
 
 /// Share of the loadout's flat-ground maximum that a target may be placed at.
@@ -848,6 +869,11 @@ fn assemble(
         candidates: 0,
         attempts: 0,
         fell_back: force_flat_terrain,
+        rung: Some(if force_flat_terrain {
+            Rung::Terrainless
+        } else {
+            Rung::Drawn
+        }),
         supply: false,
     }
 }
@@ -856,21 +882,24 @@ fn assemble(
 /// and for loadout `lo`.
 ///
 /// DESIGN §2.3 step 6: reject and regenerate with `screen_seed + 1` on
-/// failure, capped at 8 attempts, then fall back to `Flat`. The fallback
-/// ladder has three rungs:
+/// failure, capped at 8 attempts, then fall back to `Flat`. The ladder has
+/// four rungs ([`Rung`]):
 ///
 /// 1. Up to `MAX_GEN_ATTEMPTS` drawn templates, each on the next seed.
 /// 2. Up to `MAX_GEN_ATTEMPTS` `Flat` screens on a separate run of seeds.
 /// 3. No template: the screen seed's base ridge flattened to a gentle roll,
 ///    cut to one target.
+/// 4. Dead level ground, no wind before or after the apex, one Pylon well
+///    inside the loadout's range ([`level_screen`]).
 ///
-/// Rungs 1 and 2 return a screen only if it passes [`solver::validate`].
-/// Rung 3 is returned without that gate: it relies on a single target
-/// inside the distance cap on gentle terrain always being reachable, and
-/// records whatever candidate count the solver finds. No test forces rung 3
-/// or asserts that it is solvable; the batch harness's candidate gate would
-/// only notice if a sampled screen happened to reach it. Supply screens
-/// (Scavenger Rites) have no targets and skip validation too.
+/// Every rung returns a screen only if it passes [`solver::validate`], so
+/// DESIGN §2.4 holds for fallbacks too. Rung 4 is built so that it cannot
+/// fail for any loadout the game can hold; the gate is there to prove it
+/// rather than to choose. Should it fail anyway, debug and test builds panic,
+/// naming the seed, screen and loadout. A release build returns the rung-4
+/// screen with its failing candidate count, which the batch harness treats
+/// as an error. Supply screens (Scavenger Rites) have no targets, so there
+/// is nothing to validate; they are exempt by nature and report no rung.
 ///
 /// Pure: the same arguments always give a bit-identical screen, whatever was
 /// generated before. The loadout is an input because it changes what is
@@ -879,6 +908,39 @@ fn assemble(
 /// screens once their drafts differ; the seed alone fixes the run only
 /// together with the player's picks, which is why picks are logged.
 pub fn generate_screen(run_seed: u64, index: u32, width: usize, lo: &Loadout) -> Screen {
+    generate_screen_from(run_seed, index, width, lo, Rung::Drawn)
+}
+
+/// Rungs of the generation ladder, in the order [`generate_screen`] climbs
+/// down them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Rung {
+    /// A template drawn from the band's weights.
+    Drawn,
+    /// The `Flat` template on a separate run of seeds.
+    Flat,
+    /// No template: the base ridge flattened to a gentle roll, one target.
+    Terrainless,
+    /// Level ground, calm air, one target well inside range.
+    Level,
+}
+
+impl Rung {
+    /// Every rung, top first.
+    pub const ALL: [Rung; 4] = [Rung::Drawn, Rung::Flat, Rung::Terrainless, Rung::Level];
+}
+
+/// [`generate_screen`], starting the ladder at rung `from` rather than the
+/// top. `Rung::Drawn` is `generate_screen` itself; the later rungs exist so
+/// tests can force a fallback without hunting for a seed that reaches it.
+/// Supply screens are still supply screens whatever `from` says.
+pub fn generate_screen_from(
+    run_seed: u64,
+    index: u32,
+    width: usize,
+    lo: &Loadout,
+    from: Rung,
+) -> Screen {
     let band = band_of(index);
     let seed0 = screen_seed(run_seed, index);
 
@@ -887,46 +949,125 @@ pub fn generate_screen(run_seed: u64, index: u32, width: usize, lo: &Loadout) ->
         let mut s = assemble(index, seed0, width, Template::Flat, band, lo, false);
         s.structures.clear();
         s.supply = true;
+        s.rung = None;
         s.candidates = usize::MAX;
         return s;
     }
 
-    let mut r_template = Pcg32::new(substream(seed0, 0x5445_4D50));
-    let weights = template_weights(band, lo);
+    if from <= Rung::Drawn {
+        let mut r_template = Pcg32::new(substream(seed0, 0x5445_4D50));
+        let weights = template_weights(band, lo);
+        for attempt in 0..MAX_GEN_ATTEMPTS {
+            let seed = seed0.wrapping_add(attempt as u64);
+            let template = Template::ALL[r_template.weighted(&weights)];
+            let mut screen = assemble(index, seed, width, template, band, lo, false);
+            screen.attempts = attempt + 1;
+            if gate(&mut screen, lo) {
+                return screen;
+            }
+        }
+    }
 
-    for attempt in 0..MAX_GEN_ATTEMPTS {
-        let seed = seed0.wrapping_add(attempt as u64);
-        let template = Template::ALL[r_template.weighted(&weights)];
-        let mut screen = assemble(index, seed, width, template, band, lo, false);
-        screen.attempts = attempt + 1;
-        let report = solver::validate(&screen, lo);
-        if report.solvable() {
-            screen.candidates = report.worst_direct;
+    if from <= Rung::Flat {
+        for attempt in 0..MAX_GEN_ATTEMPTS {
+            let seed = seed0.wrapping_add(0x1000 + attempt as u64);
+            let mut screen = assemble(index, seed, width, Template::Flat, band, lo, false);
+            screen.attempts = MAX_GEN_ATTEMPTS + attempt + 1;
+            screen.fell_back = true;
+            screen.rung = Some(Rung::Flat);
+            if gate(&mut screen, lo) {
+                return screen;
+            }
+        }
+    }
+
+    if from <= Rung::Terrainless {
+        let mut screen = assemble(index, seed0, width, Template::Flat, band, lo, true);
+        screen.structures.truncate(1);
+        screen.attempts = MAX_GEN_ATTEMPTS * 2 + 1;
+        if gate(&mut screen, lo) {
             return screen;
         }
     }
 
-    // Flat template, fresh seeds.
-    for attempt in 0..MAX_GEN_ATTEMPTS {
-        let seed = seed0.wrapping_add(0x1000 + attempt as u64);
-        let mut screen = assemble(index, seed, width, Template::Flat, band, lo, false);
-        screen.attempts = MAX_GEN_ATTEMPTS + attempt + 1;
-        screen.fell_back = true;
-        let report = solver::validate(&screen, lo);
-        if report.solvable() {
-            screen.candidates = report.worst_direct;
-            return screen;
-        }
+    let mut screen = level_screen(index, seed0, width, band, lo);
+    if !gate(&mut screen, lo) && cfg!(debug_assertions) {
+        panic!(
+            "unsolvable screen: run seed {run_seed:#x}, screen {index}, width {width}: \
+             even the level fallback has only {} direct candidates for {lo:?}",
+            screen.candidates
+        );
     }
-
-    // No template, terrain flattened, one target. This cannot fail: a target
-    // inside the distance cap on a gentle roll is always reachable.
-    let mut screen = assemble(index, seed0, width, Template::Flat, band, lo, true);
-    screen.structures.truncate(1);
-    screen.attempts = MAX_GEN_ATTEMPTS * 2 + 1;
-    screen.fell_back = true;
-    screen.candidates = solver::validate(&screen, lo).worst_direct;
     screen
+}
+
+/// Validate `screen` against `lo` and record the direct-aim count in
+/// `candidates`. True if it passes the DESIGN §2.4 gate.
+fn gate(screen: &mut Screen, lo: &Loadout) -> bool {
+    let report = solver::validate(screen, lo);
+    screen.candidates = report.worst_direct;
+    report.solvable()
+}
+
+/// Share of the loadout's flat-ground range at which [`level_screen`] puts
+/// its target.
+pub const LEVEL_RANGE_SHARE: f64 = 0.5;
+
+/// Rung 4 of the generation ladder: the simplest screen that is still a
+/// screen.
+///
+/// Solvable by construction, whatever the loadout:
+///
+/// - The ground is dead level at `BASE_ELEVATION`, so nothing stands between
+///   muzzle and target.
+/// - Wind is zero before and after the apex. Every wind modifier (Ballast,
+///   Featherweight, Anemometer, Storm Front, Dead Reckoning) scales,
+///   resamples or hides a quantity that is now nothing.
+/// - The target sits at [`LEVEL_RANGE_SHARE`] of
+///   [`ballistics::max_flat_range`], or at the band's design distance if
+///   that is nearer, and never nearer than the usual 60-unit minimum. At half
+///   range every speed from about 71% of the maximum up has both a low and a
+///   high angle that lands there, so the sweep finds shots across a wide
+///   band of power; the coarsest angle quantum (0.5°) moves the landing
+///   point by a few units at most, less than the target's width. The minimum
+///   speed is no obstacle: a steep enough angle shortens any shot.
+///   Featherweight, Sabot and Ballast only move the maximum, and the
+///   distance moves with it.
+/// - The target is a Pylon, the largest box of the five kinds, and a direct
+///   hit from any loadout takes its integrity below zero
+///   (`STEEL_BLAST_FACTOR` is above 1). Airburst's default fuse bursts over
+///   the target centre, which the low-angle shots cross at the target's own
+///   height.
+///
+/// Long Lens changes the camera, not the world, and Overhang is a template,
+/// so neither reaches this rung. The width is only a clamp: the target is
+/// kept 16 units inside the right edge, as everywhere else. The seed is
+/// recorded but draws nothing.
+pub fn level_screen(index: u32, seed: u64, width: usize, band: u32, lo: &Loadout) -> Screen {
+    let field = Heightfield::from_base(vec![terrain::BASE_ELEVATION; width]);
+    let distance = target_distance(band).min(ballistics::max_flat_range(lo) * LEVEL_RANGE_SHARE);
+    let x = clamp(
+        EMPLACEMENT_X + distance,
+        EMPLACEMENT_X + 60.0,
+        width as f64 - 16.0,
+    );
+    let structures = vec![seat_structure(&field, StructureKind::Pylon, x, width)];
+    Screen {
+        index,
+        seed,
+        width,
+        template: Template::Flat,
+        field,
+        structures,
+        wind: 0.0,
+        wind_late: Some(0.0),
+        muzzle_x: EMPLACEMENT_X,
+        candidates: 0,
+        attempts: MAX_GEN_ATTEMPTS * 2 + 2,
+        fell_back: true,
+        rung: Some(Rung::Level),
+        supply: false,
+    }
 }
 
 // ------------------------------------------------------------ economy (§1)
@@ -1298,11 +1439,17 @@ impl RunState {
             self.one_shot_streak = 0;
         }
         self.grant(gain);
+        self.leave_screen();
+    }
 
-        // A draft fires at the end of each band (DESIGN §1). The offers come
-        // from the next screen's seed and the loadout, not from a running
-        // generator, so they are fixed by what the log already contains and
-        // a replay meets the same offers.
+    /// Leave a cleared screen: open the band-end draft if the next screen
+    /// starts a band, otherwise advance to it.
+    ///
+    /// A draft fires at the end of each band (DESIGN §1). The offers come
+    /// from the next screen's seed and the loadout, not from a running
+    /// generator, so they are fixed by what the log already contains and a
+    /// replay meets the same offers.
+    fn leave_screen(&mut self) {
         let next = self.screen_index + 1;
         if next.is_multiple_of(BAND_LEN) {
             let offers = draft_offers(screen_seed(self.run_seed, next), &self.loadout);
@@ -1371,11 +1518,12 @@ impl RunState {
         };
         // A supply screen has nothing to shoot at; walk straight through it.
         // It counts as cleared (DESIGN §4) and its +6 shells were granted on
-        // entry. Walking through bypasses `clear_screen`, so no refund is
-        // paid and the band-end draft check is not made for this step.
+        // entry. No refund is paid, but the band-end draft check is still
+        // made, so a supply screen just before a band start (15, 35, …)
+        // leaves the run drafting on it.
         if self.phase == Phase::Firing && self.screen.supply {
             self.screens_cleared += 1;
-            self.advance();
+            self.leave_screen();
         }
     }
 }
@@ -1451,6 +1599,144 @@ mod tests {
     use crate::terrain::WORLD_FLOOR;
 
     const SEED: u64 = 0x0B00_1234_5678_9ABC;
+
+    /// Every modifier at its stack limit, alone and in every pair, plus the
+    /// empty loadout. Covers the power extremes (Featherweight, Ballast, both
+    /// with Sabot), Vernier's quantum, Dead Reckoning, Storm Front, Airburst
+    /// and the Overhang unlocks.
+    fn loadout_matrix() -> Vec<Loadout> {
+        let maxed = |ms: &[Modifier]| {
+            let mut lo = Loadout::new();
+            for &m in ms {
+                for _ in 0..m.max_stacks() {
+                    lo.take(m);
+                }
+            }
+            lo
+        };
+        let all: Vec<Modifier> = Modifier::all().collect();
+        let mut out = vec![Loadout::new()];
+        for (i, &a) in all.iter().enumerate() {
+            out.push(maxed(&[a]));
+            for &b in &all[i + 1..] {
+                out.push(maxed(&[a, b]));
+            }
+        }
+        out.push(maxed(&[
+            Modifier::Featherweight,
+            Modifier::Sabot,
+            Modifier::StormFront,
+            Modifier::DeadReckoning,
+        ]));
+        out.push(maxed(&[
+            Modifier::Ballast,
+            Modifier::StormFront,
+            Modifier::Vernier,
+            Modifier::Airburst,
+        ]));
+        out
+    }
+
+    /// Force the ladder to start at `from` for every loadout in the matrix
+    /// and assert the result passes the gate. Returns how many screens came
+    /// off each rung.
+    fn fallback_is_solvable_from(from: Rung) -> [usize; 4] {
+        let mut rungs = [0usize; 4];
+        for (n, lo) in loadout_matrix().iter().enumerate() {
+            for (k, index) in [0u32, 21, 83, 203, 401].into_iter().enumerate() {
+                let seed = SEED ^ ((n * 5 + k) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                let width = if (n + k) % 2 == 0 { 320 } else { 400 };
+                let s = generate_screen_from(seed, index, width, lo, from);
+                let Some(rung) = s.rung else {
+                    // Supply screens have no targets: nothing to validate.
+                    assert!(s.supply && s.structures.is_empty());
+                    continue;
+                };
+                assert!(rung >= from, "{rung:?} is above the starting rung");
+                let r = solver::validate(&s, lo);
+                assert!(
+                    r.solvable(),
+                    "rung {rung:?} unsolvable: loadout {n}, screen {index}, width {width}, \
+                     {} candidates",
+                    r.worst
+                );
+                assert_eq!(s.candidates, r.worst_direct);
+                rungs[rung as usize] += 1;
+            }
+        }
+        rungs
+    }
+
+    #[test]
+    fn the_terrain_free_fallback_is_gated_and_solvable_for_every_loadout() {
+        // DESIGN §2.4: every screen is proven solvable before it is shown,
+        // including the ones generation had to fall back for. Start the
+        // ladder at the terrain-free rung so the fallback is exercised
+        // whatever the seed would have done.
+        let rungs = fallback_is_solvable_from(Rung::Terrainless);
+        assert!(rungs[Rung::Terrainless as usize] + rungs[Rung::Level as usize] > 1000);
+    }
+
+    #[test]
+    fn the_level_fallback_is_solvable_for_every_loadout() {
+        // The bottom rung, forced for every loadout in the matrix. This is the
+        // one that must never fail.
+        let rungs = fallback_is_solvable_from(Rung::Level);
+        assert!(rungs[Rung::Level as usize] > 1000);
+    }
+
+    #[test]
+    fn the_level_fallback_ignores_the_seed_and_the_wind() {
+        let mut lo = Loadout::new();
+        lo.take(Modifier::StormFront);
+        let a = generate_screen_from(1, 83, 320, &lo, Rung::Level);
+        let b = generate_screen_from(2, 83, 320, &lo, Rung::Level);
+        assert_eq!(a.wind, 0.0);
+        assert_eq!(a.wind_late, Some(0.0));
+        assert_eq!(a.structures[0].x0, b.structures[0].x0);
+        assert_eq!(a.field.base, b.field.base);
+        assert!(a.fell_back);
+    }
+
+    #[test]
+    fn a_failing_terrain_free_screen_drops_to_the_level_rung() {
+        // Before the gate, rung 3 was returned unvalidated. No loadout a
+        // draft can build has been seen to break it, so this one is doctored:
+        // wind forty times over leaves the gentle roll unsolvable on most
+        // seeds. Old code shipped such a screen; now it must come off rung 4
+        // instead, still proven solvable.
+        let mut lo = Loadout::new();
+        lo.wind_scale = 40.0;
+        let index = 401;
+        let run_seed = (0..64u64)
+            .find(|&seed| {
+                let mut s = assemble(
+                    index,
+                    screen_seed(seed, index),
+                    320,
+                    Template::Flat,
+                    band_of(index),
+                    &lo,
+                    true,
+                );
+                s.structures.truncate(1);
+                !solver::validate(&s, &lo).solvable()
+            })
+            .expect("no seed breaks the terrain-free rung");
+        let s = generate_screen_from(run_seed, index, 320, &lo, Rung::Terrainless);
+        assert_eq!(s.rung, Some(Rung::Level));
+        assert!(solver::validate(&s, &lo).solvable());
+    }
+
+    #[test]
+    #[should_panic(expected = "unsolvable screen")]
+    fn an_unsolvable_last_rung_panics_rather_than_shipping() {
+        // A doctored loadout no real draft can produce: the shell barely
+        // leaves the barrel, so nothing is in range and every rung fails.
+        let mut lo = Loadout::new();
+        lo.power_scale = 0.05;
+        generate_screen_from(SEED, 21, 320, &lo, Rung::Terrainless);
+    }
 
     // ------------------------------------------------------- M1 acceptance
     #[test]
@@ -1652,6 +1938,37 @@ mod tests {
             "integrity changed — that would be a direct hit, not undermining"
         );
         assert!(box_.y0 >= WORLD_FLOOR);
+    }
+
+    #[test]
+    fn collapse_is_permanent_when_the_footprint_is_refilled() {
+        // Debris can pile back over a felled structure's footprint. The
+        // wreck must stay down, or a cleared screen could un-clear.
+        let lo = Loadout::new();
+        let mut screen = generate_screen(SEED, 0, 320, &lo);
+        let st = screen.structures[0].clone();
+        for _ in 0..12 {
+            for i in st.x0..st.x0 + st.footprint() {
+                screen.field.crater(i as f64, 6.0);
+            }
+            screen.resolve_structures();
+            if screen.structures[0].is_down() {
+                break;
+            }
+        }
+        assert!(
+            screen.structures[0].is_down(),
+            "undermining never felled it"
+        );
+        let lean = screen.structures[0].lean;
+
+        screen
+            .field
+            .mound(st.centre_x(), st.footprint() as f64 * 2.0, 60.0);
+        screen.resolve_structures();
+        let s = &screen.structures[0];
+        assert_eq!(s.state, StructState::Collapsed, "support {}", s.support);
+        assert_eq!(s.lean, lean, "a wreck does not change the way it fell");
     }
 
     #[test]
@@ -1959,6 +2276,26 @@ mod tests {
         assert!(!normal.supply);
         // And they do not appear without the modifier.
         assert!(!generate_screen(7, 5, 320, &Loadout::new()).supply);
+    }
+
+    /// Supply screens fall on multiples of 5, so 15, 35, … sit just before a
+    /// band start. Walking through one must still open that band's draft.
+    #[test]
+    fn supply_screens_before_a_band_start_still_open_its_draft() {
+        let mut state = RunState::new(0x5CA7, 320);
+        state.loadout.take(Modifier::ScavengerRites);
+        let mut drafts = Vec::new();
+        while state.screen_index < 40 {
+            assert!(!state.is_over(), "ran dry at screen {}", state.screen_index);
+            if state.phase == Phase::Drafting {
+                drafts.push(state.screen_index + 1);
+                state.take_offer(0);
+            } else {
+                clear_current_screen(&mut state, &Loadout::new());
+            }
+        }
+        let bands: Vec<u32> = (1..=10).map(|b| b * BAND_LEN).collect();
+        assert_eq!(drafts, bands, "every band start opens its draft");
     }
 
     #[test]
