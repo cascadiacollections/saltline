@@ -36,14 +36,14 @@
 //! less often; play keeps the project's cap, because a shell in flight
 //! should be smooth.
 
-/// Menus and overlays run at this rate at most, in frames per second. Nothing on them moves on its
-/// own, and a highlight or a typed character a frame later at 30 fps is not
-/// something a thumb can feel.
+/// Menus and overlays run at this rate at most, in frames per second.
+/// Nothing on them moves on its own, and a highlight or a typed character a
+/// frame later at 30 fps is not something a thumb can feel.
 pub const IDLE_FPS: i32 = 30;
 
 /// How often, in seconds, the display's safe area is asked again when
-/// nothing else has prompted it: a phone turned end over end keeps its window size, but the
-/// camera hole moves to the other side.
+/// nothing else has prompted it: a phone turned end over end keeps its
+/// window size, but the camera hole moves to the other side.
 pub const DISPLAY_RECHECK: f64 = 1.0;
 
 /// Decides whether this frame needs rasterising and uploading.

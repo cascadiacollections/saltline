@@ -10,13 +10,14 @@
 //!
 //! # One canvas at the internal resolution
 //!
-//! DESIGN §5.1 fixes the buffer at 180 buffer pixels tall (216 under Long
-//! Lens, which adds sky rather than scaling anything) and 320 to 400 wide,
-//! by device aspect. The whole frame, terrain, sprites, HUD and text alike,
-//! is drawn by the CPU into the one [`Canvas`] at that size, then uploaded as
-//! a single texture that `game.rs` draws at 1:1. Godot's viewport stretch,
-//! with nearest filtering set project-wide, does the only scaling in the
-//! game, so every buffer pixel lands on the screen as the same whole block.
+//! DESIGN §5.1 fixes the buffer at 180 buffer pixels tall and 320 to 400
+//! wide, by device aspect; Long Lens makes it 216 tall
+//! (`app::LONG_LENS_H`), adding sky rather than scaling. The whole frame,
+//! terrain, sprites, HUD and text alike, is drawn by the CPU into the one
+//! [`Canvas`] at that size, then uploaded as a single texture that
+//! `game.rs` draws at 1:1. Godot's viewport stretch, with nearest filtering
+//! set project-wide, does the only scaling in the game, so every buffer
+//! pixel lands on the screen as the same whole block.
 //! UI in the same buffer at the same resolution is itself a §5.1 rule.
 //!
 //! World units map one to one onto buffer pixels: a heightfield column is
@@ -58,9 +59,10 @@ use crate::font;
 use crate::palette::{slot, Palette, Rgba};
 
 /// 4x4 Bayer matrix: the values 0 to 15 laid out so that any threshold
-/// switches on pixels spread as evenly as possible. The only dithering in the game is the sky gradient and
-/// the material transition band — DESIGN §5.2 is explicit that dithering
-/// everything is the other common low-res failure.
+/// switches on pixels spread as evenly as possible. The only dithering in
+/// the game is the sky gradient and the material transition band — DESIGN
+/// §5.2 is explicit that dithering everything is the other common low-res
+/// failure.
 pub const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
 /// The dither threshold for buffer or world pixel `(x, y)`, strictly between

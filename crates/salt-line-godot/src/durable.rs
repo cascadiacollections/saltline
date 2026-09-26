@@ -19,17 +19,19 @@
 //! 2 fsync <temp> (sync_all)     the data reaches the device  main untouched; temp
 //!                               before any rename can be     possibly still torn
 //!                               committed ahead of it
-//! 3 rename <temp> over main     one atomic swap: a reader    old main or new main,
-//!                               sees old or new, never mix   each whole
+//! 3 rename <temp> over main     one swap (atomic on POSIX):  old main or new main,
+//!                               a reader sees old or new     each whole
 //! 4 fsync the directory         the rename itself reaches    old main or new main,
 //!   (Unix only; errors ignored) the device                   each whole; once it
-//!                                                            returns, the new one
+//!                                                            succeeds, the new one
 //! ```
 //!
 //! Step 2 is the one most often left out. A journalling filesystem with
-//! delayed allocation may commit the rename's metadata before the file's
-//! data; power lost in between leaves a file of the right length full of
-//! zeros, or an empty one. That is what the NUL test in [`pick`] catches.
+//! delayed allocation (ext4) may commit the rename's metadata before the
+//! file's data; power lost in between leaves a file of the right length full
+//! of zeros, or an empty one. That is what the NUL and `version`-line tests
+//! in [`pick`] catch. The run files (`resume`) do not use `pick`: `run.txt`
+//! wins whenever it exists.
 //!
 //! # The read: which copy to trust
 //!
@@ -42,8 +44,10 @@
 //!
 //! # Platform caveats
 //!
-//! `std::fs::rename` replaces the destination in one step on Unix and on
-//! Windows alike. Windows has no directory fsync through `std`, and `std`
+//! On Unix `rename` is atomic by POSIX. On Windows `std` calls `MoveFileExW`
+//! or `SetFileInformationByHandle`; Microsoft does not document either as
+//! atomic, though NTFS journals the rename and in practice a reader sees one
+//! file or the other. Windows has no directory fsync through `std`, and `std`
 //! does not ask for write-through on the rename, so there step 4 is skipped:
 //! a power cut just after the rename may bring back the old save, never a
 //! torn one. Where `user://` has no real path at all (`save::on_disk`
@@ -64,14 +68,16 @@ use std::path::Path;
 /// The new contents go to `temp` in full and are flushed to the device
 /// (`sync_all`) before `temp` is renamed over `main`. Without the flush a
 /// journalling filesystem may commit the rename before the data, and a crash
-/// then leaves an empty save where the old one was. `rename` replaces the
-/// destination atomically on Unix, and on Windows (`std` documents
-/// `MoveFileExW` or `SetFileInformationByHandle`). On Unix the directory is
-/// flushed too, so the rename itself survives; failing that is not worth
-/// failing the save over. Windows has no directory flush through `std` (and
-/// `std` does not ask for `MOVEFILE_WRITE_THROUGH`), so there the swap is
-/// atomic but a power cut just after it may undo it: the old save, never a
-/// torn one. See the module docs for what a crash at each step leaves.
+/// then leaves an empty save where the old one was. On Unix `rename` is
+/// atomic by POSIX. On Windows `std` calls `MoveFileExW` or
+/// `SetFileInformationByHandle`; Microsoft does not document either as
+/// atomic, though NTFS journals the rename and in practice a reader sees one
+/// file or the other. On Unix the directory is flushed too, so the rename
+/// itself survives; failing that is not worth failing the save over. Windows
+/// has no directory flush through `std` (and `std` does not ask for
+/// `MOVEFILE_WRITE_THROUGH`), so there a power cut just after the swap may
+/// undo it: the old save, never a torn one. See the module docs for what a
+/// crash at each step leaves.
 pub fn write_atomic(main: &Path, temp: &Path, text: &str) -> io::Result<()> {
     {
         let mut f = File::create(temp)?;

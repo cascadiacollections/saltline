@@ -16,7 +16,8 @@
 //! at one end never does, and is ignored rather than read as held. Once
 //! armed, `game.rs` reads an axis as pushed past 0.45 of full deflection.
 //! Button presses are taken from any pad (a press is what makes it count);
-//! buttons held down are read only from pads that count.
+//! buttons held down are read only from pads that count, for input; `busy`
+//! counts a press on any pad (`Input::is_anything_pressed`).
 
 /// A stick axis this close to centre (as a fraction of full deflection, -1
 /// to 1) is at rest, and may be trusted from then.

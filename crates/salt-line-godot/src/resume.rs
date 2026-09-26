@@ -40,21 +40,29 @@
 //! `RunFile::Discard` deletes all three, and if a file will not go, writes
 //! an empty `run.txt`, which [`judge`] reads as no run.
 //!
-//! What a crash costs, step by step:
+//! What a crash costs, step by step (crash / next launch finds / cost):
 //!
 //! ```text
-//! crash                                     next launch finds    cost
-//! writing run.txt.new                       the previous line    the latest shot or
-//!                                           in run.txt           draft; it resumes
-//!                                                                one entry behind
-//! after the rename                          the new line         nothing
-//! rebuilding at launch (a log that          run-loading.txt      that run, once:
-//! brings the sim down)                                           discarded with a note
-//! after RunFile::Restore                    run.txt              nothing
-//! a run ends: between its Discard and the   no run file          that score, never
-//! Store that puts its score on the board                         scored twice
-//! a run ends: the Store fails (full disk,   run.txt, by way of   nothing; the next
-//! a newer build's save)                     RunFile::Keep        launch scores it
+//! writing run.txt.new
+//!     finds  the previous line in run.txt; with no run.txt, run.txt.new itself
+//!     cost   one entry behind; a torn run.txt.new fails `judge` and is
+//!            discarded with a note
+//! after the rename
+//!     finds  the new line
+//!     cost   nothing
+//! rebuilding at launch (killed, or a log that brings the sim down)
+//!     finds  run-loading.txt
+//!     cost   that run, once: discarded with a note
+//! after RunFile::Restore
+//!     finds  run.txt
+//!     cost   nothing
+//! a run ends: between its Discard and the Store of its score
+//!     finds  no run file
+//!     cost   that score, never scored twice
+//! a run ends: the Store fails (full disk, a newer build's save)
+//!     finds  run.txt, by way of RunFile::Keep
+//!     cost   nothing, unless the Keep write fails or a new run starts this
+//!            session: its first Write replaces the kept line
 //! ```
 //!
 //! Two properties fall out of that ordering:
@@ -65,20 +73,28 @@
 //!   order. By the time a score can be on the board the log is gone, so no
 //!   launch can find it and score it again. A crash in between loses the
 //!   score instead. `Keep` rewrites the log only after a `Store` has failed.
+//!   This assumes the Discard took. If a file will not delete and the blank
+//!   write also fails, the log survives beside a scored board. Against a
+//!   power cut it also needs the deletes to be durable before the save's
+//!   rename: on Unix the directory fsync after that rename covers them (same
+//!   directory); on Windows nothing forces it.
 //! - **A corrupt run file costs one crash, not every launch.** The file is
 //!   moved to `run-loading.txt` before it is parsed or replayed, and is put
 //!   back only once [`judge`] has returned. If the rebuild panics, the
 //!   `Restore` is never applied (no file effect survives a panic, see
 //!   `app::Effect::survives_panic`); the next launch sees
 //!   `run-loading.txt`, never replays it, and throws it away
-//!   (`app::Abandoned::Interrupted`). Text that merely fails
-//!   to parse or replay is caught by [`judge`] as [`Stale`] and discarded
-//!   with a note, without a crash at all.
+//!   (`app::Abandoned::Interrupted`). Text that merely fails to parse or
+//!   replay is caught by [`judge`] as [`Stale`] and discarded with a note,
+//!   without a crash at all. If the move aside at launch fails, the
+//!   one-crash guard is lost for that launch.
 //!
 //! `app/disk_tests.rs` holds the first property, and the resumed run
 //! matching the run as played, end to end: it applies the core's effects to
 //! an in-memory disk, kills the process after every effect in turn, and
-//! launches again on what was left.
+//! launches again on what was left. It models each effect as one atomic
+//! step that cannot fail; that the steps really are atomic is `durable`'s
+//! job.
 
 use salt_line_sim::replay::{decode_log, encode_log, Replay, DRAFT_MARK};
 use salt_line_sim::run::{LoggedShot, RunState};

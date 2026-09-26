@@ -16,8 +16,9 @@
 //! - **Hook chaining.** [`install`] takes the hook already installed (gdext's,
 //!   which prints the panic to the Godot console) and installs a closure
 //!   that calls it first and then `on_panic`, which writes the report.
-//!   Nothing the engine already did is lost; the report is added on top. `INSTALLED` makes a
-//!   second call a no-op, so the hook is never chained to itself.
+//!   Nothing the engine already did is lost; the report is added on top.
+//!   `INSTALLED` makes a second call a no-op, so the hook is never chained
+//!   to itself.
 //! - **The context.** Every frame, before the frame's input is acted on,
 //!   the node calls [`note`] with the mode, the run and the aim. The hook
 //!   reads that under `CONTEXT.try_lock()`: a panic raised while `note`
@@ -34,10 +35,12 @@
 //!   location, mode, seed, aim and shot log: what is needed to replay the
 //!   crash (DESIGN §3) and nothing about the player. [`tidy_path`] strips
 //!   the build machine's directories, and so its user name, from the panic
-//!   location. The report leaves the device only if the player pastes it.
-//! - **Nothing written after a panic.** The report is the last file this
-//!   session writes. `save::store` refuses, and the node drops every file
-//!   effect (`app::Effect::survives_panic`): state that was half-updated
+//!   location. The message is copied as it is, so a panic that quotes a
+//!   path carries it. The report leaves the device only if the player
+//!   pastes it.
+//! - **Nothing written after a panic.** The report is the last file the
+//!   game's code writes this session. `save::store` refuses, and the node
+//!   drops every file effect (`app::Effect::survives_panic`): state that was half-updated
 //!   when the panic unwound is not trusted to replace the last good save or
 //!   run file, and the report must stay where the next launch looks for it.
 //! - **Editor and hot reload.** `lib.rs` installs the hook only outside the

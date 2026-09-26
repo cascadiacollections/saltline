@@ -14,11 +14,12 @@
 //! Two rules sit on top of the atomic write, both in [`store`]:
 //!
 //! - *From the future.* A save whose `version` is newer than this build's
-//!   [`VERSION`], or unreadable, loads as an empty board with
-//!   `from_the_future` set, and is never written over: a player who runs an
-//!   older build for a session keeps the board the newer one wrote. A run
-//!   finished meanwhile cannot reach the board, so its line is kept in the
-//!   run file for a build that can score it (`app::Store::Score`).
+//!   [`VERSION`], or whose version cannot be parsed, loads as an empty
+//!   board with `from_the_future` set, and is never written over: a player
+//!   who runs an older build for a session keeps the board the newer one
+//!   wrote. A run finished meanwhile cannot reach the board, so its line is
+//!   kept in the run file for a build that can score it
+//!   (`app::Store::Score`).
 //! - *Not after a panic.* Once the crash hook has fired, nothing replaces the
 //!   last good save (see `crash` and `app::Effect::survives_panic`).
 
