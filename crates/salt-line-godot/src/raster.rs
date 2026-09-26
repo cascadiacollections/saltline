@@ -7,6 +7,48 @@
 //!
 //! Nothing here scales, rotates or anti-aliases. Every coordinate that reaches
 //! `put` is already a whole pixel.
+//!
+//! # One canvas at the internal resolution
+//!
+//! DESIGN §5.1 fixes the buffer at 180 buffer pixels tall (216 under Long
+//! Lens, which adds sky rather than scaling anything) and 320 to 400 wide,
+//! by device aspect. The whole frame, terrain, sprites, HUD and text alike,
+//! is drawn by the CPU into the one [`Canvas`] at that size, then uploaded as
+//! a single texture that `game.rs` draws at 1:1. Godot's viewport stretch,
+//! with nearest filtering set project-wide, does the only scaling in the
+//! game, so every buffer pixel lands on the screen as the same whole block.
+//! UI in the same buffer at the same resolution is itself a §5.1 rule.
+//!
+//! World units map one to one onto buffer pixels: a heightfield column is
+//! one world unit wide and one buffer pixel wide. [`View`] turns world
+//! positions into buffer pixels with the camera's whole-pixel offset.
+//!
+//! # Dithering
+//!
+//! Gradients are ordered dithering with a 4x4 Bayer matrix ([`BAYER`]):
+//! each pixel compares the blend it wants against a fixed threshold for its
+//! position, and takes one palette colour or the other. No colour off the
+//! sixteen is ever made (DESIGN §5.2), and the pattern is stable frame to
+//! frame, unlike random dithering. It is used only where §5.2 allows it:
+//! the sky and the rock-to-bedrock band.
+//!
+//! # Pinned frames
+//!
+//! Tests pin whole frames with `Canvas::palette_text` (test builds only):
+//! every pixel written as the hex digit of its palette slot, one text row
+//! per buffer row, and the text snapshotted with `insta` (see
+//! `a_frame_of_a_real_screen_is_pinned` below; the snapshots live in
+//! `src/snapshots/`). A change to any drawing shows up in review as exactly
+//! the characters, so exactly the pixels, that moved. A few rows of that
+//! snapshot, where the high sky (slot 4) is dithered into the middle sky
+//! (slot 5):
+//!
+//! ```text
+//! 444444444444444444444444
+//! 544454445444544454445444
+//! 444444444444444444444444
+//! 445444544454445444544454
+//! ```
 
 use godot::builtin::PackedByteArray;
 use salt_line_sim::terrain::{Heightfield, Material, ROCK_DEPTH, SAND_DEPTH};
@@ -15,11 +57,15 @@ use salt_line_sim::SCREEN_H;
 use crate::font;
 use crate::palette::{slot, Palette, Rgba};
 
-/// 4x4 Bayer matrix. The only dithering in the game is the sky gradient and
+/// 4x4 Bayer matrix: the values 0 to 15 laid out so that any threshold
+/// switches on pixels spread as evenly as possible. The only dithering in the game is the sky gradient and
 /// the material transition band — DESIGN §5.2 is explicit that dithering
 /// everything is the other common low-res failure.
 pub const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
+/// The dither threshold for buffer or world pixel `(x, y)`, strictly between
+/// 0 and 1 (1/32 to 31/32). A blend fraction above it takes the second
+/// colour.
 #[inline]
 fn bayer(x: i32, y: i32) -> f64 {
     let bx = x.rem_euclid(4) as usize;
@@ -29,12 +75,16 @@ fn bayer(x: i32, y: i32) -> f64 {
 
 /// An RGBA8 pixel buffer at the internal resolution.
 pub struct Canvas {
+    /// Width in buffer pixels.
     pub w: i32,
+    /// Height in buffer pixels.
     pub h: i32,
+    /// `w * h` pixels, row by row from the top left, four bytes each.
     px: Vec<u8>,
 }
 
 impl Canvas {
+    /// A transparent buffer of `w` by `h` buffer pixels, at least 1 by 1.
     pub fn new(w: i32, h: i32) -> Self {
         let (w, h) = (w.max(1), h.max(1));
         Canvas {
@@ -44,6 +94,7 @@ impl Canvas {
         }
     }
 
+    /// Change size, clearing the buffer only if the size actually changed.
     pub fn resize(&mut self, w: i32, h: i32) {
         let (w, h) = (w.max(1), h.max(1));
         if w != self.w || h != self.h {
@@ -53,6 +104,8 @@ impl Canvas {
         }
     }
 
+    /// Every pixel to transparent black, which `Canvas::palette_text`
+    /// shows as `.`.
     pub fn clear(&mut self) {
         self.px.fill(0);
     }
@@ -63,6 +116,8 @@ impl Canvas {
         }
     }
 
+    /// Set one pixel. Anything off the buffer is dropped, so every drawing
+    /// routine can run partly off the edge without clipping for itself.
     #[inline]
     pub fn put(&mut self, x: i32, y: i32, c: Rgba) {
         if x < 0 || y < 0 || x >= self.w || y >= self.h {
@@ -73,6 +128,8 @@ impl Canvas {
     }
 
     /// Alpha-blended write, for the few translucent plates in the HUD.
+    /// `alpha` is 0 (nothing) to 255 (opaque); the result is always opaque,
+    /// and its colour is off the palette unless `alpha` is 255.
     #[inline]
     pub fn put_blend(&mut self, x: i32, y: i32, c: Rgba, alpha: u8) {
         if alpha == 255 {
@@ -235,13 +292,17 @@ impl Canvas {
 /// for exactly that reason — there is no float to forget to round.
 #[derive(Clone, Copy, Debug)]
 pub struct View {
+    /// World x at the buffer's left edge, in world units (whole pixels).
     pub cam_x: i32,
+    /// Buffer width, in buffer pixels.
     pub w: i32,
+    /// Buffer height, in buffer pixels: 180, or more under Long Lens.
     pub h: i32,
 }
 
 impl View {
-    /// World x to screen x.
+    /// World x (world units) to screen x (buffer pixels), rounded to the
+    /// nearest whole pixel.
     #[inline]
     pub fn sx(&self, world_x: f64) -> i32 {
         (world_x.round() as i32) - self.cam_x
@@ -270,8 +331,14 @@ pub fn draw_sky(canvas: &mut Canvas, view: &View, pal: &Palette) {
         // Anchor the gradient to the world, not to the buffer, so Long Lens
         // adds sky at the top instead of shifting the whole ramp.
         let world_row = SCREEN_H as i32 - 1 - view.world_row(y);
+        // `world_row` counts pixels down from the top of the 180-pixel world
+        // (negative in Long Lens's extra sky), and `t` measures it in
+        // 105-pixel steps: flat SKY_HI to 47 pixels down, SKY_HI to SKY_MID
+        // over the next 58, SKY_MID to SKY_LO over the 44 after that.
         let t = world_row as f64 / 105.0;
         for x in 0..canvas.w {
+            // Dither by world x, not buffer x, so the pattern pans with the
+            // camera instead of crawling across the sky.
             let th = bayer(x + view.cam_x, y);
             let (lo, hi, f) = if t < 1.0 {
                 (
@@ -335,7 +402,9 @@ pub fn draw_terrain(canvas: &mut Canvas, view: &View, field: &Heightfield, pal: 
             canvas.put(sx, y, c);
         }
 
-        // Crater rims get one pixel of the shadow tone on the inner edge.
+        // Crater rims get one pixel of the shadow tone on the inner edge,
+        // wherever a neighbouring column stands 0.4 world units higher, and a
+        // second pixel on a steeper wall (1.2 units).
         // That single line is what makes a crater read as depth rather than as
         // a bite taken out of the ground (DESIGN §5.5).
         let left = field.surface(col.saturating_sub(1));
