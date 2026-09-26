@@ -63,6 +63,8 @@ const DEFAULT_TOUCH_AIM: TouchAim = TouchAim::Buttons;
 const DEFAULT_ARC_HINT: ArcHint = ArcHint::Short;
 /// Seconds of flight the Short preview shows, so its length reads as power.
 const SHORT_ARC_SECONDS: f64 = 0.3;
+/// The last shot's arc stays on screen until the player turns it off.
+const DEFAULT_LAST_ARC: bool = true;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -191,6 +193,9 @@ pub struct SaltLine {
     touch: TouchPad,
     /// The aim a touch drag started from, put back if the pull is cancelled.
     drag_from: Option<(i32, i32)>,
+    /// The primary shell's path from the last shot. Drawn only while the sim
+    /// still has a `last_apex`, so it goes when the screen does.
+    last_arc: Vec<Vec2>,
     /// Showing touch controls. On from the first touch, off again at the next
     /// key or button press, like `controller_active`.
     touch_active: bool,
@@ -265,6 +270,7 @@ impl INode2D for SaltLine {
             touch_buttons: Vec::new(),
             touch: TouchPad::default(),
             drag_from: None,
+            last_arc: Vec::new(),
             touch_active: false,
             back_requested: false,
             mobile: false,
@@ -520,6 +526,7 @@ impl SaltLine {
         self.angle_ticks = 900;
         self.power_ticks = 600;
         self.anim = None;
+        self.last_arc.clear();
         self.clear_hold = 0.0;
         self.cam_x = 0;
         self.cam_target = 0.0;
@@ -625,6 +632,7 @@ impl SaltLine {
             "S" => Key::S,
             "V" => Key::V,
             "M" => Key::M,
+            "L" => Key::L,
             _ => return None,
         })
     }
@@ -667,6 +675,7 @@ impl SaltLine {
             "replay" => ("R", "Y"),
             "controls" => ("V", "BACK"),
             "mute" => ("M", "START"),
+            "last_arc" => ("L", "X"),
             _ => ("", ""),
         };
         self.binding(action, defaults.0, defaults.1)
@@ -858,6 +867,11 @@ impl SaltLine {
                     save::store(&self.save);
                     self.play_sound(Sound::Ui);
                 }
+                if self.action_pressed(16, "last_arc") {
+                    self.save.last_arc = Some(!self.last_arc_on());
+                    save::store(&self.save);
+                    self.play_sound(Sound::Ui);
+                }
                 if self.action_pressed(3, "replay") {
                     self.save.bindings.clear();
                     save::store(&self.save);
@@ -1045,6 +1059,10 @@ impl SaltLine {
         }
     }
 
+    fn last_arc_on(&self) -> bool {
+        self.save.last_arc.unwrap_or(DEFAULT_LAST_ARC)
+    }
+
     fn touch_aim(&self) -> TouchAim {
         self.save.touch_aim.unwrap_or(DEFAULT_TOUCH_AIM)
     }
@@ -1091,6 +1109,11 @@ impl SaltLine {
             .map(|t| t.flight_time)
             .fold(0.0f64, f64::max);
         let collapsed = report.collapsed.clone();
+        self.last_arc = report
+            .traces
+            .first()
+            .map(|t| t.path.clone())
+            .unwrap_or_default();
         self.anim = Some(Anim {
             traces: report.traces,
             before,
@@ -1643,6 +1666,12 @@ impl SaltLine {
                 y += 20;
                 let mute = if self.save.muted { "UNMUTE" } else { "MUTE" };
                 y = self.menu_row(y, "mute", "", mute, fg);
+                let last = if self.last_arc_on() {
+                    "LAST ARC: ON"
+                } else {
+                    "LAST ARC: OFF"
+                };
+                y = self.menu_row(y, "last_arc", "", last, fg);
                 let aim = match self.touch_aim() {
                     TouchAim::Buttons => "AIM: BUTTONS",
                     TouchAim::Drag => "AIM: DRAG",
@@ -1693,6 +1722,10 @@ impl SaltLine {
                 }
                 y += 4;
                 self.centred(y, "M / START  MUTE     R / Y  RESET", dim);
+                y += 7;
+                let on = if self.last_arc_on() { "ON" } else { "OFF" };
+                let toggle = format!("{}  LAST ARC: {on}", self.input_label("last_arc"));
+                self.centred(y, &toggle, fg);
                 y += 9;
                 self.centred(y, "EDIT bind LINES IN salt_line.txt TO REMAP", dim);
                 y += 7;
@@ -1912,6 +1945,11 @@ impl SaltLine {
             if let Some(a) = apex {
                 raster::draw_plumb(&mut self.canvas, &view, a, &pal);
             }
+        }
+
+        // Under the structures and emplacement, so it never hides either.
+        if self.anim.is_none() && apex.is_some() && self.last_arc_on() {
+            raster::draw_last_arc(&mut self.canvas, &view, &self.last_arc, &pal);
         }
 
         self.draw_structures(&screen, &view);

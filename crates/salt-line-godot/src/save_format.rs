@@ -125,6 +125,9 @@ pub struct Save {
     /// default can change without overriding anyone's choice.
     pub touch_aim: Option<TouchAim>,
     pub arc_hint: Option<ArcHint>,
+    /// Keep the last shot's arc drawn until the next one. `None` until the
+    /// player toggles it, like the touch settings.
+    pub last_arc: Option<bool>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
@@ -142,6 +145,7 @@ impl Default for Save {
             bindings: Vec::new(),
             touch_aim: None,
             arc_hint: None,
+            last_arc: None,
             from_the_future: false,
         }
     }
@@ -175,6 +179,13 @@ impl Save {
                 Some("muted") => save.muted = it.next() == Some("1"),
                 Some("touch_aim") => save.touch_aim = it.next().and_then(TouchAim::from_token),
                 Some("arc_hint") => save.arc_hint = it.next().and_then(ArcHint::from_token),
+                Some("last_arc") => {
+                    save.last_arc = match it.next() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    }
+                }
                 Some("learned") => {
                     if let Some(v) = it.next().and_then(|s| s.parse::<u32>().ok()) {
                         save.learned = v;
@@ -234,6 +245,9 @@ impl Save {
         }
         if let Some(h) = self.arc_hint {
             out.push_str(&format!("arc_hint {}\n", h.token()));
+        }
+        if let Some(on) = self.last_arc {
+            out.push_str(&format!("last_arc {}\n", on as u8));
         }
         for (action, key, pad) in &self.bindings {
             out.push_str(&format!("bind {action} {key} {pad}\n"));
@@ -467,5 +481,18 @@ mod tests {
 
         let junk = Save::parse("touch_aim sideways\narc_hint everything\n");
         assert_eq!((junk.touch_aim, junk.arc_hint), (None, None));
+    }
+
+    #[test]
+    fn the_last_arc_setting_is_saved_only_once_toggled() {
+        assert!(!Save::default().serialize().contains("last_arc"));
+        for on in [true, false] {
+            let chosen = Save {
+                last_arc: Some(on),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&chosen.serialize()).last_arc, Some(on));
+        }
+        assert_eq!(Save::parse("last_arc maybe\n").last_arc, None);
     }
 }

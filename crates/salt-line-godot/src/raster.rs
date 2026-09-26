@@ -350,6 +350,19 @@ pub fn draw_trajectory(
     }
 }
 
+/// The last shot's arc, left behind as a faint dotted line until the next shot
+/// (or the next screen) replaces it.
+pub fn draw_last_arc(
+    canvas: &mut Canvas,
+    view: &View,
+    path: &[salt_line_sim::Vec2],
+    pal: &Palette,
+) {
+    for p in path.iter().step_by(4) {
+        canvas.put_blend(view.sx(p.x), view.sy(p.y), pal.get(slot::UI_FG), 110);
+    }
+}
+
 /// Chalk Marks: the previous shot's landing point stays marked on the terrain.
 pub fn draw_chalk(
     canvas: &mut Canvas,

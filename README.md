@@ -85,6 +85,7 @@ settings. Phones use the Compatibility renderer; the desktop keeps Forward+.
 | R | Y | SAME SEED AGAIN | Replay the same seed |
 | V | Back/Select | CONTROLS / AUDIO | Controls and audio screen |
 | M | Start | MUTE | Mute/unmute |
+| L | X (on Controls) | LAST ARC | Keep the last shot's arc on screen (on by default) |
 | F1 | — | — | Debug overlay: template, candidate count, camera, buffer size |
 | Esc | B | `II`, or the back gesture | Pause / back |
 
@@ -109,6 +110,12 @@ Touch aiming has two modes, chosen with AIM on the CONTROLS / AUDIO screen:
 
 Until a player picks one, the defaults are `DEFAULT_TOUCH_AIM` and
 `DEFAULT_ARC_HINT` in `game.rs`.
+
+LAST ARC, on the same screen for every input, leaves the last shot's path
+drawn as a faint dotted line until the next shot or the next screen. It is on
+by default (`DEFAULT_LAST_ARC`). It overlaps Chalk Marks and Plumb Line, which
+still add more: Chalk keeps up to two landings, and Plumb draws a clear guide at
+the apex.
 
 The game automatically changes onboarding labels after the most recent
 keyboard, controller or touch input. Stick aiming uses a 0.45 dead zone and the same
