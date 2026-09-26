@@ -12,6 +12,20 @@
 //! ```
 //!
 //! which rewrites the file and prints the digest to append to `EPOCHS`.
+//!
+//! How the pieces fit:
+//!
+//! - The pinned screen digests (`snapshots.rs`) cover generation alone.
+//! - The golden runs cover everything a log touches after that: ballistics,
+//!   damage, the economy, drafts, and the fuse and offset inputs.
+//! - `epoch_digest` hashes both into one number. `SIM_EPOCH` names that
+//!   number and `EPOCHS` keeps every past one, so an outcome change cannot
+//!   land without a visible, append-only version bump.
+//!
+//! The runs are not recorded by hand: `SPECS` feeds seeded decisions to the
+//! scripted player in `common`, so the corpus can be regenerated exactly.
+//! A corpus of hashes catches any change but cannot say what changed; the
+//! example and property tests are where a failure gets explained.
 
 mod common;
 
@@ -39,7 +53,9 @@ const SPECS: [(u64, usize, usize, f64); 8] = [
     (0x0008, 320, 120, 0.2),
 ];
 
+/// One parsed corpus line.
 struct Golden {
+    /// 1-based line number in `golden_runs.txt`, for failure messages.
     line: usize,
     epoch: u32,
     replay: Replay,
@@ -94,6 +110,9 @@ fn replayed(g: &Golden) -> RunState {
         .unwrap_or_else(|e| panic!("golden_runs.txt:{}: {e:?}", g.line))
 }
 
+/// Each recorded run must be from the current epoch and replay to its
+/// recorded hash. The epoch check comes first so a stale corpus fails with
+/// "regenerate", not with a confusing hash mismatch.
 #[test]
 fn golden_runs_reproduce() {
     let runs = corpus();
@@ -117,6 +136,10 @@ fn golden_runs_reproduce() {
     }
 }
 
+/// A regression corpus is only as good as what it exercises. After a
+/// regeneration the runs could, by chance, stop reaching deep bands or stop
+/// using the fuse; this makes that a failure instead of a silent loss of
+/// coverage.
 #[test]
 fn the_corpus_covers_what_it_should() {
     let runs = corpus();

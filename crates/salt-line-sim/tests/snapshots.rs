@@ -1,5 +1,15 @@
 //! Snapshot tests (insta). Each pins output that should only ever change on
 //! purpose; `cargo insta review` shows the diff and accepts it.
+//!
+//! A snapshot asserts nothing about what is correct, only that the output
+//! is what it was. That is the right tool for generation: there is no
+//! oracle for what screen 41 of a seed should look like, but there is a
+//! promise that it stays the same (DESIGN §2.2). Property tests check the
+//! rules; this checks the promise.
+//!
+//! The same screen digests are also folded into the epoch digest in
+//! `golden_runs.rs`, so accepting a changed snapshot without bumping
+//! `SIM_EPOCH` fails that test (DESIGN §9.3).
 
 mod common;
 
