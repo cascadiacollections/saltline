@@ -8,6 +8,43 @@
 //! this crate exists. Within this crate, the game (`app`) and its drawing
 //! (`render`) are engine-free and run under `cargo test`; `game` is the one
 //! Godot node, a thin adapter around them. See `app` for how they fit.
+//!
+//! # Where to start reading
+//!
+//! Follow one frame: [`game`]'s `process` gathers input into
+//! [`input::Intents`], hands it to [`app::Game`], applies the
+//! [`app::Effect`]s that come back, and, if [`frame::Redraw`] says the frame
+//! changed, has [`render`] paint the game into a [`raster::Canvas`], which is
+//! uploaded as one texture. The rules themselves are in `salt-line-sim`;
+//! `design/DESIGN.md` §5 is the art direction this crate holds to.
+//!
+//! # Crate map
+//!
+//! ```text
+//! entry      lib            the GDExtension entry point; installs the crash hook
+//! adapter    game           the one Godot node: engine events in, effects out
+//! core       app            the game: modes, menus, runs, effects (engine-free)
+//!            input, touch,  keys and pad buttons, on-screen buttons, slingshot
+//!            aim, keypad    aiming, the seed keypad
+//!            presentation   timers, held-input repeat, onboarding
+//!            cli            developer flags
+//! drawing    render         a Game painted into a Canvas (engine-free)
+//!            raster         the Canvas and its drawing primitives
+//!            palette, font, the 16 colours, bitmap fonts, HUD icons,
+//!            icons, sprites sprite sheets (palette and sprites load via Godot)
+//! pacing     frame          redraw only when something changed; idle frame cap
+//!            pads           which joypads, and which stick axes, to trust
+//! disk       save_format    the save file's text format (engine-free)
+//!            durable        atomic replace and which copy to trust on load
+//!            save           `user://` paths and file IO through them
+//!            resume         the in-progress run file, for CONTINUE
+//!            crash          the panic hook and its report
+//! ```
+//!
+//! "Engine-free" means the module compiles and is tested under `cargo test`
+//! with no Godot running. The modules that call into the engine are `lib`,
+//! `game`, `save`, `palette` and `sprites` (texture loading), and `raster`
+//! only to hand its bytes over as a `PackedByteArray`.
 
 use godot::prelude::*;
 
