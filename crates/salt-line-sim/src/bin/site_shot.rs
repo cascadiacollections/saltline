@@ -24,7 +24,7 @@
 use std::io::{self, Read};
 
 use salt_line_sim::modifiers::Loadout;
-use salt_line_sim::run::{Screen, StructState, Structure, StructureKind};
+use salt_line_sim::run::{Rung, Screen, StructState, Structure, StructureKind};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::{Heightfield, Template};
 use salt_line_sim::EMPLACEMENT_X;
@@ -85,6 +85,7 @@ fn main() {
         candidates: 0,
         attempts: 1,
         fell_back: false,
+        rung: Some(Rung::Drawn),
         supply: false,
     };
     let loadout = Loadout::new();
