@@ -2,3 +2,7 @@
 # digests and palette digits, not prose.
 [files]
 extend-exclude = ["*.snap", "proptest-regressions/"]
+
+[default.extend-words]
+# Apple's Unique Device Identifier, not a misspelt UUID.
+UDID = "UDID"
