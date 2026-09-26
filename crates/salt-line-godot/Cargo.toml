@@ -11,13 +11,6 @@ repository.workspace = true
 # can be unit-tested with `cargo test`. Those parts touch no engine API.
 crate-type = ["cdylib", "rlib"]
 
-[features]
-# Off by default: the development preview has no paywall and nothing for sale.
-# Turning this on arms the paywall, which then requires a real storefront —
-# see `src/store.rs`.
-default = []
-monetization = []
-
 [dependencies]
 # `api-4-7` pins the GDExtension API level to the engine version this project
 # targets (see project.godot config/features and RELEASING.md). Without it the

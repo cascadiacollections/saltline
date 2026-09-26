@@ -1528,13 +1528,6 @@ impl RunState {
     }
 }
 
-/// Screens playable before the unlock. DESIGN / brief M6.
-///
-/// Presentation policy rather than a rule of the sim: nothing here reads
-/// it. The Godot layer shows its paywall once `screen_index` reaches this
-/// value, so screens 0..=14 (shown to the player as 1 to 15) are free.
-pub const FREE_SCREENS: u32 = 15;
-
 /// A run seed for a calendar day, so every player gets the same daily run.
 /// Takes the day number rather than reading the clock — nothing in the sim
 /// touches system time.

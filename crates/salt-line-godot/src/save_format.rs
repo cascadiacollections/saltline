@@ -7,7 +7,6 @@
 //!
 //! ```text
 //! version 2
-//! unlocked 0
 //! volume 75
 //! muted 0
 //! learned 0
@@ -159,9 +158,6 @@ impl ArcHint {
 /// the text format described in the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
-    /// The last unlock the platform confirmed. A cache, never proof of
-    /// purchase; see [`crate::store::entitlement`].
-    pub unlocked: bool,
     /// The leaderboard, best first, at most [`KEEP`] entries once sorted.
     pub scores: Vec<Entry>,
     /// Master effects volume, as an integer percentage for a stable text
@@ -195,7 +191,6 @@ pub struct Save {
 impl Default for Save {
     fn default() -> Self {
         Self {
-            unlocked: false,
             scores: Vec::new(),
             volume: 75,
             muted: false,
@@ -231,7 +226,6 @@ impl Save {
                         };
                     }
                 }
-                Some("unlocked") => save.unlocked = it.next() == Some("1"),
                 Some("volume") => {
                     if let Some(v) = it.next().and_then(|s| s.parse::<u8>().ok()) {
                         save.volume = v.min(100);
@@ -288,7 +282,8 @@ impl Save {
                     }
                 }
                 // Unknown keys are ignored so a later version can add one
-                // without this build discarding the rest of the file.
+                // without this build discarding the rest of the file. This
+                // also drops the retired `unlocked` line older builds wrote.
                 _ => {}
             }
         }
@@ -304,7 +299,6 @@ impl Save {
     pub fn serialize(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("version {VERSION}\n"));
-        out.push_str(&format!("unlocked {}\n", if self.unlocked { 1 } else { 0 }));
         out.push_str(&format!("volume {}\n", self.volume.min(100)));
         out.push_str(&format!("muted {}\n", if self.muted { 1 } else { 0 }));
         out.push_str(&format!("learned {}\n", self.learned));
@@ -379,10 +373,7 @@ mod tests {
 
     #[test]
     fn a_save_survives_a_round_trip() {
-        let mut s = Save {
-            unlocked: true,
-            ..Save::default()
-        };
+        let mut s = Save::default();
         s.place(entry(9, 3, 40));
         s.place(Entry {
             seed: 12,
@@ -392,7 +383,6 @@ mod tests {
             daily: true,
         });
         let back = Save::parse(&s.serialize());
-        assert_eq!(back.unlocked, s.unlocked);
         assert_eq!(back.scores, s.scores);
         assert_eq!(back.volume, 75);
     }
@@ -446,7 +436,6 @@ mod tests {
                     \n\
                     run 5 6 7 8 1\n";
         let s = Save::parse(text);
-        assert!(s.unlocked);
         assert_eq!(s.scores.len(), 2);
         assert_eq!(s.scores[0].screens, 6);
     }
@@ -467,8 +456,20 @@ mod tests {
     fn a_version_one_file_reads_the_same_as_a_versionless_one() {
         let legacy = "unlocked 1\nrun 4 5 6 7 1\n";
         let current = "version 1\nunlocked 1\nrun 4 5 6 7 1\n";
-        assert_eq!(Save::parse(legacy).scores, Save::parse(current).scores);
-        assert!(Save::parse(legacy).unlocked);
+        assert_eq!(Save::parse(legacy), Save::parse(current));
+    }
+
+    #[test]
+    fn a_retired_unlocked_line_is_ignored_and_not_written_back() {
+        // Builds with the old paywall wrote `unlocked 0` or `unlocked 1`.
+        for flag in ["0", "1"] {
+            let text = format!("version 2\nunlocked {flag}\nvolume 40\nrun 4 5 6 7 1\n");
+            let s = Save::parse(&text);
+            assert_eq!(s.volume, 40);
+            assert_eq!(s.scores.len(), 1);
+            assert_eq!(s, Save::parse("version 2\nvolume 40\nrun 4 5 6 7 1\n"));
+            assert!(!s.serialize().contains("unlocked"));
+        }
     }
 
     #[test]
@@ -477,7 +478,6 @@ mod tests {
             let s = Save::parse(text);
             assert!(s.from_the_future, "{text:?}");
             assert!(s.scores.is_empty());
-            assert!(!s.unlocked);
         }
     }
 
@@ -607,7 +607,6 @@ mod tests {
             ]);
             (
                 (
-                    any::<bool>(),
                     prop::collection::vec(entry, 0..20),
                     any::<u8>(),
                     any::<bool>(),
@@ -620,11 +619,10 @@ mod tests {
             )
                 .prop_map(
                     |(
-                        (unlocked, scores, volume, muted),
+                        (scores, volume, muted),
                         (learned, bindings),
                         (touch_aim, arc_hint, last_arc),
                     )| Save {
-                        unlocked,
                         scores,
                         volume,
                         muted,
@@ -686,7 +684,6 @@ mod tests {
     #[cfg_attr(miri, ignore = "insta opens a socket, which Miri cannot emulate")]
     fn the_file_format_is_pinned() {
         let save = Save {
-            unlocked: true,
             scores: vec![
                 Entry {
                     seed: 20260907,

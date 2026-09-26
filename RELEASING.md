@@ -14,7 +14,7 @@ It is a preview, not a product. Nothing in it is for sale.
 | Version | `0.1.0-preview` |
 | Shape | Desktop, keyboard and controller, windowed or fullscreen |
 | Platforms | Linux x86_64, macOS (one universal build: Apple silicon and Intel), Windows x86_64 and arm64; Android arm64 (sideload builds, touch controls); iOS arm64 (build and sign locally with `just ios`) |
-| Monetization | **None.** Built without the `monetization` feature; every screen is playable |
+| Monetization | **None.** No paywall and no store code; every screen is playable |
 | Save data | Plain text at `user://salt_line.txt`, format version 2 (reads version 1/versionless) |
 | Distribution | GitHub releases: a rolling `dev` prerelease from `main`, and a release per `vX.Y.Z` tag. Not a store build |
 
@@ -37,15 +37,6 @@ godot --headless --path . --export-release "Linux" build/SaltLine.x86_64
 
 `--import` is not optional on a clean checkout: without it the export succeeds
 and ships with no art in it.
-
-The monetized build is a different build:
-
-```sh
-cargo build --release -p salt-line-godot --features monetization
-```
-
-It arms the paywall at screen 15 and then has no storefront to satisfy it —
-see "Monetization" below. Do not ship it.
 
 ---
 
@@ -298,8 +289,7 @@ Copy this into the release notes, trimmed to what is still true.
 
 **Deliberate for the preview**
 
-- No monetization of any kind. The paywall exists in the code behind an
-  off-by-default feature flag and has no storefront behind it.
+- No monetization of any kind. There is no paywall and no store code.
 - Desktop binaries are unsigned and un-notarized unless the owner has set up
   the signing secrets below, so macOS Gatekeeper and Windows SmartScreen will
   both warn. Android dev builds and releases are signed with the debug key
@@ -338,10 +328,6 @@ mistaken for "already handled".
 - **macOS signing and notarization.** See below. Until the secrets exist, the
   macOS build is unsigned.
 - **Windows code signing.** Documentation only, see below.
-- **Store presence.** If the game is ever sold, the `monetization` feature
-  needs a real storefront SDK behind `crates/salt-line-godot/src/store.rs`:
-  purchase, restore, and an entitlement query that is the authority. The local
-  save flag is a cache and must never be trusted as proof of purchase.
 - **Trademark and naming clearance** for "Salt Line".
 - **Privacy statement.** The game collects and transmits nothing today. Say so
   explicitly if it is ever published anywhere that asks.

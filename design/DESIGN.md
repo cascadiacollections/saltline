@@ -677,7 +677,7 @@ Every finished run is kept on the device as its seed, rules and shot log.
 From that the game can offer **play this seed again**, **watch that run**,
 and **share a run**. A run is a few kilobytes of text, so there is no
 database: the storage model is the same as the save file's, plain text the
-player owns (README, "Monetization").
+player owns (README, "Nothing for sale").
 
 ### 9.1 Storage
 
