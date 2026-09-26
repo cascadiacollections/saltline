@@ -16,6 +16,7 @@ pub mod font;
 pub mod frame;
 pub mod game;
 pub mod icons;
+pub mod keypad;
 pub mod palette;
 pub mod presentation;
 pub mod raster;

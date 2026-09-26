@@ -7,8 +7,9 @@
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
     AudioStream, AudioStreamPlayer, DisplayServer, Engine, INode2D, Image, ImageTexture, Input,
-    InputEvent, InputEventKey, InputEventMouseMotion, InputEventScreenDrag, InputEventScreenTouch,
-    Node2D, Os, RenderingServer, ResourceLoader, Time,
+    InputEvent, InputEventJoypadButton, InputEventJoypadMotion, InputEventKey,
+    InputEventMouseMotion, InputEventScreenDrag, InputEventScreenTouch, Node2D, Os,
+    RenderingServer, ResourceLoader, Time,
 };
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
@@ -25,6 +26,7 @@ use salt_line_sim::{Vec2, DT, POWER_TICKS_MAX, SCREEN_H, SCREEN_W_MAX, SCREEN_W_
 use crate::crash;
 use crate::durable::Debounce;
 use crate::frame::{self, DisplayPoll, Memo, Redraw};
+use crate::keypad::{self, Focus};
 use crate::palette::{slot, Palette};
 use crate::presentation::{
     self, RepeatState, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER,
@@ -51,11 +53,6 @@ const TOPPLE_TIME: f64 = 0.22;
 /// Key repeat: delay before repeating, then interval.
 const REPEAT_DELAY: f64 = 0.28;
 
-/// The on-screen seed keypad. Each key's label is also its touch action.
-const SEED_KEYS: [&str; 36] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-];
 const REPEAT_RATE: f64 = 0.035;
 
 /// Touch aiming until the player picks one in Controls. Undecided: buttons are
@@ -174,7 +171,7 @@ struct FrameState {
     buffer: (i32, i32, (i32, i32)),
     devices: (bool, bool),
     run: Option<(u32, Phase, i32, u32, u64, u64)>,
-    seed: usize,
+    seed: (usize, Focus),
     settings: (
         u8,
         bool,
@@ -244,10 +241,19 @@ pub struct SaltLine {
     status_time: f64,
     debug: bool,
 
-    /// Key edge/repeat state: (key, was_down, timer).
-    keys: Vec<(Key, bool, f64)>,
-    pad_edges: Vec<(JoyButton, bool)>,
+    /// Key hold-to-repeat state.
+    keys: Vec<(Key, RepeatState)>,
+    /// Key and button presses as events arrive, and the ones this frame
+    /// reads. Polling alone loses a press and release inside one frame.
+    key_queue: Vec<Key>,
+    key_presses: Vec<Key>,
+    pad_queue: Vec<JoyButton>,
+    pad_presses: Vec<JoyButton>,
+    /// Every joypad that has sent an event. Any of them drives the game.
+    pads: Vec<i32>,
     pad_repeat: [RepeatState; 8],
+    /// The controller's place on the seed keypad.
+    seed_focus: Focus,
     controller_active: bool,
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
@@ -344,8 +350,13 @@ impl INode2D for SaltLine {
             status_time: 0.0,
             debug: false,
             keys: Vec::new(),
-            pad_edges: Vec::new(),
+            key_queue: Vec::new(),
+            key_presses: Vec::new(),
+            pad_queue: Vec::new(),
+            pad_presses: Vec::new(),
+            pads: Vec::new(),
             pad_repeat: [RepeatState::default(); 8],
+            seed_focus: Focus::default(),
             controller_active: false,
             touch_buttons: Vec::new(),
             touch: TouchPad::default(),
@@ -462,7 +473,35 @@ impl INode2D for SaltLine {
             Ok(_) => return,
             Err(event) => event,
         };
+        let event = match event.try_cast::<InputEventJoypadMotion>() {
+            // Stick deflection is polled; `busy` keeps frames coming while
+            // one is held over.
+            Ok(motion) => {
+                self.note_pad(motion.get_device());
+                return;
+            }
+            Err(event) => event,
+        };
         self.redraw.mark();
+        let event = match event.try_cast::<InputEventKey>() {
+            Ok(key) => {
+                if key.is_pressed() && !key.is_echo() {
+                    self.key_queue.push(key.get_keycode());
+                }
+                return;
+            }
+            Err(event) => event,
+        };
+        let event = match event.try_cast::<InputEventJoypadButton>() {
+            Ok(button) => {
+                self.note_pad(button.get_device());
+                if button.is_pressed() {
+                    self.pad_queue.push(button.get_button_index());
+                }
+                return;
+            }
+            Err(event) => event,
+        };
         let event = match event.try_cast::<InputEventScreenDrag>() {
             Ok(drag) => {
                 let local = self
@@ -537,18 +576,24 @@ impl INode2D for SaltLine {
             return;
         }
         let unicode = key.get_unicode();
-        match key.get_keycode() {
+        let keycode = key.get_keycode();
+        match keycode {
             Key::BACKSPACE => {
                 self.seed_text.pop();
             }
             Key::ENTER | Key::KP_ENTER => self.start_seeded_run(),
             Key::ESCAPE => self.leave_seed_entry(),
-            _ => {
-                if (32..127).contains(&unicode) && self.seed_text.chars().count() < 20 {
+            _ if (32..127).contains(&unicode) => {
+                if self.seed_text.chars().count() < 20 {
                     self.seed_text.push(unicode as u8 as char);
                 }
             }
+            // Arrows and the like fall through to move the keypad focus.
+            _ => return,
         }
+        // Typed, not pressed: an M in a seed must not also mute, nor the
+        // Enter that starts the run fire its first shot.
+        self.key_queue.retain(|k| *k != keycode);
     }
 }
 
@@ -568,6 +613,12 @@ impl SaltLine {
 
     fn leave_seed_entry(&mut self) {
         self.mode = Mode::Title;
+    }
+
+    fn open_seed_entry(&mut self) {
+        self.seed_text.clear();
+        self.seed_focus = Focus::default();
+        self.mode = Mode::SeedEntry;
     }
 
     fn today() -> u64 {
@@ -833,30 +884,47 @@ impl SaltLine {
             "controls" => ("V", "BACK"),
             "mute" => ("M", "START"),
             "last_arc" => ("L", "X"),
+            "seed" => ("S", "Y"),
             _ => ("", ""),
         };
         self.binding(action, defaults.0, defaults.1)
     }
 
+    /// A joypad has sent an event, so it counts from now on.
+    fn note_pad(&mut self, device: i32) {
+        if !self.pads.contains(&device) {
+            self.pads.push(device);
+        }
+    }
+
+    /// The button is held on any joypad.
+    fn pad_held(&self, button: JoyButton) -> bool {
+        let input = Input::singleton();
+        self.pads
+            .iter()
+            .any(|&d| input.is_joy_button_pressed(d, button))
+    }
+
+    /// The stick is pushed past the threshold on any joypad.
+    fn stick_held(&self, axis: JoyAxis, sign: f32) -> bool {
+        let input = Input::singleton();
+        self.pads
+            .iter()
+            .any(|&d| input.get_joy_axis(d, axis) * sign > 0.45)
+    }
+
+    /// True on the frame the button went down on any joypad.
     fn pad_pressed(&mut self, button: JoyButton) -> bool {
-        let slot = if let Some(i) = self.pad_edges.iter().position(|(b, _)| *b == button) {
-            i
-        } else {
-            self.pad_edges.push((button, false));
-            self.pad_edges.len() - 1
-        };
-        let down = Input::singleton().is_joy_button_pressed(0, button);
-        let was = self.pad_edges[slot].1;
-        self.pad_edges[slot].1 = down;
+        let down = self.pad_presses.contains(&button);
         if down {
             self.controller_active = true;
             self.touch_active = false;
         }
-        down && !was
+        down
     }
 
     fn action_pressed(&mut self, _slot: usize, action: &str) -> bool {
-        let (key, pad) = self.action_binding(action);
+        let (key, _) = self.action_binding(action);
         let key_down = Self::key_token(&key)
             .map(|k| self.pressed(k))
             .unwrap_or(false);
@@ -864,11 +932,17 @@ impl SaltLine {
             self.controller_active = false;
             self.touch_active = false;
         }
-        let pad_down = Self::pad_token(&pad)
-            .map(|b| self.pad_pressed(b))
-            .unwrap_or(false);
+        let pad_down = self.pad_action_pressed(action);
         let touch_down = self.touch.pressed(action) || (action == "back" && self.back_requested);
         key_down || pad_down || touch_down
+    }
+
+    /// `action_pressed` for the controller alone.
+    fn pad_action_pressed(&mut self, action: &str) -> bool {
+        let (_, pad) = self.action_binding(action);
+        Self::pad_token(&pad)
+            .map(|b| self.pad_pressed(b))
+            .unwrap_or(false)
     }
 
     fn action_repeated(&mut self, slot: usize, action: &str, delta: f64) -> u32 {
@@ -876,9 +950,9 @@ impl SaltLine {
         let keyboard = Self::key_token(&key)
             .map(|k| self.repeated(k, delta))
             .unwrap_or(0);
-        let mut pad_down = Self::pad_token(&pad)
-            .map(|b| Input::singleton().is_joy_button_pressed(0, b))
-            .unwrap_or(false);
+        let button = Self::pad_token(&pad);
+        let pad_press = button.is_some_and(|b| self.pad_presses.contains(&b));
+        let mut pad_down = button.is_some_and(|b| self.pad_held(b));
         // Left stick is always available in addition to remappable D-pad.
         let axis = match action {
             "left" => Some((JoyAxis::LEFT_X, -1.0)),
@@ -888,18 +962,24 @@ impl SaltLine {
             _ => None,
         };
         if let Some((axis, sign)) = axis {
-            pad_down |= Input::singleton().get_joy_axis(0, axis) * sign > 0.45;
+            pad_down |= self.stick_held(axis, sign);
         }
         if keyboard > 0 {
             self.controller_active = false;
             self.touch_active = false;
         }
-        if pad_down {
+        if pad_down || pad_press {
             self.controller_active = true;
             self.touch_active = false;
         }
         keyboard
-            + self.pad_repeat[slot].tick(pad_down, delta, REPEAT_DELAY, REPEAT_RATE)
+            + self.pad_repeat[slot].tick_pressed(
+                pad_press,
+                pad_down,
+                delta,
+                REPEAT_DELAY,
+                REPEAT_RATE,
+            )
             + self.touch.repeated(action)
     }
 
@@ -916,50 +996,28 @@ impl SaltLine {
     }
 
     fn key_slot(&mut self, key: Key) -> usize {
-        if let Some(i) = self.keys.iter().position(|(k, _, _)| *k == key) {
+        if let Some(i) = self.keys.iter().position(|(k, _)| *k == key) {
             i
         } else {
-            self.keys.push((key, false, 0.0));
+            self.keys.push((key, RepeatState::default()));
             self.keys.len() - 1
         }
     }
 
-    /// True on the frame a key goes down.
+    /// True on the frame a key goes down, even if it came up again before
+    /// the frame began.
     fn pressed(&mut self, key: Key) -> bool {
-        let down = Input::singleton().is_key_pressed(key);
-        let i = self.key_slot(key);
-        let was = self.keys[i].1;
-        self.keys[i].1 = down;
-        if !down {
-            self.keys[i].2 = 0.0;
-        }
-        down && !was
+        self.key_presses.contains(&key)
     }
 
     /// Number of activations this frame, with hold-to-repeat.
     fn repeated(&mut self, key: Key, delta: f64) -> u32 {
+        let pressed = self.key_presses.contains(&key);
         let down = Input::singleton().is_key_pressed(key);
         let i = self.key_slot(key);
-        let was = self.keys[i].1;
-        self.keys[i].1 = down;
-        if !down {
-            self.keys[i].2 = 0.0;
-            return 0;
-        }
-        if !was {
-            self.keys[i].2 = -REPEAT_DELAY;
-            return 1;
-        }
-        self.keys[i].2 += delta;
-        let mut n = 0;
-        while self.keys[i].2 >= REPEAT_RATE {
-            self.keys[i].2 -= REPEAT_RATE;
-            n += 1;
-            if n > 20 {
-                break;
-            }
-        }
-        n
+        self.keys[i]
+            .1
+            .tick_pressed(pressed, down, delta, REPEAT_DELAY, REPEAT_RATE)
     }
 
     fn shift_held(&self) -> bool {
@@ -967,25 +1025,39 @@ impl SaltLine {
         input.is_key_pressed(Key::SHIFT)
     }
 
-    fn handle_input(&mut self, delta: f64) {
+    /// Once per frame, before any action is read: this frame's presses are
+    /// the ones queued since the last.
+    fn begin_input_frame(&mut self, delta: f64) {
+        std::mem::swap(&mut self.key_presses, &mut self.key_queue);
+        self.key_queue.clear();
+        std::mem::swap(&mut self.pad_presses, &mut self.pad_queue);
+        self.pad_queue.clear();
         self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+    }
+
+    fn handle_input(&mut self, delta: f64) {
+        self.begin_input_frame(delta);
         self.handle_mode_input(delta);
         self.back_requested = false;
     }
 
     /// Something on screen is moving or being held, so every frame draws.
     fn busy(&self) -> bool {
-        let input = Input::singleton();
-        let stick = [JoyAxis::LEFT_X, JoyAxis::LEFT_Y]
-            .into_iter()
-            .any(|axis| input.get_joy_axis(0, axis).abs() > 0.45);
+        let stick = [
+            (JoyAxis::LEFT_X, -1.0),
+            (JoyAxis::LEFT_X, 1.0),
+            (JoyAxis::LEFT_Y, -1.0),
+            (JoyAxis::LEFT_Y, 1.0),
+        ]
+        .into_iter()
+        .any(|(axis, sign)| self.stick_held(axis, sign));
         self.anim.is_some()
             || self.clear_hold > 0.0
             || self.status_time > 0.0
             || self.auto
             || self.touch.active()
             || stick
-            || input.is_anything_pressed()
+            || Input::singleton().is_anything_pressed()
     }
 
     /// What a frame shows that input or a step can change, compared across
@@ -1007,7 +1079,7 @@ impl SaltLine {
                     r.emplacement_offset.to_bits(),
                 )
             }),
-            seed: self.seed_text.len(),
+            seed: (self.seed_text.len(), self.seed_focus),
             settings: (
                 self.save.volume,
                 self.save.muted,
@@ -1053,9 +1125,8 @@ impl SaltLine {
                     let seed = daily_seed(Self::today());
                     self.play_sound(Sound::Ui);
                     self.start_run(seed, true);
-                } else if self.pressed(Key::S) || self.touch.pressed("seed") {
-                    self.seed_text.clear();
-                    self.mode = Mode::SeedEntry;
+                } else if self.action_pressed(17, "seed") {
+                    self.open_seed_entry();
                 } else if self.last_crash.is_some() && self.action_pressed(4, "copy") {
                     self.copy_last_crash();
                 } else if self.action_pressed(1, "controls") {
@@ -1109,21 +1180,7 @@ impl SaltLine {
                     self.mode = Mode::Title;
                 }
             }
-            Mode::SeedEntry => {
-                // Keyboard text comes in through `unhandled_input`; these are
-                // the touch buttons and the on-screen keypad.
-                if self.touch.pressed("confirm") {
-                    self.start_seeded_run();
-                } else if self.action_pressed(2, "back") {
-                    self.leave_seed_entry();
-                } else if self.touch.pressed("del") {
-                    self.seed_text.pop();
-                } else if let Some(k) = SEED_KEYS.iter().find(|k| self.touch.pressed(k)) {
-                    if self.seed_text.chars().count() < 20 {
-                        self.seed_text.push_str(k);
-                    }
-                }
-            }
+            Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::Paywall => {
                 if self.pressed(Key::U) {
                     self.unlock(false);
@@ -1149,6 +1206,44 @@ impl SaltLine {
                 }
             }
             Mode::Playing => self.handle_play_input(delta),
+        }
+    }
+
+    /// Keyboard text comes in through `unhandled_input`. This is the touch
+    /// keypad, and the controller moving a focus over the same keypad: A
+    /// presses the focused key, B deletes, or leaves once nothing is typed.
+    fn handle_seed_input(&mut self, delta: f64) {
+        let dx = self.action_repeated(1, "right", delta) as i32
+            - self.action_repeated(0, "left", delta) as i32;
+        let dy = self.action_repeated(2, "down", delta) as i32
+            - self.action_repeated(3, "up", delta) as i32;
+        if dx != 0 || dy != 0 {
+            self.seed_focus.step(dx, dy);
+        }
+        let key = if self.pad_action_pressed("confirm") {
+            Some(self.seed_focus.action())
+        } else if self.pad_action_pressed("back") {
+            Some(if self.seed_text.is_empty() {
+                "back"
+            } else {
+                keypad::DEL
+            })
+        } else if self.touch.pressed("back") || self.back_requested {
+            Some("back")
+        } else {
+            ["confirm", keypad::DEL]
+                .into_iter()
+                .chain(keypad::KEYS)
+                .find(|k| self.touch.pressed(k))
+        };
+        match key {
+            Some("confirm") => self.start_seeded_run(),
+            Some("back") => self.leave_seed_entry(),
+            Some(keypad::DEL) => {
+                self.seed_text.pop();
+            }
+            Some(k) if self.seed_text.chars().count() < 20 => self.seed_text.push_str(k),
+            _ => {}
         }
     }
 
@@ -1825,7 +1920,14 @@ impl SaltLine {
                     "DAILY RUN",
                     fg,
                 );
-                y = self.menu_row(y, "seed", "S      SEED ENTRY", "SEED ENTRY", fg);
+                let seed = self.input_label("seed");
+                y = self.menu_row(
+                    y,
+                    "seed",
+                    &format!("{seed}      SEED ENTRY"),
+                    "SEED ENTRY",
+                    fg,
+                );
                 let controls = self.input_label("controls");
                 y = self.menu_row(
                     y,
@@ -1972,7 +2074,7 @@ impl SaltLine {
                 let shown = format!("> {text}");
                 self.centred(y, &shown, fg);
                 y += 10;
-                if self.touch_active {
+                if self.plated() {
                     y = self.draw_seed_keypad(y) + 6;
                     y = self.menu_row(y, "confirm", "", "START", fg);
                     y = self.menu_row(y, "back", "", "BACK", dim);
@@ -2044,11 +2146,15 @@ impl SaltLine {
     ) {
         let pal = self.pal.clone();
         self.canvas.plate(x, y, w, h, &pal);
-        let c = if self.touch.held(action) {
+        let c = if self.lit(action) {
             pal.get(slot::ALERT)
         } else {
             pal.get(slot::UI_FG)
         };
+        if self.focused(action) {
+            self.canvas
+                .rect_outline(x - 1, y - 1, w + 2, h + 2, pal.get(slot::ALERT));
+        }
         let tx = x + (w - crate::font::small_width(label) as i32) / 2;
         let ty = y + (h - crate::font::SMALL_H as i32) / 2;
         self.canvas.text_small(tx, ty, label, c);
@@ -2059,23 +2165,45 @@ impl SaltLine {
     /// is any text and the platform keyboard is not dependable inside a game
     /// view. Returns the y below it.
     fn draw_seed_keypad(&mut self, top: i32) -> i32 {
-        let (kw, kh, pitch) = (18, 15, 20);
-        let rows = [&SEED_KEYS[..13], &SEED_KEYS[13..26], &SEED_KEYS[26..]];
+        let (kw, kh, pitch, del_w) = (18, 15, 20, 36);
         let mut y = top;
-        for (r, keys) in rows.into_iter().enumerate() {
-            let del_w = if r == 2 { 36 + 2 } else { 0 };
-            let row_w = keys.len() as i32 * pitch - 2 + del_w;
+        for keys in &keypad::ROWS[..keypad::KEY_ROWS] {
+            let row_w = keys
+                .iter()
+                .map(|&k| if k == keypad::DEL { del_w + 2 } else { pitch })
+                .sum::<i32>()
+                - 2;
             let mut x = (self.canvas.w - row_w) / 2;
-            for &k in keys {
-                self.draw_touch_button(x, y, kw, kh, k, k);
-                x += pitch;
-            }
-            if r == 2 {
-                self.draw_touch_button(x, y, 36, kh, "DEL", "del");
+            for &k in keys.iter() {
+                if k == keypad::DEL {
+                    self.draw_touch_button(x, y, del_w, kh, "DEL", k);
+                } else {
+                    self.draw_touch_button(x, y, kw, kh, k, k);
+                    x += pitch;
+                }
             }
             y += kh + 2;
         }
         y
+    }
+
+    /// Menu lines are plates rather than "KEY  TEXT": on a touchscreen, and
+    /// for a controller on the seed keypad, where the focus moves over them.
+    fn plated(&self) -> bool {
+        self.touch_active || (self.controller_active && self.mode == Mode::SeedEntry)
+    }
+
+    /// The controller's keypad focus is on this action's plate.
+    fn focused(&self, action: &str) -> bool {
+        self.mode == Mode::SeedEntry
+            && self.controller_active
+            && !self.touch_active
+            && self.seed_focus.action() == action
+    }
+
+    /// A plate's label lights while a finger is on it or the focus is.
+    fn lit(&self, action: &str) -> bool {
+        self.touch.held(action) || self.focused(action)
     }
 
     /// A menu line. With a keyboard or controller it reads "KEY  TEXT"; on a
@@ -2089,7 +2217,7 @@ impl SaltLine {
         text: &str,
         c: crate::palette::Rgba,
     ) -> i32 {
-        if !self.touch_active {
+        if !self.plated() {
             self.centred(y, keyed, c);
             return y + 8;
         }
@@ -2098,7 +2226,11 @@ impl SaltLine {
         let pad = 10;
         let x = (self.canvas.w - tw) / 2 - pad;
         self.canvas.plate(x, y - 4, tw + 2 * pad, 13, &pal);
-        let c = if self.touch.held(action) {
+        if self.focused(action) {
+            self.canvas
+                .rect_outline(x - 1, y - 5, tw + 2 * pad + 2, 15, pal.get(slot::ALERT));
+        }
+        let c = if self.lit(action) {
             pal.get(slot::ALERT)
         } else {
             c
@@ -2938,7 +3070,7 @@ impl SaltLine {
             self.status_time = 0.0;
         }
         self.status_time = (self.status_time - delta).max(0.0);
-        self.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        self.begin_input_frame(delta);
         self.apply_frame_cap();
         if self.action_pressed(4, "copy") {
             let text = crash::report()
