@@ -123,7 +123,7 @@ pub fn format_report(r: &Report) -> String {
     let _ = writeln!(s, "version: {}", r.version);
     let _ = writeln!(s, "platform: {} {}", r.os, r.arch);
     let _ = writeln!(s, "panic: {}", r.message.replace('\n', "\n  "));
-    let at = r.location.as_deref().map_or("unknown", tidy_path);
+    let at = r.location.as_deref().map_or("unknown".into(), tidy_path);
     let _ = writeln!(s, "at: {at}");
     let Some(ctx) = r.context else {
         let _ = writeln!(s, "context: unavailable");
@@ -173,26 +173,21 @@ pub fn format_report(r: &Report) -> String {
 /// the developer's user name, which has no business in a pasted report. Keep
 /// from the crate directory (the component before the last `src`) onward, or
 /// just the file name if there is no `src`.
-pub fn tidy_path(loc: &str) -> &str {
-    let absolute =
-        loc.starts_with('/') || loc.starts_with('\\') || loc.as_bytes().get(1) == Some(&b':');
+///
+/// Separators become `/` first. A Windows build reports
+/// `crates\salt-line-godot\src\game.rs`; the same bug should read the same
+/// in a report whichever platform it came from.
+pub fn tidy_path(loc: &str) -> String {
+    let loc = loc.replace('\\', "/");
+    let absolute = loc.starts_with('/') || loc.as_bytes().get(1) == Some(&b':');
     if !absolute {
         return loc;
     }
-    let is_sep = |c: char| c == '/' || c == '\\';
-    let src = [
-        loc.rfind("/src/"),
-        loc.rfind("\\src\\"),
-        loc.rfind("/src\\"),
-        loc.rfind("\\src/"),
-    ]
-    .into_iter()
-    .flatten()
-    .max();
-    match src {
-        Some(i) => loc[..i].rfind(is_sep).map_or(loc, |j| &loc[j + 1..]),
-        None => loc.rfind(is_sep).map_or(loc, |j| &loc[j + 1..]),
-    }
+    let from = match loc.rfind("/src/") {
+        Some(i) => loc[..i].rfind('/').map_or(0, |j| j + 1),
+        None => loc.rfind('/').map_or(0, |j| j + 1),
+    };
+    loc[from..].to_string()
 }
 
 fn payload_message(info: &PanicHookInfo) -> String {
@@ -390,8 +385,21 @@ mod tests {
     )]
     #[case::registry_windows(
         "C:\\Users\\someone\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\godot-core-0.5.5\\src\\private.rs:331:5",
-        "godot-core-0.5.5\\src\\private.rs:331:5"
+        "godot-core-0.5.5/src/private.rs:331:5"
     )]
+    #[case::our_crate_on_windows(
+        "crates\\salt-line-godot\\src\\crash.rs:457:45",
+        "crates/salt-line-godot/src/crash.rs:457:45"
+    )]
+    #[case::unc_windows(
+        "\\\\server\\share\\someone\\deps\\glam-0.32.1\\src\\f32.rs:1:1",
+        "glam-0.32.1/src/f32.rs:1:1"
+    )]
+    #[case::mixed_separators(
+        "D:/a/saltline\\crates\\salt-line-sim\\src/run.rs:9:1",
+        "salt-line-sim/src/run.rs:9:1"
+    )]
+    #[case::no_src_windows("C:\\Users\\someone\\out\\generated.rs:3:1", "generated.rs:3:1")]
     #[case::std(
         "/rustc/0123abcd/library/core/src/panicking.rs:75:14",
         "core/src/panicking.rs:75:14"
