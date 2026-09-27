@@ -80,6 +80,9 @@ step that no amount of CI will cover.
 
 - [ ] Linux: `chmod +x SaltLine.x86_64 && ./SaltLine.x86_64` on a stock distro
       with no Godot installed
+- [ ] Linux: exported build contains the XDG Portals bridge; on a desktop with
+      GameMode available, a live run registers and pause/game over releases it.
+      On a desktop without that portal, play and saves still work.
 - [ ] macOS: unzip, launch, work through the Gatekeeper warning (none on a
       notarized release), confirm it runs, on Apple silicon **and** on an
       Intel Mac: CI never launches the universal build's x86_64 half
