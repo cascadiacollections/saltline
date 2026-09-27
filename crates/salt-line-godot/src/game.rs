@@ -202,10 +202,9 @@ impl INode2D for SaltLine {
 
     fn ready(&mut self) {
         let mobile = Os::singleton().has_feature("mobile");
-        if mobile {
-            // What shows beside the playfield is a letterbox, not sky.
-            RenderingServer::singleton().set_default_clear_color(Color::BLACK);
-        }
+        // Aspect::Keep can letterbox on desktop too (16:10, ultrawide and
+        // Long Lens). The area outside the one drawn texture is not sky.
+        RenderingServer::singleton().set_default_clear_color(Color::BLACK);
         self.art = Art {
             pal: Palette::load(PALETTE_PATH),
             sprites: Some(Sprites::load_all(SPRITE_DIR)),

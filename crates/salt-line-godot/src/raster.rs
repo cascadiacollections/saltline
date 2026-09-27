@@ -436,10 +436,10 @@ pub fn draw_ground_detail(canvas: &mut Canvas, view: &View, screen: &Screen, pal
             continue;
         }
         let hash = mix64(screen.seed ^ (world_x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
-        if screen.field.scar[col] < 2.0 && hash % 17 == 0 {
+        if screen.field.scar[col] < 2.0 && hash.is_multiple_of(17) {
             canvas.put(sx, top + 4 + ((hash >> 8) % 3) as i32, pal.get(slot::ROCK));
         }
-        if screen.field.scar[col].abs() > 0.5 || hash % 37 != 0 {
+        if screen.field.scar[col].abs() > 0.5 || !hash.is_multiple_of(37) {
             continue;
         }
         if (world_x as f64 - screen.muzzle_x).abs() < 22.0

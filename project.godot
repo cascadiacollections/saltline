@@ -7,7 +7,7 @@
 ; DESIGN §5.1. Changing one of them breaks the low-resolution presentation:
 ;
 ;   stretch/mode = "viewport"   render at the internal size, scale the result
-;   stretch/aspect = "expand"   let the width float, keep the height fixed
+;   stretch/aspect = "keep"     center the complete buffer at any window ratio
 ;   default_texture_filter = 0  nearest, project-wide — one missed material is
 ;                               the whole illusion
 ;
@@ -43,7 +43,7 @@ window/size/viewport_height=180
 window/size/window_width_override=1280
 window/size/window_height_override=720
 window/stretch/mode="viewport"
-window/stretch/aspect="expand"
+window/stretch/aspect="keep"
 window/vsync/vsync_mode=1
 
 [input_devices]
@@ -64,7 +64,9 @@ anti_aliasing/quality/msaa_2d=0
 anti_aliasing/quality/screen_space_aa=0
 textures/default_filters/use_nearest_mipmap_filter=true
 textures/default_filters/anisotropic_filtering_level=0
-environment/defaults/default_clear_color=Color(0.141, 0.212, 0.361, 1)
+; Window ratios outside the generated 320..400px width (and Long Lens)
+; letterbox around the complete playfield instead of exposing unused sky.
+environment/defaults/default_clear_color=Color(0, 0, 0, 1)
 ; The game draws every frame into one texture itself, so on phones the
 ; Compatibility renderer (OpenGL ES) is all it needs, and it runs on devices
 ; and emulators where Vulkan presentation fails. Desktop keeps Forward+.

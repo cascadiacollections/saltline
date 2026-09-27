@@ -101,11 +101,10 @@ impl Game {
         let want = width.map_or(device, |w| w as i32);
         self.display.buffer_w = want;
         self.display.kept_width = want != device;
-        self.fx.push(Effect::Aspect(if want == device {
-            Aspect::Expand
-        } else {
-            Aspect::Keep
-        }));
+        // A 320..400px width cap and Long Lens can make the buffer narrower
+        // than the window's aspect. Keep the full image centered rather than
+        // expanding the logical viewport past the one texture we draw.
+        self.fx.push(Effect::Aspect(Aspect::Keep));
     }
 
     /// Write pending settings once they settle, or as soon as the player

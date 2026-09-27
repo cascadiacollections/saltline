@@ -270,6 +270,12 @@ pub fn solve_target_capped(
     target: usize,
     cap: usize,
 ) -> (Vec<Candidate>, usize) {
+    // Solving means changing a standing target to a downed one. A collapsed
+    // wreck may still have a hittable box, but hitting it only clears debris;
+    // it must not be reported as a fresh way to fell that target.
+    if screen.structures.get(target).is_none_or(|s| s.is_down()) {
+        return (Vec::new(), 0);
+    }
     let Some(aims) = aim_points(screen, target) else {
         return (Vec::new(), 0);
     };
@@ -391,6 +397,18 @@ mod tests {
             // Every candidate is on the loadout's input grid.
             assert_eq!(a.shot, a.shot.quantized(&lo));
         }
+    }
+
+    #[test]
+    fn a_down_target_has_no_felling_candidates() {
+        let lo = Loadout::new();
+        let mut screen = generate_screen(0xABCD, 0, 320, &lo);
+        assert!(!solve_target(&screen, &lo, 0).is_empty());
+
+        screen.structures[0].state = StructState::Collapsed;
+        assert!(solve_target(&screen, &lo, 0).is_empty());
+        screen.structures[0].state = StructState::Cleared;
+        assert!(solve_target(&screen, &lo, 0).is_empty());
     }
 
     #[test]

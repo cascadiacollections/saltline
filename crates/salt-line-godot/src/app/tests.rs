@@ -185,7 +185,7 @@ fn confirm_on_the_title_starts_todays_daily() {
     assert_eq!(g.play.last_seed, daily_seed(TODAY));
     assert_eq!(g.play.run.as_ref().unwrap().width, 320);
     assert!(fx.contains(&Effect::Play(Sound::Ui)));
-    assert!(fx.contains(&Effect::Aspect(Aspect::Expand)));
+    assert!(fx.contains(&Effect::Aspect(Aspect::Keep)));
     assert_eq!(g.status, format!("SEED {}", format_seed(daily_seed(TODAY))));
     // A new run goes to disk at once, log and all.
     assert_eq!(count(&fx, is_run_write), 1);
@@ -956,7 +956,7 @@ fn a_run_from_another_width_keeps_it_letterboxed_until_the_title() {
     let fx = [fx, tick(&mut g, idle())].concat();
     assert_eq!(g.display.buffer_w, 320);
     assert!(!g.display.kept_width);
-    assert!(fx.contains(&Effect::Aspect(Aspect::Expand)));
+    assert!(fx.contains(&Effect::Aspect(Aspect::Keep)));
 }
 
 #[test]

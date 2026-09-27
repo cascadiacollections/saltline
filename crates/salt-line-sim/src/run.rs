@@ -757,7 +757,6 @@ fn place_structures(
     index: u32,
     band: u32,
     width: usize,
-    muzzle_x: f64,
     primary_x: f64,
     count: u32,
 ) -> Vec<Structure> {
@@ -774,7 +773,7 @@ fn place_structures(
         } else {
             candidate_left
         };
-        xs.push(clamp(x, muzzle_x + 60.0, width as f64 - 16.0));
+        xs.push(clamp(x, EMPLACEMENT_X + 60.0, width as f64 - 16.0));
     }
 
     let mut out: Vec<Structure> = Vec::new();
@@ -887,16 +886,7 @@ fn assemble(
     };
 
     let count = r_place.weighted(&target_count_weights(band)) as u32 + 1;
-    let structures = place_structures(
-        &field,
-        &mut r_place,
-        index,
-        band,
-        width,
-        EMPLACEMENT_X,
-        primary_x,
-        count,
-    );
+    let structures = place_structures(&field, &mut r_place, index, band, width, primary_x, count);
 
     Screen {
         index,
