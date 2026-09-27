@@ -55,6 +55,7 @@ use crate::palette::{slot, Palette};
 use crate::presentation;
 use crate::raster::{self, Canvas, Sprite, View};
 use crate::save_format::{ArcHint, TouchAim};
+use crate::sky;
 use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
 use crate::touch::{Button, Rect};
 
@@ -681,7 +682,14 @@ impl Painter<'_> {
         let range = screen.range_to_nearest();
         let sappers = loadout.has_flag(flags::SAPPERS_EYE);
 
-        self.canvas.fill(pal.get(slot::SKY_HI));
+        sky::draw(
+            self.canvas,
+            &view,
+            pal,
+            sky::Phase::for_screen(index),
+            run.run_seed ^ index as u64,
+            self.g.play.sky_time,
+        );
         raster::draw_terrain(self.canvas, &view, &screen.field, pal);
         raster::draw_ground_detail(self.canvas, &view, &screen, pal);
         if sappers {

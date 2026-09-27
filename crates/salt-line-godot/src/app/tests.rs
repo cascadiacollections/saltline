@@ -74,6 +74,24 @@ fn playing(seed: u64) -> Game {
     g
 }
 
+#[test]
+fn night_sky_redraws_sparingly_and_freezes_when_paused() {
+    let mut g = playing(42);
+    g.jump_to(6);
+    g.status_time = 0.0;
+    g.play.sky_time = 0.0;
+    g.take_effects();
+
+    assert!(!g.tick(0.1, &idle()).contains(&Effect::Redraw));
+    assert!(g.tick(0.1, &idle()).contains(&Effect::Redraw));
+    assert!(!g.tick(0.1, &idle()).contains(&Effect::Redraw));
+
+    g.mode = Mode::Paused;
+    let held_time = g.play.sky_time;
+    g.tick(0.1, &idle());
+    assert_eq!(g.play.sky_time, held_time);
+}
+
 fn tick(g: &mut Game, i: Intents) -> Vec<Effect> {
     g.tick(FRAME, &i)
 }

@@ -40,6 +40,7 @@ impl Game {
         self.play.last_arc.clear();
         self.new_preview();
         self.play.clear_hold = 0.0;
+        self.play.sky_time = 0.0;
         self.play.cam_x = 0;
         self.play.cam_target = 0.0;
         self.play.daily = daily;
@@ -137,6 +138,18 @@ impl Game {
     pub(super) fn step(&mut self, delta: f64) {
         if self.mode != Mode::Playing {
             return;
+        }
+
+        // Star changes need a redraw only five times a second. Daylight
+        // remains fully static, preserving the idle texture-upload saving.
+        if let Some(run) = self.play.run.as_ref() {
+            let old_step = (self.play.sky_time * 5.0).floor() as u64;
+            self.play.sky_time += delta;
+            if crate::sky::Phase::for_screen(run.screen_index).has_stars()
+                && (self.play.sky_time * 5.0).floor() as u64 != old_step
+            {
+                self.fx.push(Effect::Redraw);
+            }
         }
 
         // Advance the shot replay. The sim ran at a fixed 1/120; this only

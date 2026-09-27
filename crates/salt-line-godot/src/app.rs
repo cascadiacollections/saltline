@@ -643,6 +643,8 @@ pub(crate) struct Play {
     /// Seconds left holding a cleared screen before the run moves on; zero
     /// when not holding. Counts down from `CLEAR_HOLD`.
     pub(crate) clear_hold: f64,
+    /// Cosmetic sky clock. It is not saved or read by the simulation.
+    pub(crate) sky_time: f64,
     /// Aim inputs, in the sim's tick space: integers, as the shot log records
     /// them (DESIGN §9.2). Angle ticks run from 0 to `dmath::MAX_ANGLE_TICKS`;
     /// the keys step them by the loadout's angle quantum.
@@ -785,6 +787,7 @@ impl Default for Game {
                 run: None,
                 anim: None,
                 clear_hold: 0.0,
+                sky_time: 0.0,
                 angle_ticks: 900,
                 power_ticks: 600,
                 cam_x: 0,
