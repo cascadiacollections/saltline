@@ -10,7 +10,8 @@ current OS, so other platforms carry only the addon's GDScript facade and
 select its null backend without loading a descriptor.
 
 `tools/build_xdg_portals.sh` fetches that exact revision and builds the Linux
-editor, debug, and release libraries. CI runs it before Godot import and export.
+editor, debug, and release libraries by default. CI builds the editor and
+release libraries before Godot import and export.
 On a Linux development machine, install CMake, pkg-config, and GLib/GIO headers,
 then run `bash tools/build_xdg_portals.sh` before starting Godot. The native
 libraries and descriptor are generated and ignored by Git.
