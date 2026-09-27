@@ -46,6 +46,9 @@ godot --path .                   # play
 
 `cargo build` before `godot`: the extension is loaded from
 `target/{debug,release}/`, so a stale build is what the engine will run.
+On Linux, also run `bash tools/build_xdg_portals.sh` once to build the optional
+GameMode bridge; see [`docs/xdg-portals.md`](docs/xdg-portals.md). The game still
+plays when the desktop portal or GameMode is unavailable.
 
 With `just` installed, the same common operations are available as `just test`,
 `just build`, and `just run`. The Python tools use the locked environment from

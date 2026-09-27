@@ -1,5 +1,8 @@
 /target
 /build
+/addons/xdg_portals/bin/
+/addons/xdg_portals/xdg_portals.gdextension
+/addons/xdg_portals/xdg_portals.gdextension.uid
 **/*.rs.bk
 .godot/
 __pycache__/

@@ -95,7 +95,7 @@ const TITLE_GAIN_DB: f32 = -8.0;
 const TITLE_FADE_SECONDS: f64 = 1.0;
 
 /// The one Godot node the game needs, registered with the engine as
-/// `SaltLine` and used as the root of `godot/main.tscn`. It owns the core ([`Game`]) and
+/// `SaltLine` and used by `godot/main.tscn`. It owns the core ([`Game`]) and
 /// everything engine-side: the canvas and its texture, the audio players,
 /// the input queues and the frame pacing.
 #[derive(GodotClass)]
@@ -408,6 +408,16 @@ impl INode2D for SaltLine {
             }
             _ => {}
         }
+    }
+}
+
+#[godot_api]
+impl SaltLine {
+    /// Presentation-only state for optional desktop services. A paused run
+    /// releases GameMode; neither the service nor this query enters the sim.
+    #[func]
+    fn is_active_play(&self) -> bool {
+        self.g.mode == crate::app::Mode::Playing
     }
 }
 
