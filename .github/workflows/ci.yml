@@ -346,6 +346,7 @@ jobs:
             addons/xdg_portals/bin
             addons/xdg_portals/xdg_portals.gdextension
           key: xdg-portals-ubuntu-24.04-${{ hashFiles('tools/build_xdg_portals.sh', 'tools/xdg_portals_linux.gdextension.in') }}
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: build the Linux desktop portal bridge
         if: runner.os == 'Linux' && steps.portal-cache.outputs.cache-hit != 'true'
         run: |
