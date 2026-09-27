@@ -12,6 +12,9 @@ select its null backend without loading a descriptor.
 `tools/build_xdg_portals.sh` fetches that exact revision and builds the Linux
 editor, debug, and release libraries by default. CI builds the editor and
 release libraries before Godot import and export.
+PR and main builds cache only the generated Linux libraries and descriptor,
+keyed by the pinned source and descriptor template. Release tags build cold,
+matching the repository's cache policy.
 On a Linux development machine, install CMake, pkg-config, and GLib/GIO headers,
 then run `bash tools/build_xdg_portals.sh` before starting Godot. The native
 libraries and descriptor are generated and ignored by Git.
