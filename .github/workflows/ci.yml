@@ -891,7 +891,7 @@ jobs:
       - name: import assets
         shell: bash
         run: |
-          "$GODOT_BIN" --headless --path . --frame-delay 800 --import
+          "$GODOT_BIN" --headless --path . --import
       - name: export the arm64 binary
         shell: bash
         run: |
