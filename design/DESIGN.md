@@ -102,6 +102,13 @@ feeds generation.
    | `Overhang` | Target tucked under a lip (see §2.4) | Band 5 |
    | `Basin` | Target below the firing line | Band 6 |
 
+   For the opening sequence, screen 3 is `Ridge` with a radio mast, and screen
+   6 is `Chasm` with a silo (screen numbers here are player-facing, starting at
+   1).
+   The ridge must block the straight sightline to the first target. All other
+   screens use the band weights, and every featured screen still passes the
+   usual solvability gate before it is shown.
+
 4. **Material layering.** Assign layers by depth below the local surface:
    `Sand` (0–8 units), `Rock` (8–30), `Bedrock` (30+). Structures are placed as
    `Steel` columns. Material controls crater radius multiplier (§2.6) and
@@ -227,7 +234,7 @@ of 5–11 pixel columns. Each structure tracks:
 ```
 integrity:  f32       // 1.0 → 0.0
 support:    f32       // fraction of footprint columns still at original height
-state:      Intact | Leaning | Collapsed
+state:      Intact | Leaning | Collapsed | Cleared
 ```
 
 Two independent kill paths, and having both is the point:
@@ -246,11 +253,12 @@ Two independent kill paths, and having both is the point:
 | `integrity > 0.35` and `support > 0.6` | Intact |
 | `integrity ≤ 0.35` or `support ≤ 0.6` | Leaning |
 | `integrity ≤ 0` or `support ≤ 0.3` | Collapsed |
+| Direct shell hit on an already collapsed wreck | Cleared |
 
 Leaning is a real state, not a cosmetic one: a leaning structure tilts toward the
 weaker side of its footprint, which shifts its bounding box by several pixels and
 changes the shot you need. It also grants no refund — the screen is not cleared
-until every target reads Collapsed.
+until every target is down (Collapsed or Cleared).
 
 Collapse animates as a topple in the lean direction, then the debris adds a small
 positive mound to the scar buffer where it lands. Terrain gets slightly higher
@@ -258,6 +266,9 @@ where a structure fell. That is a nice consequence to leave in.
 
 Collapse is permanent. Debris or later craters that raise or refill the footprint
 never stand a collapsed structure back up.
+An already collapsed wreck still catches a shell. A direct follow-up hit clears
+the wreck and its collision box, opening the line to targets behind it. The
+debris mound is still ordinary terrain and can be cratered.
 
 Undermining is what gives the DEMO build a win condition of its own. A player
 running Auger and Cluster never needs to hit a target directly — they excavate
@@ -393,7 +404,7 @@ Settings rather than per-material — one missed material is the whole illusion.
 | Count | Role |
 |---|---|
 | 4 | Terrain ramp — sand, rock, bedrock, and a shared shadow tone |
-| 3 | Sky gradient, dithered between bands |
+| 3 | Sky tones for menus and effects; the playfield uses one flat deep tone |
 | 3 | Player chassis — body, highlight, dark edge |
 | 3 | Structures — body, highlight, damage tone |
 | 2 | UI — foreground text, background plate |
@@ -405,8 +416,9 @@ Salt flats have a genuinely strange color range: bleached white-pink ground
 against a deep sky, with very little mid-tone. Lean into that. It gives you high
 contrast, which is exactly what a game about reading terrain silhouettes needs.
 
-Dither only for the sky gradient and for material transition bands. Dithering
-everything is the other common low-res failure.
+Dither only for menu sky gradients and material transition bands. The playfield
+sky stays flat so targets, shells and the terrain silhouette remain legible.
+Dithering everything is the other common low-res failure.
 
 ### 5.3 Player entity
 

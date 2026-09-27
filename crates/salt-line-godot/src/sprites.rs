@@ -233,6 +233,9 @@ impl Sprites {
     /// returned sprite is a faithful drawing of that state — the caller falls
     /// back to a procedural rubble mound when it is not.
     pub fn structure(&self, kind: StructureKind, state: StructState) -> (Option<&Sprite>, bool) {
+        if state == StructState::Cleared {
+            return (None, true);
+        }
         let drawn = match (kind, state) {
             (StructureKind::WaterTower, StructState::Intact) => &self.tower_intact,
             (StructureKind::WaterTower, StructState::Leaning) => &self.tower_leaning,
@@ -249,6 +252,7 @@ impl Sprites {
             (StructureKind::Pylon, StructState::Intact) => &self.pylon,
             (StructureKind::Pylon, StructState::Leaning) => &self.pylon_leaning,
             (StructureKind::Pylon, StructState::Collapsed) => &self.pylon_collapsed,
+            (_, StructState::Cleared) => unreachable!("cleared wreck returned above"),
         };
         match drawn.as_ref() {
             Some(sprite) => (Some(sprite), true),

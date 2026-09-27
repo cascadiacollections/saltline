@@ -46,6 +46,12 @@ window/stretch/mode="viewport"
 window/stretch/aspect="expand"
 window/vsync/vsync_mode=1
 
+[input_devices]
+
+; Desktop mouse press, drag and release feed the same touch path as a phone.
+; The game only handles ScreenTouch/ScreenDrag for pointer aiming.
+pointing/emulate_touch_from_mouse=true
+
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0

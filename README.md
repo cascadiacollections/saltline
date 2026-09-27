@@ -12,6 +12,8 @@ platforms, the release checklist, and the known-issues list.
 Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`), Godot `4.7.2`, and
 `uv` for the Python asset tools. `just` is optional but provides the documented
 shortcuts below.
+If you use mise, `mise install` reads the Rust version from the existing
+`rust-toolchain.toml`; run commands with `mise exec -- cargo ...`.
 
 The `godot` crate is pinned to the matching `api-4-7` feature. If you raise the
 engine version, raise that feature and `compatibility_minimum` in
@@ -130,6 +132,9 @@ and sit along the bottom edge, which is always solid ground. Phones start with
 them showing; elsewhere they appear on the first touch. Any key or controller
 press switches back, and a tap switches to touch again. Holding a button
 repeats like holding a key.
+
+On Windows, mouse clicks use the same touch controls. Choose `AIM: DRAG` in
+CONTROLS / AUDIO to click on open ground, pull back and release to fire.
 
 Touch aiming has two modes, chosen with AIM on the CONTROLS / AUDIO screen:
 

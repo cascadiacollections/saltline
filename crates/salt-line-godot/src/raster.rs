@@ -52,6 +52,8 @@
 //! ```
 
 use godot::builtin::PackedByteArray;
+use salt_line_sim::rng::mix64;
+use salt_line_sim::run::Screen;
 use salt_line_sim::terrain::{Heightfield, Material, ROCK_DEPTH, SAND_DEPTH};
 use salt_line_sim::SCREEN_H;
 
@@ -416,6 +418,44 @@ pub fn draw_terrain(canvas: &mut Canvas, view: &View, field: &Heightfield, pal: 
             if left > surface + 1.2 || right > surface + 1.2 {
                 canvas.put(sx, top + 1, pal.get(slot::SHADOW));
             }
+        }
+    }
+}
+
+/// Sparse soil flecks and grass tufts, fixed to world columns. The grass is
+/// removed by a crater because only the untouched surface can grow it.
+pub fn draw_ground_detail(canvas: &mut Canvas, view: &View, screen: &Screen, pal: &Palette) {
+    for sx in 0..canvas.w {
+        let world_x = sx + view.cam_x;
+        if world_x < 0 || world_x as usize >= screen.field.len() {
+            continue;
+        }
+        let col = world_x as usize;
+        let top = view.sy(screen.field.surface(col));
+        if top < 4 || top >= canvas.h - 8 {
+            continue;
+        }
+        let hash = mix64(screen.seed ^ (world_x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        if screen.field.scar[col] < 2.0 && hash % 17 == 0 {
+            canvas.put(sx, top + 4 + ((hash >> 8) % 3) as i32, pal.get(slot::ROCK));
+        }
+        if screen.field.scar[col].abs() > 0.5 || hash % 37 != 0 {
+            continue;
+        }
+        if (world_x as f64 - screen.muzzle_x).abs() < 22.0
+            || screen
+                .structures
+                .iter()
+                .any(|s| (world_x as f64 - s.centre_x()).abs() < 10.0)
+        {
+            continue;
+        }
+        let grass = pal.get(slot::HULL_HI);
+        canvas.put(sx, top - 1, grass);
+        canvas.put(sx, top - 2, grass);
+        canvas.put(sx - 1, top - 1, grass);
+        if hash & 1 == 0 {
+            canvas.put(sx + 1, top - 2, grass);
         }
     }
 }

@@ -12,6 +12,10 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- The first six screens now feature a radio mast behind a ridge that calls for
+  a lob and a silo across a chasm, so a short run shows more target variety.
+- Sparse soil flecks and grass tufts make the ground less bare; craters clear
+  the grass they dig through.
 - Android build (arm64): landscape and immersive, with touch controls across
   the whole game: angle, power and FIRE buttons, tappable menus and draft
   cards, an on-screen keypad for seed entry, and the back gesture as "back".
@@ -34,6 +38,12 @@ second. See RELEASING.md for the release steps.
 
 ### Changed
 
+- A direct hit clears an already collapsed wreck so later shells can pass
+  through it; the debris mound remains diggable ground.
+- Playfield art is quieter: a flat deep sky replaces the busy full-screen
+  backgrounds, and soil flecks and grass appear less often so targets and
+  terrain edges stand out.
+- Windows mouse clicks now feed the touch controls, including drag aiming.
 - The HUD reads without words: a windsock that flies with the wind in place of
   `WIND +3`, and a shell icon in place of `SHELLS`.
 - On phones, the playfield and HUD stay clear of camera cutouts and rounded

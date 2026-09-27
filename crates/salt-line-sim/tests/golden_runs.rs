@@ -29,11 +29,12 @@
 
 mod common;
 
+use salt_line_sim::ballistics::End;
 use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::replay::{
     decode_log, encode_log, screen_hash, state_hash, Hasher, Replay, DRAFT_MARK,
 };
-use salt_line_sim::run::{generate_screen, Phase, RunState};
+use salt_line_sim::run::{generate_screen, shot, Phase, RunState, StructState};
 use salt_line_sim::{band_of, EPOCHS, EPOCH_DIGEST, SIM_EPOCH};
 
 const CORPUS: &str = include_str!("golden_runs.txt");
@@ -195,6 +196,18 @@ fn epoch_digest(run_hashes: impl IntoIterator<Item = u64>) -> u64 {
     for hash in run_hashes {
         h.write_u64(hash);
     }
+    // The scripted runs do not reliably fire twice at an already collapsed
+    // target. Pin that replay-visible transition explicitly as part of the
+    // epoch contract.
+    let mut wreck = generate_screen(0x0B00_1234_5678_9ABC, 0, 320, &lo);
+    wreck.structures[0].state = StructState::Collapsed;
+    let report = wreck.apply_shot(shot(0, 820), &lo, None, false);
+    assert!(matches!(
+        report.traces[0].end,
+        End::Structure { index: 0, .. }
+    ));
+    assert_eq!(wreck.structures[0].state, StructState::Cleared);
+    h.write_u64(screen_hash(&wreck));
     h.finish()
 }
 

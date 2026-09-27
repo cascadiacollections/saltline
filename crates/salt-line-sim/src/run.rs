@@ -148,7 +148,7 @@ impl StructureKind {
 ///
 /// Derived, never set directly: `resolve_state` recomputes it from
 /// [`Structure::integrity`] and [`Structure::support`] after every shot,
-/// until the structure collapses. Collapse is final.
+/// until the structure collapses. A later direct hit can clear its wreck.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum StructState {
@@ -161,6 +161,9 @@ pub enum StructState {
     /// Integrity at or below 0, or support at or below 0.3. A collapsed
     /// structure takes no further blast damage and is never re-resolved.
     Collapsed = 2,
+    /// A direct shell hit removed an already collapsed wreck. It no longer
+    /// draws or collides, but still counts as a downed target.
+    Cleared = 3,
 }
 
 /// How far a leaning structure's bounding box shifts, in pixels. Enough to
@@ -197,7 +200,7 @@ pub struct Structure {
     /// kinds, below 1 for Silo and Pylon), clamped to 0..=1.
     pub support: f64,
     /// Damage state, derived from `integrity` and `support`; fixed once
-    /// `Collapsed`.
+    /// `Collapsed` or `Cleared`.
     pub state: StructState,
     /// -1 leaning left, 0 upright, +1 leaning right.
     pub lean: i8,
@@ -220,7 +223,7 @@ impl Structure {
     pub fn aabb(&self) -> Aabb {
         let shift = self.lean as f64 * LEAN_SHIFT;
         let h = match self.state {
-            StructState::Collapsed => 6.0,
+            StructState::Collapsed | StructState::Cleared => 6.0,
             // A leaning silhouette is redrawn at ~15 degrees, so it loses a
             // little height and gains a little width.
             StructState::Leaning => self.kind.height() * 0.95,
@@ -239,10 +242,10 @@ impl Structure {
         )
     }
 
-    /// Whether it has collapsed. Only collapsed structures count toward
-    /// clearing a screen; leaning ones do not.
+    /// Whether it has been downed. Cleared wrecks still count toward clearing
+    /// a screen; leaning structures do not.
     pub fn is_down(&self) -> bool {
-        self.state == StructState::Collapsed
+        matches!(self.state, StructState::Collapsed | StructState::Cleared)
     }
 
     /// DESIGN §2.7 threshold table. Collapse is checked first.
@@ -379,10 +382,19 @@ impl Screen {
     }
 
     /// Boxes for every structure, collapsed ones included as low rubble, in
-    /// structure order, so an index into the result is an index into
-    /// `structures`.
+    /// structure order. A cleared wreck gets an unreachable off-world box so
+    /// ballistic hit indices still correspond to `structures`.
     pub fn target_boxes(&self) -> Vec<Aabb> {
-        self.structures.iter().map(|s| s.aabb()).collect()
+        self.structures
+            .iter()
+            .map(|s| {
+                if s.state == StructState::Cleared {
+                    Aabb::new(-1.0e9, -1.0e9, -1.0e9 + 1.0, -1.0e9 + 1.0)
+                } else {
+                    s.aabb()
+                }
+            })
+            .collect()
     }
 
     /// Whether every structure has collapsed. A supply screen is always
@@ -550,6 +562,11 @@ impl Screen {
             End::Structure { index, .. } => Some(index),
             _ => None,
         };
+        if let Some(i) = direct {
+            if self.structures[i].state == StructState::Collapsed {
+                self.structures[i].state = StructState::Cleared;
+            }
+        }
         let material = if direct.is_some() {
             Material::Steel
         } else {
@@ -702,6 +719,24 @@ pub fn template_weights(band: u32, lo: &Loadout) -> [u32; 7] {
     w
 }
 
+/// Give a short first run a readable sequence of shot problems. The other
+/// screens still draw from the band's weights, and every choice still passes
+/// the normal solvability gate.
+fn screen_template_weights(index: u32, lo: &Loadout) -> [u32; 7] {
+    let featured = match index {
+        2 => Some(Template::Ridge),
+        5 => Some(Template::Chasm),
+        _ => None,
+    };
+    if let Some(template) = featured {
+        let mut weights = [0; 7];
+        weights[template as usize] = 1;
+        weights
+    } else {
+        template_weights(band_of(index), lo)
+    }
+}
+
 // -------------------------------------------------------- screen assembly
 
 fn kind_weights(band: u32) -> [u32; 5] {
@@ -719,6 +754,7 @@ fn kind_weights(band: u32) -> [u32; 5] {
 fn place_structures(
     field: &Heightfield,
     rng: &mut Pcg32,
+    index: u32,
     band: u32,
     width: usize,
     muzzle_x: f64,
@@ -749,7 +785,16 @@ fn place_structures(
         {
             continue;
         }
-        let kind = StructureKind::ALL[rng.weighted(&kind_weights(band))];
+        let sampled = StructureKind::ALL[rng.weighted(&kind_weights(band))];
+        let kind = if out.is_empty() {
+            match index {
+                2 => StructureKind::RadioMast,
+                5 => StructureKind::Silo,
+                _ => sampled,
+            }
+        } else {
+            sampled
+        };
         out.push(seat_structure(field, kind, x, width));
     }
     out
@@ -845,6 +890,7 @@ fn assemble(
     let structures = place_structures(
         &field,
         &mut r_place,
+        index,
         band,
         width,
         EMPLACEMENT_X,
@@ -956,7 +1002,7 @@ pub fn generate_screen_from(
 
     if from <= Rung::Drawn {
         let mut r_template = Pcg32::new(substream(seed0, 0x5445_4D50));
-        let weights = template_weights(band, lo);
+        let weights = screen_template_weights(index, lo);
         for attempt in 0..MAX_GEN_ATTEMPTS {
             let seed = seed0.wrapping_add(attempt as u64);
             let template = Template::ALL[r_template.weighted(&weights)];
@@ -1884,6 +1930,38 @@ mod tests {
     }
 
     #[test]
+    fn opening_encounters_feature_distinct_terrain_and_remain_solvable() {
+        let lo = Loadout::new();
+        for seed in 0..64 {
+            for width in [320, 400] {
+                for (index, expected) in [(2, Template::Ridge), (5, Template::Chasm)] {
+                    let screen = generate_screen(seed, index, width, &lo);
+                    assert_eq!(screen.template, expected, "seed {seed}, screen {index}");
+                    let kind = if index == 2 {
+                        StructureKind::RadioMast
+                    } else {
+                        StructureKind::Silo
+                    };
+                    assert_eq!(screen.structures[0].kind, kind);
+                    assert!(!screen.fell_back, "seed {seed}, screen {index}");
+                    assert!(screen.candidates >= MIN_SOLUTIONS);
+                    if index == 2 {
+                        let muzzle = screen.muzzle();
+                        let target = solver::aim_points(&screen, 0).unwrap()[0];
+                        let blocked = ((muzzle.x as usize + 3)..target.x as usize).any(|x| {
+                            let y = muzzle.y
+                                + (target.y - muzzle.y) * (x as f64 - muzzle.x)
+                                    / (target.x - muzzle.x);
+                            screen.field.surface_at(x as f64) > y
+                        });
+                        assert!(blocked, "ridge leaves a clear sightline for seed {seed}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn target_count_mix_overlaps_progression_tiers() {
         assert_eq!(target_count_weights(0), [100, 0, 0]);
         assert_eq!(target_count_weights(2), [100, 0, 0]);
@@ -2033,6 +2111,64 @@ mod tests {
         let hi_col = (st.x0 + st.footprint() + 30).min(screen.width);
         let risen = (lo_col..hi_col).any(|i| screen.field.surface(i) > before[i] + 0.5);
         assert!(risen, "no debris mound anywhere near the collapse");
+    }
+
+    #[test]
+    fn a_direct_hit_clears_old_rubble_without_reviving_the_target() {
+        let lo = Loadout::new();
+        let mut screen = (3..20)
+            .map(|index| generate_screen(SEED, index, 320, &lo))
+            .find(|screen| screen.structures.len() > 1)
+            .expect("a multi-target screen");
+        assert_eq!(screen.structures.len(), 2);
+        screen.structures[0].state = StructState::Collapsed;
+        let rubble = screen.target_boxes()[0];
+        let hit = rubble.centre();
+
+        screen.detonate(End::Structure { index: 0, pos: hit }, 1.0, &lo);
+        assert_eq!(screen.structures[0].state, StructState::Cleared);
+        assert!(screen.structures[0].is_down());
+        assert!(!screen.cleared(), "the other target still stands");
+        assert_eq!(screen.structures[1].state, StructState::Intact);
+
+        let boxes = screen.target_boxes();
+        assert_eq!(boxes.len(), 2, "ballistic indices must stay stable");
+        assert!(!crate::ballistics::segment_hits_aabb(
+            Vec2::new(rubble.x0 - 10.0, hit.y),
+            Vec2::new(rubble.x1 + 10.0, hit.y),
+            boxes[0].expand(crate::SHELL_RADIUS),
+        ));
+        let integrity = screen.structures[0].integrity;
+        screen.detonate(
+            End::Terrain {
+                pos: hit,
+                material: Material::Sand,
+            },
+            1.0,
+            &lo,
+        );
+        assert_eq!(screen.structures[0].state, StructState::Cleared);
+        assert_eq!(screen.structures[0].integrity, integrity);
+    }
+
+    #[test]
+    fn a_second_shell_passes_through_a_cleared_wreck() {
+        let lo = Loadout::new();
+        let mut screen = generate_screen(SEED, 0, 320, &lo);
+        screen.structures[0].state = StructState::Collapsed;
+        let shot = shot(0, 820);
+
+        let first = screen.apply_shot(shot, &lo, None, false);
+        assert!(matches!(
+            first.traces[0].end,
+            End::Structure { index: 0, .. }
+        ));
+        assert_eq!(screen.structures[0].state, StructState::Cleared);
+        let second = screen.apply_shot(shot, &lo, None, false);
+        assert!(!matches!(
+            second.traces[0].end,
+            End::Structure { index: 0, .. }
+        ));
     }
 
     #[test]

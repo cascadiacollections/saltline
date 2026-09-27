@@ -89,11 +89,6 @@ use crate::touch::Button;
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
 const TITLE_BACKGROUND_PATH: &str = "res://art/title_background_320x180.png";
-const PARALLAX_BACKGROUND_PATHS: [&str; 3] = [
-    "res://art/backgrounds/parallax_sky_512x180.png",
-    "res://art/backgrounds/parallax_mesas_512x180.png",
-    "res://art/backgrounds/parallax_dunes_512x180.png",
-];
 /// Music sits behind the sharper one-shot effects instead of competing with them.
 const TITLE_GAIN_DB: f32 = -8.0;
 /// A cold launch should not hit the speaker at the track's full level.
@@ -215,10 +210,6 @@ impl INode2D for SaltLine {
             pal: Palette::load(PALETTE_PATH),
             sprites: Some(Sprites::load_all(SPRITE_DIR)),
             title_background: Sprites::load_one(TITLE_BACKGROUND_PATH),
-            parallax_backgrounds: PARALLAX_BACKGROUND_PATHS
-                .iter()
-                .map(|path| Sprites::load_one(path))
-                .collect(),
         };
         self.g = Game::new(mobile, save::load());
         self.find_last_crash();

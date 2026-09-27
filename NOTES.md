@@ -218,3 +218,16 @@ with guessed values.
   in-progress run from epoch 2 is discarded on update: the resume file
   refuses an older epoch rather than replay it under new rules. Epoch
   digest: `0x64713d327a31a792`.
+- **Epoch 4:** screen 3 features a radio mast behind a ridge that blocks a
+  straight sightline, and screen 6 features a silo across a chasm. Other early
+  screens still draw from their band's template and structure weights.
+  The normal solvability gate and fallback ladder still apply. This changes
+  generated screens and the outcomes of saved shot logs, so an in-progress
+  epoch-3 run is discarded on update. Epoch digest: `0x1104ab329b376f2c`.
+- **Epoch 5:** a direct shell hit on an already collapsed wreck clears its
+  drawing and collision box. It still counts as a downed target, and the
+  debris mound remains destructible terrain. A shot log that strikes rubble
+  can now replay differently, so epoch-4 in-progress runs are discarded.
+  The epoch digest includes an explicit rubble-clearing probe because the
+  scripted golden runs do not reliably take that second shot. Epoch digest:
+  `0x9c4ef5d00758cebe`.
