@@ -190,6 +190,19 @@ section:first-of-type { border-top: 0; }
 .btn.ghost:hover { color: var(--sand); border-color: var(--sand); }
 .fineprint { font-size: .8rem; color: var(--rock); }
 
+/* ---------------------------------------------------- gameplay preview */
+.gameplay-preview {
+  display: grid;
+  grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
+  align-items: center;
+  gap: 2rem;
+  padding-top: 2.5rem;
+  padding-bottom: 2.5rem;
+}
+.gameplay-preview > * { min-width: 0; }
+.gameplay-preview .preview-copy p { color: var(--rock); max-width: 42ch; }
+.gameplay-preview .shot-figure { margin: 0; }
+
 /* ----------------------------------------------------------- shareware */
 .shareware {
   display: grid; gap: 2rem;
@@ -340,7 +353,7 @@ footer nav { display: grid; gap: .4rem; font-size: .88rem; }
 .media-grid img, .split img, .palette img, .shot-figure img { max-width: 100%; }
 
 @media (max-width: 760px) {
-  .shareware, .build-grid { grid-template-columns: minmax(0, 1fr); }
+  .gameplay-preview, .shareware, .build-grid { grid-template-columns: minmax(0, 1fr); }
   .hero-copy { margin-top: -3rem; }
   .keys th { width: 7.5rem; }
 }
