@@ -35,9 +35,12 @@ func _exit_tree() -> void:
 
 
 func _on_capabilities_changed() -> void:
-	_attempted = false
-	if _registered and not DesktopServices.has_capability(DesktopServices.Capability.GAME_MODE):
+	var available := DesktopServices.has_capability(DesktopServices.Capability.GAME_MODE)
+	if _registered and not available:
 		_registered = false
+	# A refresh must not register the same process twice: losing the result of
+	# the second call would also prevent the first registration from being freed.
+	_attempted = _registered
 
 
 func _release_game_mode() -> void:
