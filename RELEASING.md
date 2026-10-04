@@ -31,8 +31,8 @@ Supported toolchain, pinned and checked in:
 ```sh
 uv sync --locked
 cargo build --release -p salt-line-godot
-godot --headless --path . --import
-godot --headless --path . --export-release "Linux" build/SaltLine.x86_64
+bash tools/godot_headless.sh --import
+bash tools/godot_headless.sh --export-release "Linux" build/SaltLine.x86_64
 ```
 
 `--import` is not optional on a clean checkout: without it the export succeeds
