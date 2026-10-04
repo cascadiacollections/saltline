@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Kevin Coughlin
 #
 # SPDX-License-Identifier: MIT
-extends DesktopServicesBackend
 class_name DesktopServicesMockBackend
+extends DesktopServicesBackend
 
 ## Fully scripted backend used by the test suite and by games that want to
 ## exercise portal code paths without a desktop session.
@@ -49,7 +49,8 @@ var interface_versions: Dictionary = {
 	_FACADE.Capability.NOTIFICATION: 2,
 }
 
-## Value returned by [method game_mode_query_status].
+## Value returned by [method game_mode_query_status]: a
+## [code]GameModeStatus[/code], not a raw portal code.
 var next_game_mode_status: int = 0
 ## Value returned by [method game_mode_register] and [method game_mode_unregister].
 var next_game_mode_result: int = 0
@@ -149,6 +150,7 @@ func remove_notification(id: String) -> bool:
 
 
 # --- Test drivers -------------------------------------------------------------
+
 
 ## Emits [signal DesktopServicesBackend.request_completed] as the portal would.
 func complete_request(handle: String, response: int, results: Dictionary = {}) -> void:

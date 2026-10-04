@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Pin the Linux native bridge to the audited addon revision copied into
 # addons/xdg_portals. The addon remains usable with its null backend elsewhere.
-revision=b6405883ec05d32f214a5cdc79cbb5dc83860539
+revision=6e14d9975f3bb0b054d958dddb7afc977fb7256e
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source_dir="${XDG_PORTALS_BUILD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/saltline/xdg-portals-src}"
 output_dir="$root/addons/xdg_portals/bin"
