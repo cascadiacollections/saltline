@@ -433,17 +433,19 @@ jobs:
         # Exporting without importing first ships an artifact with no art in
         # it — which exports successfully and then launches wrong.
         #
-        # --frame-delay works around godotengine/godot#111048: on a cold cache the
-        # editor quits before the GDExtension docs finish generating and crashes
-        # (reliably on the macOS runner with 4.7.2, signal 11). Remove it once fixed.
+        # godotengine/godot#111048: the editor can quit before a deferred
+        # GDExtension doc update runs and crash (signal 11, exit 139) after the
+        # work is done. --frame-delay only narrowed that window; Windows still
+        # crashed with it. tools/godot_headless.sh removes the triggers. Drop
+        # both once the pinned Godot has the fix.
         shell: bash
         run: |
-          "$GODOT_BIN" --headless --path . --frame-delay 800 --import
+          bash tools/godot_headless.sh --frame-delay 800 --import
       - name: export playable binary
         shell: bash
         run: |
           set -eu
-          "$GODOT_BIN" --headless --path . --export-release \
+          bash tools/godot_headless.sh --export-release \
             "${{ matrix.preset }}" "build/${{ matrix.output }}"
           # `--export-release` has been known to exit 0 having written nothing,
           # so the file is the gate, not the exit code.
@@ -760,8 +762,13 @@ jobs:
             echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey"
           } >> "$GITHUB_ENV"
           echo "mode=debug" >> "$GITHUB_OUTPUT"
+      # The editor loads the host library, not the Android one. Without it the
+      # extension fails to load at startup and import hits godotengine/godot#111048
+      # (see tools/godot_headless.sh).
+      - name: build the GDExtension for the editor
+        run: cargo build -p salt-line-godot
       - name: import assets
-        run: godot --headless --path . --frame-delay 800 --import
+        run: bash tools/godot_headless.sh --frame-delay 800 --import
       - name: export the APK
         env:
           # Kept out of GITHUB_ENV so the password lives only in this step.
@@ -771,7 +778,7 @@ jobs:
           # Godot takes the SDK from ANDROID_HOME and the JDK from JAVA_HOME.
           export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"
           mkdir -p build dist
-          godot --headless --path . --export-release "Android" build/SaltLine.apk
+          bash tools/godot_headless.sh --export-release "Android" build/SaltLine.apk
           test -s build/SaltLine.apk
           cp build/SaltLine.apk dist/SaltLine-android-arm64.apk
           ls -l dist
@@ -822,13 +829,13 @@ jobs:
           rustup target add aarch64-apple-ios
           cargo build -p salt-line-godot --target aarch64-apple-ios
       - name: import assets
-        run: godot --headless --path . --frame-delay 800 --import
+        run: bash tools/godot_headless.sh --frame-delay 800 --import
       - name: export the Xcode project
         run: |
           set -eu
           sed -i '' 's/^application\/app_store_team_id=".*"$/application\/app_store_team_id="ABCDE12345"/' export_presets.cfg
           mkdir -p build/ios
-          godot --headless --path . --export-debug "iOS" build/ios/SaltLine.ipa
+          bash tools/godot_headless.sh --export-debug "iOS" build/ios/SaltLine.ipa
           test -d build/ios/SaltLine.xcodeproj
           info=build/ios/SaltLine/SaltLine-Info.plist
           for key in NSCameraUsageDescription NSMicrophoneUsageDescription NSPhotoLibraryUsageDescription; do
@@ -906,13 +913,13 @@ jobs:
       - name: import assets
         shell: bash
         run: |
-          "$GODOT_BIN" --headless --path . --import
+          bash tools/godot_headless.sh --import
       - name: export the arm64 binary
         shell: bash
         run: |
           set -eu
           mkdir -p build dist
-          "$GODOT_BIN" --headless --path . --export-release "Windows Desktop ARM64" build/SaltLine-arm64.exe
+          bash tools/godot_headless.sh --export-release "Windows Desktop ARM64" build/SaltLine-arm64.exe
           test -s build/SaltLine-arm64.exe
           7z a -tzip dist/SaltLine-windows-arm64.zip ./build/SaltLine-arm64.exe > /dev/null
           ls -l dist

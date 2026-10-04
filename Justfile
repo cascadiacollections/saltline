@@ -67,10 +67,10 @@ android-lib profile="debug":
     "{{ android_bin }}/llvm-strip" --strip-debug target/aarch64-linux-android/{{ profile }}/libsalt_line_godot.so
 
 # Build the debug APK at build/SaltLine.apk.
-android-apk: android-lib
+android-apk: build android-lib
     mkdir -p build
-    godot --headless --path . --frame-delay 800 --import
-    godot --headless --path . --export-debug "Android" build/SaltLine.apk
+    bash tools/godot_headless.sh --frame-delay 800 --import
+    bash tools/godot_headless.sh --export-debug "Android" build/SaltLine.apk
 
 # Build, install and launch on the attached device or emulator.
 android: android-apk
@@ -108,8 +108,8 @@ ios-project: build ios-lib
         exit 1
     fi
     rm -rf build/ios && mkdir -p build/ios
-    godot --headless --path . --frame-delay 800 --import
-    godot --headless --path . --export-debug "iOS" build/ios/SaltLine.ipa
+    bash tools/godot_headless.sh --frame-delay 800 --import
+    bash tools/godot_headless.sh --export-debug "iOS" build/ios/SaltLine.ipa
     test -d build/ios/SaltLine.xcodeproj
     # Godot 4.7.2 emits empty usage strings even though Salt Line does not use
     # the camera, microphone or photo library. Empty strings make Xcode warn.
