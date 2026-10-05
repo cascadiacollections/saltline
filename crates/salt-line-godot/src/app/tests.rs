@@ -494,6 +494,24 @@ fn firing_replays_the_shot_then_lands_it() {
 }
 
 #[test]
+fn shell_run_clock_lesson_waits_until_the_reserve_falls_below_starting_value() {
+    let mut g = playing(1);
+    g.save.learned |= LEARN_WIND;
+    assert_eq!(
+        g.play.run.as_ref().unwrap().shells,
+        salt_line_sim::START_SHELLS
+    );
+
+    g.fire();
+    assert_eq!(g.save.learned & LEARN_SHELLS, 0);
+    assert!(g.play.run.as_ref().unwrap().shells < salt_line_sim::START_SHELLS);
+
+    g.play.anim = None;
+    g.fire();
+    assert_eq!(g.save.learned & LEARN_SHELLS, LEARN_SHELLS);
+}
+
+#[test]
 fn a_long_frame_moves_the_replay_a_tenth_of_a_second_at_most() {
     let mut g = playing(1);
     tick(&mut g, keys(&[Key::Space]));

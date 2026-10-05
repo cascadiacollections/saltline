@@ -231,3 +231,8 @@ with guessed values.
   The epoch digest includes an explicit rubble-clearing probe because the
   scripted golden runs do not reliably take that second shot. Epoch digest:
   `0x9c4ef5d00758cebe`.
+- **Epoch 6:** the target-count mix now introduces doubles with the first wind
+  band and triples in band 2, then ramps them through band 9 instead of
+  guaranteeing single-target screens for the first twelve. Existing epoch-5
+  runs are discarded on update because generated screens and outcomes change.
+  Epoch digest: `0x80d3e8e017da7d72`.

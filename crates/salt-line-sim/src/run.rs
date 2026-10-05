@@ -661,25 +661,27 @@ pub fn terrain_amplitude(band: u32) -> f64 {
     (1.0 + band as f64 * 0.05).min(2.2)
 }
 
-/// Maximum target count: 1, rising to 2 at band 3 and 3 at band 9.
+/// Maximum target count: 1, rising to 2 at band 1 and 3 at band 2.
 pub fn target_count(band: u32) -> u32 {
-    if band >= 9 {
+    if band >= 2 {
         3
-    } else if band >= 3 {
+    } else if band >= 1 {
         2
     } else {
         1
     }
 }
 
-/// Weighted target-count mix for a band. The overlap between tiers keeps
-/// single-, double-, and triple-target economy visible during build testing
-/// instead of switching the whole run at two hard thresholds.
+/// Weighted target-count mix for a band. Multi-target screens enter alongside
+/// the first wind band, then ramp gradually so the opening reserve does not
+/// spend twelve screens growing on guaranteed single-target clears.
 pub fn target_count_weights(band: u32) -> [u32; 3] {
     match band {
-        0..=2 => [100, 0, 0],
-        3..=5 => [35, 65, 0],
-        6..=8 => [20, 80, 0],
+        0 => [100, 0, 0],
+        1 => [65, 35, 0],
+        2 => [40, 55, 5],
+        3..=5 => [20, 60, 20],
+        6..=8 => [10, 55, 35],
         9..=19 => [10, 40, 50],
         _ => [5, 25, 70],
     }
@@ -1855,9 +1857,9 @@ mod tests {
         assert_eq!(terrain_amplitude(0), 1.0);
         assert_eq!(terrain_amplitude(100), 2.2, "amplitude cap");
         assert_eq!(target_count(0), 1);
-        assert_eq!(target_count(2), 1);
-        assert_eq!(target_count(3), 2);
-        assert_eq!(target_count(8), 2);
+        assert_eq!(target_count(1), 2);
+        assert_eq!(target_count(2), 3);
+        assert_eq!(target_count(8), 3);
         assert_eq!(target_count(9), 3);
         assert_eq!(target_count(200), 3);
         assert_eq!(elevation_delta_limit(0), 8.0);
@@ -1954,9 +1956,10 @@ mod tests {
     #[test]
     fn target_count_mix_overlaps_progression_tiers() {
         assert_eq!(target_count_weights(0), [100, 0, 0]);
-        assert_eq!(target_count_weights(2), [100, 0, 0]);
-        assert!(target_count_weights(6)[0] > 0);
-        assert_eq!(target_count_weights(6)[2], 0);
+        assert_eq!(target_count_weights(1), [65, 35, 0]);
+        assert_eq!(target_count_weights(2), [40, 55, 5]);
+        assert!(target_count_weights(4)[2] > 0);
+        assert!(target_count_weights(6)[2] > target_count_weights(4)[2]);
         assert!(target_count_weights(20)[2] > target_count_weights(20)[1]);
     }
 
