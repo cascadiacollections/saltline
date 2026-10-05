@@ -8,26 +8,40 @@
 //! ```text
 //! cargo run --release -p salt-line-sim --bin batch
 //! cargo run --release -p salt-line-sim --bin batch -- --seeds 50 --screens 100 --build demo
+//! cargo run --release -p salt-line-sim --bin batch -- --seeds 100 --screens 40 --skill steady
 //! ```
 //!
 //! Exit status is non-zero if any screen failed to validate, so CI can gate on it.
 //!
 //! Flags: `--seeds N`, `--screens N` (per seed), `--width W`, `--build
-//! base|evolving|drift|demo|precision|risk` (default evolving), `--fast` (cap
+//! base|evolving|drift|demo|precision|risk` (default evolving), `--skill
+//! perfect|steady|rough` (default perfect), `--fast` (cap
 //! candidate counts at [`solver::GATE_CAP`], so the histogram saturates) and
-//! `-v` (print each failure as it happens).
+//! `-v` (print each failure as it happens). Skills are fixed hit assumptions:
+//! perfect (100%), steady (80%) or rough (55%). A miss wastes one shot; the
+//! simulation does not try to model aim, ballistics or player learning.
 //!
-//! The report has three parts: surviving direct-aim candidates by band and
-//! by template, a solver-assisted economy model (see the comment above its
-//! printout), and totals. Screen generation climbs down a four-rung ladder
+//! The report includes surviving direct-aim candidates by band and by
+//! template, per-band reserve/target curves, solver-assisted economy metrics,
+//! and totals. Screen generation climbs down a four-rung ladder
 //! (eight drawn seeds, eight Flat seeds, a terrain-free single target, then a
 //! level calm-air single target) and every rung is gated on the solver, so a
 //! failure here means even the level rung failed. The totals count how many
 //! screens came off each rung, and every screen with targets, fallbacks
-//! included, is re-validated here rather than trusted.
+//! included, is re-validated here rather than trusted. Seeds are the first N
+//! values of a fixed schedule; changing skill/build preserves the seed set.
+//! The economy model samples every shot a screen will take up front and ends
+//! the run when that count exceeds the reserve: the player would run dry
+//! mid-screen, so the reserve is recorded as 0. Seeds and the miss stream
+//! depend only on the seed index, so the three skills are compared on the same
+//! luck. Across builds the miss draws can drift apart once target counts
+//! differ. The hit rate is flat: it ignores wind, distance, indirect-only
+//! targets, Salvage refunds and Chalk marks, so with evolving/demo builds the
+//! non-perfect profiles slightly overcharge each miss. Read the profiles
+//! against each other, not as calibrated player types.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
-use salt_line_sim::rng::screen_seed;
+use salt_line_sim::rng::{screen_seed, Pcg32};
 use salt_line_sim::run::{generate_screen, refund, Rung, Screen};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::Template;
@@ -49,6 +63,36 @@ enum Build {
     Precision,
     /// Featherweight, Dead Reckoning, Forced March.
     Risk,
+}
+
+/// Deterministic accuracy assumptions for the solver-assisted economy model.
+/// Each target takes geometric(p) shots to fell; misses consume shells but do
+/// not alter the generated screen. This is an economy sensitivity model, not
+/// an aim/ballistics simulation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Skill {
+    Perfect,
+    Steady,
+    Rough,
+}
+
+impl Skill {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "perfect" => Self::Perfect,
+            "steady" => Self::Steady,
+            "rough" => Self::Rough,
+            _ => return None,
+        })
+    }
+
+    fn hit_percent(self) -> u32 {
+        match self {
+            Self::Perfect => 100,
+            Self::Steady => 80,
+            Self::Rough => 55,
+        }
+    }
 }
 
 impl Build {
@@ -86,6 +130,7 @@ struct Args {
     screens: u32,
     width: usize,
     build: Build,
+    skill: Skill,
     /// Cap the candidate count instead of counting them all. Much faster, but
     /// the histogram saturates.
     fast: bool,
@@ -100,6 +145,7 @@ impl Default for Args {
             screens: 100,
             width: SCREEN_W_REF,
             build: Build::Evolving,
+            skill: Skill::Perfect,
             fast: false,
             verbose: false,
         }
@@ -127,11 +173,18 @@ fn parse_args() -> Args {
                     std::process::exit(2)
                 });
             }
+            "--skill" => {
+                let v = value();
+                a.skill = Skill::parse(&v).unwrap_or_else(|| {
+                    eprintln!("unknown skill '{v}'; use perfect|steady|rough");
+                    std::process::exit(2)
+                });
+            }
             "--fast" => a.fast = true,
             "--verbose" | "-v" => a.verbose = true,
             "--help" | "-h" => {
                 println!(
-                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--fast] [-v]"
+                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough] [--fast] [-v]"
                 );
                 std::process::exit(0);
             }
@@ -143,6 +196,38 @@ fn parse_args() -> Args {
         i += 1;
     }
     a
+}
+
+#[derive(Default)]
+struct BandEconomy {
+    clears: u64,
+    supplies: u64,
+    exhausted: u64,
+    targets: [u64; 3],
+    reserve_before: i64,
+    reserve_after: i64,
+    min_after: i32,
+    max_after: i32,
+}
+
+impl BandEconomy {
+    fn record(&mut self, targets: usize, before: i32, after: i32, supply: bool) {
+        self.clears += 1;
+        if supply {
+            self.supplies += 1;
+        } else if (1..=3).contains(&targets) {
+            self.targets[targets - 1] += 1;
+        }
+        self.reserve_before += i64::from(before);
+        self.reserve_after += i64::from(after);
+        if self.clears == 1 {
+            self.min_after = after;
+            self.max_after = after;
+        } else {
+            self.min_after = self.min_after.min(after);
+            self.max_after = self.max_after.max(after);
+        }
+    }
 }
 
 /// One row of the report: a band or a template.
@@ -263,20 +348,43 @@ fn bar(n: u64, max: u64, width: usize) -> String {
     s
 }
 
+/// Number of attempts needed to land one target under the selected seeded
+/// accuracy assumption. The 64-attempt cap is a safety bound in case a
+/// future profile hits 0%; at 55% it never triggers in practice.
+fn attempts_per_target(skill: Skill, rng: &mut Pcg32) -> u32 {
+    let hit_percent = skill.hit_percent();
+    let mut attempts = 1;
+    while attempts < 64 && rng.range_u32(0, 99) >= hit_percent {
+        attempts += 1;
+    }
+    attempts
+}
+
 fn main() {
     let args = parse_args();
     let total = args.seeds * args.screens as u64;
     println!(
-        "salt-line batch: {} seeds x {} screens = {total} screens, width {}, build {:?}{}",
+        "salt-line batch: {} seeds x {} screens = {total} screens, width {}, build {:?}, skill {:?} ({}% hit chance){}",
         args.seeds,
         args.screens,
         args.width,
         args.build,
+        args.skill,
+        args.skill.hit_percent(),
         if args.fast { ", fast" } else { "" }
     );
-    println!("gate: worst-target candidates >= {MIN_SOLUTIONS}\n");
+    println!(
+        "seed schedule: mix64(0x53414C54 ^ n * 0x9E3779B97F4A7C15), n < {}",
+        args.seeds
+    );
+    println!("gate: worst-target candidates >= {MIN_SOLUTIONS}");
+    println!(
+        "economy: fixed {}% hit chance per shot, independent of target difficulty and aim\n",
+        args.skill.hit_percent()
+    );
 
     let mut by_band: Vec<Bucket> = Vec::new();
+    let mut economy_by_band: Vec<BandEconomy> = Vec::new();
     let mut by_template: Vec<Bucket> = vec![Bucket::default(); Template::ALL.len()];
     let mut failures: Vec<(u64, u32, &'static str, usize)> = Vec::new();
     let mut supply_screens = 0u64;
@@ -291,6 +399,7 @@ fn main() {
     let mut one_shot_clears = 0u64;
     let mut clear_tiers = [0u64; 4];
     let mut indirect_shots = 0u64;
+    let mut skill_misses = 0u64;
     let mut deaths = 0u64;
     let mut death_screen_sum = 0u64;
     let mut earliest_death = u32::MAX;
@@ -305,6 +414,7 @@ fn main() {
         let run_seed =
             salt_line_sim::rng::mix64(0x5341_4C54 ^ s.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let mut reserve = START_SHELLS;
+        let mut accuracy_rng = Pcg32::new(run_seed ^ 0xAC_C0_A1_71);
         let mut previous = Loadout::new();
         let mut alive = true;
         let mut run_length = 0u32;
@@ -332,12 +442,18 @@ fn main() {
             }
             previous = lo.clone();
             let screen = generate_screen(run_seed, index, args.width, &lo);
+            let band = band_of(index) as usize;
+            if economy_by_band.len() <= band {
+                economy_by_band.resize_with(band + 1, BandEconomy::default);
+            }
             if screen.supply {
                 supply_screens += 1;
                 if alive {
+                    let before = reserve;
                     reserve = (reserve + 6).min(lo.cap());
                     economy_bonus += 6;
                     run_length += 1;
+                    economy_by_band[band].record(0, before, reserve, true);
                 }
                 continue;
             }
@@ -359,27 +475,35 @@ fn main() {
             let worst = report.worst;
             let direct = report.worst_direct;
 
-            // Economy model: one shell per target, then the refund and bonus
-            // a real clear would pay. The run ends when the reserve cannot
-            // cover the next screen; validation carries on regardless.
+            // Economy model: sample a seeded number of attempts per target,
+            // then pay the screen's refund and modifiers. Misses consume
+            // shells but do not change the screen or the next target's aim.
+            // A run exits when it cannot cover the next modeled screen.
             if alive {
-                let shots = screen.structures.len() as i32;
-                if reserve < shots {
+                let target_count = screen.structures.len();
+                let shots: u32 = (0..target_count)
+                    .map(|_| attempts_per_target(args.skill, &mut accuracy_rng))
+                    .sum();
+                let before = reserve;
+                if reserve < shots as i32 {
                     alive = false;
+                    reserve = 0;
                     deaths += 1;
+                    economy_by_band[band].exhausted += 1;
                     death_screen_sum += index as u64;
                     earliest_death = earliest_death.min(index);
                     latest_death = latest_death.max(index);
                 } else {
-                    reserve -= shots;
+                    reserve -= shots as i32;
                     economy_spent += shots as u64;
-                    targets_cleared += shots as u64;
+                    targets_cleared += target_count as u64;
+                    skill_misses += (shots - target_count as u32) as u64;
                     indirect_shots += report
                         .per_target_direct
                         .iter()
                         .filter(|&&count| count == 0)
                         .count() as u64;
-                    let paid = refund(shots as u32, &lo);
+                    let paid = refund(shots, &lo);
                     let mut bonus = lo.shells_per_clear;
                     if shots == 1 {
                         one_shot_streak += 1;
@@ -390,6 +514,7 @@ fn main() {
                         one_shot_streak = 0;
                     }
                     reserve = (reserve + paid + bonus).min(lo.cap());
+                    economy_by_band[band].record(target_count, before, reserve, false);
                     economy_refunds += paid.max(0) as u64;
                     economy_bonus += bonus.max(0) as u64;
                     combat_clears += 1;
@@ -401,7 +526,6 @@ fn main() {
                 }
             }
 
-            let band = band_of(index) as usize;
             if by_band.len() <= band {
                 by_band.resize(band + 1, Bucket::default());
             }
@@ -490,12 +614,61 @@ fn main() {
         );
     }
 
+    // ----------------------------------------- economy curves by band
+    // Each row pools completed screens from the surviving seeded runs.
+    println!(
+        "\nreserve trajectory by band (runs still alive only; clears include supply screens; \
+         dry = runs that ran out of shells there)"
+    );
+    println!(
+        "{:>5} {:>7} {:>7} {:>7} {:>18} {:>8} {:>20} {:>12}",
+        "band",
+        "clears",
+        "supply",
+        "dry",
+        "target mix 1/2/3",
+        "mean Δ",
+        "reserve before→after",
+        "end min..max"
+    );
+    for (band, stats) in economy_by_band.iter().enumerate() {
+        if stats.clears == 0 && stats.exhausted == 0 {
+            continue;
+        }
+        let combat_clears: u64 = stats.targets.iter().sum();
+        let mix = if combat_clears == 0 {
+            String::from("—")
+        } else {
+            format!(
+                "{:.0}/{:.0}/{:.0}%",
+                stats.targets[0] as f64 / combat_clears as f64 * 100.0,
+                stats.targets[1] as f64 / combat_clears as f64 * 100.0,
+                stats.targets[2] as f64 / combat_clears as f64 * 100.0
+            )
+        };
+        // A band where every run ran dry has no completed screens to average.
+        let (delta, trajectory, range) = if stats.clears == 0 {
+            (String::from("—"), String::from("—"), String::from("—"))
+        } else {
+            let clears = stats.clears as f64;
+            let mean_before = stats.reserve_before as f64 / clears;
+            let mean_after = stats.reserve_after as f64 / clears;
+            (
+                format!("{:+.2}", mean_after - mean_before),
+                format!("{mean_before:.1}→{mean_after:.1}"),
+                format!("{}..{}", stats.min_after, stats.max_after),
+            )
+        };
+        println!(
+            "{band:>5} {:>7} {:>7} {:>7} {mix:>18} {delta:>8} {trajectory:>20} {range:>12}",
+            stats.clears, stats.supplies, stats.exhausted,
+        );
+    }
+
     // -------------------------------------------- deterministic play model
-    // This is an ideal solver-assisted policy: one successful shot per target,
-    // preferring a direct candidate. It provides a stable economy baseline;
-    // movement away from it after tuning is immediately visible. "Preferring"
-    // is only in the accounting: a target with no direct-aim candidate counts
-    // as an indirect shot, and costs the same one shell.
+    // One modeled successful hit per target plus seeded geometric misses at
+    // the selected accuracy rate. Direct/indirect classification still comes
+    // from the solver; the misses only change shell spending and refund tier.
     println!("\nsolver-assisted run metrics");
     println!(
         "shell economy: spent {economy_spent}, clear refunds {economy_refunds}, \
@@ -519,9 +692,9 @@ fn main() {
         clear_tiers[3]
     );
     println!(
-        "indirect-shot usage: {indirect_shots}/{} target shots ({:.2}%) had no direct candidate",
-        economy_spent,
-        indirect_shots as f64 / economy_spent.max(1) as f64 * 100.0
+        "targeting: {indirect_shots}/{} targets ({:.2}%) lack a direct candidate; modeled extra misses: {skill_misses}",
+        targets_cleared,
+        indirect_shots as f64 / targets_cleared.max(1) as f64 * 100.0
     );
     println!(
         "death/run length: {deaths}/{} runs exhausted; mean run {:.1}/{} screens{}",

@@ -29,6 +29,11 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo clippy -p salt-line-godot --all-targets --features profiling -- -D warnings
 
+# Deterministic shell-economy and solvability report. Skill is perfect, steady or rough.
+# Always passes --fast, so the candidate histogram saturates at the gate cap.
+balance seeds="100" screens="40" skill="perfect" build="base":
+    cargo run --release -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --skill {{ skill }} --build {{ build }} --fast
+
 # macOS exports ship one universal dylib: `macos.release` in salt_line.gdextension points at
 # target/universal-apple-darwin/release. Debug builds stay host-only at target/debug, so
 # `just run` does not need this; run it before `godot --export-release "macOS"` on a Mac.
