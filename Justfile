@@ -29,20 +29,21 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo clippy -p salt-line-godot --all-targets --features profiling -- -D warnings
 
-# Deterministic shell-economy and solvability report. Skill is perfect, steady or rough.
+# Deterministic shell-economy and solvability report. Skill is perfect, steady or rough;
+# aim is flat (same hit chance every shot) or scaled (harder shots miss more).
 # Always passes --fast, so the candidate histogram saturates at the gate cap.
-balance seeds="100" screens="40" skill="perfect" build="base":
-    cargo run --release -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --skill {{ skill }} --build {{ build }} --fast
+balance seeds="100" screens="40" skill="perfect" build="base" aim="flat":
+    cargo run --release -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --skill {{ skill }} --build {{ build }} --aim {{ aim }} --fast
 
 # Sweep the hit chance (10-100) and print one survival/reserve line per step,
 # to find where the shell economy stops carrying a player. Same seeds at every
-# step. Stops with batch's report if a screen fails to validate.
-balance-sweep seeds="100" screens="40" build="base" from="40" to="100" step="5":
+# step. Aim is flat or scaled. Stops with batch's report if a screen fails to validate.
+balance-sweep seeds="100" screens="40" build="base" from="40" to="100" step="5" aim="flat":
     #!/usr/bin/env bash
     set -euo pipefail
     printf '%5s  %-10s %-9s %s\n' "hit%" "exhausted" "mean run" "ending reserve (mean, min)"
     for hit in $(seq {{ from }} {{ step }} {{ to }}); do
-        if ! out=$(cargo run --release -q -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --hit "$hit" --build {{ build }} --fast); then
+        if ! out=$(cargo run --release -q -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --hit "$hit" --build {{ build }} --aim {{ aim }} --fast); then
             printf '%s\n' "$out"
             exit 1
         fi
