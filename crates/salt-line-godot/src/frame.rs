@@ -2,8 +2,8 @@
 //! to ask the display about its shape again, and a one-entry memo for work
 //! that only changes with its inputs.
 //!
-//! The frame is one software-rasterised buffer uploaded whole (DESIGN §5.1),
-//! so an unchanged frame is pure waste on a phone: a full raster pass and a
+//! The frame is one software-rasterised buffer (DESIGN §5.1), so an
+//! unchanged frame is pure waste on a phone: a full raster pass and a
 //! texture upload for pixels already on screen.
 //!
 //! # Dirty flag plus busy
