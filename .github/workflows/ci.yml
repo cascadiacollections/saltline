@@ -414,7 +414,8 @@ jobs:
         run: |
           set -eu
           if [ "${{ runner.os }}" = "Windows" ]; then
-            main=$(find "$HOME/godot" -maxdepth 3 -name 'Godot_v*_win64.exe' \
+            main=$(find "$HOME/godot" -maxdepth 3 \
+                   \( -name 'Godot_v*_win64.exe' -o -name 'Godot_v*_windows_arm64.exe' \) \
                    ! -name '*_console.exe' | head -1)
             if [ -z "$main" ]; then
               echo "no unpacked Godot found under $HOME/godot" >&2
