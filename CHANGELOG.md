@@ -10,6 +10,8 @@ second. See RELEASING.md for the release steps.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-04
+
 ### Added
 
 - The first six screens now feature a radio mast behind a ridge that calls for
@@ -59,4 +61,5 @@ second. See RELEASING.md for the release steps.
 - The unused paywall and store code. Every build plays every screen. Old save
   files still load; their `unlocked` line is ignored.
 
-[Unreleased]: https://github.com/cascadiacollections/saltline/commits/main
+[Unreleased]: https://github.com/cascadiacollections/saltline/compare/v0.1.0...main
+[0.1.0]: https://github.com/cascadiacollections/saltline/releases/tag/v0.1.0
