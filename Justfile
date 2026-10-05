@@ -30,6 +30,7 @@ lint:
     cargo clippy -p salt-line-godot --all-targets --features profiling -- -D warnings
 
 # Deterministic shell-economy and solvability report. Skill is perfect, steady or rough.
+# Always passes --fast, so the candidate histogram saturates at the gate cap.
 balance seeds="100" screens="40" skill="perfect" build="base":
     cargo run --release -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --skill {{ skill }} --build {{ build }} --fast
 

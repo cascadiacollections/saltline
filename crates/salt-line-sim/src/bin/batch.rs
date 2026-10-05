@@ -30,8 +30,15 @@
 //! screens came off each rung, and every screen with targets, fallbacks
 //! included, is re-validated here rather than trusted. Seeds are the first N
 //! values of a fixed schedule; changing skill/build preserves the seed set.
-//! The economy model treats a screen as indivisible and stops a run when it
-//! cannot afford all modeled attempts for the next screen.
+//! The economy model samples every shot a screen will take up front and ends
+//! the run when that count exceeds the reserve: the player would run dry
+//! mid-screen, so the reserve is recorded as 0. Seeds and the miss stream
+//! depend only on the seed index, so the three skills are compared on the same
+//! luck. Across builds the miss draws can drift apart once target counts
+//! differ. The hit rate is flat: it ignores wind, distance, indirect-only
+//! targets, Salvage refunds and Chalk marks, so with evolving/demo builds the
+//! non-perfect profiles slightly overcharge each miss. Read the profiles
+//! against each other, not as calibrated player types.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::{screen_seed, Pcg32};
@@ -342,7 +349,8 @@ fn bar(n: u64, max: u64, width: usize) -> String {
 }
 
 /// Number of attempts needed to land one target under the selected seeded
-/// accuracy assumption. A cap makes even the rough profile's tail finite.
+/// accuracy assumption. The 64-attempt cap is a safety bound in case a
+/// future profile hits 0%; at 55% it never triggers in practice.
 fn attempts_per_target(skill: Skill, rng: &mut Pcg32) -> u32 {
     let hit_percent = skill.hit_percent();
     let mut attempts = 1;
@@ -366,10 +374,14 @@ fn main() {
         if args.fast { ", fast" } else { "" }
     );
     println!(
-        "seed schedule: mix64(0x53414C54 ^ n * 0x9E3779B97F4A7C15), n=0..{}",
+        "seed schedule: mix64(0x53414C54 ^ n * 0x9E3779B97F4A7C15), n < {}",
         args.seeds
     );
-    println!("gate: worst-target candidates >= {MIN_SOLUTIONS}\n");
+    println!("gate: worst-target candidates >= {MIN_SOLUTIONS}");
+    println!(
+        "economy: fixed {}% hit chance per shot, independent of target difficulty and aim\n",
+        args.skill.hit_percent()
+    );
 
     let mut by_band: Vec<Bucket> = Vec::new();
     let mut economy_by_band: Vec<BandEconomy> = Vec::new();
@@ -475,6 +487,7 @@ fn main() {
                 let before = reserve;
                 if reserve < shots as i32 {
                     alive = false;
+                    reserve = 0;
                     deaths += 1;
                     economy_by_band[band].exhausted += 1;
                     death_screen_sum += index as u64;
@@ -603,9 +616,12 @@ fn main() {
 
     // ----------------------------------------- economy curves by band
     // Each row pools completed screens from the surviving seeded runs.
-    println!("\nreserve trajectory by band (completed screens; per-screen averages)");
     println!(
-        "{:>5} {:>7} {:>7} {:>7} {:>18} {:>8} {:>16} {:>12}",
+        "\nreserve trajectory by band (runs still alive only; clears include supply screens; \
+         dry = runs that ran out of shells there)"
+    );
+    println!(
+        "{:>5} {:>7} {:>7} {:>7} {:>18} {:>8} {:>20} {:>12}",
         "band",
         "clears",
         "supply",
@@ -630,18 +646,22 @@ fn main() {
                 stats.targets[2] as f64 / combat_clears as f64 * 100.0
             )
         };
-        let clears = stats.clears.max(1) as f64;
-        let mean_before = stats.reserve_before as f64 / clears;
-        let mean_after = stats.reserve_after as f64 / clears;
-        let mean_delta = mean_after - mean_before;
+        // A band where every run ran dry has no completed screens to average.
+        let (delta, trajectory, range) = if stats.clears == 0 {
+            (String::from("—"), String::from("—"), String::from("—"))
+        } else {
+            let clears = stats.clears as f64;
+            let mean_before = stats.reserve_before as f64 / clears;
+            let mean_after = stats.reserve_after as f64 / clears;
+            (
+                format!("{:+.2}", mean_after - mean_before),
+                format!("{mean_before:.1}→{mean_after:.1}"),
+                format!("{}..{}", stats.min_after, stats.max_after),
+            )
+        };
         println!(
-            "{band:>5} {:>7} {:>7} {:>7} {:>18} {mean_delta:>+8.2} {mean_before:>7.1}→{mean_after:<7.1} {:>5}..{:<5}",
-            stats.clears,
-            stats.supplies,
-            stats.exhausted,
-            mix,
-            stats.min_after,
-            stats.max_after
+            "{band:>5} {:>7} {:>7} {:>7} {mix:>18} {delta:>8} {trajectory:>20} {range:>12}",
+            stats.clears, stats.supplies, stats.exhausted,
         );
     }
 
