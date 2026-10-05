@@ -82,8 +82,9 @@ pub struct Capture {
     rendered: [u64; 2],
     texture_updates: [u64; 2],
     texture_update_skips: [u64; 2],
-    /// Strips uploaded, summed over frames.
-    strips_sent: [u64; 2],
+    /// Strips that changed, and whole-frame uploads, summed over frames.
+    strips_changed: [u64; 2],
+    wholes: [u64; 2],
     process: [Samples; 2],
     tick: [Samples; 2],
     render: [Samples; 2],
@@ -108,7 +109,8 @@ impl Capture {
             rendered: [0; 2],
             texture_updates: [0; 2],
             texture_update_skips: [0; 2],
-            strips_sent: [0; 2],
+            strips_changed: [0; 2],
+            wholes: [0; 2],
             process: pair(),
             tick: pair(),
             render: pair(),
@@ -162,13 +164,15 @@ impl Capture {
         }
     }
 
-    /// The strip pass of one frame: comparing each strip with the last
-    /// upload and updating the `sent` that changed.
-    pub fn record_texture_update(&mut self, duration: Duration, sent: u64) {
+    /// The strip pass of one frame: comparing each strip with the screen,
+    /// `changed` of them differing, and uploading them, or the whole frame
+    /// (`whole` is 1) when too many did.
+    pub fn record_texture_update(&mut self, duration: Duration, changed: u64, whole: u64) {
         if let Some(mode) = self.frame_mode {
             let i = mode.index();
             self.texture_updates[i] += 1;
-            self.strips_sent[i] += sent;
+            self.strips_changed[i] += changed;
+            self.wholes[i] += whole;
             self.texture_update[i].observe(duration);
         }
     }
@@ -207,7 +211,7 @@ impl Capture {
             format!("updated process: {}", self.process[0].summary()),
             format!("updated core_tick: {}", self.tick[0].summary()),
             format!("updated software_render: {}", self.render[0].summary()),
-            format!("updated strip_pass: {} strips_sent_per_pass={:.2} (compare + update of changed strips; CPU call time, GPU completion is deferred)", self.texture_update[0].summary(), self.strips_sent[0] as f64 / self.texture_updates[0].max(1) as f64),
+            format!("updated strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} (compare + update of changed strips; CPU call time, GPU completion is deferred)", self.texture_update[0].summary(), self.strips_changed[0] as f64 / self.texture_updates[0].max(1) as f64, self.wholes[0]),
             format!(
                 "frozen: frames={} rendered={} texture_updates={} texture_update_skips={}",
                 self.frames[1], self.rendered[1], self.texture_updates[1], self.texture_update_skips[1]
@@ -215,7 +219,7 @@ impl Capture {
             format!("frozen process: {}", self.process[1].summary()),
             format!("frozen core_tick: {}", self.tick[1].summary()),
             format!("frozen software_render: {}", self.render[1].summary()),
-            format!("frozen strip_pass: {} strips_sent_per_pass={:.2} (should be n=0)", self.texture_update[1].summary(), self.strips_sent[1] as f64 / self.texture_updates[1].max(1) as f64),
+            format!("frozen strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} (should be n=0)", self.texture_update[1].summary(), self.strips_changed[1] as f64 / self.texture_updates[1].max(1) as f64, self.wholes[1]),
         ])
     }
 }

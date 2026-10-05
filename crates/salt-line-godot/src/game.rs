@@ -4,7 +4,7 @@
 //! `salt-line-sim` (the rules); see `app` for how the three fit. This node
 //! gathers the engine's input into `input::Intents`, steps the core, carries
 //! out the `app::Effect`s it returns (audio, `user://` files, the clipboard,
-//! the window), and puts each frame on screen as a stack of strip textures.
+//! the window), and puts each frame on screen, re-sending only what changed.
 //!
 //! # The frame loop
 //!
@@ -37,8 +37,8 @@
 //!     ├─ redraw.due(busy)?  dirty flag, or anything moving
 //!     │     └─ yes: render::frame ──► Canvas ──► set_buttons ──► upload
 //!     └─ maybe_screenshot   --salt-shot
-//!   draw(): the strip textures at their rows, 1:1; the viewport stretch
-//!           scales the result
+//!   draw(): the whole-frame texture and the strips over it, 1:1; the
+//!           viewport stretch scales the result
 //! ```
 //!
 //! `input()` marks a redraw on every event except mouse and stick motion.
@@ -990,11 +990,10 @@ impl SaltLine {
         let changed = std::array::from_fn(|i| self.shadow.take_if_changed(bytes, i));
         let (plan, redraw) = self.layers.plan(changed);
         #[cfg(feature = "profiling")]
-        let sent = match &plan {
-            Plan::Nothing => 0,
-            Plan::Whole => STRIPS as u64,
-            Plan::Strips(up) => up.iter().filter(|&&u| u).count() as u64,
-        };
+        let (changed_n, whole_n) = (
+            changed.iter().filter(|&&c| c).count() as u64,
+            u64::from(plan == Plan::Whole),
+        );
         match plan {
             Plan::Nothing => {}
             Plan::Whole => {
@@ -1010,7 +1009,7 @@ impl SaltLine {
         }
         #[cfg(feature = "profiling")]
         self.profile
-            .record_texture_update(update_started.elapsed(), sent);
+            .record_texture_update(update_started.elapsed(), changed_n, whole_n);
         if redraw {
             self.base_mut().queue_redraw();
         }
