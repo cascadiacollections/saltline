@@ -14,8 +14,8 @@
 //! wide, by device aspect; Long Lens makes it 216 tall
 //! (`app::LONG_LENS_H`), adding sky rather than scaling. The whole frame,
 //! terrain, sprites, HUD and text alike, is drawn by the CPU into the one
-//! [`Canvas`] at that size, then uploaded as a single texture that
-//! `game.rs` draws at 1:1. Godot's viewport stretch, with nearest filtering
+//! [`Canvas`] at that size, then uploaded (only the strips that changed; see
+//! `strips`) to textures that `game.rs` draws at 1:1. Godot's viewport stretch, with nearest filtering
 //! set project-wide, does the only scaling in the game, so every buffer
 //! pixel lands on the screen as the same whole block.
 //! UI in the same buffer at the same resolution is itself a §5.1 rule.

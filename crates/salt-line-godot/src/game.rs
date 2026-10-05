@@ -4,7 +4,7 @@
 //! `salt-line-sim` (the rules); see `app` for how the three fit. This node
 //! gathers the engine's input into `input::Intents`, steps the core, carries
 //! out the `app::Effect`s it returns (audio, `user://` files, the clipboard,
-//! the window), and puts each frame on screen as one texture.
+//! the window), and puts each frame on screen, re-sending only what changed.
 //!
 //! # The frame loop
 //!
@@ -37,7 +37,8 @@
 //!     ├─ redraw.due(busy)?  dirty flag, or anything moving
 //!     │     └─ yes: render::frame ──► Canvas ──► set_buttons ──► upload
 //!     └─ maybe_screenshot   --salt-shot
-//!   draw(): the texture at the origin, 1:1; the viewport stretch scales it
+//!   draw(): the whole-frame texture and the strips over it, 1:1; the
+//!           viewport stretch scales the result
 //! ```
 //!
 //! `input()` marks a redraw on every event except mouse and stick motion.
@@ -55,12 +56,15 @@
 //!   one frame is invisible to `Input::is_key_pressed`; `input()` records it
 //!   as an event, so it still counts once. Holds are polled, because only
 //!   the state now matters for them.
-//! * **Dirty-flag redraw.** The frame is rasterised in software and uploaded
-//!   whole, so an unchanged frame is skipped (`frame::Redraw`): drawn when an
+//! * **Dirty-flag redraw.** The frame is rasterised in software, so an
+//!   unchanged frame is skipped (`frame::Redraw`): drawn when an
 //!   effect or an input marked it, while anything moves, and once after.
-//! * **Allocation-free upload.** Two byte buffers alternate, so the one being
-//!   filled is never the one the image still holds, and the texture is
-//!   updated in place (`upload`).
+//! * **Strip upload.** The frame is shown as one whole-frame texture with
+//!   `strips::STRIPS` horizontal strip textures over it, and only the strips
+//!   whose pixels changed are sent again; when most changed, the whole frame
+//!   is (`upload`; why, in `strips`). Each texture is updated in place
+//!   without allocating: two byte buffers alternate, so the one being filled
+//!   is never the one the image still holds.
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
@@ -86,6 +90,7 @@ use crate::render::{self, Art, Cache};
 use crate::resume::{self, RUN_LOADING_PATH, RUN_PATH};
 use crate::save;
 use crate::sprites::Sprites;
+use crate::strips::{self, Layers, Plan, Shadow, STRIPS};
 use crate::touch::Button;
 
 const PALETTE_PATH: &str = "res://art/palette_16.png";
@@ -98,7 +103,7 @@ const TITLE_FADE_SECONDS: f64 = 1.0;
 
 /// The one Godot node the game needs, registered with the engine as
 /// `SaltLine` and used by `godot/main.tscn`. It owns the core ([`Game`]) and
-/// everything engine-side: the canvas and its texture, the audio players,
+/// everything engine-side: the canvas and its textures, the audio players,
 /// the input queues and the frame pacing.
 #[derive(GodotClass)]
 #[class(base = Node2D)]
@@ -113,14 +118,15 @@ pub struct SaltLine {
     /// resolution. DESIGN §5.1 — "UI renders in the same buffer at the same
     /// resolution".
     canvas: Canvas,
-    /// The frame's image and texture live as long as the buffer keeps its
-    /// size: each frame is copied into one of `upload_bufs` and handed to the
-    /// image, which shares rather than copies it. Two buffers, so the one
-    /// being written is never the one the image still holds.
-    image: Option<Gd<Image>>,
-    texture: Option<Gd<ImageTexture>>,
-    upload_bufs: [PackedByteArray; 2],
-    upload_flip: usize,
+    /// The frame on the GPU: one whole-frame layer and `STRIPS` horizontal
+    /// strip layers, which live as long as the buffer keeps its size. See
+    /// `upload`.
+    whole: Option<Layer>,
+    strips: Vec<Layer>,
+    /// Which strips are drawn over `whole`.
+    layers: Layers,
+    /// The frame as on screen, to find the strips that changed.
+    shadow: Shadow,
     /// Whether this frame needs drawing at all. See `frame::Redraw`.
     redraw: Redraw,
     /// The engine's frame cap as the project set it, restored in play.
@@ -180,10 +186,10 @@ impl INode2D for SaltLine {
             g: Game::default(),
             art: Art::default(),
             canvas: Canvas::new(320, 180),
-            image: None,
-            texture: None,
-            upload_bufs: [PackedByteArray::new(), PackedByteArray::new()],
-            upload_flip: 0,
+            whole: None,
+            strips: Vec::new(),
+            layers: Layers::default(),
+            shadow: Shadow::default(),
             redraw: Redraw::default(),
             project_fps: 0,
             fps_cap: 0,
@@ -322,11 +328,26 @@ impl INode2D for SaltLine {
     }
 
     fn draw(&mut self) {
-        // The whole frame is one texture at the internal resolution, blitted
-        // at 1:1. Godot's viewport stretch does the only scaling in the game,
-        // with nearest filtering set project-wide.
-        if let Some(tex) = self.texture.clone() {
-            self.base_mut().draw_texture(&tex, Vector2::ZERO);
+        // The frame is one whole-frame texture at the internal resolution,
+        // with the strips that changed since it was last updated drawn over
+        // it (see `strips::Layers`), all blitted 1:1. Godot's viewport stretch
+        // does the only scaling in the game, with nearest filtering set
+        // project-wide. A texture updated in place needs no new draw; this
+        // runs again only when which strips are shown changes.
+        let layers: Vec<_> = self
+            .whole
+            .iter()
+            .chain(
+                self.strips
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| self.layers.shown(i))
+                    .map(|(_, s)| s),
+            )
+            .map(|l| (l.texture.clone(), Vector2::new(0.0, l.y as f32)))
+            .collect();
+        for (tex, at) in layers {
+            self.base_mut().draw_texture(&tex, at);
         }
     }
 
@@ -392,7 +413,7 @@ impl INode2D for SaltLine {
         let Ok(touch) = event.try_cast::<InputEventScreenTouch>() else {
             return;
         };
-        // The one texture is drawn at the origin at 1:1, so the node's local
+        // The strips are drawn from the origin at 1:1, so the node's local
         // space is buffer pixels whatever the window is scaled to.
         let local = self
             .base()
@@ -935,51 +956,66 @@ impl SaltLine {
         self.upload();
     }
 
-    /// Hand the buffer to the GPU without allocating: the frame is copied
-    /// into whichever of the two upload buffers the image is not holding, the
-    /// image takes it by reference, and the texture is updated in place. Only
-    /// a change of buffer size makes a new texture.
+    /// Hand the changed parts of the buffer to the GPU without allocating.
+    /// The strips whose rows differ from the screen are uploaded, or, when
+    /// more than `strips::WHOLE_ABOVE` do, the whole frame is (`Layers`).
+    /// Each upload copies the rows into whichever of the layer's two buffers
+    /// its image is not holding, the image takes it by reference, and the
+    /// texture is updated in place. Only a change of buffer size makes new
+    /// layers.
     fn upload(&mut self) {
-        #[cfg(feature = "profiling")]
-        let prepare_started = std::time::Instant::now();
         let (w, h) = (self.canvas.w, self.canvas.h);
-        let format = godot::classes::image::Format::RGBA8;
         let bytes = self.canvas.bytes();
-        let buf = &mut self.upload_bufs[self.upload_flip];
-        if buf.len() != bytes.len() {
-            buf.resize(bytes.len());
-        }
-        buf.as_mut_slice().copy_from_slice(bytes);
-        match self.image.as_mut() {
-            Some(image) => image.set_data(w, h, false, format, buf),
-            None => self.image = Image::create_from_data(w, h, false, format, buf),
-        }
-        self.upload_flip ^= 1;
-        let Some(image) = self.image.as_ref() else {
+        if !self.shadow.fits(w, h) || self.whole.is_none() || self.strips.len() != STRIPS {
+            self.whole = Layer::new(bytes, w, 0, h);
+            self.strips = (0..STRIPS)
+                .map(|i| {
+                    let (y0, y1) = strips::rows(h, i);
+                    Layer::new(bytes, w, y0, y1)
+                })
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default();
+            if self.whole.is_none() || self.strips.len() != STRIPS {
+                // Every frame would land back here and rebuild all of them.
+                godot_warn!("salt: could not create the frame textures for a {w}x{h} buffer");
+            }
+            self.shadow.reset(bytes, w, h);
+            self.layers.reset();
+            self.base_mut().queue_redraw();
             return;
-        };
-        #[cfg(feature = "profiling")]
-        {
-            self.profile
-                .record_upload_prepare(prepare_started.elapsed());
         }
-        match self.texture.as_mut() {
-            Some(t) if t.get_width() == w && t.get_height() == h => {
-                #[cfg(feature = "profiling")]
-                if self.profile.should_update_texture() {
-                    let update_started = std::time::Instant::now();
-                    t.update(image);
-                    self.profile.record_texture_update(update_started.elapsed());
-                } else {
-                    self.profile.record_texture_update_skipped();
+        #[cfg(feature = "profiling")]
+        if !self.profile.should_update_texture() {
+            self.profile.record_texture_update_skipped();
+            return;
+        }
+        #[cfg(feature = "profiling")]
+        let update_started = std::time::Instant::now();
+        let changed = std::array::from_fn(|i| self.shadow.take_if_changed(bytes, i));
+        let (plan, redraw) = self.layers.plan(changed);
+        #[cfg(feature = "profiling")]
+        let (changed_n, whole_n) = (
+            changed.iter().filter(|&&c| c).count() as u64,
+            u64::from(plan == Plan::Whole),
+        );
+        match plan {
+            Plan::Nothing => {}
+            Plan::Whole => {
+                if let Some(whole) = self.whole.as_mut() {
+                    whole.update(bytes, w);
                 }
-                #[cfg(not(feature = "profiling"))]
-                t.update(image);
             }
-            _ => {
-                self.texture = ImageTexture::create_from_image(image);
-                self.base_mut().queue_redraw();
+            Plan::Strips(up) => {
+                for (strip, _) in self.strips.iter_mut().zip(up).filter(|(_, u)| *u) {
+                    strip.update(bytes, w);
+                }
             }
+        }
+        #[cfg(feature = "profiling")]
+        self.profile
+            .record_texture_update(update_started.elapsed(), changed_n, whole_n);
+        if redraw {
+            self.base_mut().queue_redraw();
         }
     }
 
@@ -1089,4 +1125,51 @@ fn core_key(key: Key) -> Option<input::Key> {
 /// A pad button as the core names it; `None` for one it never reads.
 fn core_pad(button: JoyButton) -> Option<input::Pad> {
     PADS.iter().find(|(_, b)| *b == button).map(|(c, _)| *c)
+}
+
+/// Rows `y..y + h` of the frame on the GPU, as an image and the texture
+/// made from it: the whole frame, or one strip of it. See `strips`.
+struct Layer {
+    y: i32,
+    h: i32,
+    image: Gd<Image>,
+    texture: Gd<ImageTexture>,
+    bufs: [PackedByteArray; 2],
+    /// The buffer the image is not holding, filled by the next update.
+    flip: usize,
+}
+
+impl Layer {
+    const FORMAT: godot::classes::image::Format = godot::classes::image::Format::RGBA8;
+
+    /// Rows `y0..y1` of a frame `w` pixels wide, uploaded from `frame`.
+    fn new(frame: &[u8], w: i32, y0: i32, y1: i32) -> Option<Self> {
+        let rows = Self::rows(frame, w, y0, y1);
+        let bufs = [PackedByteArray::from(rows), PackedByteArray::from(rows)];
+        let image = Image::create_from_data(w, y1 - y0, false, Self::FORMAT, &bufs[0])?;
+        let texture = ImageTexture::create_from_image(&image)?;
+        Some(Self {
+            y: y0,
+            h: y1 - y0,
+            image,
+            texture,
+            bufs,
+            flip: 1,
+        })
+    }
+
+    /// Send this layer's rows of `frame` to its texture.
+    fn update(&mut self, frame: &[u8], w: i32) {
+        let buf = &mut self.bufs[self.flip];
+        buf.as_mut_slice()
+            .copy_from_slice(Self::rows(frame, w, self.y, self.y + self.h));
+        self.image.set_data(w, self.h, false, Self::FORMAT, buf);
+        self.flip ^= 1;
+        self.texture.update(&self.image);
+    }
+
+    fn rows(frame: &[u8], w: i32, y0: i32, y1: i32) -> &[u8] {
+        let stride = w as usize * 4;
+        &frame[y0 as usize * stride..y1 as usize * stride]
+    }
 }

@@ -103,7 +103,7 @@ impl Game {
         self.display.kept_width = want != device;
         // A 320..400px width cap and Long Lens can make the buffer narrower
         // than the window's aspect. Keep the full image centered rather than
-        // expanding the logical viewport past the one texture we draw.
+        // expanding the logical viewport past the frame we draw.
         self.fx.push(Effect::Aspect(Aspect::Keep));
     }
 

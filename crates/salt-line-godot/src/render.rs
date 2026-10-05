@@ -19,7 +19,7 @@
 //!
 //! * **Software rasterising into one buffer.** Every pixel is written by
 //!   this crate into an RGBA byte array of `buffer_w` × `buffer_h`; the node
-//!   uploads it whole as one texture. There is no scene graph, no sprite
+//!   uploads it in strips, the ones that changed. There is no scene graph, no sprite
 //!   node, and no GPU scaling except the final nearest-neighbour stretch.
 //! * **Painter's order.** Each frame starts from a full fill (sky or plate)
 //!   and draws back to front: sky, terrain, overlays, last arc, structures,

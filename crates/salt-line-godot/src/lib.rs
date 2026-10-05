@@ -15,7 +15,7 @@
 //! [`input::Intents`], hands it to [`app::Game`], applies the
 //! [`app::Effect`]s that come back, and, if [`frame::Redraw`] says the frame
 //! changed, has [`render`] paint the game into a [`raster::Canvas`], which is
-//! uploaded as one texture. The rules themselves are in `salt-line-sim`;
+//! uploaded to the GPU in strips. The rules themselves are in `salt-line-sim`;
 //! `design/DESIGN.md` §5 is the art direction this crate holds to.
 //!
 //! # Crate map
@@ -33,6 +33,7 @@
 //!            palette, font, the 16 colours, bitmap fonts, HUD icons,
 //!            icons, sprites sprite sheets (palette and sprites load via Godot)
 //! pacing     frame          redraw only when something changed; idle frame cap
+//!            strips         upload only the parts of the frame that changed
 //!            pads           which joypads, and which stick axes, to trust
 //! disk       save_format    the save file's text format (engine-free)
 //!            durable        atomic replace and which copy to trust on load
@@ -73,6 +74,7 @@ pub mod save;
 pub mod save_format;
 pub mod sky;
 pub mod sprites;
+pub mod strips;
 pub mod touch;
 
 struct SaltLineExtension;
