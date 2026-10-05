@@ -30,7 +30,8 @@ lint:
     cargo clippy -p salt-line-godot --all-targets --features profiling -- -D warnings
 
 # Deterministic shell-economy and solvability report. Skill is perfect, steady or rough;
-# aim is flat (same hit chance every shot) or scaled (harder shots miss more).
+# aim is flat (same hit chance every shot) or scaled (harder shots miss more;
+# no effect on perfect, which never misses).
 # Always passes --fast, so the candidate histogram saturates at the gate cap.
 balance seeds="100" screens="40" skill="perfect" build="base" aim="flat":
     cargo run --release -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --skill {{ skill }} --build {{ build }} --aim {{ aim }} --fast

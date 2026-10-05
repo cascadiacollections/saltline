@@ -45,13 +45,16 @@
 //! `--aim scaled` replaces the flat rate with one per target: the selected
 //! chance applies at a reference difficulty, and each target's difficulty
 //! comes from its range, the screen's wind and how many direct-aim shots fell
-//! it (see `shot_difficulty`). Bands then miss more as the curve hardens. The
-//! band table's `hit%` is the realised hit rate and `diff` the mean target
-//! difficulty. Salvage and Chalk marks are still ignored.
+//! it (see `shot_difficulty`). Bands then miss more as the curve hardens, so
+//! runs past ~40 screens average below the selected chance; that decline,
+//! not where misses fall within a band, is what moves survival. The
+//! band table's `hit%` is the hit rate on completed screens (the screen a run
+//! runs dry on is left out, so late bands read slightly high) and `diff` the
+//! mean target difficulty. Salvage and Chalk marks are still ignored.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::{screen_seed, Pcg32};
-use salt_line_sim::run::{generate_screen, refund, wind_magnitude, Rung, Screen};
+use salt_line_sim::run::{generate_screen, refund, Rung, Screen};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::Template;
 use salt_line_sim::{
@@ -422,38 +425,54 @@ fn bar(n: u64, max: u64, width: usize) -> String {
     s
 }
 
+/// The strongest wind the curve ever draws: `wind_magnitude` at its ceiling.
+const WIND_CAP: f64 = 7.0;
+
 /// Difficulty of a shot at which `--aim scaled` hits at exactly the selected
 /// chance: the mean over the default `just balance` run (base build, 100
 /// seeds x 40 screens, 0.324). Over that run a scaled profile's hit rate lands
-/// near its flat one, so the difference is mostly *where* the misses fall.
-/// Difficulty keeps climbing past screen 40 (about 0.56 by band 24), so longer
-/// runs average below the selected chance.
+/// near its flat one. Difficulty keeps climbing past screen 40 (about 0.56 by
+/// band 24), so longer runs average below the selected chance: steady over
+/// 100 evolving screens realises ~75%, and survives like a flat 75-76%. In
+/// practice the scaled model acts as a hit rate that declines with the band;
+/// where the misses fall within a band matters little.
 const REFERENCE_DIFFICULTY: f64 = 0.32;
 
 /// How strongly difficulty moves the hit chance: the odds of a hit fall by a
 /// factor of e^SLOPE from the easiest shot (0) to the hardest (1). At 2.0 a
 /// steady player hits about 88% of the easiest possible shots and 51% of the
-/// hardest; in practice band 0 averages ~83% and band 24 ~71%.
+/// hardest. Range never drops below ~0.2 (targets sit at least 60 units
+/// out), so those ends are not reached: band means run ~82% at band 0 to
+/// ~70% at band 24.
 const DIFFICULTY_SLOPE: f64 = 2.0;
 
 /// A 0..=1 score for how hard one target is to hit, from what the solver and
 /// the screen already know:
 ///
 /// - range: the target's distance from the muzzle over the full
-///   emplacement-to-far-edge span (weight 0.4);
-/// - wind: the screen's |wind| over the curve's cap, `wind_magnitude` at its
-///   ceiling (weight 0.3);
-/// - window: 1 minus the share of the 40 direct-aim time samples that fell
-///   it, so a target with few dialable shots, or none (indirect only), scores
-///   high (weight 0.3).
+///   emplacement-to-far-edge span of a reference-width screen (weight 0.4);
+/// - wind: the wind the shell actually flies through (|wind| times the
+///   loadout's wind scale, so Ballast calms it and Featherweight sharpens it;
+///   the stronger of the two winds under Storm Front) over [`WIND_CAP`]
+///   (weight 0.3);
+/// - arc share: 1 minus the share of the 40 direct-aim time samples that fell
+///   it, so a target few direct arcs reach, or none (indirect only), scores
+///   high (weight 0.3). Indirect-only targets are rare (0 of ~6,800 over the
+///   default base run, ~0.3% on long evolving runs), so this mostly measures
+///   how many arcs work, not whether any do.
 ///
-/// The weights are a judgement call, not fitted to players.
-fn shot_difficulty(screen: &Screen, target: usize, direct: usize) -> f64 {
+/// The weights are a judgement call, not fitted to players. The solver already
+/// accounts for wind, so the wind and arc-share terms partly overlap.
+fn shot_difficulty(screen: &Screen, lo: &Loadout, target: usize, direct: usize) -> f64 {
     let span = FAR_EDGE_X - EMPLACEMENT_X;
     let range = ((screen.structures[target].centre_x() - screen.muzzle_x).abs() / span).min(1.0);
-    let wind = (screen.wind.abs() / wind_magnitude(u32::MAX)).min(1.0);
-    let window = 1.0 - (direct.min(SOLVER_TIME_SAMPLES) as f64 / SOLVER_TIME_SAMPLES as f64);
-    0.4 * range + 0.3 * wind + 0.3 * window
+    let late = match screen.wind_late {
+        Some(late) if lo.storm_front() => late.abs(),
+        _ => 0.0,
+    };
+    let wind = (screen.wind.abs().max(late) * lo.wind_scale / WIND_CAP).min(1.0);
+    let arcs = 1.0 - (direct.min(SOLVER_TIME_SAMPLES) as f64 / SOLVER_TIME_SAMPLES as f64);
+    0.4 * range + 0.3 * wind + 0.3 * arcs
 }
 
 /// The selected hit chance adjusted for one shot's difficulty, in whole
@@ -508,7 +527,7 @@ fn main() {
             ),
             Aim::Scaled => format!(
                 "economy: {}% hit chance at difficulty {REFERENCE_DIFFICULTY}, scaled per target by \
-                 range, wind and aim window (slope {DIFFICULTY_SLOPE})",
+                 range, wind and direct-arc share (slope {DIFFICULTY_SLOPE})",
                 args.hit_percent
             ),
         }
@@ -613,19 +632,21 @@ fn main() {
             if alive {
                 let target_count = screen.structures.len();
                 // Scaled aim needs the real direct-aim counts; under --fast
-                // they stop at the gate cap, so recount in full here.
+                // they stop at the gate cap, so recount here. The direct sweep
+                // runs first and yields at most SOLVER_TIME_SAMPLES, so that
+                // cap keeps it exact without counting the other aim points.
                 let difficulties: Vec<f64> = match args.aim {
                     Aim::Flat => Vec::new(),
                     Aim::Scaled => {
                         let full;
                         let direct = if args.fast {
-                            full = solver::validate_full(&screen, &lo);
+                            full = solver::validate_capped(&screen, &lo, SOLVER_TIME_SAMPLES);
                             &full.per_target_direct
                         } else {
                             &report.per_target_direct
                         };
                         (0..target_count)
-                            .map(|t| shot_difficulty(&screen, t, direct[t]))
+                            .map(|t| shot_difficulty(&screen, &lo, t, direct[t]))
                             .collect()
                     }
                 };
@@ -942,6 +963,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use salt_line_sim::run::wind_magnitude;
+
+    #[test]
+    fn wind_cap_matches_the_curve() {
+        assert_eq!(WIND_CAP, wind_magnitude(u32::MAX));
+    }
+
+    #[test]
+    fn loadout_wind_scale_moves_the_wind_term() {
+        let mut lo = Loadout::new();
+        let mut screen = generate_screen(0x5EED, 12, SCREEN_W_REF, &lo);
+        screen.wind = WIND_CAP / 2.0;
+        let plain = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
+        lo.wind_scale = 0.5;
+        let ballasted = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
+        assert!((plain - ballasted - 0.3 * 0.25).abs() < 1e-12);
+    }
 
     #[test]
     fn perfect_aim_never_misses() {
@@ -992,16 +1030,16 @@ mod tests {
     }
 
     #[test]
-    fn shot_difficulty_tracks_range_wind_and_window() {
+    fn shot_difficulty_tracks_range_wind_and_arc_share() {
         let lo = Loadout::new();
         let mut screen = generate_screen(0x5EED, 12, SCREEN_W_REF, &lo);
         assert!(!screen.structures.is_empty());
         screen.wind = 0.0;
-        let calm_wide = shot_difficulty(&screen, 0, SOLVER_TIME_SAMPLES);
-        let calm_tight = shot_difficulty(&screen, 0, 0);
+        let calm_wide = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
+        let calm_tight = shot_difficulty(&screen, &lo, 0, 0);
         assert!((calm_tight - calm_wide - 0.3).abs() < 1e-12);
-        screen.wind = -wind_magnitude(u32::MAX);
-        let gusty_wide = shot_difficulty(&screen, 0, SOLVER_TIME_SAMPLES);
+        screen.wind = -WIND_CAP;
+        let gusty_wide = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
         assert!((gusty_wide - calm_wide - 0.3).abs() < 1e-12);
         assert!((0.0..=1.0).contains(&calm_wide) && gusty_wide <= 1.0);
     }
