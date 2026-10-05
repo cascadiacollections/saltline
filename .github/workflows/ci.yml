@@ -856,13 +856,13 @@ jobs:
           find "$app" -maxdepth 3 \( -name '*salt_line*' -o -name '*.pck' \) | tee found.txt
           grep -q salt_line found.txt
 
-  # Native build for Windows on ARM (e.g. Snapdragon laptops), cross-compiled on
-  # the x64 runner and exported with Godot's arm64 template. It cannot be
-  # launched here, so unlike the playable jobs there is no smoke test.
+  # Native build for Windows on ARM (e.g. Snapdragon laptops). The ARM runner
+  # both exports and launches the shipped executable, so a missing ARM
+  # extension or an engine startup failure cannot reach a release.
   windows-arm64:
-    name: windows (arm64, cross-built)
+    name: windows (arm64, native smoke)
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
+    runs-on: windows-11-arm
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -884,13 +884,18 @@ jobs:
         shell: bash
         run: |
           set -eu
-          rustup target add aarch64-pc-windows-msvc
+          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          # setup-godot may provide an x64 editor under emulation. Keep the
+          # host mapping valid for that editor while the exported ARM binary
+          # resolves the explicit aarch64 mapping.
+          cargo build --release -p salt-line-godot --target x86_64-pc-windows-msvc
           cargo build --release -p salt-line-godot --target aarch64-pc-windows-msvc
-          # The editor that runs the export is x64 and loads the extension
-          # itself (see the playable job), so it needs its own build as well.
-          cargo build --release -p salt-line-godot
-          mkdir -p target/debug
-          cp target/release/salt_line_godot.dll target/debug/
+          mkdir -p target/release target/debug target/aarch64-pc-windows-msvc/debug
+          cp target/x86_64-pc-windows-msvc/release/salt_line_godot.dll \
+             target/release/salt_line_godot.dll
+          cp target/release/salt_line_godot.dll target/debug/salt_line_godot.dll
+          cp target/aarch64-pc-windows-msvc/release/salt_line_godot.dll \
+             target/aarch64-pc-windows-msvc/debug/salt_line_godot.dll
       - name: find a Godot that actually runs
         shell: bash
         run: |
@@ -923,8 +928,43 @@ jobs:
           mkdir -p build dist
           bash tools/godot_headless.sh --export-release "Windows Desktop ARM64" build/SaltLine-arm64.exe
           test -s build/SaltLine-arm64.exe
+          # Keep the executable at the archive root for an Explorer launch.
           7z a -tzip dist/SaltLine-windows-arm64.zip ./build/SaltLine-arm64.exe > /dev/null
           ls -l dist
+      - name: smoke launch the ARM64 artifact
+        shell: bash
+        run: |
+          set -eu
+          rm -f smoke.png
+          shot="$(pwd -W 2>/dev/null || pwd)/smoke.png"
+          ./build/SaltLine-arm64.exe --headless -- \
+            --salt-seed 20260907 --salt-screen 12 \
+            --salt-shot "$shot" --salt-shot-at 0.5 &
+          launcher=$!
+          for _ in $(seq 1 60); do
+            if [ -s smoke.png ]; then break; fi
+            if ! kill -0 "$launcher" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$launcher" 2>/dev/null || true
+          sleep 2
+          kill -9 "$launcher" 2>/dev/null || true
+          wait "$launcher" 2>/dev/null || true
+          if [ ! -s smoke.png ]; then
+            echo "the ARM64 exported build never rendered a frame" >&2
+            exit 1
+          fi
+          if [ "$(head -c 4 smoke.png | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+            echo "smoke.png is not a PNG" >&2
+            exit 1
+          fi
+          echo "ARM64 artifact launched and rendered $(wc -c < smoke.png) bytes"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: smoke-Windows-Desktop-ARM64
+          path: smoke.png
+          if-no-files-found: warn
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-windows-arm64

@@ -56,12 +56,13 @@ step that no amount of CI will cover.
 - [ ] Version consistency (`version` job, `just version-check`); on a tag it
       also checks the tag and the CHANGELOG section
 - [ ] Batch solvability: 5,000 screens, zero unsolvable, zero `Flat` fallbacks
-- [ ] Export succeeds for all three presets **and writes a file** — Godot has
+- [ ] Export succeeds for all desktop presets, including Windows ARM64, **and
+      writes a file** — Godot has
       exited 0 having produced nothing
-- [ ] Each exported artifact **launches and renders a frame** (the smoke job).
-      This waits on the rendered PNG rather than the exit code, because a
-      Godot-exported Windows binary is GUI-subsystem and returns 0 the instant
-      it is started
+- [ ] Each exported artifact, including the Windows ARM64 artifact, **launches
+      and renders a frame** (the smoke job). This waits on the rendered PNG
+      rather than the exit code, because a Godot-exported Windows binary is
+      GUI-subsystem and returns 0 the instant it is started
 - [ ] `.sha256` published next to each artifact
 
 **Manual — before tagging**
