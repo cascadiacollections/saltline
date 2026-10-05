@@ -494,6 +494,43 @@ fn firing_replays_the_shot_then_lands_it() {
 }
 
 #[test]
+fn shell_run_clock_lesson_waits_until_the_reserve_falls_below_starting_value() {
+    let mut g = playing(1);
+    g.save.learned |= LEARN_WIND;
+    assert_eq!(
+        g.play.run.as_ref().unwrap().shells,
+        salt_line_sim::START_SHELLS
+    );
+
+    g.fire();
+    assert_eq!(g.save.learned & LEARN_SHELLS, 0);
+    assert!(g.play.run.as_ref().unwrap().shells < salt_line_sim::START_SHELLS);
+
+    g.play.anim = None;
+    g.fire();
+    assert_eq!(g.save.learned & LEARN_SHELLS, LEARN_SHELLS);
+}
+
+#[test]
+fn the_shells_prompt_shows_only_once_the_reserve_is_below_its_start() {
+    const PROMPT: &str = "SHELLS ARE THE RUN CLOCK - SPEND CAREFULLY";
+    let mut g = playing(1);
+    g.save.learned |= LEARN_ANGLE | LEARN_POWER | LEARN_FIRE | LEARN_CRATER | LEARN_WIND;
+    let start = salt_line_sim::START_SHELLS;
+    g.play.run.as_mut().unwrap().shells = start + 5;
+    assert_eq!(g.onboarding_prompt(Phase::Firing, None), None);
+    g.play.run.as_mut().unwrap().shells = start;
+    assert_eq!(g.onboarding_prompt(Phase::Firing, None), None);
+    g.play.run.as_mut().unwrap().shells = start - 1;
+    assert_eq!(
+        g.onboarding_prompt(Phase::Firing, None).as_deref(),
+        Some(PROMPT)
+    );
+    g.save.learned |= LEARN_SHELLS;
+    assert_eq!(g.onboarding_prompt(Phase::Firing, None), None);
+}
+
+#[test]
 fn a_long_frame_moves_the_replay_a_tenth_of_a_second_at_most() {
     let mut g = playing(1);
     tick(&mut g, keys(&[Key::Space]));

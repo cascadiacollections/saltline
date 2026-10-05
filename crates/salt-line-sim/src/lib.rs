@@ -53,7 +53,7 @@ pub mod terrain; // M1 — noise, heightfield, scar buffer, materials
 /// is this epoch's entry in [`EPOCHS`]. Every bump gets a line in NOTES.md.
 ///
 /// Epoch 1 is everything before the fuse and emplacement offset were logged.
-pub const SIM_EPOCH: u32 = 5;
+pub const SIM_EPOCH: u32 = 6;
 
 /// Every epoch's digest, oldest first. Append-only: a sim change appends
 /// `(SIM_EPOCH, digest)` after bumping `SIM_EPOCH`; an existing entry is never
@@ -65,6 +65,7 @@ pub const EPOCHS: &[(u32, u64)] = &[
     (3, 0x6471_3d32_7a31_a792),
     (4, 0x1104_ab32_9b37_6f2c),
     (5, 0x9c4e_f5d0_0758_cebe),
+    (6, 0x0e22_2e08_a33e_af8a),
 ];
 
 /// The digest `SIM_EPOCH` vouches for: the last entry of [`EPOCHS`].
