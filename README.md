@@ -87,6 +87,15 @@ build or release it fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and the
 fix is `adb uninstall com.cascadiacollections.saltline`, which deletes the
 saves on that device.
 
+`just android-profile` builds an optimized profiling APK (`--features
+profiling`) and launches it beside the normal app as
+`com.cascadiacollections.saltline.profile`. It auto-plays a fixed-seed run and,
+about 34 seconds in, logs CPU timings for the frame upload with the texture
+updated and frozen in turn; `just android-profile-log` follows them. Keep the
+screen awake: an asleep device never renders. It is signed with a throwaway
+key generated under `build/`; delete `build/` and the next install needs
+`adb uninstall com.cascadiacollections.saltline.profile` first.
+
 ### iOS
 
 On a Mac, `just ios` builds the extension for arm64, exports an Xcode project
