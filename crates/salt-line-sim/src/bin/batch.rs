@@ -16,7 +16,8 @@
 //! Flags: `--seeds N`, `--screens N` (per seed), `--width W`, `--build
 //! base|evolving|drift|demo|precision|risk` (default evolving), `--skill
 //! perfect|steady|rough` (default perfect), `--hit N` (a custom 10-100% hit
-//! chance in place of a named skill), `--fast` (cap
+//! chance in place of a named skill), `--aim flat|scaled` (default flat; see
+//! below), `--fast` (cap
 //! candidate counts at [`solver::GATE_CAP`], so the histogram saturates) and
 //! `-v` (print each failure as it happens). Skills are fixed hit assumptions:
 //! perfect (100%), steady (80%) or rough (55%). A miss wastes one shot; the
@@ -36,17 +37,30 @@
 //! mid-screen, so the reserve is recorded as 0. Seeds and the miss stream
 //! depend only on the seed index, so every hit chance is compared on the same
 //! luck. Across builds the miss draws can drift apart once target counts
-//! differ. The hit rate is flat: it ignores wind, distance, indirect-only
+//! differ. By default the hit rate is flat: it ignores wind, distance, indirect-only
 //! targets, Salvage refunds and Chalk marks, so with evolving/demo builds the
 //! non-perfect profiles slightly overcharge each miss. Read the profiles
 //! against each other, not as calibrated player types.
+//!
+//! `--aim scaled` replaces the flat rate with one per target: the selected
+//! chance applies at a reference difficulty, and each target's difficulty
+//! comes from its range, the screen's wind and how many direct-aim shots fell
+//! it (see `shot_difficulty`). Bands then miss more as the curve hardens, so
+//! runs past ~40 screens average below the selected chance; that decline,
+//! not where misses fall within a band, is what moves survival. The
+//! band table's `hit%` is the hit rate on completed screens (the screen a run
+//! runs dry on is left out, so late bands read slightly high) and `diff` the
+//! mean target difficulty. Salvage and Chalk marks are still ignored.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::{screen_seed, Pcg32};
 use salt_line_sim::run::{generate_screen, refund, Rung, Screen};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::Template;
-use salt_line_sim::{band_of, BAND_LEN, MIN_SOLUTIONS, SCREEN_W_REF, START_SHELLS};
+use salt_line_sim::{
+    band_of, BAND_LEN, EMPLACEMENT_X, FAR_EDGE_X, MIN_SOLUTIONS, SCREEN_W_REF, SOLVER_TIME_SAMPLES,
+    START_SHELLS,
+};
 
 /// Which loadout the screens are validated against. Solvability is a property
 /// of the screen *and* the loadout, so the harness has to pick one.
@@ -104,6 +118,27 @@ impl Skill {
     }
 }
 
+/// How the hit chance varies from shot to shot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Aim {
+    /// Every shot hits at the selected chance.
+    Flat,
+    /// The selected chance applies to a shot of reference difficulty
+    /// ([`REFERENCE_DIFFICULTY`]); farther, windier and tighter shots hit less
+    /// often, easier ones more. See [`shot_difficulty`].
+    Scaled,
+}
+
+impl Aim {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "flat" => Self::Flat,
+            "scaled" => Self::Scaled,
+            _ => return None,
+        })
+    }
+}
+
 impl Build {
     /// The `--build` spelling.
     fn parse(s: &str) -> Option<Build> {
@@ -143,6 +178,7 @@ struct Args {
     accuracy: &'static str,
     /// Chance, in whole percent, that one shot fells its target.
     hit_percent: u32,
+    aim: Aim,
     /// Cap the candidate count instead of counting them all. Much faster, but
     /// the histogram saturates.
     fast: bool,
@@ -159,6 +195,7 @@ impl Default for Args {
             build: Build::Evolving,
             accuracy: Skill::Perfect.name(),
             hit_percent: Skill::Perfect.hit_percent(),
+            aim: Aim::Flat,
             fast: false,
             verbose: false,
         }
@@ -207,11 +244,18 @@ fn parse_args() -> Args {
                         std::process::exit(2)
                     });
             }
+            "--aim" => {
+                let v = value();
+                a.aim = Aim::parse(&v).unwrap_or_else(|| {
+                    eprintln!("unknown aim '{v}'; use flat|scaled");
+                    std::process::exit(2)
+                });
+            }
             "--fast" => a.fast = true,
             "--verbose" | "-v" => a.verbose = true,
             "--help" | "-h" => {
                 println!(
-                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough | --hit N] [--fast] [-v]"
+                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough | --hit N] [--aim flat|scaled] [--fast] [-v]"
                 );
                 std::process::exit(0);
             }
@@ -235,6 +279,12 @@ struct BandEconomy {
     reserve_after: i64,
     min_after: i32,
     max_after: i32,
+    /// Targets felled and shells fired on completed combat screens: their
+    /// ratio is the hit rate the band actually saw.
+    hits: u64,
+    shots: u64,
+    /// Sum of [`shot_difficulty`] over those targets; only under `--aim scaled`.
+    difficulty: f64,
 }
 
 impl BandEconomy {
@@ -375,6 +425,70 @@ fn bar(n: u64, max: u64, width: usize) -> String {
     s
 }
 
+/// The strongest wind the curve ever draws: `wind_magnitude` at its ceiling.
+const WIND_CAP: f64 = 7.0;
+
+/// Difficulty of a shot at which `--aim scaled` hits at exactly the selected
+/// chance: the mean over the default `just balance` run (base build, 100
+/// seeds x 40 screens, 0.324). Over that run a scaled profile's hit rate lands
+/// near its flat one. Difficulty keeps climbing past screen 40 (about 0.56 by
+/// band 24), so longer runs average below the selected chance: steady over
+/// 100 evolving screens realises ~75%, and survives like a flat 75-76%. In
+/// practice the scaled model acts as a hit rate that declines with the band;
+/// where the misses fall within a band matters little.
+const REFERENCE_DIFFICULTY: f64 = 0.32;
+
+/// How strongly difficulty moves the hit chance: the odds of a hit fall by a
+/// factor of e^SLOPE from the easiest shot (0) to the hardest (1). At 2.0 a
+/// steady player hits about 88% of the easiest possible shots and 51% of the
+/// hardest. Range never drops below ~0.2 (targets sit at least 60 units
+/// out), so those ends are not reached: band means run ~82% at band 0 to
+/// ~70% at band 24.
+const DIFFICULTY_SLOPE: f64 = 2.0;
+
+/// A 0..=1 score for how hard one target is to hit, from what the solver and
+/// the screen already know:
+///
+/// - range: the target's distance from the muzzle over the full
+///   emplacement-to-far-edge span of a reference-width screen (weight 0.4);
+/// - wind: the wind the shell actually flies through (|wind| times the
+///   loadout's wind scale, so Ballast calms it and Featherweight sharpens it;
+///   the stronger of the two winds under Storm Front) over [`WIND_CAP`]
+///   (weight 0.3);
+/// - arc share: 1 minus the share of the 40 direct-aim time samples that fell
+///   it, so a target few direct arcs reach, or none (indirect only), scores
+///   high (weight 0.3). Indirect-only targets are rare (0 of ~6,800 over the
+///   default base run, ~0.3% on long evolving runs), so this mostly measures
+///   how many arcs work, not whether any do.
+///
+/// The weights are a judgement call, not fitted to players. The solver already
+/// accounts for wind, so the wind and arc-share terms partly overlap.
+fn shot_difficulty(screen: &Screen, lo: &Loadout, target: usize, direct: usize) -> f64 {
+    let span = FAR_EDGE_X - EMPLACEMENT_X;
+    let range = ((screen.structures[target].centre_x() - screen.muzzle_x).abs() / span).min(1.0);
+    let late = match screen.wind_late {
+        Some(late) if lo.storm_front() => late.abs(),
+        _ => 0.0,
+    };
+    let wind = (screen.wind.abs().max(late) * lo.wind_scale / WIND_CAP).min(1.0);
+    let arcs = 1.0 - (direct.min(SOLVER_TIME_SAMPLES) as f64 / SOLVER_TIME_SAMPLES as f64);
+    0.4 * range + 0.3 * wind + 0.3 * arcs
+}
+
+/// The selected hit chance adjusted for one shot's difficulty, in whole
+/// percent. Works on the odds so it never leaves 0..100: the odds are scaled
+/// by e^(-SLOPE x (difficulty - reference)). A perfect profile stays perfect,
+/// and anything else is held to 10..=99 so the attempt cap stays negligible
+/// and no imperfect player becomes infallible on easy shots.
+fn scaled_hit_percent(hit_percent: u32, difficulty: f64) -> u32 {
+    if hit_percent >= 100 {
+        return 100;
+    }
+    let p = f64::from(hit_percent) / 100.0;
+    let odds = p / (1.0 - p) * (-DIFFICULTY_SLOPE * (difficulty - REFERENCE_DIFFICULTY)).exp();
+    ((odds / (1.0 + odds) * 100.0).round() as u32).clamp(10, 99)
+}
+
 /// Number of attempts needed to land one target under the selected seeded
 /// accuracy assumption. The 64-attempt cap is a safety bound: `--hit` stops
 /// at 10%, where it truncates about 0.1% of targets (0.9^63).
@@ -405,8 +519,18 @@ fn main() {
     );
     println!("gate: worst-target candidates >= {MIN_SOLUTIONS}");
     println!(
-        "economy: fixed {}% hit chance per shot, independent of target difficulty and aim\n",
-        args.hit_percent
+        "{}\n",
+        match args.aim {
+            Aim::Flat => format!(
+                "economy: fixed {}% hit chance per shot, independent of target difficulty and aim",
+                args.hit_percent
+            ),
+            Aim::Scaled => format!(
+                "economy: {}% hit chance at difficulty {REFERENCE_DIFFICULTY}, scaled per target by \
+                 range, wind and direct-arc share (slope {DIFFICULTY_SLOPE})",
+                args.hit_percent
+            ),
+        }
     );
 
     let mut by_band: Vec<Bucket> = Vec::new();
@@ -507,8 +631,33 @@ fn main() {
             // A run exits when it cannot cover the next modeled screen.
             if alive {
                 let target_count = screen.structures.len();
+                // Scaled aim needs the real direct-aim counts; under --fast
+                // they stop at the gate cap, so recount here. The direct sweep
+                // runs first and yields at most SOLVER_TIME_SAMPLES, so that
+                // cap keeps it exact without counting the other aim points.
+                let difficulties: Vec<f64> = match args.aim {
+                    Aim::Flat => Vec::new(),
+                    Aim::Scaled => {
+                        let full;
+                        let direct = if args.fast {
+                            full = solver::validate_capped(&screen, &lo, SOLVER_TIME_SAMPLES);
+                            &full.per_target_direct
+                        } else {
+                            &report.per_target_direct
+                        };
+                        (0..target_count)
+                            .map(|t| shot_difficulty(&screen, &lo, t, direct[t]))
+                            .collect()
+                    }
+                };
                 let shots: u32 = (0..target_count)
-                    .map(|_| attempts_per_target(args.hit_percent, &mut accuracy_rng))
+                    .map(|t| {
+                        let hit = match args.aim {
+                            Aim::Flat => args.hit_percent,
+                            Aim::Scaled => scaled_hit_percent(args.hit_percent, difficulties[t]),
+                        };
+                        attempts_per_target(hit, &mut accuracy_rng)
+                    })
                     .sum();
                 let before = reserve;
                 if reserve < shots as i32 {
@@ -540,7 +689,11 @@ fn main() {
                         one_shot_streak = 0;
                     }
                     reserve = (reserve + paid + bonus).min(lo.cap());
-                    economy_by_band[band].record(target_count, before, reserve, false);
+                    let stats = &mut economy_by_band[band];
+                    stats.record(target_count, before, reserve, false);
+                    stats.hits += target_count as u64;
+                    stats.shots += u64::from(shots);
+                    stats.difficulty += difficulties.iter().sum::<f64>();
                     economy_refunds += paid.max(0) as u64;
                     economy_bonus += bonus.max(0) as u64;
                     combat_clears += 1;
@@ -647,12 +800,14 @@ fn main() {
          dry = runs that ran out of shells there)"
     );
     println!(
-        "{:>5} {:>7} {:>7} {:>7} {:>18} {:>8} {:>20} {:>12}",
+        "{:>5} {:>7} {:>7} {:>7} {:>18} {:>6} {:>6} {:>8} {:>20} {:>12}",
         "band",
         "clears",
         "supply",
         "dry",
         "target mix 1/2/3",
+        "hit%",
+        "diff",
         "mean Δ",
         "reserve before→after",
         "end min..max"
@@ -672,6 +827,16 @@ fn main() {
                 stats.targets[2] as f64 / combat_clears as f64 * 100.0
             )
         };
+        let hit_rate = if stats.shots == 0 {
+            String::from("—")
+        } else {
+            format!("{:.0}", stats.hits as f64 / stats.shots as f64 * 100.0)
+        };
+        let difficulty = if args.aim == Aim::Flat || stats.hits == 0 {
+            String::from("—")
+        } else {
+            format!("{:.2}", stats.difficulty / stats.hits as f64)
+        };
         // A band where every run ran dry has no completed screens to average.
         let (delta, trajectory, range) = if stats.clears == 0 {
             (String::from("—"), String::from("—"), String::from("—"))
@@ -686,7 +851,7 @@ fn main() {
             )
         };
         println!(
-            "{band:>5} {:>7} {:>7} {:>7} {mix:>18} {delta:>8} {trajectory:>20} {range:>12}",
+            "{band:>5} {:>7} {:>7} {:>7} {mix:>18} {hit_rate:>6} {difficulty:>6} {delta:>8} {trajectory:>20} {range:>12}",
             stats.clears, stats.supplies, stats.exhausted,
         );
     }
@@ -718,9 +883,17 @@ fn main() {
         clear_tiers[3]
     );
     println!(
-        "targeting: {indirect_shots}/{} targets ({:.2}%) lack a direct candidate; modeled extra misses: {skill_misses}",
+        "targeting: {indirect_shots}/{} targets ({:.2}%) lack a direct candidate; modeled extra misses: {skill_misses}{}",
         targets_cleared,
-        indirect_shots as f64 / targets_cleared.max(1) as f64 * 100.0
+        indirect_shots as f64 / targets_cleared.max(1) as f64 * 100.0,
+        match args.aim {
+            Aim::Flat => String::new(),
+            Aim::Scaled => format!(
+                "; mean difficulty {:.3}",
+                economy_by_band.iter().map(|b| b.difficulty).sum::<f64>()
+                    / targets_cleared.max(1) as f64
+            ),
+        }
     );
     println!(
         "death/run length: {deaths}/{} runs exhausted; mean run {:.1}/{} screens{}",
@@ -790,6 +963,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use salt_line_sim::run::wind_magnitude;
+
+    #[test]
+    fn wind_cap_matches_the_curve() {
+        assert_eq!(WIND_CAP, wind_magnitude(u32::MAX));
+    }
+
+    #[test]
+    fn loadout_wind_scale_moves_the_wind_term() {
+        let mut lo = Loadout::new();
+        let mut screen = generate_screen(0x5EED, 12, SCREEN_W_REF, &lo);
+        screen.wind = WIND_CAP / 2.0;
+        let plain = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
+        lo.wind_scale = 0.5;
+        let ballasted = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
+        assert!((plain - ballasted - 0.3 * 0.25).abs() < 1e-12);
+    }
 
     #[test]
     fn perfect_aim_never_misses() {
@@ -814,6 +1004,44 @@ mod tests {
             let got = miss_fraction(skill.hit_percent());
             assert!((got - expected).abs() < 0.004, "{skill:?}: {got}");
         }
+    }
+
+    #[test]
+    fn scaled_aim_leaves_the_reference_shot_and_perfect_aim_alone() {
+        for hit in [55, 80, 95] {
+            assert_eq!(scaled_hit_percent(hit, REFERENCE_DIFFICULTY), hit);
+        }
+        for difficulty in [0.0, 0.5, 1.0] {
+            assert_eq!(scaled_hit_percent(100, difficulty), 100);
+        }
+    }
+
+    #[test]
+    fn harder_shots_hit_less_often() {
+        let mut last = u32::MAX;
+        for step in 0..=10 {
+            let hit = scaled_hit_percent(80, f64::from(step) / 10.0);
+            assert!(hit <= last, "difficulty {step}/10 raised the hit chance");
+            assert!((10..=99).contains(&hit));
+            last = hit;
+        }
+        assert_eq!(scaled_hit_percent(80, 0.0), 88);
+        assert_eq!(scaled_hit_percent(80, 1.0), 51);
+    }
+
+    #[test]
+    fn shot_difficulty_tracks_range_wind_and_arc_share() {
+        let lo = Loadout::new();
+        let mut screen = generate_screen(0x5EED, 12, SCREEN_W_REF, &lo);
+        assert!(!screen.structures.is_empty());
+        screen.wind = 0.0;
+        let calm_wide = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
+        let calm_tight = shot_difficulty(&screen, &lo, 0, 0);
+        assert!((calm_tight - calm_wide - 0.3).abs() < 1e-12);
+        screen.wind = -WIND_CAP;
+        let gusty_wide = shot_difficulty(&screen, &lo, 0, SOLVER_TIME_SAMPLES);
+        assert!((gusty_wide - calm_wide - 0.3).abs() < 1e-12);
+        assert!((0.0..=1.0).contains(&calm_wide) && gusty_wide <= 1.0);
     }
 
     #[test]
