@@ -2,8 +2,8 @@
 //!
 //! Enable with `--features profiling`. The build starts a deterministic
 //! autopilot run, then alternates normal texture updates with a frozen texture
-//! while leaving simulation, software rasterization, upload preparation, and
-//! draw submission enabled in both modes. Timings are CPU-side; in particular,
+//! while leaving simulation, software rasterization, and upload preparation
+//! enabled in both modes. Timings are CPU-side; in particular,
 //! `ImageTexture::update` does not include deferred GPU completion.
 
 use godot::prelude::*;
@@ -71,6 +71,12 @@ impl Samples {
 
 pub struct Capture {
     started: Option<Instant>,
+    /// Whether the run is in play this frame; frames outside play (a game
+    /// over inside the capture window) are not counted.
+    playing: bool,
+    /// The phase this frame belongs to, fixed by `begin_frame` so a frame
+    /// that straddles a phase boundary is counted wholly in one phase.
+    frame_mode: Option<Mode>,
     finished: bool,
     frames: [u64; 2],
     rendered: [u64; 2],
@@ -81,7 +87,6 @@ pub struct Capture {
     render: [Samples; 2],
     upload_prepare: [Samples; 2],
     texture_update: [Samples; 2],
-    draw_submit: [Samples; 2],
 }
 
 impl Capture {
@@ -95,6 +100,8 @@ impl Capture {
         };
         Self {
             started: None,
+            playing: false,
+            frame_mode: None,
             finished: false,
             frames: [0; 2],
             rendered: [0; 2],
@@ -105,11 +112,15 @@ impl Capture {
             render: pair(),
             upload_prepare: pair(),
             texture_update: pair(),
-            draw_submit: pair(),
         }
     }
 
+    pub fn begin_frame(&mut self) {
+        self.frame_mode = self.mode();
+    }
+
     pub fn start_if_playing(&mut self, playing: bool) {
+        self.playing = playing;
         if playing && self.started.is_none() && !self.finished {
             self.started = Some(Instant::now());
             godot_print!(
@@ -121,11 +132,11 @@ impl Capture {
     /// Keep startup and finished runs in normal update mode; freeze only in
     /// the two measured frozen phases.
     pub fn should_update_texture(&self) -> bool {
-        self.mode() != Some(Mode::Frozen)
+        self.frame_mode != Some(Mode::Frozen)
     }
 
     fn mode(&self) -> Option<Mode> {
-        if self.finished {
+        if self.finished || !self.playing {
             return None;
         }
         let elapsed = self.started?.elapsed().as_secs_f64() - WARMUP_SECONDS;
@@ -137,13 +148,13 @@ impl Capture {
     }
 
     pub fn record_tick(&mut self, duration: Duration) {
-        if let Some(mode) = self.mode() {
+        if let Some(mode) = self.frame_mode {
             self.tick[mode.index()].observe(duration);
         }
     }
 
     pub fn record_render(&mut self, duration: Duration) {
-        if let Some(mode) = self.mode() {
+        if let Some(mode) = self.frame_mode {
             let i = mode.index();
             self.rendered[i] += 1;
             self.render[i].observe(duration);
@@ -151,13 +162,13 @@ impl Capture {
     }
 
     pub fn record_upload_prepare(&mut self, duration: Duration) {
-        if let Some(mode) = self.mode() {
+        if let Some(mode) = self.frame_mode {
             self.upload_prepare[mode.index()].observe(duration);
         }
     }
 
     pub fn record_texture_update(&mut self, duration: Duration) {
-        if let Some(mode) = self.mode() {
+        if let Some(mode) = self.frame_mode {
             let i = mode.index();
             self.texture_updates[i] += 1;
             self.texture_update[i].observe(duration);
@@ -165,19 +176,13 @@ impl Capture {
     }
 
     pub fn record_texture_update_skipped(&mut self) {
-        if let Some(mode) = self.mode() {
+        if let Some(mode) = self.frame_mode {
             self.texture_update_skips[mode.index()] += 1;
         }
     }
 
-    pub fn record_draw_submit(&mut self, duration: Duration) {
-        if let Some(mode) = self.mode() {
-            self.draw_submit[mode.index()].observe(duration);
-        }
-    }
-
     pub fn record_process(&mut self, duration: Duration) {
-        if let Some(mode) = self.mode() {
+        if let Some(mode) = self.frame_mode {
             let i = mode.index();
             self.frames[i] += 1;
             self.process[i].observe(duration);
@@ -206,7 +211,6 @@ impl Capture {
             format!("updated software_render: {}", self.render[0].summary()),
             format!("updated upload_prepare: {}", self.upload_prepare[0].summary()),
             format!("updated texture_update_call: {} (CPU call time; GPU completion is deferred)", self.texture_update[0].summary()),
-            format!("updated draw_texture_submit: {} (CPU call time; GPU draw completion is deferred)", self.draw_submit[0].summary()),
             format!(
                 "frozen: frames={} rendered={} texture_updates={} texture_update_skips={}",
                 self.frames[1], self.rendered[1], self.texture_updates[1], self.texture_update_skips[1]
@@ -216,7 +220,6 @@ impl Capture {
             format!("frozen software_render: {}", self.render[1].summary()),
             format!("frozen upload_prepare: {}", self.upload_prepare[1].summary()),
             format!("frozen texture_update_call: {} (should be n=0)", self.texture_update[1].summary()),
-            format!("frozen draw_texture_submit: {} (CPU call time; GPU draw completion is deferred)", self.draw_submit[1].summary()),
         ])
     }
 }

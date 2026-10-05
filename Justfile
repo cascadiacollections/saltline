@@ -27,6 +27,7 @@ fmt:
 
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy -p salt-line-godot --all-targets --features profiling -- -D warnings
 
 # macOS exports ship one universal dylib: `macos.release` in salt_line.gdextension points at
 # target/universal-apple-darwin/release. Debug builds stay host-only at target/debug, so
@@ -98,7 +99,6 @@ android-profile-apk: build
     assert data.count(app_id) == 1 and data.count(app_name) == 1
     path.write_text(data.replace(app_id, 'package/unique_name="com.cascadiacollections.saltline.profile"').replace(app_name, 'package/name="Salt Line Profiler"'))
     PY
-    cargo build --release -p salt-line-godot --features profiling
     rustup target add aarch64-linux-android
     RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build --release -p salt-line-godot --features profiling \
         --target aarch64-linux-android \

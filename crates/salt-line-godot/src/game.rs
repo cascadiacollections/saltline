@@ -265,6 +265,8 @@ impl INode2D for SaltLine {
         }
         #[cfg(feature = "profiling")]
         let process_started = std::time::Instant::now();
+        #[cfg(feature = "profiling")]
+        self.profile.begin_frame();
         // The dev clock (`--salt-shot-at`) runs on the capped time the core
         // animates by, so a capture on a slow frame lands at the same point
         // of an animation.
@@ -324,11 +326,7 @@ impl INode2D for SaltLine {
         // at 1:1. Godot's viewport stretch does the only scaling in the game,
         // with nearest filtering set project-wide.
         if let Some(tex) = self.texture.clone() {
-            #[cfg(feature = "profiling")]
-            let draw_started = std::time::Instant::now();
             self.base_mut().draw_texture(&tex, Vector2::ZERO);
-            #[cfg(feature = "profiling")]
-            self.profile.record_draw_submit(draw_started.elapsed());
         }
     }
 
