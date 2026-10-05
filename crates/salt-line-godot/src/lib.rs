@@ -62,6 +62,8 @@ pub mod keypad;
 pub mod pads;
 pub mod palette;
 pub mod presentation;
+#[cfg(feature = "profiling")]
+mod profiling;
 pub mod raster;
 pub mod render;
 pub mod resume;

@@ -79,6 +79,8 @@ use crate::frame::{self, DisplayPoll, Redraw};
 use crate::input::{self, Event, Intents, Typed};
 use crate::pads::Pads;
 use crate::palette::Palette;
+#[cfg(feature = "profiling")]
+use crate::profiling::Capture as ProfileCapture;
 use crate::raster::Canvas;
 use crate::render::{self, Art, Cache};
 use crate::resume::{self, RUN_LOADING_PATH, RUN_PATH};
@@ -164,6 +166,10 @@ pub struct SaltLine {
     elapsed: f64,
     /// `--salt-shot-at <seconds>`: when to grab the screenshot.
     shot_at: f64,
+    /// Present only in the dedicated profiling build; no clocks or samples in
+    /// ordinary release builds.
+    #[cfg(feature = "profiling")]
+    profile: ProfileCapture,
 }
 
 #[godot_api]
@@ -197,6 +203,8 @@ impl INode2D for SaltLine {
             frames: 0,
             elapsed: 0.0,
             shot_at: crate::cli::DEFAULT_SHOT_AT,
+            #[cfg(feature = "profiling")]
+            profile: ProfileCapture::new(),
         }
     }
 
@@ -224,6 +232,19 @@ impl INode2D for SaltLine {
         let fx = self.g.fit_display(window, self.cutout);
         self.apply(fx);
         let args = DevArgs::parse(&Self::cmdline_all());
+        #[cfg(feature = "profiling")]
+        let args = {
+            let mut args = args;
+            // A profiling APK is deliberately self-driving so every install
+            // starts from the same simulation seed without launch arguments.
+            args.seed = Some(crate::profiling::FIXED_SEED);
+            args.auto = true;
+            godot_print!(
+                "salt-profile: deterministic profiling run; seed={}",
+                crate::profiling::FIXED_SEED
+            );
+            args
+        };
         if let Some(dir) = args.gallery.as_deref() {
             self.gallery(dir);
             return;
@@ -242,6 +263,8 @@ impl INode2D for SaltLine {
             self.broken_frame(delta);
             return;
         }
+        #[cfg(feature = "profiling")]
+        let process_started = std::time::Instant::now();
         // The dev clock (`--salt-shot-at`) runs on the capped time the core
         // animates by, so a capture on a slow frame lands at the same point
         // of an animation.
@@ -254,6 +277,8 @@ impl INode2D for SaltLine {
         // frame's input is acted on, so a panic inside `fire` still reports
         // the aim it fired. The core gets the raw `delta` and caps it itself.
         let aim = (self.g.play.angle_ticks, self.g.play.power_ticks);
+        #[cfg(feature = "profiling")]
+        let tick_started = std::time::Instant::now();
         let fx = self.g.tick_with(delta, &self.intents, |g| {
             crash::note(
                 g.mode_name(),
@@ -262,6 +287,8 @@ impl INode2D for SaltLine {
                 g.run_file.resumed,
             )
         });
+        #[cfg(feature = "profiling")]
+        self.profile.record_tick(tick_started.elapsed());
         self.apply(fx);
         self.tick_title_music(capped);
         // A stick held over that moved the aim this frame is a hand on it,
@@ -273,11 +300,23 @@ impl INode2D for SaltLine {
         }
         self.prune_pads(capped);
         self.apply_frame_cap();
+        #[cfg(feature = "profiling")]
+        self.profile
+            .start_if_playing(self.g.mode == crate::app::Mode::Playing);
         if self.redraw.due(self.busy()) {
             self.render();
         }
         // Every frame, drawn or not: an undrawn frame is the last one drawn.
         self.maybe_screenshot();
+        #[cfg(feature = "profiling")]
+        {
+            self.profile.record_process(process_started.elapsed());
+            if let Some(lines) = self.profile.finish_if_due() {
+                for line in lines {
+                    godot_print!("{line}");
+                }
+            }
+        }
     }
 
     fn draw(&mut self) {
@@ -285,7 +324,11 @@ impl INode2D for SaltLine {
         // at 1:1. Godot's viewport stretch does the only scaling in the game,
         // with nearest filtering set project-wide.
         if let Some(tex) = self.texture.clone() {
+            #[cfg(feature = "profiling")]
+            let draw_started = std::time::Instant::now();
             self.base_mut().draw_texture(&tex, Vector2::ZERO);
+            #[cfg(feature = "profiling")]
+            self.profile.record_draw_submit(draw_started.elapsed());
         }
     }
 
@@ -879,6 +922,8 @@ impl SaltLine {
     }
 
     fn render(&mut self) {
+        #[cfg(feature = "profiling")]
+        let render_started = std::time::Instant::now();
         render::frame(
             &self.g,
             &self.art,
@@ -887,6 +932,8 @@ impl SaltLine {
             &mut self.cache,
         );
         self.g.set_buttons(&self.touch_buttons);
+        #[cfg(feature = "profiling")]
+        self.profile.record_render(render_started.elapsed());
         self.upload();
     }
 
@@ -895,6 +942,8 @@ impl SaltLine {
     /// image takes it by reference, and the texture is updated in place. Only
     /// a change of buffer size makes a new texture.
     fn upload(&mut self) {
+        #[cfg(feature = "profiling")]
+        let prepare_started = std::time::Instant::now();
         let (w, h) = (self.canvas.w, self.canvas.h);
         let format = godot::classes::image::Format::RGBA8;
         let bytes = self.canvas.bytes();
@@ -911,8 +960,24 @@ impl SaltLine {
         let Some(image) = self.image.as_ref() else {
             return;
         };
+        #[cfg(feature = "profiling")]
+        {
+            self.profile
+                .record_upload_prepare(prepare_started.elapsed());
+        }
         match self.texture.as_mut() {
-            Some(t) if t.get_width() == w && t.get_height() == h => t.update(image),
+            Some(t) if t.get_width() == w && t.get_height() == h => {
+                #[cfg(feature = "profiling")]
+                if self.profile.should_update_texture() {
+                    let update_started = std::time::Instant::now();
+                    t.update(image);
+                    self.profile.record_texture_update(update_started.elapsed());
+                } else {
+                    self.profile.record_texture_update_skipped();
+                }
+                #[cfg(not(feature = "profiling"))]
+                t.update(image);
+            }
             _ => {
                 self.texture = ImageTexture::create_from_image(image);
                 self.base_mut().queue_redraw();
