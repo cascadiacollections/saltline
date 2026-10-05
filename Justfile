@@ -34,6 +34,20 @@ lint:
 balance seeds="100" screens="40" skill="perfect" build="base":
     cargo run --release -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --skill {{ skill }} --build {{ build }} --fast
 
+# Sweep the hit chance and print one survival/reserve line per step, to find
+# where the shell economy stops carrying a player. Same seeds at every step.
+balance-sweep seeds="100" screens="40" build="base" from="40" to="100" step="5":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -q -p salt-line-sim --bin batch
+    printf '%5s  %s\n' "hit%" "runs exhausted / mean run / ending reserve"
+    for hit in $(seq {{ from }} {{ step }} {{ to }}); do
+        out=$(target/release/batch --seeds {{ seeds }} --screens {{ screens }} --hit "$hit" --build {{ build }} --fast)
+        deaths=$(grep -o 'death/run length: [^;]*; mean run [0-9.]*/[0-9]*' <<<"$out" | sed 's/death\/run length: //')
+        ending=$(grep -o 'mean ending reserve [0-9.]*, min [0-9-]*' <<<"$out")
+        printf '%5s  %s; %s\n' "$hit" "$deaths" "$ending"
+    done
+
 # macOS exports ship one universal dylib: `macos.release` in salt_line.gdextension points at
 # target/universal-apple-darwin/release. Debug builds stay host-only at target/debug, so
 # `just run` does not need this; run it before `godot --export-release "macOS"` on a Mac.

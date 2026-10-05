@@ -15,7 +15,8 @@
 //!
 //! Flags: `--seeds N`, `--screens N` (per seed), `--width W`, `--build
 //! base|evolving|drift|demo|precision|risk` (default evolving), `--skill
-//! perfect|steady|rough` (default perfect), `--fast` (cap
+//! perfect|steady|rough` (default perfect), `--hit N` (a custom 1-100% hit
+//! chance in place of a named skill), `--fast` (cap
 //! candidate counts at [`solver::GATE_CAP`], so the histogram saturates) and
 //! `-v` (print each failure as it happens). Skills are fixed hit assumptions:
 //! perfect (100%), steady (80%) or rough (55%). A miss wastes one shot; the
@@ -74,6 +75,8 @@ enum Skill {
     Perfect,
     Steady,
     Rough,
+    /// `--hit N`: any hit chance from 1 to 100%, for sweeps.
+    Hit(u32),
 }
 
 impl Skill {
@@ -91,6 +94,7 @@ impl Skill {
             Self::Perfect => 100,
             Self::Steady => 80,
             Self::Rough => 55,
+            Self::Hit(percent) => percent,
         }
     }
 }
@@ -180,11 +184,23 @@ fn parse_args() -> Args {
                     std::process::exit(2)
                 });
             }
+            "--hit" => {
+                let v = value();
+                a.skill = v
+                    .parse()
+                    .ok()
+                    .filter(|p| (1..=100).contains(p))
+                    .map(Skill::Hit)
+                    .unwrap_or_else(|| {
+                        eprintln!("bad hit chance '{v}'; use a whole percent from 1 to 100");
+                        std::process::exit(2)
+                    });
+            }
             "--fast" => a.fast = true,
             "--verbose" | "-v" => a.verbose = true,
             "--help" | "-h" => {
                 println!(
-                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough] [--fast] [-v]"
+                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough | --hit N] [--fast] [-v]"
                 );
                 std::process::exit(0);
             }
@@ -350,7 +366,8 @@ fn bar(n: u64, max: u64, width: usize) -> String {
 
 /// Number of attempts needed to land one target under the selected seeded
 /// accuracy assumption. The 64-attempt cap is a safety bound in case a
-/// future profile hits 0%; at 55% it never triggers in practice.
+/// future profile hits 0%; `--hit` starts at 1% and the named skills at 55%,
+/// so in practice it only bounds the lowest `--hit` values.
 fn attempts_per_target(skill: Skill, rng: &mut Pcg32) -> u32 {
     let hit_percent = skill.hit_percent();
     let mut attempts = 1;
@@ -758,5 +775,40 @@ fn main() {
             println!("  seed {seed:#018x} screen {index:<4} {template:<9} {worst} candidates");
         }
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn perfect_aim_never_misses() {
+        let mut rng = Pcg32::new(7);
+        assert!((0..1000).all(|_| attempts_per_target(Skill::Perfect, &mut rng) == 1));
+    }
+
+    #[test]
+    fn hit_rate_matches_the_profile() {
+        // Mean of a geometric(p) draw is 1/p: 1.25 attempts at 80%.
+        let mut rng = Pcg32::new(7);
+        let n = 20_000;
+        let total: u32 = (0..n)
+            .map(|_| attempts_per_target(Skill::Steady, &mut rng))
+            .sum();
+        let mean = f64::from(total) / f64::from(n);
+        assert!((mean - 1.25).abs() < 0.02, "mean attempts {mean}");
+    }
+
+    #[test]
+    fn named_skills_match_their_hit_spelling() {
+        for skill in [Skill::Perfect, Skill::Steady, Skill::Rough] {
+            assert_eq!(
+                skill.hit_percent(),
+                Skill::Hit(skill.hit_percent()).hit_percent()
+            );
+        }
+        assert_eq!(Skill::parse("steady"), Some(Skill::Steady));
+        assert_eq!(Skill::parse("sloppy"), None);
     }
 }
