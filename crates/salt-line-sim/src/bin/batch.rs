@@ -15,7 +15,8 @@
 //!
 //! Flags: `--seeds N`, `--screens N` (per seed), `--width W`, `--build
 //! base|evolving|drift|demo|precision|risk` (default evolving), `--skill
-//! perfect|steady|rough` (default perfect), `--fast` (cap
+//! perfect|steady|rough` (default perfect), `--hit N` (a custom 10-100% hit
+//! chance in place of a named skill), `--fast` (cap
 //! candidate counts at [`solver::GATE_CAP`], so the histogram saturates) and
 //! `-v` (print each failure as it happens). Skills are fixed hit assumptions:
 //! perfect (100%), steady (80%) or rough (55%). A miss wastes one shot; the
@@ -29,11 +30,11 @@
 //! failure here means even the level rung failed. The totals count how many
 //! screens came off each rung, and every screen with targets, fallbacks
 //! included, is re-validated here rather than trusted. Seeds are the first N
-//! values of a fixed schedule; changing skill/build preserves the seed set.
+//! values of a fixed schedule; changing skill, hit chance or build preserves the seed set.
 //! The economy model samples every shot a screen will take up front and ends
 //! the run when that count exceeds the reserve: the player would run dry
 //! mid-screen, so the reserve is recorded as 0. Seeds and the miss stream
-//! depend only on the seed index, so the three skills are compared on the same
+//! depend only on the seed index, so every hit chance is compared on the same
 //! luck. Across builds the miss draws can drift apart once target counts
 //! differ. The hit rate is flat: it ignores wind, distance, indirect-only
 //! targets, Salvage refunds and Chalk marks, so with evolving/demo builds the
@@ -86,6 +87,14 @@ impl Skill {
         })
     }
 
+    fn name(self) -> &'static str {
+        match self {
+            Self::Perfect => "perfect",
+            Self::Steady => "steady",
+            Self::Rough => "rough",
+        }
+    }
+
     fn hit_percent(self) -> u32 {
         match self {
             Self::Perfect => 100,
@@ -130,7 +139,10 @@ struct Args {
     screens: u32,
     width: usize,
     build: Build,
-    skill: Skill,
+    /// The named skill, or "custom" for `--hit`.
+    accuracy: &'static str,
+    /// Chance, in whole percent, that one shot fells its target.
+    hit_percent: u32,
     /// Cap the candidate count instead of counting them all. Much faster, but
     /// the histogram saturates.
     fast: bool,
@@ -145,7 +157,8 @@ impl Default for Args {
             screens: 100,
             width: SCREEN_W_REF,
             build: Build::Evolving,
-            skill: Skill::Perfect,
+            accuracy: Skill::Perfect.name(),
+            hit_percent: Skill::Perfect.hit_percent(),
             fast: false,
             verbose: false,
         }
@@ -175,16 +188,30 @@ fn parse_args() -> Args {
             }
             "--skill" => {
                 let v = value();
-                a.skill = Skill::parse(&v).unwrap_or_else(|| {
+                let skill = Skill::parse(&v).unwrap_or_else(|| {
                     eprintln!("unknown skill '{v}'; use perfect|steady|rough");
                     std::process::exit(2)
                 });
+                a.accuracy = skill.name();
+                a.hit_percent = skill.hit_percent();
+            }
+            "--hit" => {
+                let v = value();
+                a.accuracy = "custom";
+                a.hit_percent = v
+                    .parse()
+                    .ok()
+                    .filter(|p| (10..=100).contains(p))
+                    .unwrap_or_else(|| {
+                        eprintln!("bad hit chance '{v}'; use a whole percent from 10 to 100");
+                        std::process::exit(2)
+                    });
             }
             "--fast" => a.fast = true,
             "--verbose" | "-v" => a.verbose = true,
             "--help" | "-h" => {
                 println!(
-                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough] [--fast] [-v]"
+                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough | --hit N] [--fast] [-v]"
                 );
                 std::process::exit(0);
             }
@@ -349,10 +376,9 @@ fn bar(n: u64, max: u64, width: usize) -> String {
 }
 
 /// Number of attempts needed to land one target under the selected seeded
-/// accuracy assumption. The 64-attempt cap is a safety bound in case a
-/// future profile hits 0%; at 55% it never triggers in practice.
-fn attempts_per_target(skill: Skill, rng: &mut Pcg32) -> u32 {
-    let hit_percent = skill.hit_percent();
+/// accuracy assumption. The 64-attempt cap is a safety bound: `--hit` stops
+/// at 10%, where it truncates about 0.1% of targets (0.9^63).
+fn attempts_per_target(hit_percent: u32, rng: &mut Pcg32) -> u32 {
     let mut attempts = 1;
     while attempts < 64 && rng.range_u32(0, 99) >= hit_percent {
         attempts += 1;
@@ -364,13 +390,13 @@ fn main() {
     let args = parse_args();
     let total = args.seeds * args.screens as u64;
     println!(
-        "salt-line batch: {} seeds x {} screens = {total} screens, width {}, build {:?}, skill {:?} ({}% hit chance){}",
+        "salt-line batch: {} seeds x {} screens = {total} screens, width {}, build {:?}, accuracy {} ({}% hit chance){}",
         args.seeds,
         args.screens,
         args.width,
         args.build,
-        args.skill,
-        args.skill.hit_percent(),
+        args.accuracy,
+        args.hit_percent,
         if args.fast { ", fast" } else { "" }
     );
     println!(
@@ -380,7 +406,7 @@ fn main() {
     println!("gate: worst-target candidates >= {MIN_SOLUTIONS}");
     println!(
         "economy: fixed {}% hit chance per shot, independent of target difficulty and aim\n",
-        args.skill.hit_percent()
+        args.hit_percent
     );
 
     let mut by_band: Vec<Bucket> = Vec::new();
@@ -482,7 +508,7 @@ fn main() {
             if alive {
                 let target_count = screen.structures.len();
                 let shots: u32 = (0..target_count)
-                    .map(|_| attempts_per_target(args.skill, &mut accuracy_rng))
+                    .map(|_| attempts_per_target(args.hit_percent, &mut accuracy_rng))
                     .sum();
                 let before = reserve;
                 if reserve < shots as i32 {
@@ -758,5 +784,43 @@ fn main() {
             println!("  seed {seed:#018x} screen {index:<4} {template:<9} {worst} candidates");
         }
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn perfect_aim_never_misses() {
+        let mut rng = Pcg32::new(7);
+        assert!((0..1000).all(|_| attempts_per_target(100, &mut rng) == 1));
+    }
+
+    /// Fraction of shots that miss over many targets. Tight enough to catch
+    /// an off-by-one in the roll range (80/99 vs 80/100 hits).
+    fn miss_fraction(hit_percent: u32) -> f64 {
+        let mut rng = Pcg32::new(7);
+        let shots: u32 = (0..50_000)
+            .map(|_| attempts_per_target(hit_percent, &mut rng))
+            .sum();
+        f64::from(shots - 50_000) / f64::from(shots)
+    }
+
+    #[test]
+    fn miss_rate_matches_the_hit_chance() {
+        for skill in [Skill::Steady, Skill::Rough] {
+            let expected = 1.0 - f64::from(skill.hit_percent()) / 100.0;
+            let got = miss_fraction(skill.hit_percent());
+            assert!((got - expected).abs() < 0.004, "{skill:?}: {got}");
+        }
+    }
+
+    #[test]
+    fn skill_names_round_trip() {
+        for skill in [Skill::Perfect, Skill::Steady, Skill::Rough] {
+            assert_eq!(Skill::parse(skill.name()), Some(skill));
+        }
+        assert_eq!(Skill::parse("sloppy"), None);
     }
 }

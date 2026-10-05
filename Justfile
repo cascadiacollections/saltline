@@ -34,6 +34,28 @@ lint:
 balance seeds="100" screens="40" skill="perfect" build="base":
     cargo run --release -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --skill {{ skill }} --build {{ build }} --fast
 
+# Sweep the hit chance (10-100) and print one survival/reserve line per step,
+# to find where the shell economy stops carrying a player. Same seeds at every
+# step. Stops with batch's report if a screen fails to validate.
+balance-sweep seeds="100" screens="40" build="base" from="40" to="100" step="5":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf '%5s  %-10s %-9s %s\n' "hit%" "exhausted" "mean run" "ending reserve (mean, min)"
+    for hit in $(seq {{ from }} {{ step }} {{ to }}); do
+        if ! out=$(cargo run --release -q -p salt-line-sim --bin batch -- --seeds {{ seeds }} --screens {{ screens }} --hit "$hit" --build {{ build }} --fast); then
+            printf '%s\n' "$out"
+            exit 1
+        fi
+        deaths=$(sed -n 's/^death\/run length: \([0-9]*\/[0-9]*\) runs exhausted; mean run \([0-9.]*\/[0-9]*\).*/\1 \2/p' <<<"$out")
+        ending=$(sed -n 's/.*mean ending reserve \([0-9.]*\), min \(-\{0,1\}[0-9]*\).*/\1, \2/p' <<<"$out")
+        if [[ -z "$deaths" || -z "$ending" ]]; then
+            echo "balance-sweep: batch output format changed; update the sed patterns" >&2
+            exit 1
+        fi
+        read -r exhausted run <<<"$deaths"
+        printf '%5s  %-10s %-9s %s\n' "$hit" "$exhausted" "$run" "$ending"
+    done
+
 # macOS exports ship one universal dylib: `macos.release` in salt_line.gdextension points at
 # target/universal-apple-darwin/release. Debug builds stay host-only at target/debug, so
 # `just run` does not need this; run it before `godot --export-release "macOS"` on a Mac.
