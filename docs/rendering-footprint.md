@@ -1,5 +1,7 @@
 # One texture, two renderers: a Salt Line footprint audit
 
+> Since #49 the frame is one whole-frame texture with up to twelve strip textures drawn over it, and only the strips that changed are uploaded. The one-texture, one-draw-call description below predates that; the memory findings still apply.
+
 Salt Line draws its 320 × 180 playfield in Rust, uploads one RGBA image to Godot, and displays it as one textured quad. That made the desktop renderer seem like a minor choice. A memory snapshot showed otherwise.
 
 I ran the same screen (`--salt-seed 4242 --salt-screen 6`) in Godot 4.7.2 on Windows ARM64, using the x64 build under emulation. The window was 1280 × 720 and hidden for measurement. Each row is a fresh process; these are process counters, so the exact numbers will vary by machine and graphics driver.

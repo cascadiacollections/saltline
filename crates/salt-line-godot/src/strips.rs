@@ -10,23 +10,27 @@
 //!
 //! Why: on a phone the upload itself is the expensive part of a frame, not
 //! the raster. On a Pixel 10, `ImageTexture::update` of the whole 375x180
-//! buffer cost ~1.4 ms against ~0.6 ms for drawing it, and the cost is the
-//! driver's CPU-side copy, so it scales with the bytes sent. In play most
+//! buffer cost ~1.4 ms against ~0.6 ms for drawing it. That is CPU time inside
+//! the call (Godot's and the driver's; a ring of textures did not shorten it,
+//! so it is not a wait on the GPU), and most of it scales with the bytes
+//! sent. In play most
 //! frames change only a few strips (a shell in flight, the HUD), and about a
 //! third change nothing at all.
 //!
 //! Each upload also has a fixed cost (~0.18 ms on the Pixel), so twelve strip
 //! uploads cost more than one whole-frame upload. Hence the whole-frame
-//! texture underneath: the worst frame costs one whole upload, as before.
+//! texture underneath: the worst frame costs one whole upload, as before, plus
+//! the comparison with the shadow (tens of microseconds).
 //!
 //! The strips sit at whole-pixel offsets in the internal-resolution buffer,
 //! and the viewport stretch scales the finished viewport, so they meet with
 //! no seam.
 
 /// How many strips the frame is cut into. 12 strips of a 180-row buffer are
-/// 15 rows each: small enough that a shell in flight dirties one or two, few
-/// enough that a full-frame change (a camera pan) costs little extra in
-/// per-call overhead.
+/// 15 rows each: small enough that a shell in flight dirties one or two. A
+/// change across most of the frame (a camera pan) takes the whole-frame path
+/// instead, see [`WHOLE_ABOVE`]. A buffer must be at least `STRIPS` rows
+/// tall, so no strip is empty.
 pub const STRIPS: usize = 12;
 
 /// Above this many changed strips, one whole-frame upload is cheaper than the

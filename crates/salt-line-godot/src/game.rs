@@ -56,8 +56,8 @@
 //!   one frame is invisible to `Input::is_key_pressed`; `input()` records it
 //!   as an event, so it still counts once. Holds are polled, because only
 //!   the state now matters for them.
-//! * **Dirty-flag redraw.** The frame is rasterised in software and uploaded
-//!   whole, so an unchanged frame is skipped (`frame::Redraw`): drawn when an
+//! * **Dirty-flag redraw.** The frame is rasterised in software, so an
+//!   unchanged frame is skipped (`frame::Redraw`): drawn when an
 //!   effect or an input marked it, while anything moves, and once after.
 //! * **Strip upload.** The frame is shown as one whole-frame texture with
 //!   `strips::STRIPS` horizontal strip textures over it, and only the strips
@@ -975,6 +975,10 @@ impl SaltLine {
                 })
                 .collect::<Option<Vec<_>>>()
                 .unwrap_or_default();
+            if self.whole.is_none() || self.strips.len() != STRIPS {
+                // Every frame would land back here and rebuild all of them.
+                godot_warn!("salt: could not create the frame textures for a {w}x{h} buffer");
+            }
             self.shadow.reset(bytes, w, h);
             self.layers.reset();
             self.base_mut().queue_redraw();
