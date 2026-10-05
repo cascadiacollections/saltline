@@ -1538,7 +1538,13 @@ impl Game {
             wind.filter(|w| w.abs() > 0.01)
                 .map(|_| "READ THE WINDSOCK - CORRECT AGAINST IT".into())
         } else if learned & LEARN_SHELLS == 0 {
-            Some("SHELLS ARE THE RUN CLOCK - SPEND CAREFULLY".into())
+            // Only once the reserve has dipped below where it started: a
+            // player still banking refunds has not yet felt the clock.
+            self.play
+                .run
+                .as_ref()
+                .is_some_and(|r| r.shells < salt_line_sim::START_SHELLS)
+                .then(|| "SHELLS ARE THE RUN CLOCK - SPEND CAREFULLY".into())
         } else {
             None
         }

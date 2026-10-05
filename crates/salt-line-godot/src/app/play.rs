@@ -74,9 +74,9 @@ impl Game {
     /// replay.
     pub(super) fn fire(&mut self) {
         // Onboarding advances one lesson per shot: wind is learned by firing
-        // with wind showing once craters are, then shells only after the
-        // reserve has actually dipped below its starting value. This keeps
-        // the run-clock lesson in step with the player's experience.
+        // with wind showing once craters are, shells by firing while the
+        // shells prompt shows (after wind, with the reserve below its start;
+        // see `onboarding_prompt`).
         let learned = self.save.learned;
         if learned & LEARN_WIND != 0
             && self

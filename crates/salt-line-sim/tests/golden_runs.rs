@@ -45,7 +45,7 @@ const NOTES: &str = include_str!("../../../NOTES.md");
 /// ones, short and long runs, deep bands, a run that runs dry, and runs that
 /// draft Airburst and Enfilade and use them; `the_corpus_covers_what_it_should`
 /// holds it to that.
-const SPECS: [(u64, usize, usize, f64); 8] = [
+const SPECS: [(u64, usize, usize, f64); 9] = [
     (0x0001, 320, 12, 0.7),
     (0x0002, 400, 40, 0.7),
     (0x0003, 357, 60, 0.8),
@@ -54,6 +54,7 @@ const SPECS: [(u64, usize, usize, f64); 8] = [
     (0x0006, 320, 140, 0.95),
     (0x0007, 333, 120, 0.9),
     (0x0008, 320, 120, 0.2),
+    (0x000b, 320, 120, 0.9),
 ];
 
 /// One parsed corpus line.

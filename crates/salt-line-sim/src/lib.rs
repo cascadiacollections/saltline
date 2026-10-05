@@ -65,7 +65,7 @@ pub const EPOCHS: &[(u32, u64)] = &[
     (3, 0x6471_3d32_7a31_a792),
     (4, 0x1104_ab32_9b37_6f2c),
     (5, 0x9c4e_f5d0_0758_cebe),
-    (6, 0x80d3_e8e0_17da_7d72),
+    (6, 0x0e22_2e08_a33e_af8a),
 ];
 
 /// The digest `SIM_EPOCH` vouches for: the last entry of [`EPOCHS`].

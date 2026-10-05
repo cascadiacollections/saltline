@@ -138,7 +138,8 @@ seeds, with the loadout evolving one seeded pick per band:
   the HUD worth looking at from screen 1.
 - Template and target-count weights now overlap for build testing: two-target
   screens begin in band 3, three-target screens in band 9, and later bands
-  retain a small share of simpler counts. Eligible
+  retain a small share of simpler counts. (Superseded by epoch 6: doubles now
+  begin in band 2 and triples in band 4; see §6.) Eligible
   `Overhang` has signature-template weight comparable to `Basin` instead of
   half its weight, while its capability and solvability gates remain intact.
 - The batch report now includes a deterministic solver-assisted economy
@@ -231,8 +232,12 @@ with guessed values.
   The epoch digest includes an explicit rubble-clearing probe because the
   scripted golden runs do not reliably take that second shot. Epoch digest:
   `0x9c4ef5d00758cebe`.
-- **Epoch 6:** the target-count mix now introduces doubles with the first wind
-  band and triples in band 2, then ramps them through band 9 instead of
-  guaranteeing single-target screens for the first twelve. Existing epoch-5
-  runs are discarded on update because generated screens and outcomes change.
-  Epoch digest: `0x80d3e8e017da7d72`.
+- **Epoch 6:** the target-count mix introduces doubles in band 2 (screen 9)
+  and triples in band 4 (screen 17), then ramps them through band 9, instead
+  of guaranteeing single-target screens for the first twelve. Doubles come a
+  band after the first wind and triples two bands after that, so no two new
+  dials turn on the same screen (DESIGN §2.5). The golden corpus gains a
+  ninth run (seed `0xb`) because none of the first eight drafted on a supply
+  screen under the new mix. Existing epoch-5 runs are discarded on update
+  because generated screens and outcomes change. Epoch digest:
+  `0x0e222e08a33eaf8a`.

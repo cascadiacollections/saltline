@@ -29,7 +29,8 @@ pub const LEARN_FIRE: u32 = 1 << 2;
 pub const LEARN_CRATER: u32 = 1 << 3;
 /// Fired with a non-zero wind showing, after learning craters.
 pub const LEARN_WIND: u32 = 1 << 4;
-/// Fired again after learning wind; shells are the run clock.
+/// Fired after learning wind with the reserve below its starting value,
+/// which is when the shells-are-the-run-clock prompt shows.
 pub const LEARN_SHELLS: u32 = 1 << 5;
 /// Picked a draft card.
 pub const LEARN_DRAFT: u32 = 1 << 6;

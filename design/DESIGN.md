@@ -182,7 +182,7 @@ on different schedules so the player never feels one dial turning:
 | Target distance | `110 + band·6` units | 290 |
 | Wind magnitude | `band·0.35`, resampled per screen | 7.0 |
 | Terrain amplitude | `1.0 + band·0.05` × base | 2.2 |
-| Target count | Weighted mix: first doubles at band 1; first triples at band 2; triples reach 20% at band 3 and 50% at band 9 | 3 |
+| Target count | Weighted mix: first doubles at band 2; first triples at band 4; triples reach 25% at band 6 and 50% at band 9 | 3 |
 | Elevation delta | Widens `±(8 + band·3)` | ±70 |
 
 These are scaled to the 320×180 internal buffer, where the emplacement sits at
