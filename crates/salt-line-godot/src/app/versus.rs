@@ -270,8 +270,11 @@ impl Game {
     }
 
     /// Aim and fire, as in a run: the same keys, buttons and drag. The
-    /// right gun fires leftward, so its drag is mirrored: pull back to the
-    /// right to throw to the left.
+    /// right gun fires leftward, so its controls are mirrored. Left and
+    /// Right (keys, pad, and the `<` `>` buttons) move its barrel's tip the
+    /// same way across the screen as they move the left gun's, which is the
+    /// other way in angle; and its drag is reflected: pull back to the right
+    /// to throw to the left.
     fn handle_versus_aim(&mut self, delta: f64) {
         let quantum = self
             .versus
@@ -281,11 +284,13 @@ impl Game {
             .unwrap_or(10)
             .max(1);
         let mult = if self.shift_held() { 10 } else { 1 };
+        let mirrored = self.versus.live.as_ref().map(VersusPlay::side) == Some(Side::Right);
         let left = self.action_repeated(0, Action::Left, delta) as i32;
         let right = self.action_repeated(1, Action::Right, delta) as i32;
         if left + right != 0 {
-            self.play.angle_ticks = (self.play.angle_ticks + (right - left) * quantum * mult)
-                .clamp(0, dmath::MAX_ANGLE_TICKS);
+            let steps = if mirrored { left - right } else { right - left };
+            self.play.angle_ticks =
+                (self.play.angle_ticks + steps * quantum * mult).clamp(0, dmath::MAX_ANGLE_TICKS);
         }
         let down = self.action_repeated(2, Action::Down, delta) as i32;
         let up = self.action_repeated(3, Action::Up, delta) as i32;
@@ -295,7 +300,6 @@ impl Game {
         }
         let mut fire = self.action_pressed(Action::Fire) || self.pressed(Key::Enter);
         if self.drag_aiming() {
-            let mirrored = self.versus.live.as_ref().map(VersusPlay::side) == Some(Side::Right);
             fire |= self.drag_aim(quantum, mirrored, false);
         }
         if fire {

@@ -197,8 +197,9 @@ player (Left / Right, or tap the row), off by default; START begins.
 
 The left gun fires right and the right gun fires left; turns alternate. Between
 turns a plate covers the field: pass the phone and tap READY (Enter / A). The
-same aim controls work for both guns; the right gun's drag is mirrored (pull
-back to the right). A hit is any blast that reaches the other gun. First to 3
+same aim controls work for both guns, mirrored for the right one: Left and
+Right (and `<` `>`) move either barrel's tip the same way across the screen, and
+the right gun's drag pulls back to the right. A hit is any blast that reaches the other gun. First to 3
 hits takes a round, best of 3 rounds takes the match. Wind changes every turn,
 craters last for the round, and every round is new ground. Aim help shows that
 player's last landing mark and arc and a short preview of the current aim.

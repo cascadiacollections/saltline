@@ -293,6 +293,48 @@ fn the_score_and_wind_wait_for_the_shell_to_land() {
 }
 
 #[test]
+fn left_and_right_turn_both_barrels_the_same_way_on_screen() {
+    // The barrel tip's x relative to the pivot, in screen terms: the left
+    // gun's tip is to the right of its pivot, the right gun's to the left.
+    let tip_x = |g: &Game| {
+        let a = g.play.angle_ticks as f64 * dmath::TICK_DEG * dmath::PI / 180.0;
+        let x = dmath::cos(a);
+        if vs(g).side() == Side::Right {
+            -x
+        } else {
+            x
+        }
+    };
+    let mut g = in_match();
+    g.input.touch_active = true;
+    for side in [Side::Left, Side::Right] {
+        assert_eq!(vs(&g).side(), side);
+        press(&mut g, Key::Enter);
+        let before = tip_x(&g);
+        press(&mut g, Key::Right);
+        assert!(tip_x(&g) < before, "{side:?}: Right moved the tip left");
+        // The on-screen `>` is the same action.
+        let at = g.play.angle_ticks;
+        g.input.touch.finger_down(
+            1,
+            0.0,
+            0.0,
+            &[crate::touch::Button {
+                rect: crate::touch::Rect::new(0, 0, 4, 4),
+                action: Action::Left,
+            }],
+        );
+        g.input.touch.finger_up(1);
+        g.tick(FRAME, &idle());
+        let moved = g.play.angle_ticks - at;
+        let want = if side == Side::Left { -10 } else { 10 };
+        assert_eq!(moved, want, "{side:?}: `<`");
+        press(&mut g, Key::Space);
+        until(&mut g, |g| vs(g).stage == Stage::Handoff);
+    }
+}
+
+#[test]
 fn each_launch_deals_a_different_first_match() {
     let first_seed = |entropy: u64| {
         let mut g = game();
