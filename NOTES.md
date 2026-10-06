@@ -401,4 +401,14 @@ that a tie carried beyond three.
 - **The guns are found moved after the handoff.** During the HIT or MISS
   hold the guns are drawn where the shot found them; the move happens behind
   the pass-the-phone plate. Each side's landing mark and last arc move with
-  its gun. There is no animation or caption for the roll yet.
+  its gun. The handoff plate then says GUNS ROLLED CLOSER or APART
+  (DESIGN §11.4). The guns are not eased to their new spots: the screen
+  shown is a borrowed `Screen`, and easing would need an owned copy rebuilt
+  every frame for the field, the gun tags and aim help alike, for a move the
+  plate already announces.
+- **Overtime cues** (DESIGN §11.4) come from one rules query,
+  `Match::overtime`: LAST SHOT when the side to move must answer a winning
+  hit, TIED when a pair ended level past three. The HIT callout and the
+  handoff plate both read it, so they cannot disagree. Pips past three grow
+  both rows to the higher count rather than adding a +1 marker: the same
+  pips, one more of them, no new glyph to learn.
