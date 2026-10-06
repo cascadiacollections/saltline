@@ -435,6 +435,9 @@ Settings rather than per-material — one missed material is the whole illusion.
 | 2 | UI — foreground text, background plate |
 | 1 | Alert accent, used only for wind and the shell counter under 10 |
 
+Local versus relaxes the alert accent's reservation, for that mode only: the
+accent is the left player's colour there (§11.4).
+
 Pull the ramp from desert reference photography rather than from another game's
 palette — that keeps you clean on trade dress and produces better colors anyway.
 Salt flats have a genuinely strange color range: bleached white-pink ground
@@ -512,7 +515,8 @@ is what makes craters read as depth rather than as bites taken out of the ground
 ### 5.6 Type
 
 Use a bitmap pixel font at native resolution — 5×7 for the shell counter and wind
-value, 3×5 for the screen index. Never scale a TTF down into the buffer. Draw the
+value, 3×5 for the screen index. (Local versus scales the 3×5 face up for a few
+callouts; see §11.4.) Never scale a TTF down into the buffer. Draw the
 modifier draft cards with the same font at the same size; resist the urge to make
 draft UI larger and smoother than the game.
 
@@ -1041,7 +1045,43 @@ saturating the gate cap (8 shots) at every wind. That is easy on purpose for a
 first prototype: amplitude and template weights are the levers if duels need
 more terrain to fight over.
 
-### 11.4 Open questions
+### 11.4 Reading it at a glance
+
+The mode is played by a parent and a young child on one phone, so who is who
+and how it is going should read without reading words.
+
+- **A colour each:** left is the alert amber, right the pale sky blue
+  (`SKY_LO`). Far apart in hue, and still apart for red-green colour
+  blindness. Everything that names a side or comes from its shot uses its
+  colour: the tag over each gun (big over the gun whose turn it is), the
+  score pips, the handoff and result plates' borders and lettering, the HIT
+  callout, the hit flash, the shell's head, the muzzle and impact flashes,
+  and aim help's landing mark and preview.
+- **This relaxes §5.2 for versus.** The palette is still sixteen colours, but
+  §5.2 (and §8.5) reserve the alert accent for wind and the low-shell
+  counter; in versus it is the left player's colour instead. So that the two
+  colours mean only a side, versus draws its secondary text in `ROCK` instead
+  of `SKY_LO`, its wind digits in plain text and its windsock in brick and
+  sand.
+- **Plates everywhere:** `SKY_LO` *is* the duel sky's horizon band, so a blue
+  mark over it disappears. Everything in a side colour sits on a plate or a
+  one-pixel dark backing, for both sides alike.
+- **Pips, not digits:** a big dot per hit a round takes, filled as hits land,
+  over a small dot per round the match takes.
+- **Big words:** HIT, MISS and OOPS, whose turn it is and who won are drawn
+  in the 3x5 face at two to four times size, on a plate. This is a deliberate
+  exception to §5.6 for this mode only: whole blocks on the buffer's grid, so
+  it is still pixel type. The instruments stay at native size.
+- **Not only colour:** a HIT is called out over the scorer's half of the
+  screen, and the HIT, handoff and result plates carry an arrowhead on the
+  side of the gun they are about. A shell that lands only on its own gun is
+  called OOPS, not MISS: no point, no ding.
+- **Sound:** a two-note ding just after a hit lands (80 ms, so it is not
+  lost under the impact), and a short rising fanfare when a round or the
+  match is won, procedural like every other effect.
+- **Rematch** returns to the pre-match aim-help choice, still set as it was.
+
+### 11.5 Open questions
 
 - Should a round's loser open the next round, rather than alternating?
 - Should a gun take damage from its own shells?

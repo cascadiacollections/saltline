@@ -4,7 +4,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
-use crate::app::versus::Stage;
+use crate::app::versus::{Call, Stage, DING_DELAY};
 use crate::input::{Event, Intents, Key};
 use crate::versus::{self as rules, Side};
 
@@ -66,15 +66,17 @@ fn until(g: &mut Game, done: impl Fn(&Game) -> bool) -> Vec<Effect> {
     panic!("not done after 600 frames");
 }
 
-/// Ready up, aim `shot` and fire it, then wait for the next plate.
-fn take_turn(g: &mut Game, shot: Shot) {
+/// Ready up, aim `shot` and fire it, then wait for the next plate. Returns
+/// the turn's effects.
+fn take_turn(g: &mut Game, shot: Shot) -> Vec<Effect> {
     assert_eq!(vs(g).stage, Stage::Handoff);
     press(g, Key::Enter);
     assert_eq!(vs(g).stage, Stage::Aiming);
     (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
-    press(g, Key::Space);
+    let mut fx = press(g, Key::Space);
     assert_eq!(vs(g).stage, Stage::Flight);
-    until(g, |g| vs(g).stage != Stage::Flight);
+    fx.extend(until(g, |g| vs(g).stage != Stage::Flight));
+    fx
 }
 
 /// A shot the side to move can hit the other gun with, as things stand.
@@ -184,14 +186,18 @@ fn a_whole_match_plays_to_a_result_and_a_rematch() {
     // Left wins two rounds straight; right never hits.
     for round in 0..rules::ROUNDS_TO_WIN_MATCH {
         assert_eq!(vs(&g).duel.round, round);
+        let mut fx = Vec::new();
         for _ in 0..rules::HITS_TO_WIN_ROUND {
+            assert!(!fx.contains(&Effect::Play(Sound::Win)), "won too soon");
             if vs(&g).side() == Side::Right {
-                take_turn(&mut g, MISS);
+                fx.extend(take_turn(&mut g, MISS));
             }
             let shot = hitting(&g);
-            take_turn(&mut g, shot);
+            fx.extend(take_turn(&mut g, shot));
         }
         assert_eq!(vs(&g).stage, Stage::Result);
+        let wins = fx.iter().filter(|e| **e == Effect::Play(Sound::Win));
+        assert_eq!(wins.count(), 1, "one fanfare as the result shows");
         if round + 1 < rules::ROUNDS_TO_WIN_MATCH {
             assert_eq!(vs(&g).duel.phase, rules::Phase::RoundOver(Side::Left));
             press(&mut g, Key::Enter);
@@ -202,11 +208,40 @@ fn a_whole_match_plays_to_a_result_and_a_rematch() {
     assert_eq!(vs(&g).duel.phase, rules::Phase::MatchOver(Side::Left));
     assert_eq!(vs(&g).duel.rounds, [2, 0]);
     let seed = vs(&g).duel.seed;
-    // A rematch is a new match on a new seed, the aim help as it was.
+    // A rematch goes back to the aim-help choice, still set as it was.
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    assert!(g.versus.live.is_none());
+    assert_eq!(g.versus.help, [false, false]);
+    // From there it is a new match on a new seed.
     press(&mut g, Key::Enter);
     assert_eq!(vs(&g).stage, Stage::Handoff);
     assert_eq!(vs(&g).duel.rounds, [0, 0]);
     assert_ne!(vs(&g).duel.seed, seed);
+}
+
+#[test]
+fn a_rematch_keeps_the_last_aim_help_and_lets_it_change() {
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    press(&mut g, Key::Right);
+    press(&mut g, Key::Enter);
+    assert_eq!(g.versus.help, [false, true]);
+    // Skip to the end of the match: the rules decide it, not the plates.
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::MatchOver(Side::Right);
+    live.stage = Stage::Result;
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    assert_eq!(
+        g.versus.help,
+        [false, true],
+        "prefilled from the last match"
+    );
+    press(&mut g, Key::Left);
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(g.versus.help, [true, true]);
 }
 
 #[test]
@@ -286,10 +321,26 @@ fn the_score_and_wind_wait_for_the_shell_to_land() {
     assert_eq!(vs(&g).duel.hits, [1, 0]);
     assert_eq!(vs(&g).shown_score().0, [0, 0]);
     assert_eq!(vs(&g).shown_wind().to_bits(), wind.to_bits());
-    until(&mut g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done()));
-    g.tick(FRAME, &idle());
+    // The ding waits for the landing too, and a moment after it.
+    let fx = until(&mut g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done()));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)), "dinged in the air");
     assert_eq!(vs(&g).shown_score().0, [1, 0]);
-    assert_eq!(g.status, "HIT  RIGHT GUN");
+    assert_eq!(vs(&g).callout(), Some((Side::Left, Call::Hit)), "LEFT hit");
+    let mut dinged_at = None;
+    for _ in 0..60 {
+        if g.tick(FRAME, &idle()).contains(&Effect::Play(Sound::Hit)) {
+            dinged_at = vs(&g).anim.as_ref().map(|a| a.settled);
+            break;
+        }
+    }
+    let at = dinged_at.expect("no ding");
+    assert!(
+        (DING_DELAY..DING_DELAY + 2.0 * FRAME).contains(&at),
+        "dinged {at} s after the impact"
+    );
+    // The callout lasts until the phone is passed, then goes.
+    until(&mut g, |g| vs(g).stage == Stage::Handoff);
+    assert_eq!(vs(&g).callout(), None);
 }
 
 #[test]
@@ -496,4 +547,99 @@ fn a_tap_on_start_or_ready_does_only_that() {
             assert_eq!(vs(&g).duel.turn, 0, "READY fired a shot: drag {drag}");
         }
     }
+}
+
+#[test]
+fn a_tap_on_rematch_stops_at_the_aim_help_choice() {
+    // REMATCH and the pre-match START both sit mid-plate: one tap must not
+    // go through both and start the next match.
+    for noisy in [false, true] {
+        let mut g = touch_game(false);
+        tap(&mut g, Action::Versus, FRAME);
+        tap(&mut g, Action::Confirm, FRAME);
+        let live = g.versus.live.as_mut().unwrap();
+        live.duel.phase = rules::Phase::MatchOver(Side::Left);
+        live.stage = Stage::Result;
+        for _ in 0..30 {
+            touch_frame(&mut g, Vec::new(), FRAME);
+        }
+        if noisy {
+            noisy_tap(&mut g, Action::Confirm, FRAME);
+        } else {
+            tap(&mut g, Action::Confirm, FRAME);
+        }
+        assert_eq!(g.mode, Mode::VersusSetup, "noisy {noisy}");
+        tap(&mut g, Action::Confirm, FRAME);
+        assert_eq!(g.mode, Mode::Versus, "noisy {noisy}");
+        assert_eq!(vs(&g).stage, Stage::Handoff, "noisy {noisy}");
+    }
+}
+
+/// Fire `shot` for the side to move from its handoff, and play the turn
+/// out to the next plate, returning its effects and what was called out.
+fn called(g: &mut Game, shot: Shot) -> (Vec<Effect>, Option<(Side, Call)>) {
+    press(g, Key::Enter);
+    (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
+    let mut fx = press(g, Key::Space);
+    assert_eq!(vs(g).callout(), None, "nothing is called while it flies");
+    fx.extend(until(g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done())));
+    let call = vs(g).callout();
+    fx.extend(until(g, |g| vs(g).stage != Stage::Flight));
+    (fx, call)
+}
+
+#[test]
+fn a_miss_is_called_out_for_the_shooter() {
+    let mut g = in_match();
+    // A short lob into the open ground between the guns.
+    let (fx, call) = called(&mut g, Shot::new(1400, 330));
+    assert_eq!(call, Some((Side::Left, Call::Miss)));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)));
+}
+
+#[test]
+fn a_shell_on_your_own_gun_is_an_oops_with_no_point_or_ding() {
+    let mut g = in_match();
+    // Straight up, and down onto the left gun itself.
+    let (fx, call) = called(&mut g, MISS);
+    assert_eq!(call, Some((Side::Left, Call::Oops)));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)), "no ding");
+    assert_eq!(vs(&g).duel.hits, [0, 0], "no pip");
+    // The right gun's own-goal is an oops too.
+    let (fx, call) = called(&mut g, MISS);
+    assert_eq!(call, Some((Side::Right, Call::Oops)));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)));
+    assert_eq!(vs(&g).duel.hits, [0, 0]);
+}
+
+#[test]
+fn the_right_gun_dings_when_it_hits() {
+    let mut g = in_match();
+    take_turn(&mut g, MISS);
+    assert_eq!(vs(&g).side(), Side::Right);
+    let shot = hitting(&g);
+    let (fx, call) = called(&mut g, shot);
+    assert_eq!(call, Some((Side::Right, Call::Hit)));
+    let dings = fx.iter().filter(|e| **e == Effect::Play(Sound::Hit));
+    assert_eq!(dings.count(), 1);
+    assert_eq!(vs(&g).duel.hits, [0, 1]);
+}
+
+#[test]
+fn back_from_the_rematch_choice_leaves_versus_as_title_does() {
+    let mut g = in_match();
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::MatchOver(Side::Left);
+    live.stage = Stage::Result;
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    g.take_effects();
+    let fx = press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Title);
+    assert!(g.versus.live.is_none());
+    // The buffer is put back for the title, as leaving a match does.
+    assert!(
+        fx.iter().any(|e| matches!(e, Effect::Buffer { .. })),
+        "{fx:?}"
+    );
 }

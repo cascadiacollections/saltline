@@ -943,22 +943,25 @@ impl Painter<'_> {
         let Some(anim) = g.play.anim.as_ref() else {
             return;
         };
-        self.draw_anim_effects(anim, anim.before.muzzle(), view);
+        let ink = raster::Ink::plain(self.pal.get(slot::ALERT));
+        self.draw_anim_effects(anim, anim.before.muzzle(), ink, view);
     }
 
     /// `draw_shot_effects` for any shot being played back, fired from
-    /// `muzzle`: the run's, or a versus match's from either gun.
-    fn draw_anim_effects(&mut self, anim: &Anim, muzzle: Vec2, view: &View) {
+    /// `muzzle`: the run's, or a versus match's from either gun. The muzzle
+    /// and impact flashes are drawn in `ink` (a run's alert colour, or the
+    /// versus shooter's on a dark backing).
+    fn draw_anim_effects(&mut self, anim: &Anim, muzzle: Vec2, ink: raster::Ink, view: &View) {
         let alert = self.pal.get(slot::ALERT);
         let dust = self.pal.get(slot::ST_DMG);
         if presentation::flash_strength(anim.t, 0.0, presentation::MUZZLE_TIME) > 0.0 {
             let p = muzzle;
             let x = view.sx(p.x);
             let y = view.sy(p.y);
-            self.canvas.hline(x - 3, x + 3, y, alert);
-            self.canvas.vline(x, y - 3, y + 3, alert);
-            self.canvas.put(x + 2, y - 2, alert);
-            self.canvas.put(x + 2, y + 2, alert);
+            let mut flash: Vec<(i32, i32)> = (-3..=3).map(|d| (x + d, y)).collect();
+            flash.extend((-3..=3).map(|d| (x, y + d)));
+            flash.extend([(x + 2, y - 2), (x + 2, y + 2)]);
+            self.canvas.put_inked(&flash, ink);
         }
         for (j, trace) in anim.traces.iter().enumerate() {
             let age = anim.t - trace.flight_time;
@@ -969,8 +972,9 @@ impl Painter<'_> {
             let x = view.sx(p.x);
             let y = view.sy(p.y);
             if age < 0.06 {
-                self.canvas.hline(x - 2, x + 2, y, alert);
-                self.canvas.vline(x, y - 2, y + 2, alert);
+                let mut cross: Vec<(i32, i32)> = (-2..=2).map(|d| (x + d, y)).collect();
+                cross.extend((-2..=2).map(|d| (x, y + d)));
+                self.canvas.put_inked(&cross, ink);
             }
             let spread = 1 + (age * 30.0) as i32;
             for i in 0..5 {
@@ -1020,7 +1024,7 @@ impl Painter<'_> {
             Some(v) if loadout.has_flag(flags::ANEMOMETER) => (format!("{:.1}", v.abs()), v < 0.0),
             Some(v) => (format!("{:.0}", v.abs()), v < 0.0),
         };
-        self.draw_wind(&wind_text, to_left);
+        self.draw_wind(&wind_text, to_left, false);
 
         // Shells, top right: a shell, then the count. Alert accent under 10,
         // the only other place that colour is allowed (DESIGN §5.2).
@@ -1144,15 +1148,19 @@ impl Painter<'_> {
     }
 
     /// The windsock plate, top left: a sock flying the way the wind blows
-    /// (`to_left`), then `text`, its strength. The sock hangs limp when
-    /// `text` has no non-zero digit.
-    fn draw_wind(&mut self, text: &str, to_left: bool) {
+    /// (`to_left`), then `text`, its strength, in the alert colour (DESIGN
+    /// §5.2). `neutral` draws it without the alert colour or the sky blue,
+    /// for versus, where those two belong to the players (§11.4): plain
+    /// digits and a brick-and-sand sock. The sock hangs limp when `text`
+    /// has no non-zero digit.
+    fn draw_wind(&mut self, text: &str, to_left: bool, neutral: bool) {
         let pal = self.pal;
-        let (fg, dim, alert) = (
-            pal.get(slot::UI_FG),
-            pal.get(slot::SKY_LO),
-            pal.get(slot::ALERT),
-        );
+        let (stripe, tail, digits) = if neutral {
+            (slot::ST, slot::ROCK, slot::UI_FG)
+        } else {
+            (slot::ALERT, slot::SKY_LO, slot::ALERT)
+        };
+        let (fg, dim, alert) = (pal.get(slot::UI_FG), pal.get(tail), pal.get(stripe));
         let (ex, ey) = self.g.display.corner_pad;
         let calm = !text.bytes().any(|b| (b'1'..=b'9').contains(&b));
         let sock = if calm {
@@ -1171,7 +1179,7 @@ impl Painter<'_> {
         self.canvas
             .icon(6 + ex, 4 + ey, sock, &[fg, alert, dim], to_left && !calm);
         self.canvas
-            .text_big(6 + ex + sock_w + 3, 4 + ey, text, alert);
+            .text_big(6 + ex + sock_w + 3, 4 + ey, text, pal.get(digits));
     }
 
     /// Dim everything drawn so far with a checkerboard of the plate colour:
@@ -1691,6 +1699,218 @@ mod tests {
             assert_eq!(bits((904, 903)), bits((900, 903)), "{side:?}");
             assert_ne!(bits((910, 903)), bits((900, 903)), "{side:?}");
         }
+    }
+
+    /// How many of `c`'s pixels hold `colour` within rows `y0..y1`.
+    fn count_in_rows(c: &Canvas, y0: i32, y1: i32, colour: crate::palette::Rgba) -> usize {
+        c.bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(i, px)| {
+                let y = *i as i32 / c.w;
+                (y0..y1).contains(&y) && **px == colour
+            })
+            .count()
+    }
+
+    #[test]
+    fn each_versus_player_has_a_colour_of_their_own() {
+        use crate::versus::Side;
+        let (left, right) = (
+            versus::side_slot(Side::Left),
+            versus::side_slot(Side::Right),
+        );
+        assert_ne!(left, right);
+        for side in [left, right] {
+            // Neither may be mistaken for plain or secondary text.
+            assert!(![slot::UI_FG, slot::UI_BG, slot::ROCK].contains(&side));
+        }
+        // The handoff plate is bordered in the colour of whoever is next.
+        let mut g = game();
+        g.start_versus();
+        for side in Side::BOTH {
+            g.versus.live.as_mut().unwrap().duel.to_move = side;
+            let (c, _) = draw(&g);
+            // Just inside the plate's dark edge.
+            let (x, y) = ((c.w - 200) / 2 + 1, c.h / 2);
+            let i = ((y * c.w + x) * 4) as usize;
+            let want = Palette::default().get(versus::side_slot(side));
+            assert_eq!(c.bytes()[i..i + 4], want, "{side:?}");
+        }
+    }
+
+    /// A versus match with the left gun aiming, its aim help on.
+    fn left_aiming() -> Game {
+        let mut g = game();
+        g.versus.help = [true, true];
+        g.start_versus();
+        g.versus.live.as_mut().unwrap().stage = crate::app::VersusStage::Aiming;
+        g
+    }
+
+    /// Fire `shot` from the left gun of `left_aiming`, one frame in.
+    fn left_fires(g: &mut Game, shot: Shot) {
+        let space = Intents {
+            window: WINDOW,
+            events: vec![Event::key(Key::Space)],
+            keys_held: vec![Key::Space],
+            ..Intents::default()
+        };
+        (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
+        g.tick(1.0 / 60.0, &space);
+    }
+
+    /// Idle frames until the landed shot is called out.
+    fn until_called(g: &mut Game) {
+        let idle = Intents {
+            window: WINDOW,
+            ..Intents::default()
+        };
+        while g.versus.live.as_ref().unwrap().callout().is_none() {
+            g.tick(1.0 / 60.0, &idle);
+        }
+    }
+
+    /// A shot from the left gun that hits the right one.
+    fn left_hitting(g: &Game) -> Shot {
+        use crate::versus::{self as rules, Side};
+        let duel = &g.versus.live.as_ref().unwrap().duel;
+        let frame = rules::frame_for(&duel.screen, Side::Left);
+        let target = rules::target_in_frame(&duel.screen, Side::Left);
+        rules::shots_at(&frame, target, &duel.loadout, 1)[0]
+    }
+
+    #[test]
+    fn a_landed_versus_shot_is_called_out_large() {
+        use crate::app::VersusCall as Call;
+        use crate::versus::Side;
+        let pal = Palette::default();
+        // The callout's band, under the score plate.
+        let band = |c: &Canvas, colour| count_in_rows(c, 28, 70, colour);
+        // A hit, a short lob into the open, and straight up onto its own gun.
+        for call in [Call::Hit, Call::Miss, Call::Oops] {
+            let mut g = left_aiming();
+            let shot = match call {
+                Call::Hit => left_hitting(&g),
+                Call::Miss => Shot::new(1400, 330),
+                Call::Oops => Shot::new(1800, 0),
+            };
+            left_fires(&mut g, shot);
+            let before = draw(&g).0;
+            until_called(&mut g);
+            assert_eq!(
+                g.versus.live.as_ref().unwrap().callout(),
+                Some((Side::Left, call))
+            );
+            let (c, _) = draw(&g);
+            // HIT! in the left player's colour, four times the small face;
+            // MISS and OOPS in plain text.
+            let colour = pal.get(if call == Call::Hit {
+                slot::ALERT
+            } else {
+                slot::UI_FG
+            });
+            assert!(band(&c, colour) > 200, "{call:?}: {}", band(&c, colour));
+            assert!(band(&before, colour) < 50, "{call:?}: callout too soon");
+        }
+    }
+
+    #[test]
+    fn nothing_in_a_side_colour_touches_the_field() {
+        // The right player's blue is the sky's own horizon band, so every
+        // mark in a side colour must sit on a plate or a dark backing. Both
+        // sides draw through the same code (`side_slot`, `side_ink`); this
+        // checks it with the left side's amber, which is nowhere else in a
+        // versus frame: each amber pixel may touch only amber, the plate
+        // colours, or the impact's dust, which is drawn over the flash and
+        // is dark itself.
+        use crate::app::VersusStage;
+        use crate::versus::Side;
+        let pal = Palette::default();
+        let ok = [slot::ALERT, slot::UI_BG, slot::SHADOW, slot::ST_DMG].map(|s| pal.get(s));
+        let check = |c: &Canvas, what: &str| {
+            let px = |x: i32, y: i32| {
+                let i = ((y * c.w + x) * 4) as usize;
+                [
+                    c.bytes()[i],
+                    c.bytes()[i + 1],
+                    c.bytes()[i + 2],
+                    c.bytes()[i + 3],
+                ]
+            };
+            let mut amber = 0;
+            for y in 0..c.h {
+                for x in 0..c.w {
+                    if px(x, y) != ok[0] {
+                        continue;
+                    }
+                    amber += 1;
+                    for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                        if (0..c.w).contains(&nx) && (0..c.h).contains(&ny) {
+                            assert!(
+                                ok.contains(&px(nx, ny)),
+                                "{what}: amber at ({x}, {y}) touches {:?} at ({nx}, {ny})",
+                                px(nx, ny)
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(amber > 0, "{what}: nothing amber drawn");
+        };
+
+        // Aiming, with aim help: the tag, the name, the preview's head and
+        // last turn's landing mark.
+        let mut g = left_aiming();
+        let mark =
+            crate::versus::muzzle_of(&g.versus.live.as_ref().unwrap().duel.screen, Side::Left);
+        g.versus.live.as_mut().unwrap().duel.landing[0] = Some(Vec2::new(mark.x + 60.0, mark.y));
+        check(&draw(&g).0, "aiming");
+        // A shot leaving: the muzzle flash and the shell's head.
+        let shot = left_hitting(&g);
+        left_fires(&mut g, shot);
+        check(&draw(&g).0, "fired");
+        // Landed on the right gun: the callout, the gun's outline and the
+        // screen's edge flash.
+        until_called(&mut g);
+        check(&draw(&g).0, "hit");
+        // The handoff and result plates, left's turn and left's win.
+        let mut g = left_aiming();
+        g.versus.live.as_mut().unwrap().stage = VersusStage::Handoff;
+        check(&draw(&g).0, "handoff");
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.duel.phase = crate::versus::Phase::MatchOver(Side::Left);
+        vs.stage = VersusStage::Result;
+        check(&draw(&g).0, "result");
+    }
+
+    #[test]
+    fn the_aiming_tag_is_under_the_aim_help_preview() {
+        // A steep aim's preview climbs through the tag over the gun: the
+        // tag is drawn first, so the preview shows over it.
+        let mut g = left_aiming();
+        (g.play.angle_ticks, g.play.power_ticks) = (1700, 600);
+        let (with_help, _) = draw(&g);
+        g.versus.help = [false, false];
+        let (without, _) = draw(&g);
+        let fg = Palette::default().get(slot::UI_FG);
+        let screen = &g.versus.live.as_ref().unwrap().duel.screen;
+        let m = crate::versus::muzzle_of(screen, crate::versus::Side::Left);
+        // The tag's rows, a few pixels either side of the pivot.
+        let (x, y) = (m.x.round() as i32, (179.0 - m.y).round() as i32);
+        let tag = |c: &Canvas| {
+            (y - 30..y - 18)
+                .flat_map(|ty| (x - 3..=x + 3).map(move |tx| (tx, ty)))
+                .filter(|&(tx, ty)| {
+                    let i = ((ty * c.w + tx) * 4) as usize;
+                    c.bytes()[i..i + 4] == fg
+                })
+                .count()
+        };
+        assert_eq!(tag(&without), 0);
+        assert!(tag(&with_help) > 0, "the preview is hidden under the tag");
     }
 
     #[test]

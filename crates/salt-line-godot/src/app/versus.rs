@@ -11,6 +11,8 @@
 //!     └──────────── match still in a round ◄───────────────────────────────┤
 //!                                                                          ▼
 //!                                  Result (round or match won) ──next──► Handoff
+//!                                                     │
+//!                                       match won ──rematch──► pre-match screen
 //! ```
 //!
 //! The handoff plate covers the field between turns, so the player taking
@@ -44,6 +46,22 @@ use crate::versus::{self, Match, Side};
 /// Seconds the HIT or MISS is held on the landed shot before the phone is
 /// passed on.
 pub const VERSUS_HOLD: f64 = 1.1;
+
+/// Seconds after the shell lands that the hit's ding plays: just after the
+/// impact and collapse, so it is heard on its own rather than under them.
+pub const DING_DELAY: f64 = 0.08;
+
+/// What the landed shot is called out as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Call {
+    /// The shell reached the other gun: a point to the shooter.
+    Hit,
+    /// It reached neither gun.
+    Miss,
+    /// It reached only the shooter's own gun: no point for anyone, but not
+    /// a MISS either, which would be a strange thing to be told.
+    Oops,
+}
 
 /// Seconds a versus screen ignores new touches after it appears. Longer
 /// than a tap (about 0.12 s on a phone), so whatever a device reports for
@@ -97,6 +115,12 @@ pub(crate) struct VersusPlay {
     pub(crate) arcs: [Vec<Vec2>; 2],
     /// The gun the last shot hit, while the hit is being shown.
     pub(crate) hit: Option<Side>,
+    /// The last shot reached only its own gun, while it is being shown.
+    pub(crate) self_hit: bool,
+    /// Who fired the shot being shown, for the callout.
+    pub(crate) shooter: Side,
+    /// The hit's ding has played ([`DING_DELAY`]).
+    pub(crate) dinged: bool,
     /// Hits and rounds as they stood before the shot in the air, shown
     /// until it lands: the rules score a shot the moment it is fired, and
     /// a score that changed in mid-flight would give the result away.
@@ -124,6 +148,21 @@ impl VersusPlay {
     pub(crate) fn shown_score(&self) -> ([u32; 2], [u32; 2]) {
         self.score_before
             .unwrap_or((self.duel.hits, self.duel.rounds))
+    }
+
+    /// What to call out, and who fired: from the moment the shell lands
+    /// until the phone is passed on ([`VERSUS_HOLD`]). The renderer draws
+    /// it large: a hit in the shooter's colour, a miss or an oops plain.
+    pub(crate) fn callout(&self) -> Option<(Side, Call)> {
+        let landed = self.anim.as_ref().is_some_and(Anim::done);
+        let call = if self.hit.is_some() {
+            Call::Hit
+        } else if self.self_hit {
+            Call::Oops
+        } else {
+            Call::Miss
+        };
+        (self.stage == Stage::Flight && landed).then_some((self.shooter, call))
     }
 
     /// The wind to show: the wind the shot in the air was fired into, until
@@ -166,6 +205,9 @@ impl Game {
             aims: [(900, 600); 2],
             arcs: [Vec::new(), Vec::new()],
             hit: None,
+            self_hit: false,
+            shooter: Side::Left,
+            dinged: false,
             score_before: None,
             paused: false,
         });
@@ -198,7 +240,7 @@ impl Game {
             self.start_versus();
         } else if self.action_pressed(Action::Back) {
             self.play(Sound::Ui);
-            self.mode = Mode::Title;
+            self.leave_versus();
         }
     }
 
@@ -327,6 +369,9 @@ impl Game {
             .map(|t| t.path.clone())
             .unwrap_or_default();
         vs.hit = report.hit.then(|| report.shooter.other());
+        vs.shooter = report.shooter;
+        vs.self_hit = report.self_hit;
+        vs.dinged = false;
         vs.score_before = Some(score);
         let longest = report
             .traces
@@ -355,7 +400,6 @@ impl Game {
             return;
         }
         let mut sounds = Vec::new();
-        let mut said = None;
         let mut finished = false;
         let Some(vs) = self.versus.live.as_mut() else {
             return;
@@ -381,34 +425,41 @@ impl Game {
                 } else {
                     Sound::Terrain
                 });
-                said = Some(match vs.hit {
-                    Some(gun) => {
-                        sounds.push(Sound::Collapse);
-                        format!("HIT  {} GUN", gun.name())
-                    }
-                    None => "MISS".to_string(),
-                });
+                // The renderer calls the shot out from here on
+                // (`VersusPlay::callout`); the sounds go with it.
+                if vs.hit.is_some() {
+                    sounds.push(Sound::Collapse);
+                }
+            }
+            if vs.hit.is_some() && !vs.dinged && anim.settled >= DING_DELAY {
+                vs.dinged = true;
+                sounds.push(Sound::Hit);
             }
             finished = anim.settled > VERSUS_HOLD;
         }
         if finished {
             vs.anim = None;
             vs.hit = None;
+            vs.self_hit = false;
             vs.stage = match vs.duel.phase {
                 versus::Phase::Aiming => Stage::Handoff,
-                versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => Stage::Result,
+                versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => {
+                    // The fanfare comes with the plate that names the winner.
+                    sounds.push(Sound::Win);
+                    Stage::Result
+                }
             };
             self.fx.push(Effect::Redraw);
         }
         for sound in sounds {
             self.play(sound);
         }
-        if let Some(text) = said {
-            self.note(text);
-        }
     }
 
-    /// The result plate was dismissed: the next round, or a rematch.
+    /// The result plate was dismissed: the next round, or a rematch. A
+    /// rematch goes back to the pre-match screen rather than straight into
+    /// a new match, so each player can turn aim help on or off before the
+    /// next one; the choices from the last match are still set there.
     fn after_versus_result(&mut self) {
         let Some(vs) = self.versus.live.as_mut() else {
             return;
@@ -419,7 +470,7 @@ impl Game {
                 vs.arcs = [Vec::new(), Vec::new()];
                 vs.stage = Stage::Handoff;
             }
-            versus::Phase::MatchOver(_) => self.start_versus(),
+            versus::Phase::MatchOver(_) => self.open_versus_setup(),
             versus::Phase::Aiming => vs.stage = Stage::Handoff,
         }
     }
@@ -440,7 +491,8 @@ impl Game {
     /// `--salt-versus --salt-auto`: play both guns for the camera. Each
     /// turn readies at once and fires a shot that hits, except with
     /// `--salt-miss`, where every other turn throws a short lob; results
-    /// are dismissed, and a finished match goes to a rematch.
+    /// are dismissed, and a finished match goes back through the pre-match
+    /// screen to a rematch.
     pub(super) fn versus_autopilot(&mut self, delta: f64) {
         self.dev.auto_cooldown -= delta;
         if self.dev.auto_cooldown > 0.0 {

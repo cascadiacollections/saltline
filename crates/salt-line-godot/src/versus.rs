@@ -318,6 +318,10 @@ pub struct TurnReport {
     pub traces: Vec<Trace>,
     /// The other gun was hit.
     pub hit: bool,
+    /// The shell missed the other gun but its blast reached the shooter's
+    /// own. It scores nothing (DESIGN §11.1); the screens call it out so a
+    /// player is not told MISS for a shell that landed on themselves.
+    pub self_hit: bool,
     /// Where the shell detonated, if it did: the landing mark aim help shows.
     pub landing: Option<Vec2>,
 }
@@ -586,6 +590,7 @@ impl Match {
         let shooter = self.to_move;
         let width = self.width();
         let lo = self.loadout.clone();
+        let own_box = emplacement_box(&self.screen, shooter);
         let target = target_in_frame(&self.screen, shooter);
         let mut frame = frame_for(&self.screen, shooter);
         let traces = fly(&frame, target, shot.quantized(&lo), &lo, record_path);
@@ -603,6 +608,10 @@ impl Match {
         self.screen.field = field;
         let landing = traces.first().and_then(Trace::detonation);
         self.landing[shooter.index()] = landing;
+        // In the shared frame, where both the traces and the box now are.
+        // A shell that ended on a structure ended on the other gun, the
+        // only box it can strike, so a self-hit is never also a hit.
+        let self_hit = !hit && traces.iter().any(|t| hits(t, own_box, &lo));
 
         if hit {
             self.hits[shooter.index()] += 1;
@@ -623,6 +632,7 @@ impl Match {
             shooter,
             traces,
             hit,
+            self_hit,
             landing,
         })
     }

@@ -250,8 +250,9 @@ with guessed values.
 
 Choices the owner's brief left open, made the simple way:
 
-- **No self-hits.** A shell that lands on its own gun scores nothing. The
-  shooter's own gun is not a collision box; the other gun is.
+- **No self-hits.** A shell that lands on its own gun scores nothing (the
+  screens call it OOPS). The shooter's own gun is not a collision box; the
+  other gun is.
 - **Openers alternate by round**, left first, rather than the loser opening.
 - **The gate checks three winds** (calm and both extremes), not every turn's
   draw. Craters change the ground during a round anyway, so no per-turn gate
@@ -276,3 +277,38 @@ Choices the owner's brief left open, made the simple way:
   changed.
 - **Mirrored controls.** Left and Right move either barrel's tip the same way
   across the screen, so for the right gun they run the other way in angle.
+- **Rematch goes through the pre-match screen.** REMATCH opens the aim-help
+  choice again rather than dealing the next match at once, so a player can
+  change their mind about help between matches. The choices are session
+  state, so the last match's are already set; nothing new is stored.
+- **Kid readability (DESIGN §11.4).** Amber left, sky blue right: two of
+  the sixteen slots, chosen for hue distance and red-green colour blindness.
+  The blue *is* the duel sky's horizon band (`SKY_LO`, the Day phase's
+  bottom band), with no contrast at all there, which is why everything in a
+  side colour sits on a plate or a one-pixel `UI_BG` backing (`raster::Ink`):
+  the gun tags, the gun name, the callout, the shell head, the flashes, the
+  landing mark, the hit outline and edge flash. A render test checks that no
+  amber pixel touches the field; both sides draw through the same code.
+  Versus moves its dim text to `ROCK`, its wind digits to plain text and its
+  windsock to brick and sand, so the colours mean only a side. This relaxes
+  §5.2's reservation of amber for wind and the low-shell counter, in versus
+  only. Digit scores are gone in favour of pips; the round number stays as
+  text bottom right.
+- **Big type is the small face scaled.** HIT/MISS at 4x, names at 2x
+  (`Canvas::text_small_scaled`), rather than a new large face: one glyph set
+  to keep legible, and integer blocks keep it on the pixel grid. Versus only;
+  §5.6 still governs everything else.
+- **Cues beyond colour.** A HIT callout sits over the scorer's half and,
+  like the handoff and result plates, has an arrowhead on that side.
+- **OOPS.** A shell that misses the other gun but reaches its own is called
+  OOPS, plain, with no pip and no ding. The godot-side `TurnReport` gains
+  `self_hit`; the sim is unchanged.
+- **The ding waits 80 ms** after the landing (`DING_DELAY`), so it is not
+  masked by the impact and collapse sounds on the same frame. Collapse stays.
+- **The HIT/MISS status line became the callout.** The callout is derived
+  from the match state (`VersusPlay::callout`), so it lasts exactly the
+  landing hold and goes when the phone is passed; the status line is left
+  for other notes and drawn in plain text in versus.
+- **Sounds.** `versus_hit` (A5 then E6) and `versus_win` (C-E-G-C up) come
+  from `tools/gen_audio.py` like the rest, standard library only. The hit
+  ding plays with the landing; the fanfare plays once, with the result plate.
