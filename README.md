@@ -196,8 +196,10 @@ the keyed title does not list it. The pre-match screen sets AIM HELP for each
 player (Left / Right, or tap the row), off by default; START begins. After a
 match, REMATCH comes back to this screen with the last choices still set.
 
-The left gun fires right and the right gun fires left; turns alternate. Between
-turns a plate covers the field: pass the phone and tap READY (Enter / A). The
+The left gun fires right and the right gun fires left; turns alternate. Each
+side has a colour, amber for left and blue for right, used for its gun's tag,
+its score pips and its plates. Between turns a plate covers the field: pass the
+phone and tap READY (Enter / A). The
 same aim controls work for both guns, mirrored for the right one: Left and
 Right (and `<` `>`) move either barrel's tip the same way across the screen, and
 the right gun's drag pulls back to the right. A hit is any blast that reaches the other gun. First to 3

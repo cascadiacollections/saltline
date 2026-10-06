@@ -1041,7 +1041,31 @@ saturating the gate cap (8 shots) at every wind. That is easy on purpose for a
 first prototype: amplitude and template weights are the levers if duels need
 more terrain to fight over.
 
-### 11.4 Open questions
+### 11.4 Reading it at a glance
+
+The mode is played by a parent and a young child on one phone, so who is who
+and how it is going should read without reading words.
+
+- **A colour each:** left is the alert amber, right the pale sky blue
+  (`SKY_LO`). Far apart in hue, and still apart for red-green colour
+  blindness. Everything that names a side uses its colour: the tag over each
+  gun (big over the gun whose turn it is), the score pips, the handoff and
+  result plates' borders and lettering, the HIT callout and the hit flash.
+  §5.2 still holds: these are existing slots with a second job in this mode.
+  So that the colours mean only a side, versus draws its secondary text in
+  `ROCK` instead of `SKY_LO`, and its wind digits in plain text instead of
+  the alert colour.
+- **Pips, not digits:** a big dot per hit a round takes, filled as hits land,
+  over a small dot per round the match takes.
+- **Big words:** HIT and MISS, whose turn it is and who won are drawn in the
+  3x5 face at two to four times size, on a plate. This is a deliberate
+  exception to §5.6 for this mode only: whole blocks on the buffer's grid, so
+  it is still pixel type. The instruments stay at native size.
+- **Sound:** a two-note ding on a hit and a short rising fanfare when a round
+  or the match is won, procedural like every other effect.
+- **Rematch** returns to the pre-match aim-help choice, still set as it was.
+
+### 11.5 Open questions
 
 - Should a round's loser open the next round, rather than alternating?
 - Should a gun take damage from its own shells?

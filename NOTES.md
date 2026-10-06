@@ -280,3 +280,20 @@ Choices the owner's brief left open, made the simple way:
   choice again rather than dealing the next match at once, so a player can
   change their mind about help between matches. The choices are session
   state, so the last match's are already set; nothing new is stored.
+- **Kid readability (DESIGN §11.4).** Amber left, sky blue right: two of
+  the sixteen slots, chosen for hue distance and red-green colour blindness.
+  The blue is close to the duel sky, so everything coloured sits on a plate
+  (the gun tags, the callout); versus moves its dim text to `ROCK` and its
+  wind digits to plain text so the colours mean only a side. Digit scores
+  are gone in favour of pips; the round number stays as text bottom right.
+- **Big type is the small face scaled.** HIT/MISS at 4x, names at 2x
+  (`Canvas::text_small_scaled`), rather than a new large face: one glyph set
+  to keep legible, and integer blocks keep it on the pixel grid. Versus only;
+  §5.6 still governs everything else.
+- **The HIT/MISS status line became the callout.** The callout is derived
+  from the match state (`VersusPlay::callout`), so it lasts exactly the
+  landing hold and goes when the phone is passed; the status line is left
+  for other notes and drawn in plain text in versus.
+- **Sounds.** `versus_hit` (A5 then E6) and `versus_win` (C-E-G-C up) come
+  from `tools/gen_audio.py` like the rest, standard library only. The hit
+  ding plays with the landing; the fanfare plays once, with the result plate.
