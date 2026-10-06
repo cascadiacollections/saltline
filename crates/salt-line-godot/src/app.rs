@@ -1606,7 +1606,7 @@ mod play;
 mod session;
 mod versus;
 
-pub use versus::{Stage as VersusStage, VERSUS_HOLD};
+pub use versus::{Call as VersusCall, Stage as VersusStage, DING_DELAY, VERSUS_HOLD};
 pub(crate) use versus::{VersusPlay, VersusState};
 
 #[cfg(test)]

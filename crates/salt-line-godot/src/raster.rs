@@ -77,6 +77,27 @@ fn bayer(x: i32, y: i32) -> f64 {
     (BAYER[by][bx] as f64 + 0.5) / 16.0
 }
 
+/// The colour a shot's own marks are drawn in (the shell head, the
+/// landing mark, the muzzle and impact flashes), and an optional backing
+/// colour drawn one pixel around them first. A run draws them in the alert
+/// colour with no backing; local versus draws them in the shooter's colour
+/// on a dark backing, since the right player's colour is the sky's own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ink {
+    pub colour: Rgba,
+    pub backing: Option<Rgba>,
+}
+
+impl Ink {
+    /// `colour` with no backing.
+    pub fn plain(colour: Rgba) -> Ink {
+        Ink {
+            colour,
+            backing: None,
+        }
+    }
+}
+
 /// An RGBA8 pixel buffer at the internal resolution.
 pub struct Canvas {
     /// Width in buffer pixels.
@@ -204,6 +225,22 @@ impl Canvas {
                 let dx = if flip { w - 1 - i } else { i };
                 self.put(x + dx, y + j as i32, c);
             }
+        }
+    }
+
+    /// Set every pixel in `points` to `ink`'s colour, after putting its
+    /// backing (if any) on their four neighbours, so each mark is ringed in
+    /// the backing wherever it is not touching itself.
+    pub fn put_inked(&mut self, points: &[(i32, i32)], ink: Ink) {
+        if let Some(backing) = ink.backing {
+            for &(x, y) in points {
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    self.put(x + dx, y + dy, backing);
+                }
+            }
+        }
+        for &(x, y) in points {
+            self.put(x, y, ink.colour);
         }
     }
 
@@ -521,13 +558,27 @@ pub fn draw_material_boundaries(
     }
 }
 
-/// The dotted trajectory of the shot in flight.
+/// The dotted trajectory of the shot in flight, the shell's head in the
+/// alert colour.
 pub fn draw_trajectory(
     canvas: &mut Canvas,
     view: &View,
     path: &[salt_line_sim::Vec2],
     upto: usize,
     pal: &Palette,
+) {
+    let head = Ink::plain(pal.get(slot::ALERT));
+    draw_trajectory_inked(canvas, view, path, upto, pal, head);
+}
+
+/// [`draw_trajectory`] with the shell's head, two pixels square, in `head`.
+pub fn draw_trajectory_inked(
+    canvas: &mut Canvas,
+    view: &View,
+    path: &[salt_line_sim::Vec2],
+    upto: usize,
+    pal: &Palette,
+    head: Ink,
 ) {
     let end = upto.min(path.len());
     for (i, p) in path[..end].iter().enumerate() {
@@ -536,9 +587,9 @@ pub fn draw_trajectory(
         }
         canvas.put(view.sx(p.x), view.sy(p.y), pal.get(slot::UI_FG));
     }
-    if let Some(head) = path.get(end.saturating_sub(1)) {
-        let (x, y) = (view.sx(head.x), view.sy(head.y));
-        canvas.rect(x, y, 2, 2, pal.get(slot::ALERT));
+    if let Some(p) = path.get(end.saturating_sub(1)) {
+        let (x, y) = (view.sx(p.x), view.sy(p.y));
+        canvas.put_inked(&[(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)], head);
     }
 }
 
@@ -563,16 +614,30 @@ pub fn draw_chalk(
     field: &Heightfield,
     pal: &Palette,
 ) {
+    draw_chalk_inked(canvas, view, marks, field, Ink::plain(pal.get(slot::ALERT)));
+}
+
+/// [`draw_chalk`] in `ink`: versus marks a landing in the shooter's colour.
+pub fn draw_chalk_inked(
+    canvas: &mut Canvas,
+    view: &View,
+    marks: &[salt_line_sim::Vec2],
+    field: &Heightfield,
+    ink: Ink,
+) {
     for m in marks {
         let col = m.x.round().clamp(0.0, (field.len() - 1) as f64) as usize;
         let surface = field.surface(col);
         let y = view.sy(surface) - 1;
         let x = view.sx(m.x);
-        for dx in -2..=2 {
-            let c = (col as i32 + dx).clamp(0, field.len() as i32 - 1) as usize;
-            canvas.put(x + dx, view.sy(field.surface(c)) - 1, pal.get(slot::ALERT));
-        }
-        canvas.put(x, y - 3, pal.get(slot::ALERT));
+        let mut points: Vec<(i32, i32)> = (-2..=2)
+            .map(|dx| {
+                let c = (col as i32 + dx).clamp(0, field.len() as i32 - 1) as usize;
+                (x + dx, view.sy(field.surface(c)) - 1)
+            })
+            .collect();
+        points.push((x, y - 3));
+        canvas.put_inked(&points, ink);
     }
 }
 

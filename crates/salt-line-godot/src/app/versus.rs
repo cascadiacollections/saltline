@@ -47,6 +47,22 @@ use crate::versus::{self, Match, Side};
 /// passed on.
 pub const VERSUS_HOLD: f64 = 1.1;
 
+/// Seconds after the shell lands that the hit's ding plays: just after the
+/// impact and collapse, so it is heard on its own rather than under them.
+pub const DING_DELAY: f64 = 0.08;
+
+/// What the landed shot is called out as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Call {
+    /// The shell reached the other gun: a point to the shooter.
+    Hit,
+    /// It reached neither gun.
+    Miss,
+    /// It reached only the shooter's own gun: no point for anyone, but not
+    /// a MISS either, which would be a strange thing to be told.
+    Oops,
+}
+
 /// Seconds a versus screen ignores new touches after it appears. Longer
 /// than a tap (about 0.12 s on a phone), so whatever a device reports for
 /// the tap that changed the screen is spent rather than taken again.
@@ -99,8 +115,12 @@ pub(crate) struct VersusPlay {
     pub(crate) arcs: [Vec<Vec2>; 2],
     /// The gun the last shot hit, while the hit is being shown.
     pub(crate) hit: Option<Side>,
-    /// Who fired the shot being shown, for the HIT or MISS callout.
+    /// The last shot reached only its own gun, while it is being shown.
+    pub(crate) self_hit: bool,
+    /// Who fired the shot being shown, for the callout.
     pub(crate) shooter: Side,
+    /// The hit's ding has played ([`DING_DELAY`]).
+    pub(crate) dinged: bool,
     /// Hits and rounds as they stood before the shot in the air, shown
     /// until it lands: the rules score a shot the moment it is fired, and
     /// a score that changed in mid-flight would give the result away.
@@ -130,12 +150,19 @@ impl VersusPlay {
             .unwrap_or((self.duel.hits, self.duel.rounds))
     }
 
-    /// The HIT or MISS to call out, and who fired: from the moment the
-    /// shell lands until the phone is passed on ([`VERSUS_HOLD`]). `true`
-    /// is a hit. The renderer draws it large, in the shooter's colour.
-    pub(crate) fn callout(&self) -> Option<(Side, bool)> {
+    /// What to call out, and who fired: from the moment the shell lands
+    /// until the phone is passed on ([`VERSUS_HOLD`]). The renderer draws
+    /// it large: a hit in the shooter's colour, a miss or an oops plain.
+    pub(crate) fn callout(&self) -> Option<(Side, Call)> {
         let landed = self.anim.as_ref().is_some_and(Anim::done);
-        (self.stage == Stage::Flight && landed).then_some((self.shooter, self.hit.is_some()))
+        let call = if self.hit.is_some() {
+            Call::Hit
+        } else if self.self_hit {
+            Call::Oops
+        } else {
+            Call::Miss
+        };
+        (self.stage == Stage::Flight && landed).then_some((self.shooter, call))
     }
 
     /// The wind to show: the wind the shot in the air was fired into, until
@@ -178,7 +205,9 @@ impl Game {
             aims: [(900, 600); 2],
             arcs: [Vec::new(), Vec::new()],
             hit: None,
+            self_hit: false,
             shooter: Side::Left,
+            dinged: false,
             score_before: None,
             paused: false,
         });
@@ -341,6 +370,8 @@ impl Game {
             .unwrap_or_default();
         vs.hit = report.hit.then(|| report.shooter.other());
         vs.shooter = report.shooter;
+        vs.self_hit = report.self_hit;
+        vs.dinged = false;
         vs.score_before = Some(score);
         let longest = report
             .traces
@@ -394,18 +425,22 @@ impl Game {
                 } else {
                     Sound::Terrain
                 });
-                // The renderer calls out HIT or MISS from here on
+                // The renderer calls the shot out from here on
                 // (`VersusPlay::callout`); the sounds go with it.
                 if vs.hit.is_some() {
                     sounds.push(Sound::Collapse);
-                    sounds.push(Sound::Hit);
                 }
+            }
+            if vs.hit.is_some() && !vs.dinged && anim.settled >= DING_DELAY {
+                vs.dinged = true;
+                sounds.push(Sound::Hit);
             }
             finished = anim.settled > VERSUS_HOLD;
         }
         if finished {
             vs.anim = None;
             vs.hit = None;
+            vs.self_hit = false;
             vs.stage = match vs.duel.phase {
                 versus::Phase::Aiming => Stage::Handoff,
                 versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => {

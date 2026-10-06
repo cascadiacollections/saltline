@@ -4,7 +4,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
-use crate::app::versus::Stage;
+use crate::app::versus::{Call, Stage, DING_DELAY};
 use crate::input::{Event, Intents, Key};
 use crate::versus::{self as rules, Side};
 
@@ -321,17 +321,23 @@ fn the_score_and_wind_wait_for_the_shell_to_land() {
     assert_eq!(vs(&g).duel.hits, [1, 0]);
     assert_eq!(vs(&g).shown_score().0, [0, 0]);
     assert_eq!(vs(&g).shown_wind().to_bits(), wind.to_bits());
-    // The ding waits for the landing too, and comes with it.
-    loop {
-        let fx = g.tick(FRAME, &idle());
-        let landed = vs(&g).anim.as_ref().is_some_and(|a| a.done());
-        assert_eq!(fx.contains(&Effect::Play(Sound::Hit)), landed);
-        if landed {
+    // The ding waits for the landing too, and a moment after it.
+    let fx = until(&mut g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done()));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)), "dinged in the air");
+    assert_eq!(vs(&g).shown_score().0, [1, 0]);
+    assert_eq!(vs(&g).callout(), Some((Side::Left, Call::Hit)), "LEFT hit");
+    let mut dinged_at = None;
+    for _ in 0..60 {
+        if g.tick(FRAME, &idle()).contains(&Effect::Play(Sound::Hit)) {
+            dinged_at = vs(&g).anim.as_ref().map(|a| a.settled);
             break;
         }
     }
-    assert_eq!(vs(&g).shown_score().0, [1, 0]);
-    assert_eq!(vs(&g).callout(), Some((Side::Left, true)), "LEFT hit");
+    let at = dinged_at.expect("no ding");
+    assert!(
+        (DING_DELAY..DING_DELAY + 2.0 * FRAME).contains(&at),
+        "dinged {at} s after the impact"
+    );
     // The callout lasts until the phone is passed, then goes.
     until(&mut g, |g| vs(g).stage == Stage::Handoff);
     assert_eq!(vs(&g).callout(), None);
@@ -569,18 +575,54 @@ fn a_tap_on_rematch_stops_at_the_aim_help_choice() {
     }
 }
 
+/// Fire `shot` for the side to move from its handoff, and play the turn
+/// out to the next plate, returning its effects and what was called out.
+fn called(g: &mut Game, shot: Shot) -> (Vec<Effect>, Option<(Side, Call)>) {
+    press(g, Key::Enter);
+    (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
+    let mut fx = press(g, Key::Space);
+    assert_eq!(vs(g).callout(), None, "nothing is called while it flies");
+    fx.extend(until(g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done())));
+    let call = vs(g).callout();
+    fx.extend(until(g, |g| vs(g).stage != Stage::Flight));
+    (fx, call)
+}
+
 #[test]
 fn a_miss_is_called_out_for_the_shooter() {
     let mut g = in_match();
-    press(&mut g, Key::Enter);
-    (g.play.angle_ticks, g.play.power_ticks) = (MISS.angle_ticks, MISS.power_ticks);
-    let mut fx = press(&mut g, Key::Space);
-    assert_eq!(vs(&g).callout(), None, "nothing is called while it flies");
-    fx.extend(until(&mut g, |g| {
-        vs(g).anim.as_ref().is_some_and(|a| a.done())
-    }));
-    assert_eq!(vs(&g).callout(), Some((Side::Left, false)));
+    // A short lob into the open ground between the guns.
+    let (fx, call) = called(&mut g, Shot::new(1400, 330));
+    assert_eq!(call, Some((Side::Left, Call::Miss)));
     assert!(!fx.contains(&Effect::Play(Sound::Hit)));
+}
+
+#[test]
+fn a_shell_on_your_own_gun_is_an_oops_with_no_point_or_ding() {
+    let mut g = in_match();
+    // Straight up, and down onto the left gun itself.
+    let (fx, call) = called(&mut g, MISS);
+    assert_eq!(call, Some((Side::Left, Call::Oops)));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)), "no ding");
+    assert_eq!(vs(&g).duel.hits, [0, 0], "no pip");
+    // The right gun's own-goal is an oops too.
+    let (fx, call) = called(&mut g, MISS);
+    assert_eq!(call, Some((Side::Right, Call::Oops)));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)));
+    assert_eq!(vs(&g).duel.hits, [0, 0]);
+}
+
+#[test]
+fn the_right_gun_dings_when_it_hits() {
+    let mut g = in_match();
+    take_turn(&mut g, MISS);
+    assert_eq!(vs(&g).side(), Side::Right);
+    let shot = hitting(&g);
+    let (fx, call) = called(&mut g, shot);
+    assert_eq!(call, Some((Side::Right, Call::Hit)));
+    let dings = fx.iter().filter(|e| **e == Effect::Play(Sound::Hit));
+    assert_eq!(dings.count(), 1);
+    assert_eq!(vs(&g).duel.hits, [0, 1]);
 }
 
 #[test]

@@ -19,20 +19,27 @@
 //!
 //! - **A colour each.** The left gun is the alert amber, the right gun the
 //!   pale sky blue ([`side_slot`]): far apart in hue, and still apart for
-//!   the commonest colour blindness. Whatever names a side is drawn in its
-//!   colour: the marker over each gun, the score pips, the handoff and
-//!   result plates, the HIT callout and the hit flash. DESIGN §5.2's
-//!   sixteen colours stay sixteen; these are two existing slots given a
-//!   second job here, so the usual dim text (also sky blue) moves to
-//!   [`DIM`] on every versus screen.
+//!   the commonest colour blindness. Whatever names a side or comes from its
+//!   shot is drawn in its colour: the marker over each gun, the score pips,
+//!   the handoff and result plates, the HIT callout, the hit flash, the
+//!   shell's head, its muzzle and impact flashes, and aim help's marks.
+//!   DESIGN §5.2's sixteen colours stay sixteen, but its reservation of
+//!   amber for wind and low shells is relaxed here (§11.4). So the colours
+//!   mean only a side, the usual dim text (also sky blue) moves to [`DIM`],
+//!   and the wind is drawn without either colour.
+//! - **Never on bare sky.** The sky blue *is* the duel sky's horizon band,
+//!   so everything in a side colour sits on a plate or a dark backing
+//!   (`side_ink`).
+//! - **Not only colour.** A HIT is called out over the scorer's half, and
+//!   it and the handoff and result plates point at that side's gun.
 //! - **Pips, not digits.** Hits this round are a row of big dots per side,
 //!   filled as they land; rounds won are a row of small ones under them.
 //! - **Big words.** HIT and MISS, whose turn it is and who won are drawn in
 //!   the small face at two to four times size ([`Canvas::text_small_scaled`]),
-//!   always on a plate: the right player's blue is close to the sky's.
+//!   always on a plate.
 
 use super::*;
-use crate::app::VersusStage as Stage;
+use crate::app::{VersusCall as Call, VersusStage as Stage};
 use crate::versus::{self, Side};
 
 /// Secondary text on versus screens. The game's usual dim, `SKY_LO`, is the
@@ -47,8 +54,8 @@ pub(super) fn side_slot(side: Side) -> usize {
     }
 }
 
-/// A hit this round, and a hit still to make: 7 by 7, so a pip is about as
-/// wide as a fingertip on a phone.
+/// A hit this round, and a hit still to make: 7 by 7 buffer pixels, about
+/// 2-3 mm on a Pixel, as big as fits three a side in the score plate.
 const PIP: [&str; 7] = [
     "0011100", "0111110", "1111111", "1111111", "1111111", "0111110", "0011100",
 ];
@@ -181,6 +188,15 @@ impl Painter<'_> {
         let guns = Side::BOTH.map(|gun| versus::muzzle_of(screen, gun).x);
         raster::draw_ground_detail_around(self.canvas, &view, screen, &guns, pal);
 
+        // A marker over each gun in its player's colour; a big one over the
+        // gun whose turn it is. Drawn before aim help, whose preview of a
+        // steep shot climbs through the marker.
+        let turn = matches!(vs.stage, Stage::Handoff | Stage::Aiming);
+        for gun in Side::BOTH {
+            let m = versus::muzzle_of(screen, gun);
+            self.draw_gun_marker(view.sx(m.x), view.sy(m.y), gun, turn && gun == side);
+        }
+
         let aiming = vs.stage == Stage::Aiming && !vs.paused;
         if aiming && g.versus.help[side.index()] {
             self.draw_aim_help(vs, side, &view);
@@ -194,29 +210,23 @@ impl Painter<'_> {
             };
             self.draw_gun(versus::muzzle_of(screen, gun), aim, gun, &view);
         }
-        // A marker over each gun in its player's colour; a big one over the
-        // gun whose turn it is.
-        let turn = matches!(vs.stage, Stage::Handoff | Stage::Aiming);
-        for gun in Side::BOTH {
-            let m = versus::muzzle_of(screen, gun);
-            self.draw_gun_marker(view.sx(m.x), view.sy(m.y), gun, turn && gun == side);
-        }
 
         if let Some(anim) = vs.anim.as_ref() {
+            // The shell, its flashes and the hit, in the shooter's ink.
+            let ink = self.side_ink(vs.shooter);
             let upto = (anim.t / DT).floor().max(0.0) as usize;
             for t in &anim.traces {
                 if !t.path.is_empty() {
-                    raster::draw_trajectory(self.canvas, &view, &t.path, upto, pal);
+                    raster::draw_trajectory_inked(self.canvas, &view, &t.path, upto, pal, ink);
                 }
             }
             let muzzle = anim
                 .traces
                 .first()
                 .map_or(anim.before.muzzle(), |t| t.origin);
-            self.draw_anim_effects(anim, muzzle, &view);
+            self.draw_anim_effects(anim, muzzle, ink, &view);
             if let Some(gun) = vs.hit {
-                let scorer = side_slot(gun.other());
-                self.draw_hit(anim, versus::emplacement_box(screen, gun), scorer, &view);
+                self.draw_hit(anim, versus::emplacement_box(screen, gun), ink, &view);
             }
         }
 
@@ -288,44 +298,65 @@ impl Painter<'_> {
     /// fire, less the wind they still have to read.
     fn draw_aim_help(&mut self, vs: &crate::app::VersusPlay, side: Side, view: &View) {
         let pal = self.pal;
+        let ink = self.side_ink(side);
         let screen = &vs.duel.screen;
         if let Some(mark) = vs.duel.landing[side.index()] {
-            raster::draw_chalk(self.canvas, view, &[mark], &screen.field, pal);
+            raster::draw_chalk_inked(self.canvas, view, &[mark], &screen.field, ink);
         }
         raster::draw_last_arc(self.canvas, view, &vs.arcs[side.index()], pal);
 
         let aim = (self.g.play.angle_ticks, self.g.play.power_ticks);
         let (path, upto) = aim_preview(&vs.duel, side, aim);
-        raster::draw_trajectory(self.canvas, view, &path, upto, pal);
+        raster::draw_trajectory_inked(self.canvas, view, &path, upto, pal, ink);
+    }
+
+    /// `side`'s colour on the plate colour, for the marks a shot leaves
+    /// over open sky and ground. Both sides are backed alike, so a hit
+    /// looks the same whoever scores it.
+    fn side_ink(&self, side: Side) -> raster::Ink {
+        raster::Ink {
+            colour: self.pal.get(side_slot(side)),
+            backing: Some(self.pal.get(slot::UI_BG)),
+        }
     }
 
     /// The gun that was hit blinks its outline while the hit is announced,
-    /// and the screen's edge flashes, both in the scorer's colour (`scorer`,
-    /// a palette slot).
+    /// and the screen's edge flashes, both in the scorer's `ink`: each line
+    /// between two lines of its backing, so it shows over the sky too.
     fn draw_hit(
         &mut self,
         anim: &Anim,
         b: salt_line_sim::ballistics::Aabb,
-        scorer: usize,
+        ink: raster::Ink,
         view: &View,
     ) {
         if !anim.done() || (anim.settled * 8.0) as i32 % 2 == 1 {
             return;
         }
-        let alert = self.pal.get(scorer);
         let (x0, x1) = (view.sx(b.x0), view.sx(b.x1));
         let (y0, y1) = (view.sy(b.y1), view.sy(b.y0));
-        self.canvas
-            .rect_outline(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2, alert);
+        self.backed_outline(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2, ink);
         if anim.settled < presentation::COLLAPSE_TIME {
             let (w, h) = (self.canvas.w, self.canvas.h);
-            self.canvas.rect_outline(1, 1, w - 2, h - 2, alert);
+            self.backed_outline(1, 1, w - 2, h - 2, ink);
         }
     }
 
+    /// A one-pixel rectangle outline in `ink`, with its backing (if any)
+    /// one pixel outside and one inside.
+    fn backed_outline(&mut self, x: i32, y: i32, w: i32, h: i32, ink: raster::Ink) {
+        if let Some(backing) = ink.backing {
+            self.canvas
+                .rect_outline(x - 1, y - 1, w + 2, h + 2, backing);
+            self.canvas
+                .rect_outline(x + 1, y + 1, w - 2, h - 2, backing);
+        }
+        self.canvas.rect_outline(x, y, w, h, ink.colour);
+    }
+
     /// Wind top left, the score pips top right, the round bottom right,
-    /// the aim readouts bottom left while a player aims, the HIT or MISS
-    /// callout, the status line, and the touch controls.
+    /// the aim readouts bottom left while a player aims, the HIT, MISS or
+    /// OOPS callout, the status line, and the touch controls.
     fn render_versus_hud(&mut self, vs: &crate::app::VersusPlay, aiming: bool) {
         let pal = self.pal;
         let fg = pal.get(slot::UI_FG);
@@ -337,7 +368,7 @@ impl Painter<'_> {
         // duel's winds are all small (`versus::WIND_MAX`).
         if matches!(vs.stage, Stage::Aiming | Stage::Flight) {
             let wind = vs.shown_wind();
-            self.draw_wind(&format!("{:.1}", wind.abs()), wind < 0.0, slot::UI_FG);
+            self.draw_wind(&format!("{:.1}", wind.abs()), wind < 0.0, true);
         }
 
         // Hits this round over rounds won, left to right as the guns stand.
@@ -365,34 +396,51 @@ impl Painter<'_> {
                 &format!("ANG {:.1}", shot.angle_degrees()),
                 fg,
             );
+            // The name on a plate of its own: it sits over open ground.
             let colour = pal.get(side_slot(vs.side()));
-            self.canvas.text_small(3 + ex, y - 14, &name, colour);
+            let name_w = crate::font::small_width(&name) as i32;
+            self.canvas.plate(1 + ex, y - 19, name_w + 6, 11, pal);
+            self.canvas.text_small(4 + ex, y - 16, &name, colour);
         }
 
-        // The landed shot, called out large under the score: HIT in the
-        // shooter's colour with their name under it, or a plain MISS.
-        // It sits on a plate: the right player's sky blue is close to the
-        // sky itself.
+        // The landed shot, called out large under the score, on a plate
+        // (the right player's blue is the sky's horizon band). A HIT is in
+        // the shooter's colour, over the shooter's half of the screen and
+        // pointing at their gun, with their name under it; a MISS or an
+        // OOPS (their own gun) is plain and in the middle.
         let callout = vs.callout();
-        if let Some((shooter, hit)) = callout {
+        if let Some((shooter, call)) = callout {
             let top = 28 + ey;
-            let by = format!("{} GUN SCORES", shooter.name());
-            let word = if hit { "HIT!" } else { "MISS" };
-            let word_w = crate::font::small_width(word) as i32 * 4;
-            let inner_w = if hit {
-                word_w.max(crate::font::small_width(&by) as i32)
-            } else {
-                word_w
+            let (word, under) = match call {
+                Call::Hit => ("HIT!", Some(format!("{} GUN SCORES", shooter.name()))),
+                Call::Miss => ("MISS", None),
+                Call::Oops => ("OOPS", Some("YOUR OWN GUN".to_string())),
             };
-            let (pw, ph) = (inner_w + 14, if hit { 41 } else { 32 });
-            let px = (w - pw) / 2;
+            let word_w = crate::font::small_width(word) as i32 * 4;
+            let under_w = under
+                .as_deref()
+                .map_or(0, |u| crate::font::small_width(u) as i32);
+            let (pw, ph) = (
+                word_w.max(under_w) + 14,
+                if under.is_some() { 41 } else { 32 },
+            );
+            let cx = match (call, shooter) {
+                (Call::Hit, Side::Left) => w / 2 - w / 6,
+                (Call::Hit, Side::Right) => w / 2 + w / 6,
+                _ => w / 2,
+            };
+            let px = cx - pw / 2;
             self.canvas.plate(px, top, pw, ph, pal);
-            if hit {
+            let c = if call == Call::Hit {
                 self.side_border(px, top, pw, ph, shooter);
-                self.shout(top + 6, word, side_slot(shooter), 4);
-                self.shout(top + 30, &by, side_slot(shooter), 1);
+                self.side_pointer(px, top, pw, ph, shooter, 4);
+                side_slot(shooter)
             } else {
-                self.shout(top + 6, word, slot::UI_FG, 4);
+                slot::UI_FG
+            };
+            self.shout(cx, top + 6, word, c, 4);
+            if let Some(under) = under {
+                self.shout(cx, top + 30, &under, c, 1);
             }
         }
 
@@ -443,11 +491,11 @@ impl Painter<'_> {
             .vline(mid, y + 1, y + SCORE_H - 2, pal.get(slot::SHADOW));
     }
 
-    /// `text` centred at `y` in the small face at `scale` (one block per
-    /// glyph pixel), in palette slot `c`. It is `5 * scale` tall. Always
-    /// over a plate, where both players' colours read.
-    fn shout(&mut self, y: i32, text: &str, c: usize, scale: i32) {
-        let x = (self.canvas.w - crate::font::small_width(text) as i32 * scale) / 2;
+    /// `text` centred on `cx` at `y` in the small face at `scale` (one
+    /// block per glyph pixel), in palette slot `c`. It is `5 * scale` tall.
+    /// Always over a plate, where both players' colours read.
+    fn shout(&mut self, cx: i32, y: i32, text: &str, c: usize, scale: i32) {
+        let x = cx - crate::font::small_width(text) as i32 * scale / 2;
         let c = self.pal.get(c);
         self.canvas.text_small_scaled(x, y, text, c, scale);
     }
@@ -476,12 +524,33 @@ impl Painter<'_> {
         self.canvas.icon(left + 2, top + 2, rows, &colour, false);
     }
 
-    /// A plate's border in a side's colour, two pixels thick, over the
-    /// plate `canvas.plate` drew at the same rectangle.
+    /// A plate's border in a side's colour, two pixels thick, just inside
+    /// the dark edge of the plate `canvas.plate` drew at the same rectangle,
+    /// so the colour never touches the field.
     fn side_border(&mut self, x: i32, y: i32, w: i32, h: i32, side: Side) {
         let c = self.pal.get(side_slot(side));
-        self.canvas.rect_outline(x, y, w, h, c);
         self.canvas.rect_outline(x + 1, y + 1, w - 2, h - 2, c);
+        self.canvas.rect_outline(x + 2, y + 2, w - 4, h - 4, c);
+    }
+
+    /// An arrowhead `depth` pixels deep on the outside of the plate at `x`,
+    /// `y`, `w`, `h`, on `side`'s edge, pointing at that side's gun: a cue
+    /// that does not depend on telling the colours apart.
+    fn side_pointer(&mut self, x: i32, y: i32, w: i32, h: i32, side: Side, depth: i32) {
+        let cy = y + h / 2;
+        let mut points = Vec::new();
+        for i in 0..depth {
+            let px = match side {
+                Side::Left => x - 1 - i,
+                Side::Right => x + w + i,
+            };
+            let half = depth - 1 - i;
+            for dy in -half..=half {
+                points.push((px, cy + dy));
+            }
+        }
+        let ink = self.side_ink(side);
+        self.canvas.put_inked(&points, ink);
     }
 
     /// Between turns: the field dimmed and a plate in the colour of the
@@ -503,6 +572,7 @@ impl Painter<'_> {
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
         self.side_border(px, top, 200, ph, side);
+        self.side_pointer(px, top, 200, ph, side, 7);
         let mut y = top + 7;
         if opening {
             self.centred(y, &format!("ROUND {}", duel.round + 1), dim);
@@ -510,7 +580,13 @@ impl Painter<'_> {
             self.draw_score((w - SCORE_W) / 2, y, duel.hits, duel.rounds);
         }
         y += heading_h + 6;
-        self.shout(y, &format!("{} GUN", side.name()), side_slot(side), 2);
+        self.shout(
+            w / 2,
+            y,
+            &format!("{} GUN", side.name()),
+            side_slot(side),
+            2,
+        );
         y += 10 + 6;
         self.centred(y, "TAKE THE PHONE - NO PEEKING", fg);
         y += 13;
@@ -544,9 +620,10 @@ impl Painter<'_> {
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
         self.side_border(px, top, 200, ph, winner);
+        self.side_pointer(px, top, 200, ph, winner, 7);
         let mut y = top + 7;
         let title = format!("{} GUN WINS", winner.name());
-        self.shout(y, &title, side_slot(winner), 2);
+        self.shout(w / 2, y, &title, side_slot(winner), 2);
         y += 10 + 5;
         let what = if over {
             "THE MATCH!".to_string()
