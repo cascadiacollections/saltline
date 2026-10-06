@@ -44,6 +44,12 @@ pub const STRIPS: usize = 12;
 /// and 1.72 at 12 (never whole, with p95 rising from ~3.4 to 4.3 ms). 3 to 6
 /// are within noise of each other. Re-measure on a phone before changing it;
 /// a weaker GPU or driver may move the break-even.
+///
+/// Power did not separate them: a Perfetto power-rail capture of 0, 4 and 12
+/// (three interleaved rounds) showed CPU, GPU and memory rails within a few mW
+/// of each other (~100 mW per rail) and no consistent direction, while
+/// whole-device totals swung by hundreds of mW between runs of the same value.
+/// So this threshold is a frame-time choice, not a battery one.
 pub const WHOLE_ABOVE: usize = 4;
 
 /// The rows `[start, end)` of strip `i` in a buffer `h` rows tall. Strips
