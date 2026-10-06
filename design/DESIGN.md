@@ -549,7 +549,10 @@ final state hashes match.
 Confirm before any public build:
 
 - [ ] No character combatants — targets are structures, not figures
-- [ ] Single player, not alternating two-player duel
+- [ ] Single player, not alternating two-player duel. **Owner decision
+      pending:** the local versus prototype (§11) is exactly such a duel. It
+      stays playable on development builds; decide here before any public
+      build.
 - [ ] No primate, fruit, or skyline motif anywhere in art or naming
 - [ ] Title has no lineage to either reference game
 - [ ] Zero code, data, or asset lineage from any prior artillery title
