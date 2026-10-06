@@ -267,5 +267,12 @@ Choices the owner's brief left open, made the simple way:
   shell comes down, like SCREEN CLEAR in a run.
 - **Nothing is saved.** No resume, no board, no onboarding lessons learned
   from versus input.
-- **Match seed** is the daily seed mixed with a per-session match count, since
-  the core reads no clock.
+- **Match seed** mixes the wall clock at launch (read by the adapter; the core
+  reads no clock), the daily seed and a per-session match count, so no two
+  launches deal the same first match.
+- **One touch, one screen.** Every versus screen change spends the fingers
+  down and ignores new touches for 0.3 s, after a Pixel playtest where one tap
+  on START also readied the turn and fired. Single-player screens are not
+  changed.
+- **Mirrored controls.** Left and Right move either barrel's tip the same way
+  across the screen, so for the right gun they run the other way in angle.
