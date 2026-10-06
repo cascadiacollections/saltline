@@ -475,10 +475,8 @@ fn the_guns_roll_after_a_pair_with_a_hit_and_stay_mirrored() {
 #[test]
 fn the_default_ladder_keeps_the_guns_on_screen() {
     let back = GUN_SHIFT * GUN_ROLL_BACK as f64;
-    assert!(
-        GUN_ROLL_BACK >= 1 && GUN_ROLL_FORWARD >= 1,
-        "both ways reachable"
-    );
+    // Both ways reachable from home.
+    const { assert!(GUN_ROLL_BACK >= 1 && GUN_ROLL_FORWARD >= 1) };
     assert!(
         EMPLACEMENT_X - back >= GUN_EDGE_MARGIN,
         "a gun rolled all the way back would hang off the screen"
