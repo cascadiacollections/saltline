@@ -177,8 +177,11 @@ impl Game {
     /// them would only cost a tap. Not for the dev autopilot or screenshots,
     /// which nobody is watching with focus.
     pub(super) fn auto_pause(&mut self) {
+        if self.dev.auto || self.dev.capturing {
+            return;
+        }
         self.auto_pause_versus();
-        if self.mode != Mode::Playing || self.dev.auto || self.dev.capturing {
+        if self.mode != Mode::Playing {
             return;
         }
         if self.play.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {

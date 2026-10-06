@@ -335,6 +335,20 @@ fn left_and_right_turn_both_barrels_the_same_way_on_screen() {
 }
 
 #[test]
+fn focus_loss_does_not_stall_the_versus_autopilot() {
+    let mut g = game();
+    let args: Vec<String> = ["--salt-versus", "--salt-auto"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    g.start_dev(&crate::cli::DevArgs::parse(&args), 20_000);
+    until(&mut g, |g| vs(g).stage == Stage::Flight);
+    g.focus_lost(&[]);
+    assert!(!vs(&g).paused, "nobody is watching with focus");
+    until(&mut g, |g| vs(g).duel.turn >= 2);
+}
+
+#[test]
 fn each_launch_deals_a_different_first_match() {
     let first_seed = |entropy: u64| {
         let mut g = game();
