@@ -40,7 +40,7 @@
 
 use super::*;
 use crate::app::{VersusCall as Call, VersusStage as Stage};
-use crate::versus::{self, Overtime, RollWay, Side};
+use crate::versus::{self, RollWay, Side, Stakes};
 
 /// Secondary text on versus screens. The game's usual dim, `SKY_LO`, is the
 /// right player's colour here.
@@ -72,9 +72,20 @@ const PIP_MIDDLE: i32 = 9;
 
 /// How many hit pips each side shows: one per hit a round takes, or more
 /// once a tie has carried the round past that, so that every hit has a pip
-/// and the side ahead shows one filled pip more than the side behind.
+/// and the side ahead shows one filled pip more than the side behind. Past
+/// [`PIP_CAP`] the hits are shown as numbers instead ([`score_numeric`]).
 pub(super) fn pip_count(hits: [u32; 2]) -> u32 {
     versus::HITS_TO_WIN_ROUND.max(hits[0]).max(hits[1])
+}
+
+/// The most hit pips a row draws. Five keeps the score plate clear of the
+/// pause button at the narrowest buffer and well inside the 200-pixel
+/// handoff and result plates; a round that runs longer shows numbers.
+pub(super) const PIP_CAP: u32 = 5;
+
+/// Whether `hits` are drawn as numbers rather than pips.
+pub(super) fn score_numeric(hits: [u32; 2]) -> bool {
+    pip_count(hits) > PIP_CAP
 }
 
 /// Width of one side's `n` hit pips.
@@ -84,8 +95,8 @@ fn hit_row_w(n: u32) -> i32 {
 
 /// Width of both sides' pips for `hits`, middle gap included: the score
 /// plate's inside, and the row the handoff and result plates show.
-fn score_w(hits: [u32; 2]) -> i32 {
-    2 * hit_row_w(pip_count(hits)) + PIP_MIDDLE
+pub(super) fn score_w(hits: [u32; 2]) -> i32 {
+    2 * hit_row_w(pip_count(hits).min(PIP_CAP)) + PIP_MIDDLE
 }
 /// Height of the hit pips over the round pips.
 const SCORE_H: i32 = 7 + 3 + 5;
@@ -95,21 +106,22 @@ const SCORE_H: i32 = 7 + 3 + 5;
 /// other side answers or that it is tied. The opener's third hit is not the
 /// win while an answer is due, so it must not read like one.
 pub(super) fn hit_line(duel: &versus::Match, shooter: Side) -> String {
-    match duel.overtime() {
-        Some(Overtime::LastShot) => format!("{} GUN TO ANSWER", shooter.other().name()),
-        Some(Overtime::Tied) => "TIED - KEEP GOING".to_string(),
-        None => format!("{} GUN SCORES", shooter.name()),
+    match duel.stakes() {
+        Some(Stakes::LastShot) => format!("{} GUN TO ANSWER", shooter.other().name()),
+        Some(Stakes::Tied) => "TIED - KEEP GOING".to_string(),
+        Some(Stakes::HitToWin) | None => format!("{} GUN SCORES", shooter.name()),
     }
 }
 
 /// The lines the handoff plate adds under the name of the player taking
-/// the phone, each with its palette slot: a last shot to tie (in their
-/// colour) or a tie that plays on, then which way the guns rolled after
-/// the last shot, if they did.
+/// the phone, each with its palette slot: what rides on their shot (a last
+/// shot to tie or a hit to win, in their colour, or a tie that plays on),
+/// then which way the guns rolled after the last shot, if they did.
 pub(super) fn handoff_cues(vs: &crate::app::VersusPlay) -> Vec<(&'static str, usize)> {
-    let overtime = vs.duel.overtime().map(|o| match o {
-        Overtime::LastShot => ("LAST SHOT - HIT TO TIE", side_slot(vs.side())),
-        Overtime::Tied => ("TIED - KEEP GOING", slot::UI_FG),
+    let overtime = vs.duel.stakes().map(|o| match o {
+        Stakes::LastShot => ("LAST SHOT - HIT TO TIE", side_slot(vs.side())),
+        Stakes::HitToWin => ("HIT TO WIN", side_slot(vs.side())),
+        Stakes::Tied => ("TIED - KEEP GOING", slot::UI_FG),
     });
     let roll = vs.rolled.map(|way| match way {
         RollWay::Closer => ("GUNS ROLLED CLOSER", slot::UI_FG),
@@ -514,15 +526,22 @@ impl Painter<'_> {
         let pal = self.pal;
         let round_row_w = versus::ROUNDS_TO_WIN_MATCH as i32 * (5 + PIP_GAP) - PIP_GAP;
         let pips = pip_count(hits);
-        let row_w = hit_row_w(pips);
+        let numeric = score_numeric(hits);
+        let row_w = hit_row_w(pips.min(PIP_CAP));
         for side in Side::BOTH {
             let i = side.index();
             let colour = [pal.get(side_slot(side))];
             let x0 = x + i as i32 * (row_w + PIP_MIDDLE);
-            for k in 0..pips {
-                let pip: &[&str] = if k < hits[i] { &PIP } else { &PIP_EMPTY };
-                let px = x0 + k as i32 * (7 + PIP_GAP);
-                self.canvas.icon(px, y, pip, &colour, false);
+            if numeric {
+                let text = hits[i].to_string();
+                let tx = x0 + (row_w - crate::font::small_width(&text) as i32) / 2;
+                self.canvas.text_small(tx, y + 1, &text, colour[0]);
+            } else {
+                for k in 0..pips {
+                    let pip: &[&str] = if k < hits[i] { &PIP } else { &PIP_EMPTY };
+                    let px = x0 + k as i32 * (7 + PIP_GAP);
+                    self.canvas.icon(px, y, pip, &colour, false);
+                }
             }
             let rx = x0 + (row_w - round_row_w) / 2;
             for k in 0..versus::ROUNDS_TO_WIN_MATCH {

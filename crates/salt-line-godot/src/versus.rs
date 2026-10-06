@@ -52,8 +52,9 @@
 //! [`Match`] is the state machine. Players alternate shots; a hit is any
 //! detonation whose blast overlaps the other emplacement ([`hits`]), the
 //! same overlap test a blast uses against a structure (DESIGN §2.7). First
-//! to [`HITS_TO_WIN_ROUND`] hits takes the round, but both sides always get
-//! the same number of shots ([`round_winner`]), and first to
+//! to [`HITS_TO_WIN_ROUND`] hits takes the round, but the side that did not
+//! open gets an answering shot whenever a hit could still tie
+//! ([`round_winner`]), and first to
 //! [`ROUNDS_TO_WIN_MATCH`] rounds takes the match. Wind is drawn afresh for
 //! every turn from the match seed and the turn number ([`turn_wind`]);
 //! craters stay for the round, and every round is a new screen.
@@ -81,9 +82,10 @@
 //!   no longer does. They roll at the end of the pair of shots the hit was
 //!   in, never between its two shots, so the side answering a hit aims at
 //!   the guns the hit was scored on.
-//! - **Equal shots** ([`EQUAL_SHOTS`]). A round can only end once both sides
-//!   have fired as often as each other, so the opener's winning hit is
-//!   always answered, and a tie past the mark plays on.
+//! - **Equal shots** ([`EQUAL_SHOTS`]). The opener's winning hit is answered
+//!   whenever the answer could tie it (one ahead), and a tie past the mark
+//!   plays on; two or more ahead, the round ends at once rather than ask for
+//!   a shot that cannot matter.
 //!
 //! Stronger wind and a shorter hit reach were measured too, and kept as
 //! levers ([`WIND_MIN`], [`WIND_MAX`], [`HIT_REACH`]) at their old values:
@@ -99,7 +101,7 @@ use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::rng::{screen_seed, substream, Pcg32};
 use salt_line_sim::run::{self, Rung, Screen, CHASSIS_WIDTH};
 use salt_line_sim::solver::{self, GATE_CAP};
-use salt_line_sim::terrain::{self, Heightfield, ShapeParams, Template};
+use salt_line_sim::terrain::{self, Heightfield, Material, ShapeParams, Template};
 use salt_line_sim::{Vec2, EMPLACEMENT_X, MAX_GEN_ATTEMPTS, MIN_SOLUTIONS};
 
 /// Hits that win a round.
@@ -151,9 +153,10 @@ pub const WIND_MIN: f64 = 0.0;
 /// to land on the box itself.
 pub const HIT_REACH: f64 = salt_line_sim::BASE_BLAST_RADIUS;
 
-/// Whether the side that did not open a round always gets as many shots as
-/// the side that did. When it is on, a round only ends after the second
-/// side's turn, so an opener's winning hit can still be answered.
+/// Whether the side that did not open a round gets an answering shot when
+/// the opener reaches the mark and a hit would tie: an opener one ahead is
+/// answered, an opener two or more ahead wins at once, and a tie plays on
+/// in pairs ([`round_winner`]).
 pub const EQUAL_SHOTS: bool = true;
 
 /// How far each gun rolls after a hit, in world units, so the range that
@@ -200,7 +203,8 @@ pub struct Rules {
     pub wind_min: f64,
     /// How far outside the box a detonation still hits ([`HIT_REACH`]).
     pub hit_reach: f64,
-    /// Both sides get the same number of shots each round ([`EQUAL_SHOTS`]).
+    /// The side that did not open answers when a hit would tie
+    /// ([`EQUAL_SHOTS`]).
     pub equal_shots: bool,
     /// How far both guns roll after a hit ([`GUN_SHIFT`]).
     pub gun_shift: f64,
@@ -479,15 +483,17 @@ impl Roll {
     }
 }
 
-/// Where a round stands once it has gone past its usual end, under equal
-/// shots ([`Match::overtime`]).
+/// What rides on the coming shot, when it is more than an ordinary turn
+/// ([`Match::stakes`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Overtime {
-    /// The opener is one hit ahead with the mark reached, and the side to
-    /// move has one shot to tie it.
+pub enum Stakes {
+    /// The opener has the mark and is one hit ahead: the side to move has
+    /// one shot, and a hit ties it.
     LastShot,
     /// A pair has ended level past the mark: play goes on in pairs.
     Tied,
+    /// A hit by the side to move wins the round outright.
+    HitToWin,
 }
 
 /// Every distinct shot `frame`'s gun can dial in that hits `target`, up to
@@ -911,23 +917,27 @@ impl Match {
         None
     }
 
-    /// Whether the round has gone past its usual end, as the side to move
-    /// sees it: they must answer a winning hit ([`Overtime::LastShot`]), or
-    /// the last pair ended level past the mark ([`Overtime::Tied`]). `None`
-    /// for an ordinary turn, outside `Phase::Aiming` and without equal
-    /// shots.
-    pub fn overtime(&self) -> Option<Overtime> {
-        if !self.rules.equal_shots || self.phase != Phase::Aiming {
+    /// What rides on the coming shot, as the side to move sees it: a last
+    /// shot to tie ([`Stakes::LastShot`]), a tie that plays on
+    /// ([`Stakes::Tied`]), or a hit that wins the round
+    /// ([`Stakes::HitToWin`]). `None` for an ordinary turn and outside
+    /// `Phase::Aiming`. The first two only arise with equal shots.
+    pub fn stakes(&self) -> Option<Stakes> {
+        if self.phase != Phase::Aiming {
             return None;
         }
         let opener = Match::first_to_move(self.round);
         let (theirs, mine) = (self.hits[opener.index()], self.hits[opener.other().index()]);
-        if theirs < HITS_TO_WIN_ROUND {
-            None
-        } else if self.to_move != opener && theirs > mine {
-            Some(Overtime::LastShot)
-        } else if self.to_move == opener && theirs == mine {
-            Some(Overtime::Tied)
+        let mover = self.to_move;
+        let equal = self.rules.equal_shots;
+        let mut after_hit = self.hits;
+        after_hit[mover.index()] += 1;
+        if equal && mover != opener && theirs >= HITS_TO_WIN_ROUND && theirs == mine + 1 {
+            Some(Stakes::LastShot)
+        } else if equal && mover == opener && theirs >= HITS_TO_WIN_ROUND && theirs == mine {
+            Some(Stakes::Tied)
+        } else if round_winner(after_hit, mover, opener, &self.rules) == Some(mover) {
+            Some(Stakes::HitToWin)
         } else {
             None
         }
@@ -971,8 +981,13 @@ pub fn fill_under_guns(shared: &mut Screen) {
     let w = shared.width;
     let x0 = (shared.muzzle_x - CHASSIS_WIDTH as f64 * 0.5).clamp(0.0, w as f64) as usize;
     for i in x0..(x0 + CHASSIS_WIDTH).min(w) {
-        shared.field.scar[i] = 0.0;
-        shared.field.scar[w - 1 - i] = 0.0;
+        for c in [i, w - 1 - i] {
+            // Unexcavated ground is Sand: the terrain module's own rule for
+            // a scar of zero, so later craters there are sized as on any
+            // fresh ground, and the two sides stay mirror images.
+            shared.field.scar[c] = 0.0;
+            shared.field.material[c] = Material::Sand;
+        }
     }
 }
 
@@ -980,17 +995,20 @@ pub fn fill_under_guns(shared: &mut Screen) {
 /// `hits` counts that shot.
 ///
 /// Normally the first to [`HITS_TO_WIN_ROUND`] wins at once. With
-/// [`Rules::equal_shots`], a round only ends once both sides have fired as
-/// often as each other, which is after the side that did not open has shot:
-/// then whoever leads with at least `HITS_TO_WIN_ROUND` hits wins. An
-/// opener who reaches the mark is answered by one more shot; if that ties
-/// it, play goes on in pairs until a pair ends with one side ahead.
+/// [`Rules::equal_shots`], the side that did not open always gets its shot
+/// when that shot could still tie: a round ends after the second shot of a
+/// pair with whoever leads at or past the mark, or straight after the
+/// opener's shot if the opener has the mark and leads by two or more, when
+/// no answer could catch up. An opener who reaches the mark one hit ahead
+/// is answered by one more shot; if that ties it, play goes on in pairs
+/// until a pair ends with one side ahead.
 pub fn round_winner(hits: [u32; 2], shooter: Side, opener: Side, rules: &Rules) -> Option<Side> {
     if !rules.equal_shots {
         return (hits[shooter.index()] >= HITS_TO_WIN_ROUND).then_some(shooter);
     }
     if shooter == opener {
-        return None;
+        let (theirs, mine) = (hits[opener.index()], hits[opener.other().index()]);
+        return (theirs >= HITS_TO_WIN_ROUND && theirs >= mine + 2).then_some(opener);
     }
     let (mine, theirs) = (hits[shooter.index()], hits[opener.index()]);
     if mine.max(theirs) < HITS_TO_WIN_ROUND || mine == theirs {

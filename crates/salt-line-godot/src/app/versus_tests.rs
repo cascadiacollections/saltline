@@ -249,7 +249,7 @@ fn overtime_holds_the_fanfare_until_someone_actually_wins() {
         });
         assert_eq!(vs(&g).stage, Stage::Handoff, "left's hit {n} is no win");
         if n == rules::HITS_TO_WIN_ROUND {
-            assert_eq!(vs(&g).duel.overtime(), Some(rules::Overtime::LastShot));
+            assert_eq!(vs(&g).duel.stakes(), Some(rules::Stakes::LastShot));
         }
         fx.extend({
             let shot = hitting(&g);
@@ -257,7 +257,7 @@ fn overtime_holds_the_fanfare_until_someone_actually_wins() {
         });
         assert_eq!(vs(&g).stage, Stage::Handoff);
     }
-    assert_eq!(vs(&g).duel.overtime(), Some(rules::Overtime::Tied));
+    assert_eq!(vs(&g).duel.stakes(), Some(rules::Stakes::Tied));
     assert!(no_fanfare(&fx), "no fanfare while the round is still open");
     // Left misses, right hits: right is ahead after the pair and wins.
     fx.extend(take_turn(&mut g, MISS));

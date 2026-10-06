@@ -316,15 +316,17 @@ fn players_alternate_and_each_turn_draws_its_own_wind() {
 #[test]
 fn three_hits_take_a_round_and_two_rounds_take_the_match() {
     let mut m = Match::new(0x5A17, 320);
-    // Round 1: left hits every time, right always misses. Left opened, so
-    // its third hit is answered by one more right shot before the round
-    // ends (EQUAL_SHOTS).
+    // Round 1: left hits every time, right always misses. Left's third hit
+    // puts it three clear, which no answer could tie, so the round ends on
+    // it (EQUAL_SHOTS only gives right a shot that could tie).
     for n in 1..=HITS_TO_WIN_ROUND {
         let shot = hitting_shot(&m, Side::Left);
         assert!(m.fire(shot, false).unwrap().hit);
         assert_eq!(m.hits, [n, 0]);
-        assert_eq!(m.phase, Phase::Aiming);
-        assert!(!m.fire(MISS, false).unwrap().hit);
+        if n < HITS_TO_WIN_ROUND {
+            assert_eq!(m.phase, Phase::Aiming);
+            assert!(!m.fire(MISS, false).unwrap().hit);
+        }
     }
     assert_eq!(m.phase, Phase::RoundOver(Side::Left));
     assert_eq!(m.rounds, [1, 0]);
@@ -371,7 +373,7 @@ fn three_hits_take_a_round_and_two_rounds_take_the_match() {
 }
 
 #[test]
-fn with_equal_shots_the_side_that_did_not_open_always_answers() {
+fn with_equal_shots_the_side_that_did_not_open_answers_when_a_hit_could_tie() {
     let equal = Rules {
         equal_shots: true,
         ..Rules::DEFAULT
@@ -382,9 +384,15 @@ fn with_equal_shots_the_side_that_did_not_open_always_answers() {
     };
     let (l, r) = (Side::Left, Side::Right);
     let n = HITS_TO_WIN_ROUND;
-    // Left opened and has just made its winning hit: right still shoots.
+    // Left opened and has just made its winning hit one ahead: right still
+    // shoots, since a hit would tie.
     assert_eq!(round_winner([n, n - 1], l, l, &equal), None);
     assert_eq!(round_winner([n, n - 1], l, l, &first), Some(l));
+    // Two or more ahead, no answer could tie: left wins on its own shot.
+    assert_eq!(round_winner([n, n - 2], l, l, &equal), Some(l));
+    assert_eq!(round_winner([n, 0], l, l, &equal), Some(l));
+    // Two ahead but short of the mark is not a win.
+    assert_eq!(round_winner([n - 1, n - 3], l, l, &equal), None);
     // Right's answer misses: left wins. It hits: level, so play goes on.
     assert_eq!(round_winner([n, n - 1], r, l, &equal), Some(l));
     assert_eq!(round_winner([n, n], r, l, &equal), None);
@@ -402,30 +410,44 @@ fn with_equal_shots_the_side_that_did_not_open_always_answers() {
 }
 
 #[test]
-fn overtime_says_when_a_shot_must_answer_and_when_it_is_tied() {
+fn the_stakes_say_what_rides_on_the_coming_shot() {
+    let n = HITS_TO_WIN_ROUND;
     let mut m = Match::new(0x5A17, 320);
-    assert_eq!(m.overtime(), None);
-    for n in 1..=HITS_TO_WIN_ROUND {
-        let shot = hitting_shot(&m, Side::Left);
-        m.fire(shot, false).unwrap();
-        let want = (n == HITS_TO_WIN_ROUND).then_some(Overtime::LastShot);
-        assert_eq!(m.overtime(), want, "after left's hit {n}");
-        if n < HITS_TO_WIN_ROUND {
-            m.fire(MISS, false).unwrap();
-        }
-    }
-    // Right answers with a hit: not yet level, it has fewer hits. Make it
-    // level by hand and look from left's side, as after a tying answer.
-    m.hits = [HITS_TO_WIN_ROUND, HITS_TO_WIN_ROUND];
-    m.to_move = Side::Left;
-    assert_eq!(m.overtime(), Some(Overtime::Tied));
-    // Left goes ahead again: right has a last shot once more.
-    m.hits = [HITS_TO_WIN_ROUND + 1, HITS_TO_WIN_ROUND];
-    m.to_move = Side::Right;
-    assert_eq!(m.overtime(), Some(Overtime::LastShot));
-    // Without equal shots there is no overtime.
+    let at = |m: &mut Match, hits: [u32; 2], to_move: Side| {
+        m.hits = hits;
+        m.to_move = to_move;
+        m.stakes()
+    };
+    // Left opens round 1. An ordinary turn.
+    assert_eq!(at(&mut m, [0, 0], Side::Left), None);
+    // Left has the mark one ahead: right's last shot ties.
+    assert_eq!(at(&mut m, [n, n - 1], Side::Right), Some(Stakes::LastShot));
+    // Two or more ahead never reaches right: the round ended on left's
+    // shot. (Asked anyway, a hit could not even tie, so no LAST SHOT.)
+    assert_ne!(at(&mut m, [n, n - 2], Side::Right), Some(Stakes::LastShot));
+    // Level past the mark after a pair: it plays on.
+    assert_eq!(at(&mut m, [n, n], Side::Left), Some(Stakes::Tied));
+    assert_eq!(at(&mut m, [n + 1, n], Side::Right), Some(Stakes::LastShot));
+    // Left missed at 3-3: a right hit wins outright.
+    assert_eq!(at(&mut m, [n, n], Side::Right), Some(Stakes::HitToWin));
+    // So does a right hit at 2-2, and a left hit two clear of right.
+    assert_eq!(
+        at(&mut m, [n - 1, n - 1], Side::Right),
+        Some(Stakes::HitToWin)
+    );
+    assert_eq!(
+        at(&mut m, [n - 1, n - 3], Side::Left),
+        Some(Stakes::HitToWin)
+    );
+    // A left hit at 2-2 only reaches the mark one ahead: right answers.
+    assert_eq!(at(&mut m, [n - 1, n - 1], Side::Left), None);
+    // Without equal shots the first to the mark wins, so only HIT TO WIN.
     m.rules.equal_shots = false;
-    assert_eq!(m.overtime(), None);
+    assert_eq!(at(&mut m, [n - 1, 0], Side::Left), Some(Stakes::HitToWin));
+    assert_eq!(at(&mut m, [n - 2, n - 2], Side::Right), None);
+    // Nothing between rounds.
+    m.phase = Phase::RoundOver(Side::Left);
+    assert_eq!(at(&mut m, [n - 1, 0], Side::Left), None);
 }
 
 #[test]
@@ -569,6 +591,18 @@ fn rolled_guns_are_seated_alike_on_fresh_ground() {
     // right gun would roll down into it.
     let mut m = Match::new(0x5A17, 320);
     let w = m.width();
+    // Deep enough under the right gun's spots to reach rock.
+    for _ in 0..3 {
+        for x in (230..=300).step_by(6) {
+            m.screen.field.crater(x as f64, 7.0);
+        }
+    }
+    assert!(m
+        .screen
+        .field
+        .material
+        .iter()
+        .any(|&mat| mat != Material::Sand));
     for x in (230..=300).step_by(6) {
         m.screen.field.crater(x as f64, 7.0);
     }
@@ -605,6 +639,15 @@ fn rolled_guns_are_seated_alike_on_fresh_ground() {
             "pivots {} apart",
             (l.y - r.y).abs()
         );
+        // The filled columns are fresh ground through and through: Sand,
+        // the terrain's rule for no scar, under both guns alike.
+        let x0 = (m.screen.muzzle_x - CHASSIS_WIDTH as f64 * 0.5) as usize;
+        for i in x0..x0 + CHASSIS_WIDTH {
+            for c in [i, w - 1 - i] {
+                assert_eq!(m.screen.field.scar[c], 0.0);
+                assert_eq!(m.screen.field.material[c], Material::Sand, "column {c}");
+            }
+        }
     }
     assert!(rolled > 0);
     // Craters away from the guns are left alone.
