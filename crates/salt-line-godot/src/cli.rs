@@ -49,6 +49,9 @@ pub struct DevArgs {
     pub continue_run: bool,
     /// `--salt-gallery <dir>`: render the terrain template gallery and quit.
     pub gallery: Option<String>,
+    /// `--salt-versus`: start a local versus match at once, at its first
+    /// handoff. With `--salt-auto`, the autopilot plays both guns.
+    pub versus: bool,
 }
 
 impl DevArgs {
@@ -67,6 +70,7 @@ impl DevArgs {
             screen: value(args, "--salt-screen").and_then(|s| s.parse().ok()),
             continue_run: flag(args, "--salt-continue"),
             gallery: value(args, "--salt-gallery"),
+            versus: flag(args, "--salt-versus"),
         }
     }
 }
@@ -130,8 +134,16 @@ mod tests {
                 screen: None,
                 continue_run: false,
                 gallery: None,
+                versus: false,
             }
         );
+    }
+
+    #[test]
+    fn versus_is_a_flag_of_its_own() {
+        let a = DevArgs::parse(&args("--salt-versus --salt-auto"));
+        assert!(a.versus && a.auto);
+        assert_eq!(a.seed, None);
     }
 
     #[test]

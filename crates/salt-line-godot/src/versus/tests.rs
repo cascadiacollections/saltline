@@ -447,7 +447,7 @@ fn turn_wind_is_a_pure_function_of_seed_round_and_turn() {
 }
 
 #[test]
-fn a_matchs_winds_do_not_depend_on_the_shots() {
+fn winds_do_not_depend_on_the_shots() {
     // Hit or miss, the third turn of a round blows the same.
     let mut a = Match::new(99, 320);
     let mut b = Match::new(99, 320);

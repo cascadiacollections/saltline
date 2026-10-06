@@ -480,6 +480,8 @@ impl SaltLine {
     #[func]
     fn is_active_play(&self) -> bool {
         self.g.mode == crate::app::Mode::Playing
+            || (self.g.mode == crate::app::Mode::Versus
+                && self.g.versus.live.as_ref().is_some_and(|v| !v.paused))
     }
 }
 

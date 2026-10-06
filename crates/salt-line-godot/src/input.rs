@@ -213,6 +213,8 @@ pub enum Action {
     LastArc,
     Seed,
     NewRun,
+    /// The title's way into a local versus match.
+    Versus,
     AimMode,
     ArcHint,
     /// A seed keypad key: types its character.
@@ -224,7 +226,7 @@ pub enum Action {
 impl Action {
     /// Every action a `bind` line can name, in the order the save file and
     /// the Controls screen know them.
-    pub const BINDABLE: [Action; 21] = [
+    pub const BINDABLE: [Action; 22] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -246,6 +248,7 @@ impl Action {
         Self::LastArc,
         Self::Seed,
         Self::NewRun,
+        Self::Versus,
     ];
 
     /// The action's name in a `bind` line (`bind fire SPACE A`). `None` for a
@@ -273,6 +276,7 @@ impl Action {
             Self::LastArc => "last_arc",
             Self::Seed => "seed",
             Self::NewRun => "new_run",
+            Self::Versus => "versus",
             Self::TitleMusic | Self::AimMode | Self::ArcHint | Self::Type(_) | Self::Delete => {
                 return None;
             }
@@ -320,6 +324,8 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         // Only offered over a saved run, where confirm is CONTINUE and
         // pad Y is already seed entry.
         Action::NewRun => ("N", "RB"),
+        // "2" for two players. LB is free on the title, where this is read.
+        Action::Versus => ("2", "LB"),
         _ => ("", ""),
     }
 }
@@ -600,6 +606,7 @@ mod tests {
                 "last_arc",
                 "seed",
                 "new_run",
+                "versus",
             ]
         );
     }

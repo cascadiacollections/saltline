@@ -58,8 +58,8 @@
 //! `Game`'s methods are split by concern: this file has the frame, the
 //! environment events, launch and the read-only queries; `app/controls.rs`
 //! reads actions and runs each mode's input; `app/play.rs` is a run in play;
-//! `app/session.rs` is the buffer, sound, settings, crash reports and the run
-//! on disk.
+//! `app/versus.rs` is a local versus match in play; `app/session.rs` is the
+//! buffer, sound, settings, crash reports and the run on disk.
 //!
 //! # Order is behaviour
 //!
@@ -276,6 +276,11 @@ pub enum Mode {
     Paused,
     /// The run's result, with its seed to copy or play again.
     GameOver,
+    /// Before a local versus match: each player's aim help, then start.
+    VersusSetup,
+    /// A local versus match on screen, hot-seat: turns, the pass-the-phone
+    /// plate, results and its own pause (`app/versus.rs`).
+    Versus,
 }
 
 /// A shot being replayed to the player. The sim has already resolved it.
@@ -558,6 +563,7 @@ pub struct FrameState {
     devices: (bool, bool),
     run: Option<(u32, Phase, i32, u32, u64, u64)>,
     seed: (usize, Focus),
+    versus: (Option<versus::Fingerprint>, [bool; 2]),
     settings: (
         u8,
         bool,
@@ -601,6 +607,8 @@ pub struct Game {
     pub(crate) run_file: RunFileState,
     pub(crate) dev: Dev,
     pub(crate) crash: CrashInfo,
+    /// Local versus: the pre-match choices and the match on screen.
+    pub(crate) versus: VersusState,
 
     /// Effects asked for since they were last taken.
     fx: Vec<Effect>,
@@ -818,6 +826,7 @@ impl Default for Game {
             },
             dev: Dev::default(),
             crash: CrashInfo::default(),
+            versus: VersusState::default(),
             fx: Vec::new(),
         }
     }
@@ -895,9 +904,14 @@ impl Game {
         // The back gesture is a one-frame press, like a key's.
         self.input.back_requested = false;
         if self.dev.auto {
-            self.autopilot(delta);
+            if matches!(self.mode, Mode::Versus | Mode::VersusSetup) {
+                self.versus_autopilot(delta);
+            } else {
+                self.autopilot(delta);
+            }
         }
         self.step(delta);
+        self.step_versus(delta);
         self.persist_run();
         self.tick_settings(delta);
         let after = self.frame_state();
@@ -965,6 +979,11 @@ impl Game {
     /// the other half of the dirty-flag redraw.
     pub fn busy(&self) -> bool {
         self.play.anim.is_some()
+            || self
+                .versus
+                .live
+                .as_ref()
+                .is_some_and(|v| v.anim.is_some() && !v.paused)
             || self.play.clear_hold > 0.0
             || self.status_time > 0.0
             || self.dev.auto
@@ -973,7 +992,7 @@ impl Game {
 
     /// Menus, overlays and the error screen run at the idle frame rate.
     pub fn idle(&self) -> bool {
-        self.crash.broken || self.mode != Mode::Playing
+        self.crash.broken || !matches!(self.mode, Mode::Playing | Mode::Versus)
     }
 
     /// Every sound player's volume, in dB: the save's percentage as an
@@ -1171,7 +1190,9 @@ impl Game {
         self.dev.auto_miss = args.miss;
         self.dev.auto_hold_draft = args.hold_draft;
         self.dev.auto_seed = args.seed;
-        if let Some(seed) = args.seed {
+        if args.versus {
+            self.start_versus();
+        } else if let Some(seed) = args.seed {
             self.start_run(seed, false);
             if let Some(n) = args.screen {
                 self.jump_to(n);
@@ -1353,8 +1374,13 @@ impl Game {
         )
     }
 
-    /// The run holds Long Lens, so the buffer is `LONG_LENS_H` tall.
+    /// The run holds Long Lens, so the buffer is `LONG_LENS_H` tall. Never
+    /// in versus, which has no loadout to draft: a run set aside for
+    /// CONTINUE keeps its lens for when it comes back.
     pub(crate) fn long_lens(&self) -> bool {
+        if matches!(self.mode, Mode::VersusSetup | Mode::Versus) {
+            return false;
+        }
         self.play
             .run
             .as_ref()
@@ -1436,6 +1462,7 @@ impl Game {
                 )
             }),
             seed: (self.seed_text.len(), self.input.seed_focus),
+            versus: (self.versus_fingerprint(), self.versus.help),
             settings: (
                 self.save.volume,
                 self.save.muted,
@@ -1482,6 +1509,8 @@ impl Game {
             Mode::Playing => "Playing",
             Mode::Paused => "Paused",
             Mode::GameOver => "GameOver",
+            Mode::VersusSetup => "VersusSetup",
+            Mode::Versus => "Versus",
         }
     }
 
@@ -1554,8 +1583,14 @@ impl Game {
 mod controls;
 mod play;
 mod session;
+mod versus;
+
+pub use versus::{Stage as VersusStage, VERSUS_HOLD};
+pub(crate) use versus::{VersusPlay, VersusState};
 
 #[cfg(test)]
 mod disk_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod versus_tests;

@@ -640,6 +640,36 @@ impl Canvas {
             }
         }
     }
+
+    /// Blit a whole sprite mirrored left to right, its left edge at `x`.
+    pub fn blit_flipped(&mut self, sprite: &Sprite, x: i32, y: i32) {
+        self.blit_region_flipped(
+            sprite,
+            x,
+            y,
+            Rect {
+                x: 0,
+                y: 0,
+                w: sprite.w,
+                h: sprite.h,
+            },
+        );
+    }
+
+    /// [`Canvas::blit_region`] mirrored left to right: the region's last
+    /// column lands at `x`. A reflection, not a rotation, so DESIGN §5.1's
+    /// rule against rotating sprites still holds: every pixel is copied one
+    /// for one. Versus draws the right-hand gun this way.
+    pub fn blit_region_flipped(&mut self, sprite: &Sprite, x: i32, y: i32, src: Rect) {
+        let Rect { x: sx, y: sy, w, h } = src;
+        for j in 0..h {
+            for i in 0..w {
+                if let Some(c) = sprite.pixel(sx + i, sy + j) {
+                    self.put(x + (w - 1 - i), y + j, c);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
