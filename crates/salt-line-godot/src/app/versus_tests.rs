@@ -202,11 +202,40 @@ fn a_whole_match_plays_to_a_result_and_a_rematch() {
     assert_eq!(vs(&g).duel.phase, rules::Phase::MatchOver(Side::Left));
     assert_eq!(vs(&g).duel.rounds, [2, 0]);
     let seed = vs(&g).duel.seed;
-    // A rematch is a new match on a new seed, the aim help as it was.
+    // A rematch goes back to the aim-help choice, still set as it was.
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    assert!(g.versus.live.is_none());
+    assert_eq!(g.versus.help, [false, false]);
+    // From there it is a new match on a new seed.
     press(&mut g, Key::Enter);
     assert_eq!(vs(&g).stage, Stage::Handoff);
     assert_eq!(vs(&g).duel.rounds, [0, 0]);
     assert_ne!(vs(&g).duel.seed, seed);
+}
+
+#[test]
+fn a_rematch_keeps_the_last_aim_help_and_lets_it_change() {
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    press(&mut g, Key::Right);
+    press(&mut g, Key::Enter);
+    assert_eq!(g.versus.help, [false, true]);
+    // Skip to the end of the match: the rules decide it, not the plates.
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::MatchOver(Side::Right);
+    live.stage = Stage::Result;
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    assert_eq!(
+        g.versus.help,
+        [false, true],
+        "prefilled from the last match"
+    );
+    press(&mut g, Key::Left);
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(g.versus.help, [true, true]);
 }
 
 #[test]
@@ -495,5 +524,31 @@ fn a_tap_on_start_or_ready_does_only_that() {
             assert!(vs(&g).anim.is_none(), "READY fired a shot: drag {drag}");
             assert_eq!(vs(&g).duel.turn, 0, "READY fired a shot: drag {drag}");
         }
+    }
+}
+
+#[test]
+fn a_tap_on_rematch_stops_at_the_aim_help_choice() {
+    // REMATCH and the pre-match START both sit mid-plate: one tap must not
+    // go through both and start the next match.
+    for noisy in [false, true] {
+        let mut g = touch_game(false);
+        tap(&mut g, Action::Versus, FRAME);
+        tap(&mut g, Action::Confirm, FRAME);
+        let live = g.versus.live.as_mut().unwrap();
+        live.duel.phase = rules::Phase::MatchOver(Side::Left);
+        live.stage = Stage::Result;
+        for _ in 0..30 {
+            touch_frame(&mut g, Vec::new(), FRAME);
+        }
+        if noisy {
+            noisy_tap(&mut g, Action::Confirm, FRAME);
+        } else {
+            tap(&mut g, Action::Confirm, FRAME);
+        }
+        assert_eq!(g.mode, Mode::VersusSetup, "noisy {noisy}");
+        tap(&mut g, Action::Confirm, FRAME);
+        assert_eq!(g.mode, Mode::Versus, "noisy {noisy}");
+        assert_eq!(vs(&g).stage, Stage::Handoff, "noisy {noisy}");
     }
 }

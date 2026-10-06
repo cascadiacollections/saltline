@@ -193,7 +193,8 @@ default token names are accepted; unknown or malformed lines are ignored.
 A prototype two-player mode for one phone, hot-seat (DESIGN §11). On a
 touchscreen the title has a LOCAL VERSUS row; with keys it is `2` (pad LB), and
 the keyed title does not list it. The pre-match screen sets AIM HELP for each
-player (Left / Right, or tap the row), off by default; START begins.
+player (Left / Right, or tap the row), off by default; START begins. After a
+match, REMATCH comes back to this screen with the last choices still set.
 
 The left gun fires right and the right gun fires left; turns alternate. Between
 turns a plate covers the field: pass the phone and tap READY (Enter / A). The

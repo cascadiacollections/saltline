@@ -11,6 +11,8 @@
 //!     └──────────── match still in a round ◄───────────────────────────────┤
 //!                                                                          ▼
 //!                                  Result (round or match won) ──next──► Handoff
+//!                                                     │
+//!                                       match won ──rematch──► pre-match screen
 //! ```
 //!
 //! The handoff plate covers the field between turns, so the player taking
@@ -408,7 +410,10 @@ impl Game {
         }
     }
 
-    /// The result plate was dismissed: the next round, or a rematch.
+    /// The result plate was dismissed: the next round, or a rematch. A
+    /// rematch goes back to the pre-match screen rather than straight into
+    /// a new match, so each player can turn aim help on or off before the
+    /// next one; the choices from the last match are still set there.
     fn after_versus_result(&mut self) {
         let Some(vs) = self.versus.live.as_mut() else {
             return;
@@ -419,7 +424,7 @@ impl Game {
                 vs.arcs = [Vec::new(), Vec::new()];
                 vs.stage = Stage::Handoff;
             }
-            versus::Phase::MatchOver(_) => self.start_versus(),
+            versus::Phase::MatchOver(_) => self.open_versus_setup(),
             versus::Phase::Aiming => vs.stage = Stage::Handoff,
         }
     }
@@ -440,7 +445,8 @@ impl Game {
     /// `--salt-versus --salt-auto`: play both guns for the camera. Each
     /// turn readies at once and fires a shot that hits, except with
     /// `--salt-miss`, where every other turn throws a short lob; results
-    /// are dismissed, and a finished match goes to a rematch.
+    /// are dismissed, and a finished match goes back through the pre-match
+    /// screen to a rematch.
     pub(super) fn versus_autopilot(&mut self, delta: f64) {
         self.dev.auto_cooldown -= delta;
         if self.dev.auto_cooldown > 0.0 {

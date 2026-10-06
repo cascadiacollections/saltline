@@ -276,3 +276,7 @@ Choices the owner's brief left open, made the simple way:
   changed.
 - **Mirrored controls.** Left and Right move either barrel's tip the same way
   across the screen, so for the right gun they run the other way in angle.
+- **Rematch goes through the pre-match screen.** REMATCH opens the aim-help
+  choice again rather than dealing the next match at once, so a player can
+  change their mind about help between matches. The choices are session
+  state, so the last match's are already set; nothing new is stored.
