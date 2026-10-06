@@ -127,6 +127,11 @@ pub(crate) struct VersusPlay {
     pub(crate) score_before: Option<([u32; 2], [u32; 2])>,
     /// Under the pause plate.
     pub(crate) paused: bool,
+    /// When the last shot rolled the guns ([`versus::Match::roll_guns`]):
+    /// the screen as it landed, with the guns still where they were, shown
+    /// while the HIT or MISS is held. They are found at their new spots
+    /// when the phone has been passed.
+    pub(crate) landed: Option<Screen>,
 }
 
 impl VersusPlay {
@@ -136,11 +141,13 @@ impl VersusPlay {
     }
 
     /// The screen to draw: the pre-shot copy while a shot is in the air, so
-    /// the crater appears when the shell lands.
+    /// the crater appears when the shell lands, and the guns where they
+    /// were until the turn passes.
     pub(crate) fn shown_screen(&self) -> &Screen {
         match self.anim.as_ref() {
             Some(anim) if !anim.done() => &anim.before,
-            _ => &self.duel.screen,
+            Some(_) => self.landed.as_ref().unwrap_or(&self.duel.screen),
+            None => &self.duel.screen,
         }
     }
 
@@ -210,6 +217,7 @@ impl Game {
             dinged: false,
             score_before: None,
             paused: false,
+            landed: None,
         });
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -373,6 +381,10 @@ impl Game {
         vs.self_hit = report.self_hit;
         vs.dinged = false;
         vs.score_before = Some(score);
+        vs.landed = report.rolled.then(|| Screen {
+            muzzle_x: before.muzzle_x,
+            ..vs.duel.screen.clone()
+        });
         let longest = report
             .traces
             .iter()
@@ -441,6 +453,7 @@ impl Game {
             vs.anim = None;
             vs.hit = None;
             vs.self_hit = false;
+            vs.landed = None;
             vs.stage = match vs.duel.phase {
                 versus::Phase::Aiming => Stage::Handoff,
                 versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => {
@@ -518,7 +531,7 @@ impl Game {
                 } else {
                     let frame = versus::frame_for(&duel.screen, side);
                     let target = versus::target_in_frame(&duel.screen, side);
-                    versus::shots_at(&frame, target, &duel.loadout, 1)
+                    versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
                         .first()
                         .copied()
                 };

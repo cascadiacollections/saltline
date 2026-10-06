@@ -1779,7 +1779,7 @@ mod tests {
         let duel = &g.versus.live.as_ref().unwrap().duel;
         let frame = rules::frame_for(&duel.screen, Side::Left);
         let target = rules::target_in_frame(&duel.screen, Side::Left);
-        rules::shots_at(&frame, target, &duel.loadout, 1)[0]
+        rules::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)[0]
     }
 
     #[test]

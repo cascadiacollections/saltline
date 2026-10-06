@@ -85,7 +85,7 @@ fn hitting(g: &Game) -> Shot {
     let side = duel.to_move;
     let frame = rules::frame_for(&duel.screen, side);
     let target = rules::target_in_frame(&duel.screen, side);
-    rules::shots_at(&frame, target, &duel.loadout, 1)[0]
+    rules::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)[0]
 }
 
 const MISS: Shot = Shot {
@@ -181,6 +181,30 @@ fn a_turn_passes_the_phone_and_keeps_each_players_aim() {
 }
 
 #[test]
+fn rolled_guns_are_found_moved_after_the_handoff() {
+    let mut g = in_match();
+    let home = vs(&g).duel.screen.muzzle_x;
+    let shot = hitting(&g);
+    take_turn(&mut g, shot);
+    // Right answers; the pair had a hit, so the rules roll the guns now.
+    press(&mut g, Key::Enter);
+    (g.play.angle_ticks, g.play.power_ticks) = (MISS.angle_ticks, MISS.power_ticks);
+    press(&mut g, Key::Space);
+    assert_ne!(vs(&g).duel.screen.muzzle_x, home, "the rules rolled them");
+    // In flight and while the MISS is held, the guns are drawn where they
+    // stood; the crater shows once the shell is down.
+    until(&mut g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done()));
+    assert_eq!(vs(&g).shown_screen().muzzle_x, home);
+    assert_eq!(
+        vs(&g).shown_screen().field.scar,
+        vs(&g).duel.screen.field.scar
+    );
+    // Behind the plate, they are at their new spots.
+    until(&mut g, |g| vs(g).stage == Stage::Handoff);
+    assert_eq!(vs(&g).shown_screen().muzzle_x, vs(&g).duel.screen.muzzle_x);
+}
+
+#[test]
 fn a_whole_match_plays_to_a_result_and_a_rematch() {
     let mut g = in_match();
     // Left wins two rounds straight; right never hits.
@@ -194,6 +218,12 @@ fn a_whole_match_plays_to_a_result_and_a_rematch() {
             }
             let shot = hitting(&g);
             fx.extend(take_turn(&mut g, shot));
+        }
+        if vs(&g).stage != Stage::Result {
+            // Left opened this round, so right answers its third hit, and
+            // no fanfare has played while that answer was due.
+            assert!(!fx.contains(&Effect::Play(Sound::Win)), "won too soon");
+            fx.extend(take_turn(&mut g, MISS));
         }
         assert_eq!(vs(&g).stage, Stage::Result);
         let wins = fx.iter().filter(|e| **e == Effect::Play(Sound::Win));
