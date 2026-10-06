@@ -187,7 +187,7 @@ jobs:
           }
           gate --build base --skill perfect --max-exhausted 0 --ending 58..71
           gate --build base --skill steady --max-exhausted 2 --ending 29..37
-          gate --build evolving --skill steady --aim scaled --max-exhausted 8 --ending 39..50
+          gate --build evolving --skill steady --aim scaled --max-exhausted 8 --ending 43..53
           exit "$status"
 
   lint:
