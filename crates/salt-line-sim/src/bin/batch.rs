@@ -14,8 +14,11 @@
 //! Exit status is non-zero if any screen failed to validate, so CI can gate on it.
 //! `--max-exhausted N` and `--ending MIN..MAX` add an economy gate: the run
 //! also fails if more than N seeded runs ran out of shells, or the mean ending
-//! reserve falls outside MIN..MAX. The run is deterministic, so a gate trips
-//! only when generation, refunds or the curve actually change.
+//! reserve falls outside MIN..MAX. The run is deterministic, so a gate never
+//! flakes; the bounds are what let small, intended tuning through, while a
+//! larger shift (in generation, refunds, the curve or this file's play model)
+//! trips it. The golden runs already catch *that* the sim changed; this
+//! catches *how far* the economy moved.
 //!
 //! Flags: `--seeds N`, `--screens N` (per seed), `--width W`, `--build
 //! base|evolving|drift|demo|precision|risk` (default evolving), `--skill
@@ -994,15 +997,36 @@ fn main() {
     let mean_ending = ending_shell_sum as f64 / args.seeds.max(1) as f64;
     let violations = economy_violations(&args, deaths, mean_ending);
     if args.max_exhausted.is_some() || args.ending.is_some() {
-        if violations.is_empty() {
-            println!("economy gate: passed");
-        } else {
-            for v in &violations {
-                println!("economy gate: FAILED — {v}");
+        // Always print the observed values next to the bounds, so a passing
+        // CI log records drift and a failing one says which run broke and
+        // what it measured.
+        let ending = match args.ending {
+            Some((lo, hi)) => format!("mean ending reserve {mean_ending:.2} (bound {lo}..{hi})"),
+            None => format!("mean ending reserve {mean_ending:.2}"),
+        };
+        let exhausted = match args.max_exhausted {
+            Some(max) => format!("{deaths}/{} runs exhausted (bound <= {max})", args.seeds),
+            None => format!("{deaths}/{} runs exhausted", args.seeds),
+        };
+        println!(
+            "economy gate [build {:?}, accuracy {} {}%, aim {:?}]: {}; {ending}; {exhausted}",
+            args.build,
+            args.accuracy,
+            args.hit_percent,
+            args.aim,
+            if violations.is_empty() {
+                "passed"
+            } else {
+                "FAILED"
             }
+        );
+        for v in &violations {
+            println!("economy gate: broke — {v}");
+        }
+        if !violations.is_empty() {
             println!(
-                "economy gate: if the change was intended, update the bounds in \
-                 .github/workflows/ci.yml with the new numbers"
+                "economy gate: if the change was intended, re-centre the bounds in \
+                 .github/workflows/ci.yml around the values above"
             );
             failed = true;
         }
