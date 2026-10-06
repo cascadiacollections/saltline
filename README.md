@@ -193,8 +193,9 @@ default token names are accepted; unknown or malformed lines are ignored.
 A prototype two-player mode for one phone, hot-seat (DESIGN §11). On a
 touchscreen the title has a LOCAL VERSUS row; with keys it is `2` (pad LB), and
 the keyed title does not list it. The pre-match screen sets AIM HELP for each
-player (Left / Right, or tap the row), off by default; START begins. After a
-match, REMATCH comes back to this screen with the last choices still set.
+player (Left / Right, or tap the row), off by default, and ROLLING GUNS (Up, or
+tap the row), on by default; START begins. After a match, REMATCH comes back to
+this screen with the last choices still set.
 
 The left gun fires right and the right gun fires left; turns alternate. Each
 side has a colour, amber for left and blue for right, used for its gun's tag,
@@ -207,7 +208,7 @@ hits takes a round, but both players always get the same number of shots: if
 the player who went first gets the third hit, the other gets one last shot to
 tie it. Best of 3 rounds takes the match. After a hit, once both have shot, the
 two guns roll a little (together, so it stays fair) and the range has to be
-found again. Wind changes every turn,
+found again; turn ROLLING GUNS off to keep them still. Wind changes every turn,
 craters last for the round, and every round is new ground. Aim help shows that
 player's last landing mark and arc and a short preview of the current aim.
 Esc / B / `II` pauses; TITLE leaves the match. Nothing about a match is saved,

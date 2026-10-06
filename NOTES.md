@@ -321,43 +321,84 @@ shot again, and whoever shot first had the edge. The brief's first idea, wind
 every turn and alternating openers, was already in the rules, so the levers
 were measured instead with a new duel harness (`just duel`,
 `crates/salt-line-godot/examples/duel.rs`): two bots that re-aim from their
-last landing, 400 matches each, width 320. `kid` is a young player with aim
-help, `steady` a grown-up without it; both are guesses, so compare rows.
+last landing, 400 matches per row, width 320. `kid` is a young player with
+aim help (shaky hand, slow learning, little wind reading, the odd
+overcorrection or change of angle), `steady` a grown-up without it; both are
+guesses, so compare rows rather than reading them as forecasts.
 
-| rules (kid bot) | shots per hit | turns per round | repeat hits | opener wins round |
-|---|---|---|---|---|
-| as shipped in #60 | 1.48 | 6.7 | 96% | 64.0% |
-| wind 2–7 (floor 2) | 1.60 | 7.2 | 85% | 60.3% |
-| hit reach 4 (was 9) | 1.71 | 7.6 | 94% | 59.4% |
-| equal shots only | 1.40 | 9.1 | 95% | 50.9% |
-| guns roll 20 only | 2.27 | 10.3 | 20% | 60.0% |
-| **equal shots + roll 20** | **2.25** | **12.7** | **21%** | **48.6%** |
+| rules, kid v kid | shots per hit | turns per round | repeat hits | opener wins round | past 3 hits | turns per match (mean, p90) |
+|---|---|---|---|---|---|---|
+| as shipped in #60 | 1.77 | 7.7 | 96% | 59.0% | 0% | 19.2, 26 |
+| equal shots only | 1.65 | 9.5 | 96% | 47.7% | 23% | 24.3, 34 |
+| **equal shots + rolling guns (16, ladder −1..+2)** | **2.27** | **11.7** | **41%** | **47.7%** | **15%** | **29.6, 42** |
+| same, step 20 (hangs 3 px off screen) | 2.55 | 13.0 | 22% | 48.2% | 15% | 32.8, 48 |
+| same, step 16, forward only (ladder 0..+3) | 2.14 | 11.5 | 37% | 46.4% | 20% | 29.4, 40 |
 
-The `steady` bot reads the same: 1.45 / 6.7 / 97% / 67.6% before, 2.16 / 13.1 /
-26% / 49.1% after. "Repeat hits" is how often the shot that just hit, fired
-again unchanged on that side's next turn, would hit again.
+| rules, steady v steady | shots per hit | turns per round | repeat hits | opener wins round | past 3 hits | turns per match (mean, p90) |
+|---|---|---|---|---|---|---|
+| as shipped in #60 | 1.44 | 6.6 | 96% | 67.7% | 0% | 16.7, 22 |
+| equal shots only | 1.28 | 11.9 | 93% | 48.7% | 38% | 28.9, 50 |
+| **equal shots + rolling guns** | **1.87** | **13.0** | **51%** | **50.7%** | **32%** | **32.2, 54** |
+
+Kid against steady, the kid's share of matches (the mean over the two ways
+round, since the side that opens round 1 differs):
+
+| rules | kid as left | kid as right | kid's share |
+|---|---|---|---|
+| as shipped in #60 | 30.8% | 25.0% | 27.9% |
+| equal shots only | 15.5% | 19.5% | 17.5% |
+| **equal shots + rolling guns** | **26.8%** | **27.0%** | **26.9%** |
+
+"Repeat hits" is how often the shot that just hit, fired again unchanged on
+that side's next turn, would hit again. "Past 3 hits" is the share of rounds
+that a tie carried beyond three.
 
 - **Wind was not the lever.** A 45° shot across a duel flies about two
   seconds, so ±2.5 drifts it about ±5 units against a hit window 44 units wide
-  (the 26-unit box plus 9 of reach each side). Spoiling a repeat that way
-  needs winds well past single-player's cap, which would swamp every shot.
+  (the 26-unit box plus 9 of reach each side). In the first round of
+  measurements (an earlier, stronger kid bot), wind 2–7 with a floor of 2 only
+  took repeat hits from 96% to 85%, and spoiling repeats with wind alone needs
+  winds well past single-player's cap, which would swamp every shot.
   `WIND_MIN` exists as a lever; it and `WIND_MAX` keep their old values.
-- **A shorter reach makes every shot harder, not repeats rarer.** `HIT_REACH`
-  stays at the blast radius.
+- **A shorter reach makes every shot harder, not repeats rarer** (reach 4:
+  repeat hits 94%). `HIT_REACH` stays at the blast radius.
 - **Rolling the guns** is what spoils a repeat. Both guns move together, back
   or forward, so the duel stays mirrored and one value (`Screen::muzzle_x`)
-  still places both guns, with no signature change anywhere. Each roll
-  changes the range by 40 units, and a spot is only taken if the screen
-  still passes the duel gate from it.
+  still places both guns. At a step of 16 a repeated hit lands about as often
+  as a fresh aim does (kid 41% against 1 / 2.27 = 44%; steady 51% against
+  53%), so repeating the last hit stops being worth anything. A step of 20
+  would make repeating worse than aiming afresh, but one step back would put
+  the pivot at x = 10 and the chassis 3 pixels off the screen; 16 is the
+  longest step that can go back once and stay on screen, so both ways are
+  reachable from home.
+- **Even odds, both ways.** A forward-only ladder (guns only ever start by
+  closing in) measured about the same (37% repeats, 46.4% opener rounds), so
+  there is no case for it over a random direction.
 - **They roll at the end of a pair**, not straight after the hit. Rolling at
   once left the opener winning 55–61% of rounds even with equal shots: the
   side answering a winning hit had to aim at guns that had just moved.
 - **Equal shots** removes the opener's edge within a round: the side that did
   not open always gets as many shots. If its answer ties things past three,
-  play goes on in pairs until one pair ends with someone ahead.
-- What is left: at the match level, the side that opens round 1 won 45–48%
-  of matches under the new rules (±2.5% at 400 matches), so if anything the
-  edge now leans slightly the other way.
+  play goes on in pairs until one pair ends with someone ahead. On its own it
+  hurts a weaker player against a stronger one (the stronger rarely misses
+  the answering shot); with rolling guns the kid's share is back to where it
+  was under the #60 rules.
+- **Fresh ground under rolled guns.** A gun could roll into a stretch the
+  other side had cratered: the two pivots were up to 16 units apart after a
+  roll, against under 5 on the generated ground (what is left of its
+  asymmetry). Rolling now fills the craters under both chassis, so both sit
+  on the generated ground; after a roll the pivots differ by 1.4 on average
+  and 4.6 at most.
+- **The re-gate is cheap.** A shot that rolls the guns takes about 0.12 ms on
+  the desktop in a release build (0.34 ms at most), against microseconds for
+  one that does not; the duel gate saturates its cap of 8 shots almost at
+  once.
+- **Owner toggle.** ROLLING GUNS on the pre-match screen (on by default, kept
+  for a rematch) plays a match with `GUN_SHIFT` at zero, so the rule can be
+  tried both ways. Equal shots stays on.
+- What is left: at the match level, the side that opens round 1 won 46–48%
+  of same-bot matches under the new rules (±2.5% at 400 matches).
 - **The guns are found moved after the handoff.** During the HIT or MISS
   hold the guns are drawn where the shot found them; the move happens behind
-  the pass-the-phone plate. There is no animation or caption for it yet.
+  the pass-the-phone plate. Each side's landing mark and last arc move with
+  its gun. There is no animation or caption for the roll yet.
