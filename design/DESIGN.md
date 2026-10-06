@@ -435,6 +435,9 @@ Settings rather than per-material — one missed material is the whole illusion.
 | 2 | UI — foreground text, background plate |
 | 1 | Alert accent, used only for wind and the shell counter under 10 |
 
+Local versus relaxes the alert accent's reservation, for that mode only: the
+accent is the left player's colour there (§11.4).
+
 Pull the ramp from desert reference photography rather than from another game's
 palette — that keeps you clean on trade dress and produces better colors anyway.
 Salt flats have a genuinely strange color range: bleached white-pink ground
@@ -512,7 +515,8 @@ is what makes craters read as depth rather than as bites taken out of the ground
 ### 5.6 Type
 
 Use a bitmap pixel font at native resolution — 5×7 for the shell counter and wind
-value, 3×5 for the screen index. Never scale a TTF down into the buffer. Draw the
+value, 3×5 for the screen index. (Local versus scales the 3×5 face up for a few
+callouts; see §11.4.) Never scale a TTF down into the buffer. Draw the
 modifier draft cards with the same font at the same size; resist the urge to make
 draft UI larger and smoother than the game.
 
@@ -1048,21 +1052,33 @@ and how it is going should read without reading words.
 
 - **A colour each:** left is the alert amber, right the pale sky blue
   (`SKY_LO`). Far apart in hue, and still apart for red-green colour
-  blindness. Everything that names a side uses its colour: the tag over each
-  gun (big over the gun whose turn it is), the score pips, the handoff and
-  result plates' borders and lettering, the HIT callout and the hit flash.
-  §5.2 still holds: these are existing slots with a second job in this mode.
-  So that the colours mean only a side, versus draws its secondary text in
-  `ROCK` instead of `SKY_LO`, and its wind digits in plain text instead of
-  the alert colour.
+  blindness. Everything that names a side or comes from its shot uses its
+  colour: the tag over each gun (big over the gun whose turn it is), the
+  score pips, the handoff and result plates' borders and lettering, the HIT
+  callout, the hit flash, the shell's head, the muzzle and impact flashes,
+  and aim help's landing mark and preview.
+- **This relaxes §5.2 for versus.** The palette is still sixteen colours, but
+  §5.2 (and §8.5) reserve the alert accent for wind and the low-shell
+  counter; in versus it is the left player's colour instead. So that the two
+  colours mean only a side, versus draws its secondary text in `ROCK` instead
+  of `SKY_LO`, its wind digits in plain text and its windsock in brick and
+  sand.
+- **Plates everywhere:** `SKY_LO` *is* the duel sky's horizon band, so a blue
+  mark over it disappears. Everything in a side colour sits on a plate or a
+  one-pixel dark backing, for both sides alike.
 - **Pips, not digits:** a big dot per hit a round takes, filled as hits land,
   over a small dot per round the match takes.
-- **Big words:** HIT and MISS, whose turn it is and who won are drawn in the
-  3x5 face at two to four times size, on a plate. This is a deliberate
+- **Big words:** HIT, MISS and OOPS, whose turn it is and who won are drawn
+  in the 3x5 face at two to four times size, on a plate. This is a deliberate
   exception to §5.6 for this mode only: whole blocks on the buffer's grid, so
   it is still pixel type. The instruments stay at native size.
-- **Sound:** a two-note ding on a hit and a short rising fanfare when a round
-  or the match is won, procedural like every other effect.
+- **Not only colour:** a HIT is called out over the scorer's half of the
+  screen, and the HIT, handoff and result plates carry an arrowhead on the
+  side of the gun they are about. A shell that lands only on its own gun is
+  called OOPS, not MISS: no point, no ding.
+- **Sound:** a two-note ding just after a hit lands (80 ms, so it is not
+  lost under the impact), and a short rising fanfare when a round or the
+  match is won, procedural like every other effect.
 - **Rematch** returns to the pre-match aim-help choice, still set as it was.
 
 ### 11.5 Open questions
