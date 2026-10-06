@@ -76,6 +76,9 @@ pub(crate) struct VersusState {
     pub(crate) help: [bool; 2],
     /// Matches started this session, so each gets its own seed.
     pub(crate) started: u64,
+    /// Different at every launch (the adapter reads the clock), so the
+    /// first match of one launch is not the first match of the last.
+    pub(crate) entropy: u64,
     /// The match on screen, if one is.
     pub(crate) live: Option<VersusPlay>,
 }
@@ -133,6 +136,12 @@ impl VersusPlay {
 }
 
 impl Game {
+    /// Something that differs at every launch, for match seeds. The core
+    /// reads no clock; the adapter passes the wall clock once at launch.
+    pub fn set_versus_entropy(&mut self, entropy: u64) {
+        self.versus.entropy = entropy;
+    }
+
     /// Open the pre-match screen.
     pub(crate) fn open_versus_setup(&mut self) {
         self.versus.live = None;
@@ -143,9 +152,12 @@ impl Game {
     /// first.
     pub(crate) fn start_versus(&mut self) {
         self.versus.started += 1;
-        // A seed of its own for each match, from the date and a count: the
-        // core reads no clock, so `today` is the only changing input it has.
-        let seed = salt_line_sim::rng::mix64(daily_seed(self.today) ^ self.versus.started);
+        // A seed of its own for each match: the launch's entropy, the date
+        // and a count. Everything after it is deterministic from the seed.
+        let seed = salt_line_sim::rng::mix64(
+            self.versus.entropy
+                ^ salt_line_sim::rng::mix64(daily_seed(self.today) ^ self.versus.started),
+        );
         let width = self.display.buffer_w as usize;
         self.versus.live = Some(VersusPlay {
             duel: Match::new(seed, width),

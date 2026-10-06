@@ -293,6 +293,29 @@ fn the_score_and_wind_wait_for_the_shell_to_land() {
 }
 
 #[test]
+fn each_launch_deals_a_different_first_match() {
+    let first_seed = |entropy: u64| {
+        let mut g = game();
+        g.set_versus_entropy(entropy);
+        g.start_versus();
+        vs(&g).duel.seed
+    };
+    // Same day, two launches: different first matches.
+    assert_ne!(
+        first_seed(1_759_000_000_000_001),
+        first_seed(1_759_000_000_000_002)
+    );
+    // The same launch is the same match: the seed fixes everything.
+    assert_eq!(first_seed(42), first_seed(42));
+    let mut g = game();
+    g.set_versus_entropy(42);
+    g.start_versus();
+    let one = vs(&g).duel.seed;
+    g.start_versus();
+    assert_ne!(vs(&g).duel.seed, one, "a rematch is a new match");
+}
+
+#[test]
 fn versus_runs_at_the_play_frame_rate_only_while_a_shot_flies() {
     let mut g = in_match();
     assert!(!g.idle());

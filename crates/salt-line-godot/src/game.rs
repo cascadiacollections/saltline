@@ -225,6 +225,10 @@ impl INode2D for SaltLine {
             title_background: Sprites::load_one(TITLE_BACKGROUND_PATH),
         };
         self.g = Game::new(mobile, save::load());
+        // Versus seeds differ from launch to launch: the wall clock, to the
+        // microsecond, read here as the date is.
+        let micros = (Time::singleton().get_unix_time_from_system() * 1e6) as u64;
+        self.g.set_versus_entropy(micros);
         self.find_last_crash();
         self.find_saved_run();
         self.setup_audio();
