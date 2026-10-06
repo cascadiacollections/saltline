@@ -31,6 +31,29 @@ Net drain is deliberate. A perfect player still trends slowly downward without
 economy modifiers, so the draft matters. Tune the refund table first when
 balancing — it is the single strongest lever on run length.
 
+**Measured (batch harness, October 2026).** These numbers come from
+`salt-line-sim`'s `batch` binary, not from players. Its hit chances are
+assumptions (perfect 100%, steady 80%, rough 55%), so compare them with each
+other, not with real players. All use 100 seeds and flat aim. Reproduce with
+`just balance 100 <screens> <skill> <base|evolving>` and
+`just balance-sweep 100 40 base 65 80 5`. CI holds three related 40-screen
+configurations inside a band (the "shell economy stays in its band" step).
+
+- **A perfect player builds a surplus first, then drains.** Without drafts,
+  the reserve rises about +2 a screen in bands 0–1, levels off near 67 by band
+  6, and starts falling at band 9 (about −0.6 a screen, nearer −1 by band 21).
+  The downward trend this section describes is real, but it starts around
+  screen 36, not from the first screen. Over 100 screens, 4 of 100 perfect
+  runs are dry by around screen 97. Whether the early surplus is intended is
+  an open question for the owner; the measurement doesn't settle it.
+- **About 75% accuracy carries almost every run through 40 screens without
+  drafts.** With a flat hit chance, 53 of 100 runs run dry at 65%, 19 at 70%,
+  1 at 75% and none from 80%.
+- **Drafting carries long runs.** Over 100 screens a steady player runs dry in
+  every run without drafts (around screen 59), against 8 of 100 with them.
+  For a rough player it is 100 against 61. The model credits Salvage and Chalk
+  Marks with assumed effects (see `batch.rs`).
+
 **Score:** screens cleared. Tiebreak on shells remaining, then total shots.
 Never show a score during the run. Show only the shell count and the screen
 index, in the corner, small.
