@@ -37,6 +37,13 @@ pub const STRIPS: usize = 12;
 /// strip uploads. On the Pixel a strip upload is ~0.18 ms of fixed cost plus
 /// ~0.1 ms of copying, and a whole upload ~1.4 ms: they break even at about
 /// five strips.
+///
+/// Measured, not just estimated: a 2026-10 sweep on the Pixel 10 (profiling
+/// build, three interleaved rounds per value) gave a mean process time of
+/// 1.94 ms at 0 (always whole), 1.53 at 3, 1.48 at 4, 1.51 at 5, 1.52 at 6
+/// and 1.72 at 12 (never whole, with p95 rising from ~3.4 to 4.3 ms). 3 to 6
+/// are within noise of each other. Re-measure on a phone before changing it;
+/// a weaker GPU or driver may move the break-even.
 pub const WHOLE_ABOVE: usize = 4;
 
 /// The rows `[start, end)` of strip `i` in a buffer `h` rows tall. Strips
