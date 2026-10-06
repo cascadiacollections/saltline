@@ -24,6 +24,19 @@
 //!
 //! Nothing here is saved: no run file, no board, no onboarding lessons. A
 //! single-player run set aside for CONTINUE is left exactly as it was.
+//!
+//! # One touch, one screen
+//!
+//! Touch presses are not taken the way key presses are, and the plates
+//! between turns put their buttons where the last screen's were: READY sits
+//! over START, and the open field a drag aims from sits under both. A tap a
+//! device reports more than once (a repeated down for a finger already down,
+//! a copy in other coordinates) could therefore start the match, ready the
+//! turn and drag-fire a shot, all from one press. So whenever the versus
+//! screen changes (the mode, the stage or the pause plate), every finger
+//! down is spent until it lifts and new touches are spent for
+//! [`TOUCH_SETTLE`]: one tap acts on one screen only. Keys and pad buttons
+//! are taken per press already and are not held back.
 
 use super::*;
 use crate::versus::{self, Match, Side};
@@ -31,6 +44,11 @@ use crate::versus::{self, Match, Side};
 /// Seconds the HIT or MISS is held on the landed shot before the phone is
 /// passed on.
 pub const VERSUS_HOLD: f64 = 1.1;
+
+/// Seconds a versus screen ignores new touches after it appears. Longer
+/// than a tap (about 0.12 s on a phone), so whatever a device reports for
+/// the tap that changed the screen is spent rather than taken again.
+pub const TOUCH_SETTLE: f64 = 0.3;
 
 /// Where a versus turn is. See the module docs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -266,7 +284,7 @@ impl Game {
         let mut fire = self.action_pressed(Action::Fire) || self.pressed(Key::Enter);
         if self.drag_aiming() {
             let mirrored = self.versus.live.as_ref().map(VersusPlay::side) == Some(Side::Right);
-            fire |= self.drag_aim(quantum, mirrored);
+            fire |= self.drag_aim(quantum, mirrored, false);
         }
         if fire {
             self.versus_fire();
@@ -446,6 +464,25 @@ impl Game {
             Stage::Result => self.after_versus_result(),
         }
         self.dev.auto_cooldown = 0.5;
+    }
+
+    /// Which versus screen is up, if any: the mode, the stage and the pause
+    /// plate. A change spends the touches in progress (`settle_touch`).
+    pub(super) fn versus_screen(&self) -> Option<(Mode, Option<Stage>, bool)> {
+        matches!(self.mode, Mode::VersusSetup | Mode::Versus).then(|| {
+            let live = self.versus.live.as_ref();
+            (
+                self.mode,
+                live.map(|vs| vs.stage),
+                live.is_some_and(|vs| vs.paused),
+            )
+        })
+    }
+
+    /// The versus screen changed: see "One touch, one screen".
+    pub(super) fn settle_touch(&mut self) {
+        self.input.touch.spend_all();
+        self.input.touch_settle = TOUCH_SETTLE;
     }
 
     /// What a versus frame shows, for `FrameState`.

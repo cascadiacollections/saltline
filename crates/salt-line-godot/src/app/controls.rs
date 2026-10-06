@@ -48,6 +48,8 @@ impl Game {
     pub(super) fn begin_input_frame(&mut self, delta: f64, intents: &Intents) {
         self.input.controls.begin(intents);
         self.input.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        // After the events, which were taken while it still ran.
+        self.input.touch_settle = (self.input.touch_settle - delta).max(0.0);
     }
 
     /// This frame's press of a key, taken. See `Controls::pressed`.
@@ -440,7 +442,7 @@ impl Game {
             self.fire();
         }
 
-        if self.drag_aiming() && self.drag_aim(quantum, false) {
+        if self.drag_aiming() && self.drag_aim(quantum, false, true) {
             self.fire();
         }
     }
@@ -452,8 +454,10 @@ impl Game {
     ///
     /// `mirrored` is for a gun that fires leftward (versus, the right
     /// player): the pull is reflected left to right before it becomes an
-    /// aim, so pulling back to the right throws to the left.
-    pub(super) fn drag_aim(&mut self, quantum: i32, mirrored: bool) -> bool {
+    /// aim, so pulling back to the right throws to the left. `teach` marks
+    /// the angle and power lessons learned (`learn`), which only a run
+    /// does: versus writes nothing.
+    pub(super) fn drag_aim(&mut self, quantum: i32, mirrored: bool, teach: bool) -> bool {
         let dropped = self.input.touch.dropped();
         let Some((start, end)) = dropped.or(self.input.touch.drag()) else {
             // Abandoned (paused, focus lost): put the old aim back.
@@ -474,8 +478,10 @@ impl Game {
         let aim = crate::aim::pull_to_aim(start, end, quantum);
         match aim {
             Some((angle, power)) => {
-                self.learn(LEARN_ANGLE);
-                self.learn(LEARN_POWER);
+                if teach {
+                    self.learn(LEARN_ANGLE);
+                    self.learn(LEARN_POWER);
+                }
                 (self.play.angle_ticks, self.play.power_ticks) = (angle, power);
             }
             None => (self.play.angle_ticks, self.play.power_ticks) = before,

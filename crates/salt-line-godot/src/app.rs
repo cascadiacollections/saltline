@@ -704,6 +704,10 @@ pub(crate) struct InputState {
     /// The aim (angle ticks, power ticks) a touch drag started from, put back
     /// if the pull is cancelled.
     pub(crate) drag_from: Option<(i32, i32)>,
+    /// Seconds before touches act again after a versus screen changed (see
+    /// `app/versus.rs`, "One touch, one screen"). Fingers that go down
+    /// meanwhile are spent.
+    pub(crate) touch_settle: f64,
 }
 
 /// The saved run (DESIGN §9.6): what is on disk and what CONTINUE offers.
@@ -815,6 +819,7 @@ impl Default for Game {
                 back_requested: false,
                 buttons: Vec::new(),
                 drag_from: None,
+                touch_settle: 0.0,
             },
             run_file: RunFileState {
                 resumable: None,
@@ -900,6 +905,7 @@ impl Game {
         let before = self.frame_state();
         let title_music_before = self.title_music_playing();
         self.begin_input_frame(delta, intents);
+        let versus_before = self.versus_screen();
         self.handle_mode_input(delta);
         // The back gesture is a one-frame press, like a key's.
         self.input.back_requested = false;
@@ -912,6 +918,9 @@ impl Game {
         }
         self.step(delta);
         self.step_versus(delta);
+        if self.versus_screen() != versus_before {
+            self.settle_touch();
+        }
         self.persist_run();
         self.tick_settings(delta);
         let after = self.frame_state();
@@ -1047,9 +1056,13 @@ impl Game {
                 }
                 Event::FingerDown { index, x, y } => {
                     self.input.touch_active = true;
-                    self.input
-                        .touch
-                        .finger_down(index, x, y, &self.input.buttons);
+                    if self.input.touch_settle > 0.0 {
+                        self.input.touch.finger_down_spent(index);
+                    } else {
+                        self.input
+                            .touch
+                            .finger_down(index, x, y, &self.input.buttons);
+                    }
                 }
                 Event::FingerMoved { index, x, y } => self.input.touch.finger_moved(index, x, y),
                 Event::FingerUp { index } => {

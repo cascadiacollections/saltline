@@ -115,6 +115,11 @@ pub struct TouchPad {
     dropping: Option<((f32, f32), (f32, f32))>,
     /// `dropping` as published by the last update, visible for one frame.
     dropped: Option<((f32, f32), (f32, f32))>,
+    /// Fingers spent by [`spend_all`](Self::spend_all) or
+    /// [`finger_down_spent`](Self::finger_down_spent): tracked until they
+    /// lift, pressing and dragging nothing, even if the device reports them
+    /// going down again meanwhile.
+    spent: Vec<i32>,
 }
 
 /// The one free drag: the finger that owns it and where it went down and is
@@ -136,6 +141,9 @@ impl TouchPad {
     /// Off every button, the finger starts the free drag if none is running;
     /// otherwise it is tracked but does nothing.
     pub fn finger_down(&mut self, index: i32, x: f32, y: f32, buttons: &[Button]) {
+        if self.spent.contains(&index) {
+            return;
+        }
         let action = buttons
             .iter()
             .rev()
@@ -172,6 +180,7 @@ impl TouchPad {
     /// [`dropped`](Self::dropped).
     pub fn finger_up(&mut self, index: i32) {
         self.fingers.retain(|(i, _)| *i != index);
+        self.spent.retain(|i| *i != index);
         if self.drag.as_ref().is_some_and(|d| d.index == index) {
             let d = self.drag.take().unwrap();
             self.dropping = Some((d.start, d.now));
@@ -182,7 +191,36 @@ impl TouchPad {
     /// progress is abandoned, not dropped.
     pub fn release_all(&mut self) {
         self.fingers.clear();
+        self.spent.clear();
         self.cancel_drag();
+    }
+
+    /// The screen under the fingers has just changed: forget this frame's
+    /// presses and any drag, and spend every finger that is down, so a touch
+    /// made on one screen can never also act on the next. Each spent finger
+    /// is still tracked until it lifts, but presses nothing, holds nothing
+    /// and starts no drag, whatever the device reports for it meanwhile.
+    pub fn spend_all(&mut self) {
+        for (index, action) in &mut self.fingers {
+            *action = None;
+            if !self.spent.contains(index) {
+                self.spent.push(*index);
+            }
+        }
+        self.went_down.clear();
+        self.pressed.clear();
+        self.repeats.clear();
+        self.cancel_drag();
+    }
+
+    /// A finger went down on a screen too new to take touches yet: tracked,
+    /// and spent like those in [`spend_all`](Self::spend_all).
+    pub fn finger_down_spent(&mut self, index: i32) {
+        self.fingers.retain(|(i, _)| *i != index);
+        self.fingers.push((index, None));
+        if !self.spent.contains(&index) {
+            self.spent.push(index);
+        }
     }
 
     /// Forget the current drag so it never drops, e.g. when the screen it
@@ -296,6 +334,38 @@ mod tests {
         pad.update(0.016, DELAY, RATE);
         assert!(!pad.pressed(Action::Fire));
         assert_eq!(pad.repeated(Action::Fire), 0);
+    }
+
+    #[test]
+    fn a_spent_finger_presses_and_drags_nothing_until_it_lifts() {
+        let mut pad = TouchPad::default();
+        pad.finger_down(0, 35.0, 5.0, &buttons());
+        pad.finger_down(1, 100.0, 100.0, &buttons());
+        pad.update(0.016, DELAY, RATE);
+        assert!(pad.pressed(Action::Fire) && pad.drag().is_some());
+        pad.spend_all();
+        assert!(!pad.pressed(Action::Fire), "this frame's press is gone");
+        assert!(!pad.held(Action::Fire));
+        assert!(pad.drag().is_none());
+        // Reported down again while still down: still spent.
+        pad.finger_down(0, 35.0, 5.0, &buttons());
+        pad.finger_down(1, 100.0, 100.0, &buttons());
+        pad.finger_moved(1, 10.0, 150.0);
+        pad.finger_up(1);
+        pad.update(0.016, DELAY, RATE);
+        assert!(!pad.pressed(Action::Fire));
+        assert!(pad.dropped().is_none(), "a spent finger never drops");
+        // Once it lifts, the same finger works again.
+        pad.finger_up(0);
+        pad.finger_down(0, 35.0, 5.0, &buttons());
+        pad.update(0.016, DELAY, RATE);
+        assert!(pad.pressed(Action::Fire));
+        // A down taken while a screen settles is spent from the start.
+        pad.finger_up(0);
+        pad.finger_down_spent(2);
+        pad.finger_down(2, 35.0, 5.0, &buttons());
+        pad.update(0.016, DELAY, RATE);
+        assert!(!pad.pressed(Action::Fire) && pad.drag().is_none());
     }
 
     #[test]

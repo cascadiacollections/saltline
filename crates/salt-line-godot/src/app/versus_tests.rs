@@ -210,7 +210,7 @@ fn a_whole_match_plays_to_a_result_and_a_rematch() {
 }
 
 #[test]
-fn the_right_players_drag_is_mirrored() {
+fn the_right_players_drag_is_mirrored_and_learns_nothing() {
     let mut g = in_match();
     g.input.touch_active = true;
     g.save.touch_aim = Some(crate::save_format::TouchAim::Drag);
@@ -219,9 +219,14 @@ fn the_right_players_drag_is_mirrored() {
     let finger = |events| Intents { events, ..idle() };
     press(&mut g, Key::Enter);
     assert_eq!(vs(&g).side(), Side::Right);
+    // Touches wait out the new screen's settle.
+    for _ in 0..30 {
+        g.tick(FRAME, &idle());
+    }
+    g.take_effects();
     // Pull back down and to the right: a throw up and to the left, which
     // for the right gun is an elevation above flat.
-    g.tick(
+    let mut fx = g.tick(
         FRAME,
         &finger(vec![
             Event::FingerDown {
@@ -232,13 +237,17 @@ fn the_right_players_drag_is_mirrored() {
             Event::FingerMoved {
                 index: 0,
                 x: 140.0,
-                y: 100.0,
+                y: 80.0,
             },
         ]),
     );
-    assert_eq!(g.play.angle_ticks, 900, "45 degrees, as for the left gun");
-    g.tick(FRAME, &finger(vec![Event::FingerUp { index: 0 }]));
+    // atan(20 / 40) is 26.57 degrees, on the 0.5-degree grid.
+    assert_eq!(g.play.angle_ticks, 530, "as the left gun would read it");
+    fx.extend(g.tick(FRAME, &finger(vec![Event::FingerUp { index: 0 }])));
     assert_eq!(vs(&g).stage, Stage::Flight);
+    // Aiming in versus teaches single-player nothing and writes nothing.
+    assert_eq!(g.save.learned, 0);
+    assert!(!fx.iter().any(|e| matches!(e, Effect::Store(_))), "{fx:?}");
     let path = &vs(&g).anim.as_ref().unwrap().traces[0].path;
     assert!(path[path.len() - 1].x < path[0].x, "the shell flew left");
 }
@@ -293,4 +302,119 @@ fn versus_runs_at_the_play_frame_rate_only_while_a_shot_flies() {
     assert!(g.busy());
     g.mode = Mode::VersusSetup;
     assert!(g.idle());
+}
+
+// ------------------------------------------------------------- touch taps
+
+/// One frame as the node runs it on a phone: the events in, the frame
+/// drawn, and its buttons handed back for the next frame's touches.
+fn touch_frame(g: &mut Game, events: Vec<Event>, delta: f64) {
+    g.tick(delta, &Intents { events, ..idle() });
+    let mut canvas = crate::raster::Canvas::new(g.display.buffer_w, g.display.buffer_h);
+    let mut buttons = Vec::new();
+    crate::render::frame(
+        g,
+        &crate::render::Art::default(),
+        &mut canvas,
+        &mut buttons,
+        &mut crate::render::Cache::default(),
+    );
+    g.set_buttons(&buttons);
+}
+
+/// The centre of the touch button for `action` on screen now.
+fn button_centre(g: &Game, action: Action) -> (f32, f32) {
+    let b = g
+        .input
+        .buttons
+        .iter()
+        .find(|b| b.action == action)
+        .unwrap_or_else(|| panic!("no {action:?} button on screen"));
+    (
+        b.rect.x as f32 + b.rect.w as f32 / 2.0,
+        b.rect.y as f32 + b.rect.h as f32 / 2.0,
+    )
+}
+
+/// A finger tapping `action`'s button: down, held about 120 ms over a few
+/// frames (a phone's tap), and up, with a frame drawn after each.
+fn tap(g: &mut Game, action: Action, delta: f64) {
+    let (x, y) = button_centre(g, action);
+    touch_frame(g, vec![Event::FingerDown { index: 0, x, y }], delta);
+    let mut held = 0.0;
+    while held < 0.12 {
+        touch_frame(g, Vec::new(), delta);
+        held += delta;
+    }
+    touch_frame(g, vec![Event::FingerUp { index: 0 }], delta);
+    for _ in 0..30 {
+        touch_frame(g, Vec::new(), delta);
+    }
+}
+
+/// A tap as a noisy device may report it: the press repeated on every frame
+/// it is held (a down for a finger already down, as after a lost event),
+/// and a last move far from where it went down (as when one of the copies
+/// arrives in other coordinates) before it lifts.
+fn noisy_tap(g: &mut Game, action: Action, delta: f64) {
+    let (x, y) = button_centre(g, action);
+    let mut held = 0.0;
+    while held < 0.12 {
+        touch_frame(g, vec![Event::FingerDown { index: 0, x, y }], delta);
+        held += delta;
+    }
+    touch_frame(
+        g,
+        vec![
+            Event::FingerMoved {
+                index: 0,
+                x: x - 150.0,
+                y: y + 60.0,
+            },
+            Event::FingerUp { index: 0 },
+        ],
+        delta,
+    );
+    for _ in 0..30 {
+        touch_frame(g, Vec::new(), delta);
+    }
+}
+
+fn touch_game(drag: bool) -> Game {
+    let mut g = Game::new(true, Save::default());
+    g.fit_display(WINDOW, (0, 0));
+    if drag {
+        g.save.touch_aim = Some(crate::save_format::TouchAim::Drag);
+    }
+    g.take_effects();
+    touch_frame(&mut g, Vec::new(), FRAME);
+    g
+}
+
+#[test]
+fn a_tap_on_start_or_ready_does_only_that() {
+    // At the play frame rate, the idle menu rate, both aim modes, and taps
+    // clean and noisy.
+    for delta in [FRAME, 1.0 / 10.0] {
+        for (drag, noisy) in [(false, false), (true, false), (false, true), (true, true)] {
+            let tap = |g: &mut Game, action| {
+                if noisy {
+                    noisy_tap(g, action, delta)
+                } else {
+                    tap(g, action, delta)
+                }
+            };
+            let mut g = touch_game(drag);
+            tap(&mut g, Action::Versus);
+            assert_eq!(g.mode, Mode::VersusSetup);
+            tap(&mut g, Action::Confirm);
+            assert_eq!(g.mode, Mode::Versus, "drag {drag}");
+            assert_eq!(vs(&g).stage, Stage::Handoff, "START went on: drag {drag}");
+            assert_eq!(vs(&g).duel.turn, 0, "a shot was fired");
+            tap(&mut g, Action::Confirm);
+            assert_eq!(vs(&g).stage, Stage::Aiming, "drag {drag}");
+            assert!(vs(&g).anim.is_none(), "READY fired a shot: drag {drag}");
+            assert_eq!(vs(&g).duel.turn, 0, "READY fired a shot: drag {drag}");
+        }
+    }
 }
