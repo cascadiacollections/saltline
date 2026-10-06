@@ -118,6 +118,8 @@ fn a_match_leaves_a_saved_run_and_the_disk_alone() {
     press(&mut g, Key::R);
     assert_eq!(g.mode, Mode::Title);
     assert!(g.run_file.resumable.is_some());
+    // Last session's crash report stays offered: a match is not a run.
+    g.crash.last_crash = Some("report".into());
     g.take_effects();
 
     let mut fx = press(&mut g, Key::Num2);
@@ -132,6 +134,7 @@ fn a_match_leaves_a_saved_run_and_the_disk_alone() {
     assert_eq!(g.mode, Mode::Title);
     assert!(g.versus.live.is_none());
     assert!(g.run_file.resumable.is_some(), "CONTINUE is still offered");
+    assert!(g.crash.last_crash.is_some());
     assert!(
         !fx.iter().any(|e| matches!(
             e,

@@ -102,12 +102,12 @@
 //!
 //! | Effect | Emitted by | Adapter action | Feedback via `stored()` | Dropped after panic |
 //! |---|---|---|---|---|
-//! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a draft offered or taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
+//! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a versus shot landing or hitting (`app/versus.rs`), a draft offered or taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
 //! | `Volume(dB)` | mute, the Controls volume (the node sets it once itself at launch) | `set_volume_db` on every player | no | no |
 //! | `TitleMusic(on)` | the title music toggle and transitions to/from the title | start or stop the looping title player | no | no |
 //! | `Redraw` | any status note, a buffer change, pausing, and [`Game::tick`] when the frame's [`FrameState`] changed | `frame::Redraw::mark` | no | no |
 //! | `RecheckDisplay` | [`Game::tick`], on entering Title or GameOver | `frame::DisplayPoll::invalidate` | no | no |
-//! | `Buffer { w, h, letterbox }` | launch, a run started or continued, a draft taken, a screen change, a change of window size or cutout | resize the canvas, set the window's content scale size, offset the node | no | no |
+//! | `Buffer { w, h, letterbox }` | launch, a run started or continued, a draft taken, a screen change, a versus match started or left, a change of window size or cutout | resize the canvas, set the window's content scale size, offset the node | no | no |
 //! | `Aspect` | a run started or continued, leaving a resumed run | set the window's content scale aspect | no | no |
 //! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT | `DisplayServer::clipboard_set` | no | no |
 //! | `Quit` | back on the title or the error screen | `SceneTree::quit` | no | no |

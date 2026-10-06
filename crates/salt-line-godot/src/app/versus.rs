@@ -142,7 +142,6 @@ impl Game {
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
         self.mode = Mode::Versus;
-        self.retire_last_crash();
         // Long Lens belongs to a run; a duel is drawn at the usual height.
         self.apply_buffer_size();
     }
