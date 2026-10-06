@@ -12,6 +12,10 @@
 //! ```
 //!
 //! Exit status is non-zero if any screen failed to validate, so CI can gate on it.
+//! `--max-exhausted N` and `--ending MIN..MAX` add an economy gate: the run
+//! also fails if more than N seeded runs ran out of shells, or the mean ending
+//! reserve falls outside MIN..MAX. The run is deterministic, so a gate trips
+//! only when generation, refunds or the curve actually change.
 //!
 //! Flags: `--seeds N`, `--screens N` (per seed), `--width W`, `--build
 //! base|evolving|drift|demo|precision|risk` (default evolving), `--skill
@@ -183,6 +187,10 @@ struct Args {
     /// the histogram saturates.
     fast: bool,
     verbose: bool,
+    /// Economy gate: most runs allowed to run out of shells.
+    max_exhausted: Option<u64>,
+    /// Economy gate: allowed range of the mean ending reserve.
+    ending: Option<(f64, f64)>,
 }
 
 impl Default for Args {
@@ -198,8 +206,17 @@ impl Default for Args {
             aim: Aim::Flat,
             fast: false,
             verbose: false,
+            max_exhausted: None,
+            ending: None,
         }
     }
+}
+
+/// `MIN..MAX` as two finite numbers with MIN <= MAX.
+fn parse_range(s: &str) -> Option<(f64, f64)> {
+    let (lo, hi) = s.split_once("..")?;
+    let (lo, hi): (f64, f64) = (lo.trim().parse().ok()?, hi.trim().parse().ok()?);
+    (lo.is_finite() && hi.is_finite() && lo <= hi).then_some((lo, hi))
 }
 
 fn parse_args() -> Args {
@@ -253,9 +270,23 @@ fn parse_args() -> Args {
             }
             "--fast" => a.fast = true,
             "--verbose" | "-v" => a.verbose = true,
+            "--max-exhausted" => {
+                let v = value();
+                a.max_exhausted = Some(v.parse().unwrap_or_else(|_| {
+                    eprintln!("bad --max-exhausted '{v}'; use a run count");
+                    std::process::exit(2)
+                }));
+            }
+            "--ending" => {
+                let v = value();
+                a.ending = Some(parse_range(&v).unwrap_or_else(|| {
+                    eprintln!("bad --ending '{v}'; use MIN..MAX, e.g. 58..71");
+                    std::process::exit(2)
+                }));
+            }
             "--help" | "-h" => {
                 println!(
-                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough | --hit N] [--aim flat|scaled] [--fast] [-v]"
+                    "batch [--seeds N] [--screens N] [--width W] [--build BUILD] [--skill perfect|steady|rough | --hit N] [--aim flat|scaled] [--fast] [-v] [--max-exhausted N] [--ending MIN..MAX]"
                 );
                 std::process::exit(0);
             }
@@ -949,6 +980,7 @@ fn main() {
         );
     }
 
+    let mut failed = false;
     if failures.is_empty() {
         println!("unsolvable screens: 0 — every screen passed the gate");
     } else {
@@ -956,14 +988,76 @@ fn main() {
         for (seed, index, template, worst) in failures.iter().take(20) {
             println!("  seed {seed:#018x} screen {index:<4} {template:<9} {worst} candidates");
         }
+        failed = true;
+    }
+
+    let mean_ending = ending_shell_sum as f64 / args.seeds.max(1) as f64;
+    let violations = economy_violations(&args, deaths, mean_ending);
+    if args.max_exhausted.is_some() || args.ending.is_some() {
+        if violations.is_empty() {
+            println!("economy gate: passed");
+        } else {
+            for v in &violations {
+                println!("economy gate: FAILED — {v}");
+            }
+            println!(
+                "economy gate: if the change was intended, update the bounds in \
+                 .github/workflows/ci.yml with the new numbers"
+            );
+            failed = true;
+        }
+    }
+    if failed {
         std::process::exit(1);
     }
+}
+
+/// Which economy-gate bounds, if any, this run broke.
+fn economy_violations(args: &Args, exhausted: u64, mean_ending: f64) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(max) = args.max_exhausted {
+        if exhausted > max {
+            out.push(format!("{exhausted} runs exhausted, at most {max} allowed"));
+        }
+    }
+    if let Some((lo, hi)) = args.ending {
+        if !(lo..=hi).contains(&mean_ending) {
+            out.push(format!(
+                "mean ending reserve {mean_ending:.2} outside {lo}..{hi}"
+            ));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use salt_line_sim::run::wind_magnitude;
+
+    #[test]
+    fn ending_ranges_parse_strictly() {
+        assert_eq!(parse_range("58..71"), Some((58.0, 71.0)));
+        assert_eq!(parse_range("26.5..40"), Some((26.5, 40.0)));
+        assert_eq!(parse_range("71..58"), None);
+        assert_eq!(parse_range("58"), None);
+        assert_eq!(parse_range("a..b"), None);
+        assert_eq!(parse_range("NaN..1"), None);
+    }
+
+    #[test]
+    fn economy_gate_reports_each_broken_bound() {
+        let args = Args {
+            max_exhausted: Some(2),
+            ending: Some((26.0, 40.0)),
+            ..Args::default()
+        };
+        assert!(economy_violations(&args, 2, 26.0).is_empty());
+        assert!(economy_violations(&args, 0, 40.0).is_empty());
+        assert_eq!(economy_violations(&args, 3, 33.0).len(), 1);
+        assert_eq!(economy_violations(&args, 3, 41.0).len(), 2);
+        assert!(economy_violations(&Args::default(), 100, 0.0).is_empty());
+    }
 
     #[test]
     fn wind_cap_matches_the_curve() {

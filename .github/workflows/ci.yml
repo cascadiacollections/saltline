@@ -171,6 +171,19 @@ jobs:
             cargo run --release -q -p salt-line-sim --bin batch -- \
               --seeds 20 --screens 60 --build "$build" | tail -3
           done
+      # Economy regression gate: the shell economy over the default balance run
+      # (100 seeds x 40 screens) must stay inside these bounds. The run is
+      # deterministic, so this only trips when generation, refunds or the curve
+      # change. If the change was meant, rerun the line locally and move the
+      # bounds; values when set (2026-10-05): perfect base ending 64.46, steady
+      # base 32.92, steady scaled evolving 44.34 with 3/100 runs exhausted.
+      - name: shell economy stays in its band
+        run: |
+          set -euo pipefail
+          gate() { cargo run --release -q -p salt-line-sim --bin batch -- --seeds 100 --screens 40 --fast "$@" | tail -4; }
+          gate --build base --skill perfect --max-exhausted 0 --ending 58..71
+          gate --build base --skill steady --max-exhausted 2 --ending 29..37
+          gate --build evolving --skill steady --aim scaled --max-exhausted 8 --ending 39..50
 
   lint:
     name: fmt + clippy
