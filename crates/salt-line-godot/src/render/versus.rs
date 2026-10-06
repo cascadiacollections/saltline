@@ -16,6 +16,35 @@ use super::*;
 use crate::app::VersusStage as Stage;
 use crate::versus::{self, Side};
 
+/// The aim-help preview for `side` firing `aim` (angle ticks, power
+/// ticks): the shell's path in the shared frame, flown in calm air in the
+/// shooter's frame and reflected back, and how much of it the Short arc
+/// shows. The aim is put on the instruments' grid first, as `Match::fire`
+/// puts the real shot, so the preview is the start of the shot that fires.
+pub(super) fn aim_preview(duel: &versus::Match, side: Side, aim: (i32, i32)) -> (Vec<Vec2>, usize) {
+    let screen = &duel.screen;
+    let mut frame = versus::frame_for(screen, side);
+    frame.wind = 0.0;
+    let target = versus::target_in_frame(screen, side);
+    let shot = Shot::new(aim.0, aim.1).quantized(&duel.loadout);
+    let traces = versus::fly(&frame, target, shot, &duel.loadout, true);
+    let Some(first) = traces.first() else {
+        return (Vec::new(), 0);
+    };
+    let path: Vec<Vec2> = match side {
+        Side::Left => first.path.clone(),
+        Side::Right => versus::mirror_trace(first, screen.width).path,
+    };
+    let apex = path
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
+        .map_or(0, |(i, _)| i);
+    let window = (SHORT_ARC_SECONDS / DT) as usize;
+    let upto = crate::aim::short_arc_len(apex, path.len(), window);
+    (path, upto)
+}
+
 impl Painter<'_> {
     /// The pre-match screen, under the title lettering `render_menu` drew:
     /// the rules in a line, each side's aim help, start and back.
@@ -93,7 +122,8 @@ impl Painter<'_> {
             0.0,
         );
         raster::draw_terrain(self.canvas, &view, &screen.field, pal);
-        raster::draw_ground_detail(self.canvas, &view, screen, pal);
+        let guns = Side::BOTH.map(|gun| versus::muzzle_of(screen, gun).x);
+        raster::draw_ground_detail_around(self.canvas, &view, screen, &guns, pal);
 
         let aiming = vs.stage == Stage::Aiming && !vs.paused;
         if aiming && g.versus.help[side.index()] {
@@ -209,25 +239,8 @@ impl Painter<'_> {
         }
         raster::draw_last_arc(self.canvas, view, &vs.arcs[side.index()], pal);
 
-        let mut frame = versus::frame_for(screen, side);
-        frame.wind = 0.0;
-        let target = versus::target_in_frame(screen, side);
-        let shot = Shot::new(self.g.play.angle_ticks, self.g.play.power_ticks);
-        let traces = versus::fly(&frame, target, shot, &vs.duel.loadout, true);
-        let Some(first) = traces.first() else {
-            return;
-        };
-        let path: Vec<Vec2> = match side {
-            Side::Left => first.path.clone(),
-            Side::Right => versus::mirror_trace(first, screen.width).path,
-        };
-        let apex = path
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
-            .map_or(0, |(i, _)| i);
-        let window = (SHORT_ARC_SECONDS / DT) as usize;
-        let upto = crate::aim::short_arc_len(apex, path.len(), window);
+        let aim = (self.g.play.angle_ticks, self.g.play.power_ticks);
+        let (path, upto) = aim_preview(&vs.duel, side, aim);
         raster::draw_trajectory(self.canvas, view, &path, upto, pal);
     }
 

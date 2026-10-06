@@ -1674,6 +1674,26 @@ mod tests {
     }
 
     #[test]
+    fn the_aim_help_preview_flies_the_quantized_shot() {
+        use crate::versus::{Match, Side};
+        let duel = Match::new(5, 320);
+        for side in [Side::Left, Side::Right] {
+            // 0.2 degrees off the 0.5-degree grid fires as the grid angle,
+            // so it must preview as the grid angle too, to the bit.
+            let bits = |aim| {
+                let (path, upto) = versus::aim_preview(&duel, side, aim);
+                let bits: Vec<(u64, u64)> = path
+                    .iter()
+                    .map(|p| (p.x.to_bits(), p.y.to_bits()))
+                    .collect();
+                (bits, upto)
+            };
+            assert_eq!(bits((904, 903)), bits((900, 903)), "{side:?}");
+            assert_ne!(bits((910, 903)), bits((900, 903)), "{side:?}");
+        }
+    }
+
+    #[test]
     fn a_flipped_blit_is_the_blit_reflected() {
         // Three columns, the middle one transparent.
         let sprite = Sprite {

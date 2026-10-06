@@ -425,6 +425,19 @@ pub fn draw_terrain(canvas: &mut Canvas, view: &View, field: &Heightfield, pal: 
 /// Sparse soil flecks and grass tufts, fixed to world columns. The grass is
 /// removed by a crater because only the untouched surface can grow it.
 pub fn draw_ground_detail(canvas: &mut Canvas, view: &View, screen: &Screen, pal: &Palette) {
+    draw_ground_detail_around(canvas, view, screen, &[screen.muzzle_x], pal);
+}
+
+/// [`draw_ground_detail`] with no grass within 22 columns of any of `guns`
+/// (world x of each emplacement): the screen's own for a run, both guns'
+/// in versus.
+pub fn draw_ground_detail_around(
+    canvas: &mut Canvas,
+    view: &View,
+    screen: &Screen,
+    guns: &[f64],
+    pal: &Palette,
+) {
     for sx in 0..canvas.w {
         let world_x = sx + view.cam_x;
         if world_x < 0 || world_x as usize >= screen.field.len() {
@@ -442,7 +455,7 @@ pub fn draw_ground_detail(canvas: &mut Canvas, view: &View, screen: &Screen, pal
         if screen.field.scar[col].abs() > 0.5 || !hash.is_multiple_of(37) {
             continue;
         }
-        if (world_x as f64 - screen.muzzle_x).abs() < 22.0
+        if guns.iter().any(|g| (world_x as f64 - g).abs() < 22.0)
             || screen
                 .structures
                 .iter()
@@ -709,6 +722,39 @@ mod tests {
                 c
             })
             .collect()
+    }
+
+    #[test]
+    fn no_grass_grows_under_either_versus_gun() {
+        use crate::versus::{self, Side};
+        let pal = Palette::default();
+        let grass = pal.get(slot::HULL_HI);
+        // A tuft is three pixels wide, so one just outside the 22-column
+        // clearing reaches a column in: look within 20.
+        let has_grass_near = |canvas: &Canvas, gx: f64| {
+            let lo = (gx - 20.0).ceil() as i32;
+            let hi = (gx + 20.0).floor() as i32;
+            (lo..=hi).any(|x| column(canvas, x).contains(&grass))
+        };
+        let lo = salt_line_sim::modifiers::Loadout::new();
+        let mut seen_grass_there = false;
+        for seed in 0..40u64 {
+            let s = versus::generate_duel(seed, 0, 320, &lo);
+            let right = versus::muzzle_of(&s, Side::Right).x;
+            let guns = Side::BOTH.map(|g| versus::muzzle_of(&s, g).x);
+            let mut single = Canvas::new(320, SCREEN_H as i32);
+            draw_ground_detail(&mut single, &view(0, 320), &s, &pal);
+            seen_grass_there |= has_grass_near(&single, right);
+            let mut duel = Canvas::new(320, SCREEN_H as i32);
+            draw_ground_detail_around(&mut duel, &view(0, 320), &s, &guns, &pal);
+            for g in guns {
+                assert!(!has_grass_near(&duel, g), "seed {seed}: grass at {g}");
+            }
+        }
+        assert!(
+            seen_grass_there,
+            "no seed grew grass by the right gun at all"
+        );
     }
 
     #[test]
