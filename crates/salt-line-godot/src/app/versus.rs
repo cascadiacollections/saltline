@@ -99,6 +99,8 @@ pub(crate) struct VersusPlay {
     pub(crate) arcs: [Vec<Vec2>; 2],
     /// The gun the last shot hit, while the hit is being shown.
     pub(crate) hit: Option<Side>,
+    /// Who fired the shot being shown, for the HIT or MISS callout.
+    pub(crate) shooter: Side,
     /// Hits and rounds as they stood before the shot in the air, shown
     /// until it lands: the rules score a shot the moment it is fired, and
     /// a score that changed in mid-flight would give the result away.
@@ -126,6 +128,14 @@ impl VersusPlay {
     pub(crate) fn shown_score(&self) -> ([u32; 2], [u32; 2]) {
         self.score_before
             .unwrap_or((self.duel.hits, self.duel.rounds))
+    }
+
+    /// The HIT or MISS to call out, and who fired: from the moment the
+    /// shell lands until the phone is passed on ([`VERSUS_HOLD`]). `true`
+    /// is a hit. The renderer draws it large, in the shooter's colour.
+    pub(crate) fn callout(&self) -> Option<(Side, bool)> {
+        let landed = self.anim.as_ref().is_some_and(Anim::done);
+        (self.stage == Stage::Flight && landed).then_some((self.shooter, self.hit.is_some()))
     }
 
     /// The wind to show: the wind the shot in the air was fired into, until
@@ -168,6 +178,7 @@ impl Game {
             aims: [(900, 600); 2],
             arcs: [Vec::new(), Vec::new()],
             hit: None,
+            shooter: Side::Left,
             score_before: None,
             paused: false,
         });
@@ -329,6 +340,7 @@ impl Game {
             .map(|t| t.path.clone())
             .unwrap_or_default();
         vs.hit = report.hit.then(|| report.shooter.other());
+        vs.shooter = report.shooter;
         vs.score_before = Some(score);
         let longest = report
             .traces
@@ -357,7 +369,6 @@ impl Game {
             return;
         }
         let mut sounds = Vec::new();
-        let mut said = None;
         let mut finished = false;
         let Some(vs) = self.versus.live.as_mut() else {
             return;
@@ -383,14 +394,12 @@ impl Game {
                 } else {
                     Sound::Terrain
                 });
-                said = Some(match vs.hit {
-                    Some(gun) => {
-                        sounds.push(Sound::Collapse);
-                        sounds.push(Sound::Hit);
-                        format!("HIT  {} GUN", gun.name())
-                    }
-                    None => "MISS".to_string(),
-                });
+                // The renderer calls out HIT or MISS from here on
+                // (`VersusPlay::callout`); the sounds go with it.
+                if vs.hit.is_some() {
+                    sounds.push(Sound::Collapse);
+                    sounds.push(Sound::Hit);
+                }
             }
             finished = anim.settled > VERSUS_HOLD;
         }
@@ -409,9 +418,6 @@ impl Game {
         }
         for sound in sounds {
             self.play(sound);
-        }
-        if let Some(text) = said {
-            self.note(text);
         }
     }
 

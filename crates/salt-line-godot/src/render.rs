@@ -1020,7 +1020,7 @@ impl Painter<'_> {
             Some(v) if loadout.has_flag(flags::ANEMOMETER) => (format!("{:.1}", v.abs()), v < 0.0),
             Some(v) => (format!("{:.0}", v.abs()), v < 0.0),
         };
-        self.draw_wind(&wind_text, to_left);
+        self.draw_wind(&wind_text, to_left, slot::ALERT);
 
         // Shells, top right: a shell, then the count. Alert accent under 10,
         // the only other place that colour is allowed (DESIGN §5.2).
@@ -1144,9 +1144,11 @@ impl Painter<'_> {
     }
 
     /// The windsock plate, top left: a sock flying the way the wind blows
-    /// (`to_left`), then `text`, its strength. The sock hangs limp when
+    /// (`to_left`), then `text`, its strength, in the `digits` slot: the
+    /// alert colour in a run (DESIGN §5.2), plain text in versus, where the
+    /// alert colour belongs to the left player. The sock hangs limp when
     /// `text` has no non-zero digit.
-    fn draw_wind(&mut self, text: &str, to_left: bool) {
+    fn draw_wind(&mut self, text: &str, to_left: bool, digits: usize) {
         let pal = self.pal;
         let (fg, dim, alert) = (
             pal.get(slot::UI_FG),
@@ -1171,7 +1173,7 @@ impl Painter<'_> {
         self.canvas
             .icon(6 + ex, 4 + ey, sock, &[fg, alert, dim], to_left && !calm);
         self.canvas
-            .text_big(6 + ex + sock_w + 3, 4 + ey, text, alert);
+            .text_big(6 + ex + sock_w + 3, 4 + ey, text, pal.get(digits));
     }
 
     /// Dim everything drawn so far with a checkerboard of the plate colour:
@@ -1690,6 +1692,94 @@ mod tests {
             };
             assert_eq!(bits((904, 903)), bits((900, 903)), "{side:?}");
             assert_ne!(bits((910, 903)), bits((900, 903)), "{side:?}");
+        }
+    }
+
+    /// How many of `c`'s pixels hold `colour` within rows `y0..y1`.
+    fn count_in_rows(c: &Canvas, y0: i32, y1: i32, colour: crate::palette::Rgba) -> usize {
+        c.bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(i, px)| {
+                let y = *i as i32 / c.w;
+                (y0..y1).contains(&y) && **px == colour
+            })
+            .count()
+    }
+
+    #[test]
+    fn each_versus_player_has_a_colour_of_their_own() {
+        use crate::versus::Side;
+        let (left, right) = (
+            versus::side_slot(Side::Left),
+            versus::side_slot(Side::Right),
+        );
+        assert_ne!(left, right);
+        for side in [left, right] {
+            // Neither may be mistaken for plain or secondary text.
+            assert!(![slot::UI_FG, slot::UI_BG, slot::ROCK].contains(&side));
+        }
+        // The handoff plate is bordered in the colour of whoever is next.
+        let mut g = game();
+        g.start_versus();
+        for side in Side::BOTH {
+            g.versus.live.as_mut().unwrap().duel.to_move = side;
+            let (c, _) = draw(&g);
+            let (x, y) = ((c.w - 200) / 2, c.h / 2);
+            let i = ((y * c.w + x) * 4) as usize;
+            let want = Palette::default().get(versus::side_slot(side));
+            assert_eq!(c.bytes()[i..i + 4], want, "{side:?}");
+        }
+    }
+
+    #[test]
+    fn a_landed_versus_shot_is_called_out_large() {
+        use crate::app::VersusStage;
+        use crate::versus::{self as rules, Side};
+        let space = Intents {
+            window: WINDOW,
+            events: vec![Event::key(Key::Space)],
+            keys_held: vec![Key::Space],
+            ..Intents::default()
+        };
+        let idle = Intents {
+            window: WINDOW,
+            ..Intents::default()
+        };
+        let pal = Palette::default();
+        // The callout's band, under the score plate.
+        let band = |c: &Canvas, colour| count_in_rows(c, 28, 70, colour);
+        for hit in [true, false] {
+            let mut g = game();
+            g.start_versus();
+            let vs = g.versus.live.as_mut().unwrap();
+            vs.stage = VersusStage::Aiming;
+            let duel = &vs.duel;
+            let frame = rules::frame_for(&duel.screen, Side::Left);
+            let target = rules::target_in_frame(&duel.screen, Side::Left);
+            let shot = if hit {
+                rules::shots_at(&frame, target, &duel.loadout, 1)[0]
+            } else {
+                Shot::new(1800, 0)
+            };
+            (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
+            g.tick(1.0 / 60.0, &space);
+            let before = draw(&g).0;
+            while g.versus.live.as_ref().unwrap().callout().is_none() {
+                g.tick(1.0 / 60.0, &idle);
+            }
+            assert_eq!(
+                g.versus.live.as_ref().unwrap().callout(),
+                Some((Side::Left, hit))
+            );
+            let (c, _) = draw(&g);
+            // HIT! in the left player's colour, four times the small face;
+            // MISS in plain text.
+            let colour = pal.get(if hit { slot::ALERT } else { slot::UI_FG });
+            assert!(band(&c, colour) > 200, "hit {hit}: {}", band(&c, colour));
+            assert!(band(&before, colour) < 50, "hit {hit}: callout too soon");
         }
     }
 

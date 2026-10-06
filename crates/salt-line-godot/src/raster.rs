@@ -225,6 +225,30 @@ impl Canvas {
         cx
     }
 
+    /// 3x5 text with every glyph pixel drawn as a `scale` by `scale` block,
+    /// for the few words a young player has to read across the room (the
+    /// versus HIT and MISS, whose turn it is, who won). Whole blocks on the
+    /// buffer's own grid, so it is still pixel type, only chunkier; the
+    /// instruments stay at native size. Returns the x cursor after the
+    /// string.
+    pub fn text_small_scaled(&mut self, x: i32, y: i32, s: &str, c: Rgba, scale: i32) -> i32 {
+        let mut cx = x;
+        for ch in s.chars() {
+            if let Some(g) = font::small_glyph(ch) {
+                for (j, row) in g.iter().enumerate() {
+                    for (i, bit) in row.bytes().enumerate() {
+                        if bit == b'1' {
+                            let (px, py) = (cx + i as i32 * scale, y + j as i32 * scale);
+                            self.rect(px, py, scale, scale, c);
+                        }
+                    }
+                }
+            }
+            cx += font::SMALL_ADVANCE as i32 * scale;
+        }
+        cx
+    }
+
     /// 5x7 text — the shell counter and the wind value (DESIGN §5.6).
     pub fn text_big(&mut self, x: i32, y: i32, s: &str, c: Rgba) -> i32 {
         let mut cx = x;
@@ -901,5 +925,29 @@ mod tests {
         let path = &traces[0].path;
         draw_trajectory(&mut c, &v, path, path.len(), &pal);
         insta::assert_snapshot!(c.palette_text(&pal));
+    }
+
+    #[test]
+    fn scaled_text_is_the_small_face_in_whole_blocks() {
+        let c = [1, 2, 3, 255];
+        let mut small = Canvas::new(40, 8);
+        let end = small.text_small(1, 1, "HIT!", c);
+        let mut one = Canvas::new(40, 8);
+        assert_eq!(one.text_small_scaled(1, 1, "HIT!", c, 1), end);
+        assert_eq!(one.bytes(), small.bytes(), "scale 1 is the small face");
+
+        let mut big = Canvas::new(160, 32);
+        let end = big.text_small_scaled(0, 0, "HIT!", c, 4);
+        assert_eq!(end, 4 * crate::font::SMALL_ADVANCE as i32 * 4);
+        let lit = |canvas: &Canvas, x: i32, y: i32| {
+            canvas.bytes()[((y * canvas.w + x) * 4) as usize] != 0
+        };
+        for y in 0..big.h {
+            for x in 0..big.w {
+                let want =
+                    x / 4 + 1 < small.w && y / 4 + 1 < small.h && lit(&small, x / 4 + 1, y / 4 + 1);
+                assert_eq!(lit(&big, x, y), want, "({x}, {y})");
+            }
+        }
     }
 }

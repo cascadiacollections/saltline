@@ -331,7 +331,10 @@ fn the_score_and_wind_wait_for_the_shell_to_land() {
         }
     }
     assert_eq!(vs(&g).shown_score().0, [1, 0]);
-    assert_eq!(g.status, "HIT  RIGHT GUN");
+    assert_eq!(vs(&g).callout(), Some((Side::Left, true)), "LEFT hit");
+    // The callout lasts until the phone is passed, then goes.
+    until(&mut g, |g| vs(g).stage == Stage::Handoff);
+    assert_eq!(vs(&g).callout(), None);
 }
 
 #[test]
@@ -564,4 +567,18 @@ fn a_tap_on_rematch_stops_at_the_aim_help_choice() {
         assert_eq!(g.mode, Mode::Versus, "noisy {noisy}");
         assert_eq!(vs(&g).stage, Stage::Handoff, "noisy {noisy}");
     }
+}
+
+#[test]
+fn a_miss_is_called_out_for_the_shooter() {
+    let mut g = in_match();
+    press(&mut g, Key::Enter);
+    (g.play.angle_ticks, g.play.power_ticks) = (MISS.angle_ticks, MISS.power_ticks);
+    let mut fx = press(&mut g, Key::Space);
+    assert_eq!(vs(&g).callout(), None, "nothing is called while it flies");
+    fx.extend(until(&mut g, |g| {
+        vs(g).anim.as_ref().is_some_and(|a| a.done())
+    }));
+    assert_eq!(vs(&g).callout(), Some((Side::Left, false)));
+    assert!(!fx.contains(&Effect::Play(Sound::Hit)));
 }
