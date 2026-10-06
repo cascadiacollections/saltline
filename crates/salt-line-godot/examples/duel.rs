@@ -4,25 +4,27 @@
 //! playing it a thousand times; this does the same for a duel. Each match is
 //! played to the end by two bots under one set of [`Rules`], and the report
 //! says how quickly they hit, how often a shot that just hit would hit again,
-//! and how much opening a round is worth.
+//! how much opening a round is worth, how long rounds and matches run, and
+//! what a roll of the guns costs.
 //!
 //! ```text
 //! cargo run --release -p salt-line-godot --example duel
-//! cargo run --release -p salt-line-godot --example duel -- --wind 5 --wind-min 1.5
-//! cargo run --release -p salt-line-godot --example duel -- --bot steady --no-equal-shots --shift 0
+//! cargo run --release -p salt-line-godot --example duel -- --left kid --right steady
+//! cargo run --release -p salt-line-godot --example duel -- --no-equal-shots --shift 0
 //! ```
 //!
 //! Flags: `--matches N` (default 200), `--width W` (default 320), `--bot
-//! kid|steady` (default kid), and one per lever in [`Rules`]: `--wind MAX`,
-//! `--wind-min MIN`, `--reach R`, `--equal-shots` / `--no-equal-shots` and
-//! `--shift D`. A lever left out takes the game's value, so with no flags
-//! this measures the rules as shipped.
+//! kid|steady` for both guns or `--left` / `--right` for one (default kid),
+//! and one per lever in [`Rules`]: `--wind MAX`, `--wind-min MIN`, `--reach
+//! R`, `--equal-shots` / `--no-equal-shots`, `--shift D` and `--back N` /
+//! `--forward N` (the roll ladder, in steps). A lever left out takes the
+//! game's value, so with no flags this measures the rules as shipped.
 //!
 //! # The bots
 //!
 //! A bot plays the way a person learns a duel from the landing marks, not the
-//! way the solver would. It picks one angle for the round (the hitting shot
-//! nearest 45° in calm air) and only ever changes power. Each turn it fires
+//! way the solver would. It picks an angle for the round (the hitting shot
+//! nearest 45° in calm air) and mostly changes only power. Each turn it fires
 //!
 //! ```text
 //! power = ideal(wind it believes) + bias + noise
@@ -44,14 +46,21 @@
 //!   "fire again the shot that would have hit last time".
 //! - The **noise** is a hand that is not perfectly steady: up to `noise`
 //!   ticks either way.
+//! - **Lapses**: after a miss, with chance `overcorrect` it corrects by
+//!   twice what it should, and with chance `fidget` it tries another
+//!   hitting angle instead, keeping a bias learned at the old one.
 //!
-//! `kid` stands for a young player with aim help on, `steady` for a grown-up
-//! without it. Both are guesses, so read lever settings against each other,
-//! not as a forecast of real play.
+//! `kid` stands for a young player with aim help on: a shakier hand, slower
+//! learning, little wind reading, and lapses. `steady` is a grown-up without
+//! aim help and without lapses. Both are guesses, so read lever settings
+//! against each other, not as a forecast of real play.
 //!
-//! Everything is seeded: the same flags print the same report.
+//! Everything is seeded: the same flags print the same report. The roll
+//! timing is wall-clock and is the one line that varies.
 
-use salt_line_godot::versus::{self, Match, Phase, Rules, Side};
+use std::time::Instant;
+
+use salt_line_godot::versus::{self, Match, Phase, Rules, Side, HITS_TO_WIN_ROUND};
 use salt_line_sim::ballistics::{End, Shot};
 use salt_line_sim::rng::{substream, Pcg32};
 use salt_line_sim::solver::GATE_CAP;
@@ -65,14 +74,18 @@ struct Profile {
     learn: f64,
     open: f64,
     noise: f64,
+    overcorrect: f64,
+    fidget: f64,
 }
 
 const KID: Profile = Profile {
     name: "kid",
-    wind_read: 0.3,
-    learn: 0.7,
-    open: 80.0,
-    noise: 15.0,
+    wind_read: 0.2,
+    learn: 0.5,
+    open: 120.0,
+    noise: 25.0,
+    overcorrect: 0.15,
+    fidget: 0.10,
 };
 
 const STEADY: Profile = Profile {
@@ -81,6 +94,8 @@ const STEADY: Profile = Profile {
     learn: 0.85,
     open: 120.0,
     noise: 8.0,
+    overcorrect: 0.0,
+    fidget: 0.0,
 };
 
 /// Power moves in steps of this many ticks, as a key press or a drag does.
@@ -95,7 +110,8 @@ const TAG_BOT: u64 = 0x4442_4F54;
 struct Args {
     matches: u64,
     width: usize,
-    profile: Profile,
+    /// Each gun's bot, by [`Side::index`].
+    bots: [Profile; 2],
     rules: Rules,
 }
 
@@ -103,7 +119,7 @@ fn parse_args() -> Args {
     let mut a = Args {
         matches: 200,
         width: 320,
-        profile: KID,
+        bots: [KID, KID],
         rules: Rules::DEFAULT,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -111,6 +127,11 @@ fn parse_args() -> Args {
     let bad = |flag: &str, v: &str| -> ! {
         eprintln!("bad {flag} '{v}'");
         std::process::exit(2)
+    };
+    let profile = |flag: &str, v: &str| match v {
+        "kid" => KID,
+        "steady" => STEADY,
+        _ => bad(flag, v),
     };
     while i < argv.len() {
         let flag = argv[i].as_str();
@@ -128,13 +149,11 @@ fn parse_args() -> Args {
                 a.width = v.parse().unwrap_or_else(|_| bad(flag, &v));
             }
             "--bot" => {
-                let v = value();
-                a.profile = match v.as_str() {
-                    "kid" => KID,
-                    "steady" => STEADY,
-                    _ => bad(flag, &v),
-                };
+                let p = profile(flag, &value());
+                a.bots = [p, p];
             }
+            "--left" => a.bots[0] = profile(flag, &value()),
+            "--right" => a.bots[1] = profile(flag, &value()),
             "--wind" => {
                 let v = value();
                 a.rules.wind_max = v.parse().unwrap_or_else(|_| bad(flag, &v));
@@ -153,9 +172,17 @@ fn parse_args() -> Args {
                 let v = value();
                 a.rules.gun_shift = v.parse().unwrap_or_else(|_| bad(flag, &v));
             }
+            "--back" => {
+                let v = value();
+                a.rules.roll_back = v.parse().unwrap_or_else(|_| bad(flag, &v));
+            }
+            "--forward" => {
+                let v = value();
+                a.rules.roll_forward = v.parse().unwrap_or_else(|_| bad(flag, &v));
+            }
             "--help" | "-h" => {
                 println!(
-                    "duel [--matches N] [--width W] [--bot kid|steady] [--wind MAX] [--wind-min MIN] [--reach R] [--equal-shots | --no-equal-shots] [--shift D]"
+                    "duel [--matches N] [--width W] [--bot kid|steady] [--left kid|steady] [--right kid|steady] [--wind MAX] [--wind-min MIN] [--reach R] [--equal-shots | --no-equal-shots] [--shift D] [--back N] [--forward N]"
                 );
                 std::process::exit(0);
             }
@@ -199,13 +226,12 @@ fn ideal_power(duel: &Match, side: Side, angle: i32, wind: f64) -> i32 {
         .unwrap_or(coarse)
 }
 
-/// The angle a bot keeps for a round: of the hitting shots in calm air, the
-/// one nearest 45°.
-fn round_angle(duel: &Match, side: Side) -> i32 {
+/// The angles of the hitting shots in calm air, nearest 45° first.
+fn hitting_angles(duel: &Match, side: Side) -> Vec<i32> {
     let mut frame = versus::frame_for(&duel.screen, side);
     frame.wind = 0.0;
     let target = versus::target_in_frame(&duel.screen, side);
-    versus::shots_at(
+    let mut angles: Vec<i32> = versus::shots_at(
         &frame,
         target,
         &duel.loadout,
@@ -214,12 +240,18 @@ fn round_angle(duel: &Match, side: Side) -> i32 {
     )
     .iter()
     .map(|s| s.angle_ticks)
-    .min_by_key(|a| (a - 900).abs())
-    .unwrap_or(900)
+    .collect();
+    angles.sort_by_key(|a| (a - 900).abs());
+    angles.dedup();
+    if angles.is_empty() {
+        angles.push(900);
+    }
+    angles
 }
 
 /// One bot's memory for a round.
 struct Bot {
+    angles: Vec<i32>,
     angle: i32,
     bias: f64,
     /// Wind of its last shot, in its own frame.
@@ -245,30 +277,47 @@ struct Tally {
     repeat_hits: u64,
     opener_won: u64,
     first_opener_matches: u64,
+    /// Matches won, by [`Side::index`].
+    side_matches: [u64; 2],
+    /// Rounds that ended with someone past [`HITS_TO_WIN_ROUND`] hits.
+    overtime: u64,
     shutouts: u64,
     capped: u64,
     matches: u64,
+    /// Turns each finished match took.
+    match_turns: Vec<u32>,
+    /// Seconds spent in each shot that rolled the guns (the re-gate is most
+    /// of it), and in each that did not.
+    rolled_fire: Vec<f64>,
+    plain_fire: Vec<f64>,
+    /// How far apart the two pivots stood in height after each roll.
+    roll_heights: Vec<f64>,
 }
 
 fn play_match(seed: u64, args: &Args, t: &mut Tally) {
-    let p = args.profile;
     let mut duel = Match::with_rules(seed, args.width, args.rules);
     let mut rng = Pcg32::new(substream(seed, TAG_BOT));
+    let mut match_turns = 0;
     loop {
         let opener = duel.to_move;
         // What the bots learned of the range is the ground and guns as the
         // round opened; anything since (craters, a roll) shows up only in
         // where their shells land, and the bias learns it from there.
         let reference = duel.clone();
-        let mut bots = Side::BOTH.map(|side| Bot {
-            angle: round_angle(&duel, side),
-            bias: rng.signed(p.open),
-            last_wind: None,
-            last_hit: None,
+        let mut bots = Side::BOTH.map(|side| {
+            let angles = hitting_angles(&duel, side);
+            Bot {
+                angle: angles[0],
+                angles,
+                bias: rng.signed(args.bots[side.index()].open),
+                last_wind: None,
+                last_hit: None,
+            }
         });
         let mut turns = 0;
         while duel.phase == Phase::Aiming && turns < MAX_TURNS {
             let side = duel.to_move;
+            let p = args.bots[side.index()];
             let wind = own_wind(&duel, side);
             let bot = &mut bots[side.index()];
             if let Some(shot) = bot.last_hit {
@@ -288,9 +337,30 @@ fn play_match(seed: u64, args: &Args, t: &mut Tally) {
             // What would have hit in the wind that blew, read before the
             // shot digs its crater.
             let wanted = ideal_power(&duel, side, bot.angle, wind) as f64;
+            let clock = Instant::now();
             let report = duel.fire(shot, false).expect("aiming");
+            let spent = clock.elapsed().as_secs_f64();
+            if report.rolled.is_some() {
+                t.rolled_fire.push(spent);
+                let (l, r) = (
+                    versus::muzzle_of(&duel.screen, Side::Left),
+                    versus::muzzle_of(&duel.screen, Side::Right),
+                );
+                t.roll_heights.push((l.y - r.y).abs());
+            } else {
+                t.plain_fire.push(spent);
+            }
             let bot = &mut bots[side.index()];
-            bot.bias -= p.learn * (power as f64 - wanted);
+            let gain = if !report.hit && rng.next_f64() < p.overcorrect {
+                2.0 * p.learn
+            } else {
+                p.learn
+            };
+            bot.bias -= gain * (power as f64 - wanted);
+            if !report.hit && bot.angles.len() > 1 && rng.next_f64() < p.fidget {
+                let pick = rng.range_u32(0, bot.angles.len() as u32 - 1) as usize;
+                bot.angle = bot.angles[pick];
+            }
             bot.last_wind = Some(wind);
             bot.last_hit = report.hit.then_some(shot);
             t.shots += 1;
@@ -299,6 +369,7 @@ fn play_match(seed: u64, args: &Args, t: &mut Tally) {
         }
         t.rounds += 1;
         t.turns += turns as u64;
+        match_turns += turns;
         let winner = match duel.phase {
             Phase::RoundOver(w) | Phase::MatchOver(w) => w,
             Phase::Aiming => {
@@ -308,9 +379,12 @@ fn play_match(seed: u64, args: &Args, t: &mut Tally) {
         };
         t.opener_won += (winner == opener) as u64;
         t.shutouts += (duel.hits[winner.other().index()] == 0) as u64;
+        t.overtime += (duel.hits[winner.index()] > HITS_TO_WIN_ROUND) as u64;
         if let Phase::MatchOver(w) = duel.phase {
             t.matches += 1;
             t.first_opener_matches += (w == Match::first_to_move(0)) as u64;
+            t.side_matches[w.index()] += 1;
+            t.match_turns.push(match_turns);
             return;
         }
         duel.next_round();
@@ -335,6 +409,18 @@ fn pct(n: u64, d: u64) -> f64 {
     }
 }
 
+fn mean(xs: &[f64]) -> f64 {
+    if xs.is_empty() {
+        0.0
+    } else {
+        xs.iter().sum::<f64>() / xs.len() as f64
+    }
+}
+
+fn max(xs: &[f64]) -> f64 {
+    xs.iter().copied().fold(0.0, f64::max)
+}
+
 fn main() {
     let args = parse_args();
     let r = args.rules;
@@ -342,30 +428,57 @@ fn main() {
     for m in 0..args.matches {
         play_match(substream(0x5EED_D0E1, m), &args, &mut t);
     }
+    let [left, right] = args.bots.map(|p| p.name);
     println!(
-        "bot {} | wind {:.1}..{:.1} | reach {:.1} | equal shots {} | shift {:.0} | {} matches at width {}",
-        args.profile.name,
+        "{left} v {right} | wind {:.1}..{:.1} | reach {:.1} | equal shots {} | shift {:.0} (-{}..+{}) | {} matches at width {}",
         r.wind_min,
         r.wind_max,
         r.hit_reach,
         if r.equal_shots { "on" } else { "off" },
         r.gun_shift,
+        r.roll_back,
+        r.roll_forward,
         args.matches,
         args.width,
     );
+    let rounds = t.rounds - t.capped;
     println!(
-        "shots per hit {:.2} | turns per round {:.1} | repeat hits {:.0}% of {} | opener wins round {:.1}% | first opener wins match {:.1}% | shutouts {:.0}%{}",
+        "shots per hit {:.2} | turns per round {:.1} | repeat hits {:.0}% of {} | opener wins round {:.1}% | first opener wins match {:.1}% | shutouts {:.0}% | past {} hits {:.0}%{}",
         t.shots as f64 / t.hits.max(1) as f64,
         t.turns as f64 / t.rounds.max(1) as f64,
         pct(t.repeat_hits, t.repeat_chances),
         t.repeat_chances,
-        pct(t.opener_won, t.rounds - t.capped),
+        pct(t.opener_won, rounds),
         pct(t.first_opener_matches, t.matches),
-        pct(t.shutouts, t.rounds - t.capped),
+        pct(t.shutouts, rounds),
+        HITS_TO_WIN_ROUND,
+        pct(t.overtime, rounds),
         if t.capped > 0 {
             format!(" | {} rounds hit the turn cap", t.capped)
         } else {
             String::new()
         },
+    );
+    let mut turns = t.match_turns.clone();
+    turns.sort_unstable();
+    let p90 = turns
+        .get((turns.len() * 9 / 10).min(turns.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or(0);
+    println!(
+        "matches won: left ({left}) {:.1}%, right ({right}) {:.1}% | turns per match mean {:.1}, p90 {}",
+        pct(t.side_matches[0], t.matches),
+        pct(t.side_matches[1], t.matches),
+        turns.iter().map(|&n| n as f64).sum::<f64>() / turns.len().max(1) as f64,
+        p90,
+    );
+    println!(
+        "rolls {} | shot with a roll: mean {:.2} ms, max {:.2} ms (without: mean {:.2} ms) | pivot height gap after a roll: mean {:.2}, max {:.2}",
+        t.rolled_fire.len(),
+        mean(&t.rolled_fire) * 1e3,
+        max(&t.rolled_fire) * 1e3,
+        mean(&t.plain_fire) * 1e3,
+        mean(&t.roll_heights),
+        max(&t.roll_heights),
     );
 }
