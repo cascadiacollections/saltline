@@ -195,9 +195,11 @@ fn rolled_guns_are_found_moved_after_the_handoff() {
     // stood; the crater shows once the shell is down.
     until(&mut g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done()));
     assert_eq!(vs(&g).shown_screen().muzzle_x, home);
-    assert_eq!(
-        vs(&g).shown_screen().field.scar,
-        vs(&g).duel.screen.field.scar
+    let scar = |s: &Screen| s.field.scar.iter().sum::<f64>();
+    let held = scar(vs(&g).shown_screen());
+    assert!(
+        held > scar(&vs(&g).anim.as_ref().unwrap().before),
+        "no crater"
     );
     // Behind the plate, they are at their new spots.
     until(&mut g, |g| vs(g).stage == Stage::Handoff);

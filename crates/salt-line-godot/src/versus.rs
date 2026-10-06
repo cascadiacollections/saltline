@@ -97,7 +97,7 @@
 use salt_line_sim::ballistics::{self, Aabb, End, FireOptions, Shot, Trace, World};
 use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::rng::{screen_seed, substream, Pcg32};
-use salt_line_sim::run::{self, Rung, Screen};
+use salt_line_sim::run::{self, Rung, Screen, CHASSIS_WIDTH};
 use salt_line_sim::solver::{self, GATE_CAP};
 use salt_line_sim::terrain::{self, Heightfield, ShapeParams, Template};
 use salt_line_sim::{Vec2, EMPLACEMENT_X, MAX_GEN_ATTEMPTS, MIN_SOLUTIONS};
@@ -164,19 +164,30 @@ pub const EQUAL_SHOTS: bool = true;
 /// [`Screen::muzzle_x`], places both: see [`frame_for`]), so the duel stays
 /// as fair as it was; only the distance between them changes, by twice
 /// this. Which way they roll is drawn from the match seed
-/// ([`Match::roll_guns`]). 20 changes the range by 40, almost the whole
-/// 44-unit hit window: in the harness a repeated hit then lands about one
-/// time in four (12 left it at three in five, 24 at one in twenty).
-pub const GUN_SHIFT: f64 = 20.0;
+/// ([`Match::roll_guns`]).
+///
+/// 16 is the longest step that can still be taken once backwards from
+/// [`EMPLACEMENT_X`] with the whole chassis on screen ([`GUN_EDGE_MARGIN`]).
+/// It changes the range by 32 of the 44-unit hit window, which is enough
+/// that firing the last hit again is no better than aiming afresh (NOTES
+/// §7 has the harness numbers).
+pub const GUN_SHIFT: f64 = 16.0;
 
-/// How far a gun may roll back from [`EMPLACEMENT_X`] toward its edge of the
-/// screen. Enfilade's own limit (`EMPLACEMENT_X - 14`), so the chassis
-/// stays on screen.
-pub const GUN_SHIFT_BACK: f64 = EMPLACEMENT_X - 14.0;
+/// How many [`GUN_SHIFT`] steps a gun may roll back from [`EMPLACEMENT_X`],
+/// toward its edge of the screen. The guns stand on a ladder of spots a step
+/// apart, from this many back to [`GUN_ROLL_FORWARD`] forward, so every roll
+/// lands on a spot and both ways are always reachable from home.
+pub const GUN_ROLL_BACK: u32 = 1;
 
-/// How far a gun may roll forward from [`EMPLACEMENT_X`] toward the other.
-/// At the narrowest buffer the guns stay well over 150 units apart.
-pub const GUN_SHIFT_FORWARD: f64 = 48.0;
+/// How many [`GUN_SHIFT`] steps a gun may roll forward from
+/// [`EMPLACEMENT_X`], toward the other gun.
+pub const GUN_ROLL_FORWARD: u32 = 2;
+
+/// The furthest back a gun's pivot may stand, from the screen edge: half the
+/// 26-pixel chassis plus a pixel, so the whole gun stays on screen (the limit
+/// Enfilade's emplacement offset keeps in a run). A test holds the default
+/// ladder to it.
+pub const GUN_EDGE_MARGIN: f64 = 14.0;
 
 /// The tunable rules of a duel, one field per lever. [`Rules::DEFAULT`] is
 /// what the game plays, built from the constants above; the duel harness
@@ -193,6 +204,10 @@ pub struct Rules {
     pub equal_shots: bool,
     /// How far both guns roll after a hit ([`GUN_SHIFT`]).
     pub gun_shift: f64,
+    /// Steps a gun may roll back from home ([`GUN_ROLL_BACK`]).
+    pub roll_back: u32,
+    /// Steps a gun may roll forward from home ([`GUN_ROLL_FORWARD`]).
+    pub roll_forward: u32,
 }
 
 impl Rules {
@@ -203,6 +218,8 @@ impl Rules {
         hit_reach: HIT_REACH,
         equal_shots: EQUAL_SHOTS,
         gun_shift: GUN_SHIFT,
+        roll_back: GUN_ROLL_BACK,
+        roll_forward: GUN_ROLL_FORWARD,
     };
 }
 
@@ -426,8 +443,20 @@ pub struct TurnReport {
     pub self_hit: bool,
     /// Where the shell detonated, if it did: the landing mark aim help shows.
     pub landing: Option<Vec2>,
-    /// The hit rolled both guns to new spots ([`Match::roll_guns`]).
-    pub rolled: bool,
+    /// The roll that followed this shot, if the guns rolled
+    /// ([`Match::roll_guns`]).
+    pub rolled: Option<Roll>,
+}
+
+/// A roll of the guns, as [`Match::fire`] reports it.
+#[derive(Clone, Debug)]
+pub struct Roll {
+    /// How far each gun's pivot moved, by [`Side::index`], in the shared
+    /// frame.
+    pub moved: [Vec2; 2],
+    /// The shared screen as the shot left it, before the roll: craters dug,
+    /// guns where they stood. What to show while the shot's result is held.
+    pub landed: Screen,
 }
 
 /// Every distinct shot `frame`'s gun can dial in that hits `target`, up to
@@ -757,7 +786,7 @@ impl Match {
             self.hits[shooter.index()] += 1;
             self.roll_due = true;
         }
-        let mut rolled = false;
+        let mut rolled = None;
         let opener = Match::first_to_move(self.round);
         if let Some(winner) = round_winner(self.hits, shooter, opener, &self.rules) {
             self.rounds[winner.index()] += 1;
@@ -772,7 +801,8 @@ impl Match {
             // guns the hit was scored on, as the opener did.
             if self.roll_due && shooter != opener {
                 self.roll_due = false;
-                rolled = self.roll_guns();
+                let landed = self.screen.clone();
+                rolled = self.roll_guns().map(|moved| Roll { moved, landed });
             }
             self.turn += 1;
             self.to_move = shooter.other();
@@ -788,46 +818,63 @@ impl Match {
         })
     }
 
-    /// Roll both guns `rules.gun_shift` units, back toward the edges or
-    /// forward toward each other, and say whether they moved. [`Match::fire`]
-    /// calls it after the second shot of any pair in which someone hit,
-    /// unless the round is over.
+    /// Roll both guns one `rules.gun_shift` step, back toward the edges or
+    /// forward toward each other, and say how far each pivot moved.
+    /// [`Match::fire`] calls it after the second shot of any pair in which
+    /// someone hit, unless the round is over.
     ///
-    /// The way is drawn from the match seed, the round and the turn. A gun
-    /// that is already as far back ([`GUN_SHIFT_BACK`]) or forward
-    /// ([`GUN_SHIFT_FORWARD`]) as it may go rolls the other way, and a spot
-    /// is only taken if the screen still passes the duel gate from there
-    /// ([`duel_candidates`]); if neither way does, the guns stay put. The
-    /// gun is reseated on the ground where it stops, craters and all.
-    pub fn roll_guns(&mut self) -> bool {
+    /// The guns stand on a ladder of spots a step apart, from
+    /// `rules.roll_back` steps behind [`EMPLACEMENT_X`] to
+    /// `rules.roll_forward` in front. The way is drawn from the match seed,
+    /// the round and the turn, even odds; a gun at the end of the ladder
+    /// rolls the other way, and a spot is only taken if the screen still
+    /// passes the duel gate from there ([`duel_candidates`]). If neither way
+    /// does, the guns stay put and this returns `None`.
+    ///
+    /// Each gun rolls onto fresh ground: the craters under its chassis at
+    /// the new spot are filled ([`fill_under_guns`]), so both guns are seated
+    /// on the ground as it was generated, by the same rule mirrored
+    /// ([`muzzle_of`]), and neither starts its next shot from the bottom of
+    /// a hole the other dug. Each side's landing mark moves with its gun, so
+    /// aim help still shows where the last shell fell relative to the gun
+    /// that fired it.
+    pub fn roll_guns(&mut self) -> Option<[Vec2; 2]> {
         let step = self.rules.gun_shift;
         if step <= 0.0 {
-            return false;
+            return None;
         }
         let stream = substream(
             substream(round_seed(self.seed, self.round), TAG_ROLL),
             self.turn as u64,
         );
         let forward_first = Pcg32::new(stream).next_u32() & 1 == 1;
-        let ways = if forward_first {
-            [step, -step]
-        } else {
-            [-step, step]
-        };
-        let offset = self.screen.muzzle_x - EMPLACEMENT_X;
+        let ways: [i64; 2] = if forward_first { [1, -1] } else { [-1, 1] };
+        let rung = ((self.screen.muzzle_x - EMPLACEMENT_X) / step).round() as i64;
+        let ladder = -(self.rules.roll_back as i64)..=self.rules.roll_forward as i64;
         for way in ways {
-            let next = offset + way;
-            if !(-GUN_SHIFT_BACK..=GUN_SHIFT_FORWARD).contains(&next) {
+            let next = rung + way;
+            if !ladder.contains(&next) {
                 continue;
             }
             let mut moved = self.screen.clone();
-            moved.muzzle_x = EMPLACEMENT_X + next;
-            if duel_candidates(&moved, &self.loadout, &self.rules) >= MIN_SOLUTIONS {
-                self.screen.muzzle_x = moved.muzzle_x;
-                return true;
+            moved.muzzle_x = EMPLACEMENT_X + next as f64 * step;
+            fill_under_guns(&mut moved);
+            if duel_candidates(&moved, &self.loadout, &self.rules) < MIN_SOLUTIONS {
+                continue;
             }
+            let delta = Side::BOTH.map(|side| {
+                let (a, b) = (muzzle_of(&self.screen, side), muzzle_of(&moved, side));
+                Vec2::new(b.x - a.x, b.y - a.y)
+            });
+            self.screen = moved;
+            for (mark, d) in self.landing.iter_mut().zip(delta) {
+                if let Some(m) = mark {
+                    *m = Vec2::new(m.x + d.x, m.y + d.y);
+                }
+            }
+            return Some(delta);
         }
-        false
+        None
     }
 
     /// Deal the next round: a new screen, hits back to zero, the other side
@@ -852,6 +899,24 @@ impl Match {
         self.screen.wind = turn_wind(self.seed, self.round, 0, &self.rules);
         self.phase = Phase::Aiming;
         true
+    }
+}
+
+/// Fill the craters under both guns' chassis, wherever `shared.muzzle_x`
+/// stands them: the columns each gun is seated on ([`Screen::muzzle`] reads
+/// the highest of them) go back to the ground as generated. The right gun's
+/// columns are the left's mirrored, so the two are filled alike.
+///
+/// Without this a gun could roll into a stretch the other side had been
+/// cratering and sit well below it: across harness matches the two pivots
+/// were up to 16 units apart after a roll, against under 5 on the ground as
+/// generated (what is left of its asymmetry, [`NEAR_SYMMETRY`]).
+pub fn fill_under_guns(shared: &mut Screen) {
+    let w = shared.width;
+    let x0 = (shared.muzzle_x - CHASSIS_WIDTH as f64 * 0.5).clamp(0.0, w as f64) as usize;
+    for i in x0..(x0 + CHASSIS_WIDTH).min(w) {
+        shared.field.scar[i] = 0.0;
+        shared.field.scar[w - 1 - i] = 0.0;
     }
 }
 

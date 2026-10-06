@@ -426,41 +426,88 @@ fn the_guns_roll_after_a_pair_with_a_hit_and_stay_mirrored() {
     let home = m.screen.muzzle_x;
     // A pair with no hit: the guns stay.
     m.fire(MISS, false).unwrap();
-    assert!(!m.fire(MISS, false).unwrap().rolled);
+    assert!(m.fire(MISS, false).unwrap().rolled.is_none());
     assert_eq!(m.screen.muzzle_x, home);
     // Left hits: nothing moves before right has answered...
     let shot = hitting_shot(&m, Side::Left);
     let r = m.fire(shot, false).unwrap();
-    assert!(r.hit && !r.rolled);
+    assert!(r.hit && r.rolled.is_none());
     assert_eq!(m.screen.muzzle_x, home);
+    let marks = m.landing;
+    let before = Side::BOTH.map(|s| muzzle_of(&m.screen, s));
     // ...then both guns roll one step, the same way.
-    assert!(m.fire(MISS, false).unwrap().rolled);
+    let r = m.fire(MISS, false).unwrap();
+    let moved = r.rolled.expect("a pair with a hit rolls the guns").moved;
     assert_eq!((m.screen.muzzle_x - home).abs(), GUN_SHIFT);
     let left = muzzle_of(&m.screen, Side::Left).x;
     let right = muzzle_of(&m.screen, Side::Right).x;
     assert_eq!(right, mirror_x(left, m.width()), "still mirror images");
+    // The report says how far each pivot went: opposite ways across the
+    // screen, the same distance.
+    for side in Side::BOTH {
+        let now = muzzle_of(&m.screen, side);
+        let d = moved[side.index()];
+        assert_eq!(
+            (d.x, d.y),
+            (
+                now.x - before[side.index()].x,
+                now.y - before[side.index()].y
+            )
+        );
+    }
+    assert_eq!(moved[0].x, -moved[1].x);
+    // Left's landing mark rode along with left's gun. Right's is the MISS
+    // it just fired, which moved with right's gun.
+    let left_mark = marks[0].expect("left landed");
+    let now = m.landing[0].unwrap();
+    assert_eq!(
+        (now.x, now.y),
+        (left_mark.x + moved[0].x, left_mark.y + moved[0].y)
+    );
+    let right_mark = r.landing.expect("right landed");
+    let now = m.landing[1].unwrap();
+    assert_eq!(
+        (now.x, now.y),
+        (right_mark.x + moved[1].x, right_mark.y + moved[1].y)
+    );
+}
+
+#[test]
+fn the_default_ladder_keeps_the_guns_on_screen() {
+    let back = GUN_SHIFT * GUN_ROLL_BACK as f64;
+    assert!(
+        GUN_ROLL_BACK >= 1 && GUN_ROLL_FORWARD >= 1,
+        "both ways reachable"
+    );
+    assert!(
+        EMPLACEMENT_X - back >= GUN_EDGE_MARGIN,
+        "a gun rolled all the way back would hang off the screen"
+    );
 }
 
 #[test]
 fn rolled_guns_stay_in_bounds_and_on_solvable_ground() {
     let lo = Loadout::new();
+    let mut all = Vec::new();
     for seed in 0..12u64 {
         let mut m = Match::new(seed, 320);
         let mut spots = vec![m.screen.muzzle_x];
         for turn in 0..12u32 {
             m.screen.wind = turn_wind(seed, 0, turn, &m.rules);
             m.turn = turn;
-            if m.roll_guns() {
+            if m.roll_guns().is_some() {
                 spots.push(m.screen.muzzle_x);
             }
-            let offset = m.screen.muzzle_x - EMPLACEMENT_X;
+            let rung = (m.screen.muzzle_x - EMPLACEMENT_X) / GUN_SHIFT;
+            assert_eq!(rung, rung.round(), "off the ladder: {rung}");
             assert!(
-                (-GUN_SHIFT_BACK..=GUN_SHIFT_FORWARD).contains(&offset),
-                "{offset}"
+                (-(GUN_ROLL_BACK as f64)..=GUN_ROLL_FORWARD as f64).contains(&rung),
+                "{rung}"
             );
             assert!(duel_candidates(&m.screen, &lo, &m.rules) >= MIN_SOLUTIONS);
         }
         assert!(spots.len() > 1, "seed {seed}: the guns never moved");
+        all.extend(spots);
         // Pure: the same match rolls the same way.
         let mut again = Match::new(seed, 320);
         again.turn = 0;
@@ -468,9 +515,64 @@ fn rolled_guns_stay_in_bounds_and_on_solvable_ground() {
         let mut first = Match::new(seed, 320);
         first.turn = 0;
         first.screen.wind = again.screen.wind;
-        assert_eq!(again.roll_guns(), first.roll_guns());
+        assert_eq!(again.roll_guns().is_some(), first.roll_guns().is_some());
         assert_eq!(again.screen.muzzle_x, first.screen.muzzle_x);
     }
+    // Both ways get used: some rolls go back past home, some forward.
+    assert!(all.iter().any(|&x| x < EMPLACEMENT_X), "never rolled back");
+    assert!(
+        all.iter().any(|&x| x > EMPLACEMENT_X),
+        "never rolled forward"
+    );
+}
+
+#[test]
+fn rolled_guns_are_seated_alike_on_fresh_ground() {
+    // Crater a long stretch in front of the right gun, where its next spot
+    // forward is, as a run of hits around it would. Without filling, the
+    // right gun would roll down into it.
+    let mut m = Match::new(0x5A17, 320);
+    let w = m.width();
+    for x in (230..=300).step_by(6) {
+        m.screen.field.crater(x as f64, 7.0);
+    }
+    let base = Heightfield::from_base(m.screen.field.base.clone());
+    let mut rolled = 0;
+    for turn in 0..8u32 {
+        m.turn = turn;
+        if m.roll_guns().is_none() {
+            continue;
+        }
+        rolled += 1;
+        let (l, r) = (
+            muzzle_of(&m.screen, Side::Left),
+            muzzle_of(&m.screen, Side::Right),
+        );
+        assert_eq!(r.x, mirror_x(l.x, w));
+        // Same rule, mirrored: the right gun reads the mirrored field
+        // exactly as the left reads the shared one.
+        let mirrored = frame_for(&m.screen, Side::Right);
+        assert_eq!(r.y.to_bits(), mirrored.muzzle().y.to_bits());
+        // Both stand on the ground as generated, so they differ only by
+        // what is left of its asymmetry, as they did before any shot.
+        let mut bare = m.screen.clone();
+        bare.field = base.clone();
+        for side in Side::BOTH {
+            assert_eq!(
+                muzzle_of(&m.screen, side).y.to_bits(),
+                muzzle_of(&bare, side).y.to_bits(),
+                "{side:?} seated in a crater"
+            );
+        }
+        assert!(
+            (l.y - r.y).abs() < 5.0,
+            "pivots {} apart",
+            (l.y - r.y).abs()
+        );
+    }
+    assert!(rolled > 0);
+    // Craters away from the guns are left alone.
+    assert!(m.screen.field.scar.iter().any(|s| *s > 0.0));
 }
 
 #[test]

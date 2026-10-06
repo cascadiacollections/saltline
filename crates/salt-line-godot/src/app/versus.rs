@@ -128,9 +128,10 @@ pub(crate) struct VersusPlay {
     /// Under the pause plate.
     pub(crate) paused: bool,
     /// When the last shot rolled the guns ([`versus::Match::roll_guns`]):
-    /// the screen as it landed, with the guns still where they were, shown
-    /// while the HIT or MISS is held. They are found at their new spots
-    /// when the phone has been passed.
+    /// the screen as the shot left it ([`versus::Roll::landed`]), craters
+    /// dug and guns still where they were, shown while the HIT or MISS is
+    /// held. They are found at their new spots when the phone has been
+    /// passed.
     pub(crate) landed: Option<Screen>,
 }
 
@@ -381,10 +382,16 @@ impl Game {
         vs.self_hit = report.self_hit;
         vs.dinged = false;
         vs.score_before = Some(score);
-        vs.landed = report.rolled.then(|| Screen {
-            muzzle_x: before.muzzle_x,
-            ..vs.duel.screen.clone()
-        });
+        // Each side's last arc moves with its gun, as the rules move its
+        // landing mark, so aim help stays attached to the gun that fired.
+        if let Some(roll) = &report.rolled {
+            for (arc, d) in vs.arcs.iter_mut().zip(roll.moved) {
+                for p in arc.iter_mut() {
+                    *p = Vec2::new(p.x + d.x, p.y + d.y);
+                }
+            }
+        }
+        vs.landed = report.rolled.map(|roll| roll.landed);
         let longest = report
             .traces
             .iter()
