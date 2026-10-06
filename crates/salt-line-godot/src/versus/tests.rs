@@ -252,14 +252,22 @@ fn a_hit_is_any_blast_that_reaches_the_box() {
 #[test]
 fn a_hit_is_scored_only_against_the_other_gun() {
     let mut m = match_on(symmetric_base(320));
-    // Dropping a shell on your own gun is a miss, not a point for anyone.
+    // Dropping a shell on your own gun is not a point for anyone; the
+    // report says it was a self-hit, for the screens to call out.
     let r = m.fire(MISS, false).unwrap();
     assert!(!r.hit);
+    assert!(r.self_hit);
     assert_eq!(m.hits, [0, 0]);
     let shot = hitting_shot(&m, Side::Right);
     let r = m.fire(shot, false).unwrap();
     assert!(r.hit);
+    assert!(!r.self_hit);
     assert_eq!(m.hits, [0, 1]);
+    // A right self-hit is found in the shared frame too.
+    m.fire(Shot::new(1400, 330), false).unwrap();
+    let r = m.fire(MISS, false).unwrap();
+    assert_eq!(r.shooter, Side::Right);
+    assert!(r.self_hit && !r.hit);
 }
 
 // ----------------------------------------------------- scoring and flow
