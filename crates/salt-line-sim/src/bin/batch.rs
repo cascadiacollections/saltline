@@ -39,15 +39,24 @@
 //! screens came off each rung, and every screen with targets, fallbacks
 //! included, is re-validated here rather than trusted. Seeds are the first N
 //! values of a fixed schedule; changing skill, hit chance or build preserves the seed set.
-//! The economy model samples every shot a screen will take up front and ends
-//! the run when that count exceeds the reserve: the player would run dry
-//! mid-screen, so the reserve is recorded as 0. Seeds and the miss stream
+//! The economy model samples every shot a screen will take up front, then
+//! plays them in order: each shot costs a shell, a Salvage near miss refunds
+//! some back, and a run that is out of shells with a target still standing
+//! has run dry mid-screen, so the reserve is recorded as 0. Seeds and the miss stream
 //! depend only on the seed index, so every hit chance is compared on the same
 //! luck. Across builds the miss draws can drift apart once target counts
-//! differ. By default the hit rate is flat: it ignores wind, distance, indirect-only
-//! targets, Salvage refunds and Chalk marks, so with evolving/demo builds the
-//! non-perfect profiles slightly overcharge each miss. Read the profiles
-//! against each other, not as calibrated player types.
+//! differ. By default the hit rate is flat: it ignores wind, distance and
+//! indirect-only targets. Read the profiles against each other, not as
+//! calibrated player types.
+//!
+//! Two modifiers act on misses and are modelled with stated assumptions
+//! rather than ballistics: Salvage refunds its shells for a miss with
+//! probability [`SALVAGE_NEAR_SHARE`] (the share of misses assumed to land
+//! within its 30 units of a standing target), and Chalk Marks raises the odds
+//! of a hit on each retry at the same target by [`CHALK_RETRY_ODDS`]. Salvage
+//! draws from its own stream; Chalk changes the accuracy draws themselves, so
+//! a build holding it diverges from the first retry on. A build holding
+//! neither plays out exactly as before.
 //!
 //! `--aim scaled` replaces the flat rate with one per target: the selected
 //! chance applies at a reference difficulty, and each target's difficulty
@@ -57,7 +66,7 @@
 //! not where misses fall within a band, is what moves survival. The
 //! band table's `hit%` is the hit rate on completed screens (the screen a run
 //! runs dry on is left out, so late bands read slightly high) and `diff` the
-//! mean target difficulty. Salvage and Chalk marks are still ignored.
+//! mean target difficulty.
 
 use salt_line_sim::modifiers::{draft_offers, Loadout, Modifier, MODIFIER_COUNT};
 use salt_line_sim::rng::{screen_seed, Pcg32};
@@ -523,13 +532,76 @@ fn scaled_hit_percent(hit_percent: u32, difficulty: f64) -> u32 {
     ((odds / (1.0 + odds) * 100.0).round() as u32).clamp(10, 99)
 }
 
+/// Share of misses assumed to land within Salvage's radius (30 units of a
+/// standing target's centre). A judgement call: a player aiming at a target
+/// mostly misses short or long by less than that, but a badly judged power or
+/// a gust can carry a shell well past. Not measured, and it matters for weak
+/// aim: on evolving, rough runs that run dry over 100 screens go 84 -> 60 of
+/// 100 as the share goes 0 -> 1. Grounding it in the solver (nudging each
+/// target's direct shot a step or two and seeing where the misses land) is a
+/// possible follow-up.
+const SALVAGE_NEAR_SHARE: f64 = 0.75;
+
+/// Chalk Marks keeps the last landing point marked, so a retry at the same
+/// target starts from a visible reference. Modelled as multiplying the odds
+/// of a hit on every retry (not the first shot) by this factor; at steady's
+/// 80% that lifts retries to ~86%. A judgement call, not measured. Two
+/// simplifications, both conservative: a second stack (Chalk Marks can be
+/// taken twice, keeping more marks) adds nothing here, and the mark left by
+/// the previous target's last shot, which in the game stays up for the next
+/// target, is not credited.
+const CHALK_RETRY_ODDS: f64 = 1.5;
+
+/// The hit chance on a retry with Chalk Marks held, in whole percent.
+fn chalk_retry_percent(hit_percent: u32, chalk_marks: u8) -> u32 {
+    if chalk_marks == 0 || hit_percent >= 100 {
+        return hit_percent;
+    }
+    let p = f64::from(hit_percent) / 100.0;
+    let odds = p / (1.0 - p) * CHALK_RETRY_ODDS;
+    ((odds / (1.0 + odds) * 100.0).round() as u32).clamp(hit_percent, 99)
+}
+
+/// Plays one screen's sampled shots in order against the reserve: `attempts`
+/// holds each target's shot count, the last of which hits. Each shot costs a
+/// shell; a miss refunds `salvage` shells (capped at `cap`) when `near`
+/// says it landed close enough. Returns the reserve left and the shells
+/// salvaged, or `None` if the reserve hits 0 with a shot still to fire.
+fn play_screen(
+    mut reserve: i32,
+    attempts: &[u32],
+    cap: i32,
+    salvage: i32,
+    mut near: impl FnMut() -> bool,
+) -> Option<(i32, u32)> {
+    let mut salvaged = 0;
+    for &n in attempts {
+        for shot in 1..=n {
+            if reserve <= 0 {
+                return None;
+            }
+            reserve -= 1;
+            if shot < n && salvage > 0 && near() {
+                let after = (reserve + salvage).min(cap);
+                salvaged += (after - reserve).max(0) as u32;
+                reserve = after;
+            }
+        }
+    }
+    Some((reserve, salvaged))
+}
+
 /// Number of attempts needed to land one target under the selected seeded
 /// accuracy assumption. The 64-attempt cap is a safety bound: `--hit` stops
 /// at 10%, where it truncates about 0.1% of targets (0.9^63).
-fn attempts_per_target(hit_percent: u32, rng: &mut Pcg32) -> u32 {
+/// `retry_percent` applies from the second attempt on (Chalk Marks); pass the
+/// same chance twice for none, which draws exactly as a single chance would.
+fn attempts_per_target(first_percent: u32, retry_percent: u32, rng: &mut Pcg32) -> u32 {
     let mut attempts = 1;
-    while attempts < 64 && rng.range_u32(0, 99) >= hit_percent {
+    let mut hit = first_percent;
+    while attempts < 64 && rng.range_u32(0, 99) >= hit {
         attempts += 1;
+        hit = retry_percent;
     }
     attempts
 }
@@ -553,7 +625,7 @@ fn main() {
     );
     println!("gate: worst-target candidates >= {MIN_SOLUTIONS}");
     println!(
-        "{}\n",
+        "{}",
         match args.aim {
             Aim::Flat => format!(
                 "economy: fixed {}% hit chance per shot, independent of target difficulty and aim",
@@ -565,6 +637,10 @@ fn main() {
                 args.hit_percent
             ),
         }
+    );
+    println!(
+        "miss modifiers, when held (assumed, not measured): Salvage near-miss share \
+         {SALVAGE_NEAR_SHARE}, Chalk Marks retry odds x{CHALK_RETRY_ODDS}\n"
     );
 
     let mut by_band: Vec<Bucket> = Vec::new();
@@ -578,6 +654,7 @@ fn main() {
     let mut economy_spent = 0u64;
     let mut economy_refunds = 0u64;
     let mut economy_bonus = 0u64;
+    let mut economy_salvage = 0u64;
     let mut combat_clears = 0u64;
     let mut targets_cleared = 0u64;
     let mut one_shot_clears = 0u64;
@@ -599,6 +676,8 @@ fn main() {
             salt_line_sim::rng::mix64(0x5341_4C54 ^ s.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let mut reserve = START_SHELLS;
         let mut accuracy_rng = Pcg32::new(run_seed ^ 0xAC_C0_A1_71);
+        // Its own stream, so holding Salvage doesn't shift the miss draws.
+        let mut salvage_rng = Pcg32::new(run_seed ^ 0x5A_17_A6_E0);
         let mut previous = Loadout::new();
         let mut alive = true;
         let mut run_length = 0u32;
@@ -684,17 +763,26 @@ fn main() {
                             .collect()
                     }
                 };
-                let shots: u32 = (0..target_count)
+                let attempts: Vec<u32> = (0..target_count)
                     .map(|t| {
                         let hit = match args.aim {
                             Aim::Flat => args.hit_percent,
                             Aim::Scaled => scaled_hit_percent(args.hit_percent, difficulties[t]),
                         };
-                        attempts_per_target(hit, &mut accuracy_rng)
+                        let retry = chalk_retry_percent(hit, lo.chalk_marks);
+                        attempts_per_target(hit, retry, &mut accuracy_rng)
                     })
-                    .sum();
+                    .collect();
+                let shots: u32 = attempts.iter().sum();
                 let before = reserve;
-                if reserve < shots as i32 {
+                let played = play_screen(reserve, &attempts, lo.cap(), lo.salvage_shells, || {
+                    salvage_rng.next_f64() < SALVAGE_NEAR_SHARE
+                });
+                if let Some((left, salvaged)) = played {
+                    reserve = left;
+                    economy_salvage += u64::from(salvaged);
+                }
+                if played.is_none() {
                     alive = false;
                     reserve = 0;
                     deaths += 1;
@@ -703,7 +791,6 @@ fn main() {
                     earliest_death = earliest_death.min(index);
                     latest_death = latest_death.max(index);
                 } else {
-                    reserve -= shots as i32;
                     economy_spent += shots as u64;
                     targets_cleared += target_count as u64;
                     skill_misses += (shots - target_count as u32) as u64;
@@ -897,7 +984,7 @@ fn main() {
     println!("\nsolver-assisted run metrics");
     println!(
         "shell economy: spent {economy_spent}, clear refunds {economy_refunds}, \
-         modifier/supply bonus {economy_bonus}, mean ending reserve {:.2}, min {}",
+         modifier/supply bonus {economy_bonus}, salvage {economy_salvage}, mean ending reserve {:.2}, min {}",
         ending_shell_sum as f64 / args.seeds.max(1) as f64,
         if min_ending_shells == i32::MAX {
             0
@@ -1060,6 +1147,53 @@ mod tests {
     use salt_line_sim::run::wind_magnitude;
 
     #[test]
+    fn a_screen_without_salvage_costs_one_shell_per_shot() {
+        // Two targets: one first-time hit, one after two misses.
+        assert_eq!(play_screen(10, &[1, 3], 99, 0, || true), Some((6, 0)));
+        // Exactly enough shells still clears; one fewer runs dry mid-screen.
+        assert_eq!(play_screen(4, &[1, 3], 99, 0, || true), Some((0, 0)));
+        assert_eq!(play_screen(3, &[1, 3], 99, 0, || true), None);
+    }
+
+    #[test]
+    fn salvage_refunds_near_misses_only_and_respects_the_cap() {
+        // Two misses, both near: each refunds one, so 3 shots cost 1.
+        assert_eq!(play_screen(5, &[3], 99, 1, || true), Some((4, 2)));
+        // The same misses landing far refund nothing.
+        assert_eq!(play_screen(5, &[3], 99, 1, || false), Some((2, 0)));
+        // A refund can keep a run alive that would otherwise run dry.
+        assert_eq!(play_screen(1, &[3], 99, 1, || true), Some((0, 2)));
+        assert_eq!(play_screen(1, &[3], 99, 1, || false), None);
+        // The cap clips a refund, and only the shells that fit count.
+        assert_eq!(play_screen(5, &[2], 5, 2, || true), Some((4, 1)));
+    }
+
+    #[test]
+    fn chalk_lifts_retries_but_not_perfect_or_unmarked_aim() {
+        assert_eq!(chalk_retry_percent(80, 0), 80);
+        assert_eq!(chalk_retry_percent(100, 1), 100);
+        assert_eq!(chalk_retry_percent(80, 1), 86);
+        assert_eq!(chalk_retry_percent(55, 1), 65);
+        for hit in [10, 55, 80, 95, 99] {
+            let retry = chalk_retry_percent(hit, 1);
+            assert!((hit..=99).contains(&retry), "{hit} -> {retry}");
+        }
+    }
+
+    #[test]
+    fn equal_retry_chance_draws_like_a_single_chance() {
+        let (mut a, mut b) = (Pcg32::new(11), Pcg32::new(11));
+        for _ in 0..1000 {
+            let single = attempts_per_target(80, 80, &mut a);
+            let mut n = 1;
+            while n < 64 && b.range_u32(0, 99) >= 80 {
+                n += 1;
+            }
+            assert_eq!(single, n);
+        }
+    }
+
+    #[test]
     fn ending_ranges_parse_strictly() {
         assert_eq!(parse_range("58..71"), Some((58.0, 71.0)));
         assert_eq!(parse_range("26.5..40"), Some((26.5, 40.0)));
@@ -1102,7 +1236,7 @@ mod tests {
     #[test]
     fn perfect_aim_never_misses() {
         let mut rng = Pcg32::new(7);
-        assert!((0..1000).all(|_| attempts_per_target(100, &mut rng) == 1));
+        assert!((0..1000).all(|_| attempts_per_target(100, 100, &mut rng) == 1));
     }
 
     /// Fraction of shots that miss over many targets. Tight enough to catch
@@ -1110,7 +1244,7 @@ mod tests {
     fn miss_fraction(hit_percent: u32) -> f64 {
         let mut rng = Pcg32::new(7);
         let shots: u32 = (0..50_000)
-            .map(|_| attempts_per_target(hit_percent, &mut rng))
+            .map(|_| attempts_per_target(hit_percent, hit_percent, &mut rng))
             .sum();
         f64::from(shots - 50_000) / f64::from(shots)
     }
