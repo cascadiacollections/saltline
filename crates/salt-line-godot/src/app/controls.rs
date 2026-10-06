@@ -48,6 +48,8 @@ impl Game {
     pub(super) fn begin_input_frame(&mut self, delta: f64, intents: &Intents) {
         self.input.controls.begin(intents);
         self.input.touch.update(delta, REPEAT_DELAY, REPEAT_RATE);
+        // After the events, which were taken while it still ran.
+        self.input.touch_settle = (self.input.touch_settle - delta).max(0.0);
     }
 
     /// This frame's press of a key, taken. See `Controls::pressed`.
@@ -211,6 +213,11 @@ impl Game {
                     if self.confirm_discard("seed") {
                         self.open_seed_entry();
                     }
+                } else if self.action_pressed(Action::Versus) {
+                    // A match never touches the run kept for CONTINUE, so
+                    // there is nothing to confirm.
+                    self.play(Sound::Ui);
+                    self.open_versus_setup();
                 } else if self.crash.last_crash.is_some() && self.action_pressed(Action::Copy) {
                     self.copy_last_crash();
                 } else if self.action_pressed(Action::Controls) {
@@ -291,6 +298,8 @@ impl Game {
                 }
             }
             Mode::Playing => self.handle_play_input(delta),
+            Mode::VersusSetup => self.handle_versus_setup_input(),
+            Mode::Versus => self.handle_versus_input(delta),
         }
     }
 
@@ -433,22 +442,34 @@ impl Game {
             self.fire();
         }
 
-        if self.drag_aiming() {
-            self.handle_drag_aim(quantum);
+        if self.drag_aiming() && self.drag_aim(quantum, false, true) {
+            self.fire();
         }
     }
 
     /// Pull back to aim, let go to fire. The aim follows the finger live, so
     /// the readouts and barrel show exactly what a release would fire; pulling
-    /// back inside the dead zone puts the old aim back and cancels.
-    pub(super) fn handle_drag_aim(&mut self, quantum: i32) {
+    /// back inside the dead zone puts the old aim back and cancels. Returns
+    /// true when the finger has just let go of an aim: the caller fires.
+    ///
+    /// `mirrored` is for a gun that fires leftward (versus, the right
+    /// player): the pull is reflected left to right before it becomes an
+    /// aim, so pulling back to the right throws to the left. `teach` marks
+    /// the angle and power lessons learned (`learn`), which only a run
+    /// does: versus writes nothing.
+    pub(super) fn drag_aim(&mut self, quantum: i32, mirrored: bool, teach: bool) -> bool {
         let dropped = self.input.touch.dropped();
         let Some((start, end)) = dropped.or(self.input.touch.drag()) else {
             // Abandoned (paused, focus lost): put the old aim back.
             if let Some(before) = self.input.drag_from.take() {
                 (self.play.angle_ticks, self.play.power_ticks) = before;
             }
-            return;
+            return false;
+        };
+        let (start, end) = if mirrored {
+            ((-start.0, start.1), (-end.0, end.1))
+        } else {
+            (start, end)
         };
         let before = *self
             .input
@@ -457,18 +478,19 @@ impl Game {
         let aim = crate::aim::pull_to_aim(start, end, quantum);
         match aim {
             Some((angle, power)) => {
-                self.learn(LEARN_ANGLE);
-                self.learn(LEARN_POWER);
+                if teach {
+                    self.learn(LEARN_ANGLE);
+                    self.learn(LEARN_POWER);
+                }
                 (self.play.angle_ticks, self.play.power_ticks) = (angle, power);
             }
             None => (self.play.angle_ticks, self.play.power_ticks) = before,
         }
         if dropped.is_some() {
             self.input.drag_from = None;
-            if aim.is_some() {
-                self.fire();
-            }
+            return aim.is_some();
         }
+        false
     }
 
     /// Start a run on the typed seed; blank starts today's daily seed, but

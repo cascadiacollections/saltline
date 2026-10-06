@@ -549,7 +549,10 @@ final state hashes match.
 Confirm before any public build:
 
 - [ ] No character combatants — targets are structures, not figures
-- [ ] Single player, not alternating two-player duel
+- [ ] Single player at its core. Local versus (§11), an alternating
+      hot-seat duel, is in scope for now as a secondary mode; the run stays
+      the main game, and versus has to pass every other item on this list
+      (no figures, no skyline, its own terrain and art).
 - [ ] No primate, fruit, or skyline motif anywhere in art or naming
 - [ ] Title has no lineage to either reference game
 - [ ] Zero code, data, or asset lineage from any prior artillery title
@@ -967,3 +970,81 @@ would get less efficient. Revisit it after haze and drift have been played.
 - **A storm-themed modifier:** for example a RISK card that doubles storm chance
   for shells, or an instrument that sees through haze. Only once the base
   system is in.
+
+---
+
+## 11. Local versus (prototype)
+
+**Status: prototype.** Built for hot-seat play on one phone. Not part of the
+roguelike: nothing here touches a run, the economy, the board or the shot log.
+
+**Scope (owner, October 2026):** local versus is in scope for now as a
+secondary mode, and §7's single-player item says so. The run stays the main
+game. Versus is held to the rest of §7 like everything else: structures and
+terrain only, no figures or skyline, its own art.
+
+### 11.1 Rules
+
+- Two guns on one duel screen, the left at `EMPLACEMENT_X`, the right at its
+  mirror. Players alternate shots, and a pass-the-phone plate covers the field
+  between turns so neither sees the other aim.
+- **Hit:** any detonation whose blast reaches the other gun's box. This is the
+  same overlap a blast needs to damage a structure (§2.7): any overlap at all.
+  A direct hit on the gun counts. A shot that lands on its own gun scores
+  nothing for anyone.
+- First to **3 hits** takes a round; **best of 3** rounds takes the match. The
+  round's loser does not matter for who opens: the sides take turns opening,
+  left first.
+- **Wind** is drawn every turn, uniform in `±2.5`, from the match seed, the
+  round and the turn number (`versus::turn_wind`). The HUD shows it to one
+  decimal, since every duel wind is small.
+- **Craters** persist for the round (§2.6). Every round is new ground.
+- **Unlimited shells**, the base loadout for both guns, no drafts, no refunds.
+- **Aim help**, per player, off by default, set on the pre-match screen: that
+  player's last landing mark and arc this round, and a Short arc (the drag
+  preview's) of the current aim in calm air.
+
+### 11.2 One sim, two directions
+
+The sim only fires rightward (`Shot` angles run from flat-right to straight
+up). The right player's shot is resolved in a **mirrored frame**: the
+heightfield reversed column for column, the wind's sign flipped, the right gun
+at `EMPLACEMENT_X`. Craters dug there are mapped back by reversing the arrays
+again, which is exact. The renderer always draws the shared frame and mirrors
+the right gun's sprites; only the app and the renderer know whose turn it is.
+
+This keeps the integrator, the solver and every determinism guard (§9.3)
+exactly as single-player runs them; no `SIM_EPOCH` bump. The sim's only change
+is a public `run::crater_detonation`, the crater half of a detonation moved out
+of `Screen::detonate` unchanged, so versus digs by the same rule.
+
+### 11.3 The duel screen
+
+Generated per round from the match seed (§2.2's split, by round):
+
+1. Base ridge and domain warp (§2.3 steps 1–2), at band 4's amplitude.
+2. A template laid out from one gun to the other, drawn from `Flat`, `Ridge`,
+   `Chasm`, `Mesa`, `Spires` and `Basin` (`Overhang` is unsolvable without a
+   modifier). No elevation delta: neither side starts higher.
+3. **Near-symmetric:** every column is pulled 45% of the way toward its mirror
+   image, so a tenth of any asymmetry is left. Fair, without being the same
+   picture twice.
+4. **Gate (§2.4):** each gun needs `MIN_SOLUTIONS` distinct shots that hit the
+   other, in calm air and at both wind extremes. Candidates come from the
+   solver's closed form aimed at the gun box and are kept only if the
+   integrator says they hit. The ladder is the single-player one: eight drawn
+   templates, eight `Flat`, then level ground, which is solvable by
+   construction at every width.
+
+A batch of 300 seeds passed on the first rung every time, with every gun
+saturating the gate cap (8 shots) at every wind. That is easy on purpose for a
+first prototype: amplitude and template weights are the levers if duels need
+more terrain to fight over.
+
+### 11.4 Open questions
+
+- Should a round's loser open the next round, rather than alternating?
+- Should a gun take damage from its own shells?
+- A visible keyed title row (the keyed title snapshot was kept unchanged).
+- Resume after the app is killed: a match is a seed plus shots, so it could be
+  logged like a run (§9.6), but nothing is saved today.

@@ -27,6 +27,7 @@
 //!            input, touch,  keys and pad buttons, on-screen buttons, slingshot
 //!            aim, keypad    aiming, the seed keypad
 //!            presentation   timers, held-input repeat, onboarding
+//!            versus         local two-player rules: duel screens, mirroring, turns
 //!            cli            developer flags
 //! drawing    render         a Game painted into a Canvas (engine-free)
 //!            raster         the Canvas and its drawing primitives
@@ -76,6 +77,7 @@ pub mod sky;
 pub mod sprites;
 pub mod strips;
 pub mod touch;
+pub mod versus;
 
 struct SaltLineExtension;
 

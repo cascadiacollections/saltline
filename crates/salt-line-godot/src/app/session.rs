@@ -84,7 +84,12 @@ impl Game {
             // A resumed run's width is done with: back to the device's.
             self.set_run_width(None);
             self.apply_buffer_size();
-        } else if self.play.run.is_none() && want_w != self.display.buffer_w {
+        } else if self.play.run.is_none()
+            && self.versus.live.is_none()
+            && want_w != self.display.buffer_w
+        {
+            // Not under a versus match either: its screen was generated
+            // for the width it has.
             self.display.buffer_w = want_w;
             self.apply_buffer_size();
         } else if self.letterbox_now() != self.display.letterbox {
@@ -172,7 +177,11 @@ impl Game {
     /// them would only cost a tap. Not for the dev autopilot or screenshots,
     /// which nobody is watching with focus.
     pub(super) fn auto_pause(&mut self) {
-        if self.mode != Mode::Playing || self.dev.auto || self.dev.capturing {
+        if self.dev.auto || self.dev.capturing {
+            return;
+        }
+        self.auto_pause_versus();
+        if self.mode != Mode::Playing {
             return;
         }
         if self.play.run.as_ref().map(|r| r.phase) == Some(Phase::Drafting) {

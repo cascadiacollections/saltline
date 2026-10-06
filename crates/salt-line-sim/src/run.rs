@@ -567,20 +567,7 @@ impl Screen {
                 self.structures[i].state = StructState::Cleared;
             }
         }
-        let material = if direct.is_some() {
-            Material::Steel
-        } else {
-            self.field.material_at(pos.x)
-        };
-
-        // Crater, attenuated by height above the surface — an airburst high
-        // over the target barely marks the ground.
-        let r = crater_radius(material, lo, damage_scale);
-        let height_above = pos.y - self.field.surface_at(pos.x);
-        if height_above < r {
-            let effective = r * (1.0 - clamp(height_above / r, 0.0, 1.0));
-            self.field.crater(pos.x, effective);
-        }
+        crater_detonation(&mut self.field, end, damage_scale, lo);
 
         // Direct and splash damage. DESIGN §2.7: blast overlap x material factor.
         let blast = blast_radius(lo, damage_scale);
@@ -641,6 +628,37 @@ impl Screen {
                 s.lean = s.lean_direction(&self.field);
             }
         }
+    }
+}
+
+/// Crater the ground for one detonation. DESIGN §2.6.
+///
+/// The crater is sized by the surface layer of the detonation's column, or
+/// as Steel for a shell that ended in a target box ([`End::Structure`]), and
+/// attenuated by height above the surface: an airburst high over the target
+/// barely marks the ground. A shell that never detonated (`End::OffScreen`,
+/// `End::Timeout`) leaves no crater.
+///
+/// [`Screen::apply_shot`] calls this for every detonation before it applies
+/// structural damage. It is public for callers that resolve a shot against
+/// boxes of their own rather than a screen's structures (the Godot crate's
+/// local versus mode, where the target is the other emplacement), so that the
+/// ground they dig is dug by exactly the same rule.
+pub fn crater_detonation(field: &mut Heightfield, end: End, damage_scale: f64, lo: &Loadout) {
+    if !end.detonates() {
+        return;
+    }
+    let pos = end.pos();
+    let material = if matches!(end, End::Structure { .. }) {
+        Material::Steel
+    } else {
+        field.material_at(pos.x)
+    };
+    let r = crater_radius(material, lo, damage_scale);
+    let height_above = pos.y - field.surface_at(pos.x);
+    if height_above < r {
+        let effective = r * (1.0 - clamp(height_above / r, 0.0, 1.0));
+        field.crater(pos.x, effective);
     }
 }
 

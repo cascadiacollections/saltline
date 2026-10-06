@@ -47,7 +47,7 @@ use salt_line_sim::modifiers::{flags, Loadout, Modifier};
 use salt_line_sim::run::{format_seed, parse_seed, Phase, Screen, StructState};
 use salt_line_sim::{Vec2, DT};
 
-use crate::app::{Game, Mode, SHORT_ARC_SECONDS, TOPPLE_TIME};
+use crate::app::{Anim, Game, Mode, SHORT_ARC_SECONDS, TOPPLE_TIME};
 use crate::frame::Memo;
 use crate::input::Action;
 use crate::keypad;
@@ -110,6 +110,7 @@ pub fn frame(
     let mut p = Painter::new(g, art, canvas, buttons, cache);
     match g.mode {
         Mode::Playing | Mode::Paused => p.render_play(),
+        Mode::Versus => p.render_versus(),
         _ => p.render_menu(),
     }
 }
@@ -298,6 +299,12 @@ impl Painter<'_> {
                     seed_text,
                     fg,
                 );
+                // Local versus is offered as a row on a touchscreen, the
+                // device it is for. With keys it is the versus binding (2)
+                // alone, so the keyed title stays as it was.
+                if self.plated() {
+                    y = self.menu_row(y, Action::Versus, "", "LOCAL VERSUS", fg);
+                }
                 let controls = self.g.input_label(Action::Controls);
                 y = self.menu_row(
                     y,
@@ -507,6 +514,7 @@ impl Painter<'_> {
                     self.centred(y, &text, alert);
                 }
             }
+            Mode::VersusSetup => self.render_versus_setup(y),
             _ => {}
         }
     }
@@ -931,13 +939,20 @@ impl Painter<'_> {
     /// The muzzle flash, impact bursts and dust, and the border flash of a
     /// collapse, timed off the replay clock.
     fn draw_shot_effects(&mut self, view: &View) {
-        let Some(anim) = self.g.play.anim.as_ref() else {
+        let g = self.g;
+        let Some(anim) = g.play.anim.as_ref() else {
             return;
         };
+        self.draw_anim_effects(anim, anim.before.muzzle(), view);
+    }
+
+    /// `draw_shot_effects` for any shot being played back, fired from
+    /// `muzzle`: the run's, or a versus match's from either gun.
+    fn draw_anim_effects(&mut self, anim: &Anim, muzzle: Vec2, view: &View) {
         let alert = self.pal.get(slot::ALERT);
         let dust = self.pal.get(slot::ST_DMG);
         if presentation::flash_strength(anim.t, 0.0, presentation::MUZZLE_TIME) > 0.0 {
-            let p = anim.before.muzzle();
+            let p = muzzle;
             let x = view.sx(p.x);
             let y = view.sy(p.y);
             self.canvas.hline(x - 3, x + 3, y, alert);
@@ -1005,24 +1020,7 @@ impl Painter<'_> {
             Some(v) if loadout.has_flag(flags::ANEMOMETER) => (format!("{:.1}", v.abs()), v < 0.0),
             Some(v) => (format!("{:.0}", v.abs()), v < 0.0),
         };
-        let calm = !wind_text.bytes().any(|b| (b'1'..=b'9').contains(&b));
-        let sock = if calm {
-            &crate::icons::SOCK_LIMP
-        } else {
-            &crate::icons::SOCK
-        };
-        let sock_w = crate::icons::width(sock);
-        self.canvas.plate(
-            3 + ex,
-            3 + ey,
-            sock_w + 9 + crate::font::big_width(&wind_text) as i32,
-            13,
-            pal,
-        );
-        self.canvas
-            .icon(6 + ex, 4 + ey, sock, &[fg, alert, dim], to_left && !calm);
-        self.canvas
-            .text_big(6 + ex + sock_w + 3, 4 + ey, &wind_text, alert);
+        self.draw_wind(&wind_text, to_left);
 
         // Shells, top right: a shell, then the count. Alert accent under 10,
         // the only other place that colour is allowed (DESIGN §5.2).
@@ -1145,6 +1143,50 @@ impl Painter<'_> {
         }
     }
 
+    /// The windsock plate, top left: a sock flying the way the wind blows
+    /// (`to_left`), then `text`, its strength. The sock hangs limp when
+    /// `text` has no non-zero digit.
+    fn draw_wind(&mut self, text: &str, to_left: bool) {
+        let pal = self.pal;
+        let (fg, dim, alert) = (
+            pal.get(slot::UI_FG),
+            pal.get(slot::SKY_LO),
+            pal.get(slot::ALERT),
+        );
+        let (ex, ey) = self.g.display.corner_pad;
+        let calm = !text.bytes().any(|b| (b'1'..=b'9').contains(&b));
+        let sock = if calm {
+            &crate::icons::SOCK_LIMP
+        } else {
+            &crate::icons::SOCK
+        };
+        let sock_w = crate::icons::width(sock);
+        self.canvas.plate(
+            3 + ex,
+            3 + ey,
+            sock_w + 9 + crate::font::big_width(text) as i32,
+            13,
+            pal,
+        );
+        self.canvas
+            .icon(6 + ex, 4 + ey, sock, &[fg, alert, dim], to_left && !calm);
+        self.canvas
+            .text_big(6 + ex + sock_w + 3, 4 + ey, text, alert);
+    }
+
+    /// Dim everything drawn so far with a checkerboard of the plate colour:
+    /// DESIGN §5.1 allows no gradient except through dithering.
+    fn dither_dim(&mut self) {
+        let bg = self.pal.get(slot::UI_BG);
+        for y in 0..self.canvas.h {
+            for x in 0..self.canvas.w {
+                if (x + y) % 2 == 0 {
+                    self.canvas.put(x, y, bg);
+                }
+            }
+        }
+    }
+
     /// The draft: the screen dimmed by a checkerboard (DESIGN §5.1: no
     /// gradients except through dithering), and one card per offer. On a touchscreen each card is its
     /// own button.
@@ -1154,16 +1196,9 @@ impl Painter<'_> {
         let dim = pal.get(slot::SKY_LO);
         let alert = pal.get(slot::ALERT);
         let w = self.canvas.w;
-        let h = self.canvas.h;
 
         // Dim the screen behind the cards without a gradient.
-        for y in 0..h {
-            for x in 0..w {
-                if (x + y) % 2 == 0 {
-                    self.canvas.put(x, y, pal.get(slot::UI_BG));
-                }
-            }
-        }
+        self.dither_dim();
 
         let title = "DRAFT  TAKE ONE";
         let tx = (w - crate::font::small_width(title) as i32) / 2;
@@ -1247,6 +1282,8 @@ impl Painter<'_> {
         self.centred((h - 48) / 2 + 31, &format!("{title}  TITLE"), dim);
     }
 }
+
+mod versus;
 
 /// Menu lines reading "KEY  TEXT", each label padded to the widest of them
 /// and never narrower than ENTER, so the default rows keep their spacing and
@@ -1452,6 +1489,7 @@ mod tests {
                 Action::TitleMusic,
                 Action::Confirm,
                 Action::Seed,
+                Action::Versus,
                 Action::Controls,
                 Action::Back
             ]
@@ -1470,6 +1508,7 @@ mod tests {
                 Action::Confirm,
                 Action::NewRun,
                 Action::Seed,
+                Action::Versus,
                 Action::Controls,
                 Action::Back,
                 Action::Copy
@@ -1573,6 +1612,103 @@ mod tests {
             &mut Cache::default(),
         );
         assert_eq!(actions(&buttons), [Action::Copy, Action::Back]);
+    }
+
+    #[test]
+    fn every_versus_screen_is_painted_and_lays_out_its_buttons() {
+        use crate::app::VersusStage;
+        let mut g = game();
+        g.input.touch_active = true;
+        g.open_versus_setup();
+        let mut screens = Vec::new();
+        let (c, buttons) = draw(&g);
+        screens.push(c);
+        assert_eq!(
+            actions(&buttons),
+            [Action::Left, Action::Right, Action::Confirm, Action::Back]
+        );
+
+        g.versus.help = [true, true];
+        g.start_versus();
+        let (c, buttons) = draw(&g);
+        screens.push(c);
+        assert_eq!(actions(&buttons), [Action::Confirm, Action::Back]);
+
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.stage = VersusStage::Aiming;
+        let (aiming, buttons) = draw(&g);
+        assert_eq!(
+            actions(&buttons),
+            [
+                Action::Left,
+                Action::Right,
+                Action::Down,
+                Action::Up,
+                Action::Fire,
+                Action::Back
+            ]
+        );
+        // Aim help draws the short preview arc over the field.
+        g.versus.help = [false, false];
+        let (bare, _) = draw(&g);
+        assert_ne!(aiming.bytes(), bare.bytes(), "aim help drew nothing");
+        screens.push(aiming);
+
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.paused = true;
+        screens.push(draw(&g).0);
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.paused = false;
+        vs.duel.phase = crate::versus::Phase::RoundOver(crate::versus::Side::Right);
+        vs.stage = VersusStage::Result;
+        let (c, buttons) = draw(&g);
+        screens.push(c);
+        assert_eq!(actions(&buttons), [Action::Confirm, Action::Replay]);
+
+        for (i, c) in screens.iter().enumerate() {
+            assert!(
+                !c.palette_text(&Palette::default()).contains('.'),
+                "versus screen {i} left pixels undrawn"
+            );
+        }
+    }
+
+    #[test]
+    fn the_aim_help_preview_flies_the_quantized_shot() {
+        use crate::versus::{Match, Side};
+        let duel = Match::new(5, 320);
+        for side in [Side::Left, Side::Right] {
+            // 0.2 degrees off the 0.5-degree grid fires as the grid angle,
+            // so it must preview as the grid angle too, to the bit.
+            let bits = |aim| {
+                let (path, upto) = versus::aim_preview(&duel, side, aim);
+                let bits: Vec<(u64, u64)> = path
+                    .iter()
+                    .map(|p| (p.x.to_bits(), p.y.to_bits()))
+                    .collect();
+                (bits, upto)
+            };
+            assert_eq!(bits((904, 903)), bits((900, 903)), "{side:?}");
+            assert_ne!(bits((910, 903)), bits((900, 903)), "{side:?}");
+        }
+    }
+
+    #[test]
+    fn a_flipped_blit_is_the_blit_reflected() {
+        // Three columns, the middle one transparent.
+        let sprite = Sprite {
+            w: 3,
+            h: 1,
+            px: vec![1, 2, 3, 255, 0, 0, 0, 0, 7, 8, 9, 255],
+        };
+        let mut a = Canvas::new(5, 1);
+        a.blit(&sprite, 1, 0);
+        let mut b = Canvas::new(5, 1);
+        b.blit_flipped(&sprite, 1, 0);
+        let px = |c: &Canvas, x: usize| c.bytes()[x * 4..x * 4 + 4].to_vec();
+        assert_eq!(px(&a, 1), px(&b, 3));
+        assert_eq!(px(&a, 3), px(&b, 1));
+        assert_eq!(px(&a, 2), px(&b, 2), "transparent stays transparent");
     }
 
     #[test]
