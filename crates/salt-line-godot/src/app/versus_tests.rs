@@ -66,15 +66,17 @@ fn until(g: &mut Game, done: impl Fn(&Game) -> bool) -> Vec<Effect> {
     panic!("not done after 600 frames");
 }
 
-/// Ready up, aim `shot` and fire it, then wait for the next plate.
-fn take_turn(g: &mut Game, shot: Shot) {
+/// Ready up, aim `shot` and fire it, then wait for the next plate. Returns
+/// the turn's effects.
+fn take_turn(g: &mut Game, shot: Shot) -> Vec<Effect> {
     assert_eq!(vs(g).stage, Stage::Handoff);
     press(g, Key::Enter);
     assert_eq!(vs(g).stage, Stage::Aiming);
     (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
-    press(g, Key::Space);
+    let mut fx = press(g, Key::Space);
     assert_eq!(vs(g).stage, Stage::Flight);
-    until(g, |g| vs(g).stage != Stage::Flight);
+    fx.extend(until(g, |g| vs(g).stage != Stage::Flight));
+    fx
 }
 
 /// A shot the side to move can hit the other gun with, as things stand.
@@ -184,14 +186,18 @@ fn a_whole_match_plays_to_a_result_and_a_rematch() {
     // Left wins two rounds straight; right never hits.
     for round in 0..rules::ROUNDS_TO_WIN_MATCH {
         assert_eq!(vs(&g).duel.round, round);
+        let mut fx = Vec::new();
         for _ in 0..rules::HITS_TO_WIN_ROUND {
+            assert!(!fx.contains(&Effect::Play(Sound::Win)), "won too soon");
             if vs(&g).side() == Side::Right {
-                take_turn(&mut g, MISS);
+                fx.extend(take_turn(&mut g, MISS));
             }
             let shot = hitting(&g);
-            take_turn(&mut g, shot);
+            fx.extend(take_turn(&mut g, shot));
         }
         assert_eq!(vs(&g).stage, Stage::Result);
+        let wins = fx.iter().filter(|e| **e == Effect::Play(Sound::Win));
+        assert_eq!(wins.count(), 1, "one fanfare as the result shows");
         if round + 1 < rules::ROUNDS_TO_WIN_MATCH {
             assert_eq!(vs(&g).duel.phase, rules::Phase::RoundOver(Side::Left));
             press(&mut g, Key::Enter);
@@ -315,8 +321,15 @@ fn the_score_and_wind_wait_for_the_shell_to_land() {
     assert_eq!(vs(&g).duel.hits, [1, 0]);
     assert_eq!(vs(&g).shown_score().0, [0, 0]);
     assert_eq!(vs(&g).shown_wind().to_bits(), wind.to_bits());
-    until(&mut g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done()));
-    g.tick(FRAME, &idle());
+    // The ding waits for the landing too, and comes with it.
+    loop {
+        let fx = g.tick(FRAME, &idle());
+        let landed = vs(&g).anim.as_ref().is_some_and(|a| a.done());
+        assert_eq!(fx.contains(&Effect::Play(Sound::Hit)), landed);
+        if landed {
+            break;
+        }
+    }
     assert_eq!(vs(&g).shown_score().0, [1, 0]);
     assert_eq!(g.status, "HIT  RIGHT GUN");
 }

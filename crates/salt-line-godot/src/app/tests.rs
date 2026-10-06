@@ -1509,3 +1509,21 @@ fn a_touch_queued_before_focus_is_lost_is_let_go_with_the_rest() {
     assert!(!g.input.touch.active(), "no finger left stuck down");
     assert_eq!(g.mode, Mode::Paused);
 }
+
+#[test]
+fn every_sound_has_its_player_slot_and_its_file() {
+    // The node finds a sound's player at `sound as usize`, so `ALL` must be
+    // in declaration order; and a sound with no file would play silence.
+    let audio = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../art/audio");
+    for (i, sound) in Sound::ALL.into_iter().enumerate() {
+        assert_eq!(sound as usize, i, "{sound:?} out of order in Sound::ALL");
+        let wav = audio.join(format!("{}.wav", sound.file()));
+        assert!(wav.is_file(), "{sound:?}: no {}", wav.display());
+        let import = audio.join(format!("{}.wav.import", sound.file()));
+        assert!(
+            import.is_file(),
+            "{sound:?}: not imported, no {}",
+            import.display()
+        );
+    }
+}

@@ -38,6 +38,18 @@ def env(t, d, power=2):
     return max(0.0, 1.0 - t / d) ** power
 
 
+def notes(t, pitches, step, tail):
+    """A plain chime: `pitches` (Hz) one after another, `step` seconds apart,
+    each ringing out over `step` (the last over `tail`). Sine plus a quiet
+    octave, so it reads as a bell on a phone speaker."""
+    i = min(int(t / step), len(pitches) - 1)
+    local = t - i * step
+    ring = tail if i == len(pitches) - 1 else step
+    f = pitches[i]
+    attack = min(1.0, local / .006)
+    return attack * env(local, ring, 1.6) * (.42*math.sin(2*math.pi*f*t) + .12*math.sin(4*math.pi*f*t))
+
+
 def main():
     render("fire", .22, lambda t, d, n: env(t, d) * (.75*n + .25*math.sin(2*math.pi*(90-35*t/d)*t)))
     render("flight", .30, lambda t, d, n: env(t, d, .7) * (.13*n + .25*math.sin(2*math.pi*(760-420*t/d)*t)))
@@ -49,6 +61,10 @@ def main():
     render("draft", .24, lambda t, d, n: env(t, d, 1.3) * .42*math.sin(2*math.pi*(360+500*t/d)*t))
     render("low_shell", .34, lambda t, d, n: env(t, d, 1.4) * .44*math.sin(2*math.pi*(220 if t < .14 else 165)*t))
     render("ui", .09, lambda t, d, n: env(t, d, 1.5) * .32*math.sin(2*math.pi*620*t))
+    # Local versus: a two-note ding for a hit, and a rising C-major arpeggio
+    # for a round or match won.
+    render("versus_hit", .36, lambda t, d, n: notes(t, (880, 1318.5), .09, .27))
+    render("versus_win", .78, lambda t, d, n: notes(t, (523.25, 659.25, 783.99, 1046.5), .1, .48))
 
 
 if __name__ == "__main__":

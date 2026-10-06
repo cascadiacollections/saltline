@@ -386,6 +386,7 @@ impl Game {
                 said = Some(match vs.hit {
                     Some(gun) => {
                         sounds.push(Sound::Collapse);
+                        sounds.push(Sound::Hit);
                         format!("HIT  {} GUN", gun.name())
                     }
                     None => "MISS".to_string(),
@@ -398,7 +399,11 @@ impl Game {
             vs.hit = None;
             vs.stage = match vs.duel.phase {
                 versus::Phase::Aiming => Stage::Handoff,
-                versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => Stage::Result,
+                versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => {
+                    // The fanfare comes with the plate that names the winner.
+                    sounds.push(Sound::Win);
+                    Stage::Result
+                }
             };
             self.fx.push(Effect::Redraw);
         }

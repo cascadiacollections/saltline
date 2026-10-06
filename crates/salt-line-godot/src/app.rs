@@ -102,7 +102,7 @@
 //!
 //! | Effect | Emitted by | Adapter action | Feedback via `stored()` | Dropped after panic |
 //! |---|---|---|---|---|
-//! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a versus shot landing or hitting (`app/versus.rs`), a draft offered or taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
+//! | `Play(Sound)` | firing, landing and collapse (`app/play.rs`), a versus shot landing or hitting and a round or match won (`app/versus.rs`), a draft offered or taken, menu choices, the low-shell warning | `play()` on that sound's `AudioStreamPlayer` | no | no |
 //! | `Volume(dB)` | mute, the Controls volume (the node sets it once itself at launch) | `set_volume_db` on every player | no | no |
 //! | `TitleMusic(on)` | the title music toggle and transitions to/from the title | start or stop the looping title player | no | no |
 //! | `Redraw` | any status note, a buffer change, pausing, and [`Game::tick`] when the frame's [`FrameState`] changed | `frame::Redraw::mark` | no | no |
@@ -347,6 +347,10 @@ pub enum Sound {
     LowShell,
     /// A menu choice.
     Ui,
+    /// A versus shell reached the other gun: a two-note ding.
+    Hit,
+    /// A versus round or match won: a short rising fanfare.
+    Win,
     /// The looping title track.
     Title,
 }
@@ -355,7 +359,7 @@ impl Sound {
     /// Every sound, in declaration order. The node creates one player per
     /// entry in this order and finds a sound's player at `sound as usize`,
     /// so the order here must match the enum's.
-    pub const ALL: [Sound; 11] = [
+    pub const ALL: [Sound; 13] = [
         Self::Fire,
         Self::Flight,
         Self::Terrain,
@@ -366,6 +370,8 @@ impl Sound {
         Self::Draft,
         Self::LowShell,
         Self::Ui,
+        Self::Hit,
+        Self::Win,
         Self::Title,
     ];
 
@@ -382,6 +388,8 @@ impl Sound {
             Self::Draft => "draft",
             Self::LowShell => "low_shell",
             Self::Ui => "ui",
+            Self::Hit => "versus_hit",
+            Self::Win => "versus_win",
             Self::Title => "title_loop",
         }
     }
