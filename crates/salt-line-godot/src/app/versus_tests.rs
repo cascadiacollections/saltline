@@ -85,7 +85,7 @@ fn hitting(g: &Game) -> Shot {
     let side = duel.to_move;
     let frame = rules::frame_for(&duel.screen, side);
     let target = rules::target_in_frame(&duel.screen, side);
-    rules::shots_at(&frame, target, &duel.loadout, 1)[0]
+    rules::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)[0]
 }
 
 const MISS: Shot = Shot {
@@ -109,6 +109,36 @@ fn the_title_opens_versus_and_the_setup_sets_aim_help() {
     // The choice is kept for the next match this session.
     press(&mut g, Key::Num2);
     assert_eq!(g.versus.help, [true, false]);
+}
+
+#[test]
+fn rolling_guns_can_be_turned_off_for_a_match_and_its_rematches() {
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    assert!(!g.versus.rolling_off, "on by default");
+    assert_eq!(g.versus.rules().gun_shift, rules::GUN_SHIFT);
+    press(&mut g, Key::Up);
+    assert!(g.versus.rolling_off);
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).duel.rules.gun_shift, 0.0);
+    // Equal shots stays on either way.
+    assert!(vs(&g).duel.rules.equal_shots);
+    // A hit and its answer: the guns stay put.
+    let home = vs(&g).duel.screen.muzzle_x;
+    let shot = hitting(&g);
+    take_turn(&mut g, shot);
+    take_turn(&mut g, MISS);
+    assert_eq!(vs(&g).duel.screen.muzzle_x, home);
+    // A rematch keeps the choice.
+    let seed = vs(&g).duel.seed;
+    g.start_versus();
+    assert_ne!(vs(&g).duel.seed, seed);
+    assert_eq!(vs(&g).duel.rules.gun_shift, 0.0);
+    // And it turns back on.
+    g.open_versus_setup();
+    press(&mut g, Key::Up);
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).duel.rules.gun_shift, rules::GUN_SHIFT);
 }
 
 #[test]
@@ -181,6 +211,89 @@ fn a_turn_passes_the_phone_and_keeps_each_players_aim() {
 }
 
 #[test]
+fn rolled_guns_are_found_moved_after_the_handoff() {
+    let mut g = in_match();
+    let home = vs(&g).duel.screen.muzzle_x;
+    let shot = hitting(&g);
+    take_turn(&mut g, shot);
+    // Right answers; the pair had a hit, so the rules roll the guns now.
+    press(&mut g, Key::Enter);
+    (g.play.angle_ticks, g.play.power_ticks) = (MISS.angle_ticks, MISS.power_ticks);
+    press(&mut g, Key::Space);
+    assert_ne!(vs(&g).duel.screen.muzzle_x, home, "the rules rolled them");
+    // In flight and while the MISS is held, the guns are drawn where they
+    // stood; the crater shows once the shell is down.
+    until(&mut g, |g| vs(g).anim.as_ref().is_some_and(|a| a.done()));
+    assert_eq!(vs(&g).shown_screen().muzzle_x, home);
+    let scar = |s: &Screen| s.field.scar.iter().sum::<f64>();
+    let held = scar(vs(&g).shown_screen());
+    assert!(
+        held > scar(&vs(&g).anim.as_ref().unwrap().before),
+        "no crater"
+    );
+    // Behind the plate, they are at their new spots.
+    until(&mut g, |g| vs(g).stage == Stage::Handoff);
+    assert_eq!(vs(&g).shown_screen().muzzle_x, vs(&g).duel.screen.muzzle_x);
+}
+
+#[test]
+fn overtime_holds_the_fanfare_until_someone_actually_wins() {
+    let mut g = in_match();
+    let mut fx = Vec::new();
+    let no_fanfare = |fx: &[Effect]| !fx.contains(&Effect::Play(Sound::Win));
+    // Both hit every time: left's third hit is answered by right's third.
+    for n in 1..=rules::HITS_TO_WIN_ROUND {
+        fx.extend({
+            let shot = hitting(&g);
+            take_turn(&mut g, shot)
+        });
+        assert_eq!(vs(&g).stage, Stage::Handoff, "left's hit {n} is no win");
+        if n == rules::HITS_TO_WIN_ROUND {
+            assert_eq!(vs(&g).duel.stakes(), Some(rules::Stakes::LastShot));
+        }
+        fx.extend({
+            let shot = hitting(&g);
+            take_turn(&mut g, shot)
+        });
+        assert_eq!(vs(&g).stage, Stage::Handoff);
+    }
+    assert_eq!(vs(&g).duel.stakes(), Some(rules::Stakes::Tied));
+    assert!(no_fanfare(&fx), "no fanfare while the round is still open");
+    // Left misses, right hits: right is ahead after the pair and wins.
+    fx.extend(take_turn(&mut g, MISS));
+    assert!(no_fanfare(&fx));
+    fx.extend({
+        let shot = hitting(&g);
+        take_turn(&mut g, shot)
+    });
+    assert_eq!(vs(&g).stage, Stage::Result);
+    assert_eq!(vs(&g).duel.phase, rules::Phase::RoundOver(Side::Right));
+    let wins = fx
+        .iter()
+        .filter(|e| **e == Effect::Play(Sound::Win))
+        .count();
+    assert_eq!(wins, 1, "one fanfare, with the result");
+}
+
+#[test]
+fn the_handoff_knows_which_way_the_guns_rolled_until_the_next_shot() {
+    let mut g = in_match();
+    assert_eq!(vs(&g).rolled, None);
+    let home = vs(&g).duel.screen.muzzle_x;
+    {
+        let shot = hitting(&g);
+        take_turn(&mut g, shot)
+    };
+    assert_eq!(vs(&g).rolled, None, "not before the pair is done");
+    take_turn(&mut g, MISS);
+    let way = vs(&g).rolled.expect("the pair had a hit");
+    let closer = vs(&g).duel.screen.muzzle_x > home;
+    assert_eq!(way == rules::RollWay::Closer, closer);
+    take_turn(&mut g, MISS);
+    assert_eq!(vs(&g).rolled, None, "a new shot clears it");
+}
+
+#[test]
 fn a_whole_match_plays_to_a_result_and_a_rematch() {
     let mut g = in_match();
     // Left wins two rounds straight; right never hits.
@@ -194,6 +307,12 @@ fn a_whole_match_plays_to_a_result_and_a_rematch() {
             }
             let shot = hitting(&g);
             fx.extend(take_turn(&mut g, shot));
+        }
+        if vs(&g).stage != Stage::Result {
+            // Left opened this round, so right answers its third hit, and
+            // no fanfare has played while that answer was due.
+            assert!(!fx.contains(&Effect::Play(Sound::Win)), "won too soon");
+            fx.extend(take_turn(&mut g, MISS));
         }
         assert_eq!(vs(&g).stage, Stage::Result);
         let wins = fx.iter().filter(|e| **e == Effect::Play(Sound::Win));

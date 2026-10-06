@@ -58,6 +58,14 @@ balance-sweep seeds="100" screens="40" build="base" from="40" to="100" step="5" 
         printf '%5s  %-10s %-9s %s\n' "$hit" "$exhausted" "$run" "$ending"
     done
 
+# Two bots play local versus matches; the report gives shots per hit, turns per round,
+# how often a repeated hit lands and how often the opener wins. Bot is kid (aim help)
+# or steady; flags set one lever each (see examples/duel.rs), e.g.
+# `just duel 400 kid --right steady` or `just duel 200 steady --no-equal-shots --shift 0`.
+# Deterministic local-versus rules report (duel harness).
+duel matches="200" bot="kid" *flags:
+    cargo run --release -p salt-line-godot --example duel -- --matches {{ matches }} --bot {{ bot }} {{ flags }}
+
 # macOS exports ship one universal dylib: `macos.release` in salt_line.gdextension points at
 # target/universal-apple-darwin/release. Debug builds stay host-only at target/debug, so
 # `just run` does not need this; run it before `godot --export-release "macOS"` on a Mac.

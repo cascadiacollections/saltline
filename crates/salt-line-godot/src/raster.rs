@@ -828,7 +828,7 @@ mod tests {
         let lo = salt_line_sim::modifiers::Loadout::new();
         let mut seen_grass_there = false;
         for seed in 0..40u64 {
-            let s = versus::generate_duel(seed, 0, 320, &lo);
+            let s = versus::generate_duel(seed, 0, 320, &lo, &versus::Rules::DEFAULT);
             let right = versus::muzzle_of(&s, Side::Right).x;
             let guns = Side::BOTH.map(|g| versus::muzzle_of(&s, g).x);
             let mut single = Canvas::new(320, SCREEN_H as i32);

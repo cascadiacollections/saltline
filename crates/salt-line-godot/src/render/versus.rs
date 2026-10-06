@@ -40,7 +40,7 @@
 
 use super::*;
 use crate::app::{VersusCall as Call, VersusStage as Stage};
-use crate::versus::{self, Side};
+use crate::versus::{self, RollWay, Side, Stakes};
 
 /// Secondary text on versus screens. The game's usual dim, `SKY_LO`, is the
 /// right player's colour here.
@@ -67,15 +67,68 @@ const ROUND_PIP: [&str; 5] = ["01110", "11111", "11111", "11111", "01110"];
 const ROUND_PIP_EMPTY: [&str; 5] = ["01110", "10001", "10001", "10001", "01110"];
 /// Pixels between pips in a row.
 const PIP_GAP: i32 = 2;
-/// Width of one side's hit pips.
-const HIT_ROW_W: i32 = versus::HITS_TO_WIN_ROUND as i32 * (7 + PIP_GAP) - PIP_GAP;
 /// The gap between the two sides' pips.
 const PIP_MIDDLE: i32 = 9;
-/// Width of both sides' pips, middle gap included: the score plate's
-/// inside, and the row the handoff and result plates show.
-const SCORE_W: i32 = 2 * HIT_ROW_W + PIP_MIDDLE;
+
+/// How many hit pips each side shows: one per hit a round takes, or more
+/// once a tie has carried the round past that, so that every hit has a pip
+/// and the side ahead shows one filled pip more than the side behind. Past
+/// [`PIP_CAP`] the hits are shown as numbers instead ([`score_numeric`]).
+pub(super) fn pip_count(hits: [u32; 2]) -> u32 {
+    versus::HITS_TO_WIN_ROUND.max(hits[0]).max(hits[1])
+}
+
+/// The most hit pips a row draws. Five keeps the score plate clear of the
+/// pause button at the narrowest buffer and well inside the 200-pixel
+/// handoff and result plates; a round that runs longer shows numbers.
+pub(super) const PIP_CAP: u32 = 5;
+
+/// Whether `hits` are drawn as numbers rather than pips.
+pub(super) fn score_numeric(hits: [u32; 2]) -> bool {
+    pip_count(hits) > PIP_CAP
+}
+
+/// Width of one side's `n` hit pips.
+fn hit_row_w(n: u32) -> i32 {
+    n as i32 * (7 + PIP_GAP) - PIP_GAP
+}
+
+/// Width of both sides' pips for `hits`, middle gap included: the score
+/// plate's inside, and the row the handoff and result plates show.
+pub(super) fn score_w(hits: [u32; 2]) -> i32 {
+    2 * hit_row_w(pip_count(hits).min(PIP_CAP)) + PIP_MIDDLE
+}
 /// Height of the hit pips over the round pips.
 const SCORE_H: i32 = 7 + 3 + 5;
+
+/// The line under a HIT callout once `shooter`'s shot has been scored:
+/// who scored, or, when the round is still open past the mark, that the
+/// other side answers or that it is tied. The opener's third hit is not the
+/// win while an answer is due, so it must not read like one.
+pub(super) fn hit_line(duel: &versus::Match, shooter: Side) -> String {
+    match duel.stakes() {
+        Some(Stakes::LastShot) => format!("{} GUN TO ANSWER", shooter.other().name()),
+        Some(Stakes::Tied) => "TIED - KEEP GOING".to_string(),
+        Some(Stakes::HitToWin) | None => format!("{} GUN SCORES", shooter.name()),
+    }
+}
+
+/// The lines the handoff plate adds under the name of the player taking
+/// the phone, each with its palette slot: what rides on their shot (a last
+/// shot to tie or a hit to win, in their colour, or a tie that plays on),
+/// then which way the guns rolled after the last shot, if they did.
+pub(super) fn handoff_cues(vs: &crate::app::VersusPlay) -> Vec<(&'static str, usize)> {
+    let overtime = vs.duel.stakes().map(|o| match o {
+        Stakes::LastShot => ("LAST SHOT - HIT TO TIE", side_slot(vs.side())),
+        Stakes::HitToWin => ("HIT TO WIN", side_slot(vs.side())),
+        Stakes::Tied => ("TIED - KEEP GOING", slot::UI_FG),
+    });
+    let roll = vs.rolled.map(|way| match way {
+        RollWay::Closer => ("GUNS ROLLED CLOSER", slot::UI_FG),
+        RollWay::Apart => ("GUNS ROLLED APART", slot::UI_FG),
+    });
+    [overtime, roll].into_iter().flatten().collect()
+}
 
 /// The aim-help preview for `side` firing `aim` (angle ticks, power
 /// ticks): the shell's path in the shared frame, flown in calm air in the
@@ -108,8 +161,8 @@ pub(super) fn aim_preview(duel: &versus::Match, side: Side, aim: (i32, i32)) -> 
 
 impl Painter<'_> {
     /// The pre-match screen, under the title lettering `render_menu` drew:
-    /// the rules in a line, each side's aim help in its colour, start and
-    /// back.
+    /// the rules in a line, each side's aim help in its colour, rolling
+    /// guns, start and back.
     pub(super) fn render_versus_setup(&mut self, mut y: i32) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
@@ -127,6 +180,7 @@ impl Painter<'_> {
         );
         y += 13;
         let help = self.g.versus.help;
+        let rolling = !self.g.versus.rolling_off;
         let on = |b: bool| if b { "ON" } else { "OFF" };
         let rows = [
             (
@@ -139,6 +193,7 @@ impl Painter<'_> {
                 format!("RIGHT AIM HELP: {}", on(help[1])),
                 colour(Side::Right),
             ),
+            (Action::Up, format!("ROLLING GUNS: {}", on(rolling)), fg),
             (Action::Confirm, "START".to_string(), fg),
             (Action::Back, "BACK".to_string(), dim),
         ];
@@ -373,7 +428,7 @@ impl Painter<'_> {
 
         // Hits this round over rounds won, left to right as the guns stand.
         let (shown_hits, shown_rounds) = vs.shown_score();
-        let plate_w = SCORE_W + 8;
+        let plate_w = score_w(shown_hits) + 8;
         let px = w - plate_w - 3 - ex;
         self.canvas.plate(px, 3 + ey, plate_w, SCORE_H + 8, pal);
         self.draw_score(px + 4, 7 + ey, shown_hits, shown_rounds);
@@ -411,8 +466,10 @@ impl Painter<'_> {
         let callout = vs.callout();
         if let Some((shooter, call)) = callout {
             let top = 28 + ey;
+            // A hit that leaves the round open past the mark says so, so
+            // the opener's third hit does not read as the win.
             let (word, under) = match call {
-                Call::Hit => ("HIT!", Some(format!("{} GUN SCORES", shooter.name()))),
+                Call::Hit => ("HIT!", Some(hit_line(duel, shooter))),
                 Call::Miss => ("MISS", None),
                 Call::Oops => ("OOPS", Some("YOUR OWN GUN".to_string())),
             };
@@ -459,23 +516,34 @@ impl Painter<'_> {
         }
     }
 
-    /// Both sides' score at `x`, `y` ([`SCORE_W`] by [`SCORE_H`]): a big
+    /// Both sides' score at `x`, `y` ([`score_w`] by [`SCORE_H`]): a big
     /// pip per hit a round takes, filled for each hit made, over a small
     /// pip per round the match takes, filled for each round won. Each side
-    /// in its colour, left on the left.
+    /// in its colour, left on the left. Past the mark each side gets a pip
+    /// per hit of the side ahead ([`pip_count`]), so a lead shows as a
+    /// filled pip against an empty one.
     fn draw_score(&mut self, x: i32, y: i32, hits: [u32; 2], rounds: [u32; 2]) {
         let pal = self.pal;
         let round_row_w = versus::ROUNDS_TO_WIN_MATCH as i32 * (5 + PIP_GAP) - PIP_GAP;
+        let pips = pip_count(hits);
+        let numeric = score_numeric(hits);
+        let row_w = hit_row_w(pips.min(PIP_CAP));
         for side in Side::BOTH {
             let i = side.index();
             let colour = [pal.get(side_slot(side))];
-            let x0 = x + i as i32 * (HIT_ROW_W + PIP_MIDDLE);
-            for k in 0..versus::HITS_TO_WIN_ROUND {
-                let pip: &[&str] = if k < hits[i] { &PIP } else { &PIP_EMPTY };
-                let px = x0 + k as i32 * (7 + PIP_GAP);
-                self.canvas.icon(px, y, pip, &colour, false);
+            let x0 = x + i as i32 * (row_w + PIP_MIDDLE);
+            if numeric {
+                let text = hits[i].to_string();
+                let tx = x0 + (row_w - crate::font::small_width(&text) as i32) / 2;
+                self.canvas.text_small(tx, y + 1, &text, colour[0]);
+            } else {
+                for k in 0..pips {
+                    let pip: &[&str] = if k < hits[i] { &PIP } else { &PIP_EMPTY };
+                    let px = x0 + k as i32 * (7 + PIP_GAP);
+                    self.canvas.icon(px, y, pip, &colour, false);
+                }
             }
-            let rx = x0 + (HIT_ROW_W - round_row_w) / 2;
+            let rx = x0 + (row_w - round_row_w) / 2;
             for k in 0..versus::ROUNDS_TO_WIN_MATCH {
                 let pip: &[&str] = if k < rounds[i] {
                     &ROUND_PIP
@@ -486,7 +554,7 @@ impl Painter<'_> {
                 self.canvas.icon(px, y + 10, pip, &colour, false);
             }
         }
-        let mid = x + HIT_ROW_W + PIP_MIDDLE / 2;
+        let mid = x + row_w + PIP_MIDDLE / 2;
         self.canvas
             .vline(mid, y + 1, y + SCORE_H - 2, pal.get(slot::SHADOW));
     }
@@ -555,7 +623,9 @@ impl Painter<'_> {
 
     /// Between turns: the field dimmed and a plate in the colour of the
     /// player whose turn it is, saying so in big letters, until they say
-    /// they are ready.
+    /// they are ready. Under the name, what has changed: a last shot to
+    /// tie or a tie that plays on ([`versus::Match::overtime`]), and which
+    /// way the guns rolled after the last shot.
     fn render_handoff(&mut self, vs: &crate::app::VersusPlay) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
@@ -567,7 +637,8 @@ impl Painter<'_> {
         // A new round says which; later turns show the score instead.
         let opening = duel.turn == 0;
         let heading_h = if opening { 5 } else { SCORE_H };
-        let body = 7 + heading_h + 6 + 10 + 6 + 5 + 13;
+        let cues = handoff_cues(vs);
+        let body = 7 + heading_h + 6 + 10 + 6 + 8 * cues.len() as i32 + 5 + 13;
         let ph = body + if plated { 20 } else { 12 };
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
@@ -577,7 +648,7 @@ impl Painter<'_> {
         if opening {
             self.centred(y, &format!("ROUND {}", duel.round + 1), dim);
         } else {
-            self.draw_score((w - SCORE_W) / 2, y, duel.hits, duel.rounds);
+            self.draw_score((w - score_w(duel.hits)) / 2, y, duel.hits, duel.rounds);
         }
         y += heading_h + 6;
         self.shout(
@@ -588,6 +659,11 @@ impl Painter<'_> {
             2,
         );
         y += 10 + 6;
+        for &(text, c) in &cues {
+            let c = pal.get(c);
+            self.centred(y, text, c);
+            y += 8;
+        }
         self.centred(y, "TAKE THE PHONE - NO PEEKING", fg);
         y += 13;
         if plated {
@@ -632,7 +708,7 @@ impl Painter<'_> {
         };
         self.centred(y, &what, fg);
         y += 5 + 7;
-        self.draw_score((w - SCORE_W) / 2, y, duel.hits, duel.rounds);
+        self.draw_score((w - score_w(duel.hits)) / 2, y, duel.hits, duel.rounds);
         y += SCORE_H + 8;
         let next = if over { "REMATCH" } else { "NEXT ROUND" };
         let rows = [(Action::Confirm, next), (Action::Replay, "TITLE")];

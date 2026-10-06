@@ -92,6 +92,10 @@ pub(crate) struct VersusState {
     /// landing mark, the last arc and a short preview of the current aim.
     /// Off for both by default.
     pub(crate) help: [bool; 2],
+    /// ROLLING GUNS OFF on the pre-match screen: the guns stay where they
+    /// are all match ([`versus::GUN_SHIFT`] off). On by default, and kept
+    /// for a rematch, so the rule can be tried both ways.
+    pub(crate) rolling_off: bool,
     /// Matches started this session, so each gets its own seed.
     pub(crate) started: u64,
     /// Different at every launch (the adapter reads the clock), so the
@@ -127,6 +131,15 @@ pub(crate) struct VersusPlay {
     pub(crate) score_before: Option<([u32; 2], [u32; 2])>,
     /// Under the pause plate.
     pub(crate) paused: bool,
+    /// When the last shot rolled the guns ([`versus::Match::roll_guns`]):
+    /// the screen as the shot left it ([`versus::Roll::landed`]), craters
+    /// dug and guns still where they were, shown while the HIT or MISS is
+    /// held. They are found at their new spots when the phone has been
+    /// passed.
+    pub(crate) landed: Option<Screen>,
+    /// Which way the guns rolled after the last shot, if they did: the
+    /// handoff plate says so. Cleared by the next shot.
+    pub(crate) rolled: Option<versus::RollWay>,
 }
 
 impl VersusPlay {
@@ -136,11 +149,13 @@ impl VersusPlay {
     }
 
     /// The screen to draw: the pre-shot copy while a shot is in the air, so
-    /// the crater appears when the shell lands.
+    /// the crater appears when the shell lands, and the guns where they
+    /// were until the turn passes.
     pub(crate) fn shown_screen(&self) -> &Screen {
         match self.anim.as_ref() {
             Some(anim) if !anim.done() => &anim.before,
-            _ => &self.duel.screen,
+            Some(_) => self.landed.as_ref().unwrap_or(&self.duel.screen),
+            None => &self.duel.screen,
         }
     }
 
@@ -174,6 +189,21 @@ impl VersusPlay {
     }
 }
 
+impl VersusState {
+    /// The rules a match started now plays by: the game's, with the guns'
+    /// roll off if the pre-match screen says so.
+    pub(crate) fn rules(&self) -> versus::Rules {
+        versus::Rules {
+            gun_shift: if self.rolling_off {
+                0.0
+            } else {
+                versus::GUN_SHIFT
+            },
+            ..versus::Rules::DEFAULT
+        }
+    }
+}
+
 impl Game {
     /// Something that differs at every launch, for match seeds. The core
     /// reads no clock; the adapter passes the wall clock once at launch.
@@ -199,7 +229,7 @@ impl Game {
         );
         let width = self.display.buffer_w as usize;
         self.versus.live = Some(VersusPlay {
-            duel: Match::new(seed, width),
+            duel: Match::with_rules(seed, width, self.versus.rules()),
             stage: Stage::Handoff,
             anim: None,
             aims: [(900, 600); 2],
@@ -210,6 +240,8 @@ impl Game {
             dinged: false,
             score_before: None,
             paused: false,
+            landed: None,
+            rolled: None,
         });
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -226,8 +258,13 @@ impl Game {
         self.apply_buffer_size();
     }
 
-    /// The pre-match screen: each side's aim help, start, back.
+    /// The pre-match screen: each side's aim help, rolling guns, start,
+    /// back.
     pub(super) fn handle_versus_setup_input(&mut self) {
+        if self.action_pressed(Action::Up) {
+            self.versus.rolling_off = !self.versus.rolling_off;
+            self.play(Sound::Ui);
+        }
         for (action, side) in [(Action::Left, Side::Left), (Action::Right, Side::Right)] {
             if self.action_pressed(action) {
                 let i = side.index();
@@ -373,6 +410,17 @@ impl Game {
         vs.self_hit = report.self_hit;
         vs.dinged = false;
         vs.score_before = Some(score);
+        // Each side's last arc moves with its gun, as the rules move its
+        // landing mark, so aim help stays attached to the gun that fired.
+        if let Some(roll) = &report.rolled {
+            for (arc, d) in vs.arcs.iter_mut().zip(roll.moved) {
+                for p in arc.iter_mut() {
+                    *p = Vec2::new(p.x + d.x, p.y + d.y);
+                }
+            }
+        }
+        vs.rolled = report.rolled.as_ref().map(versus::Roll::way);
+        vs.landed = report.rolled.map(|roll| roll.landed);
         let longest = report
             .traces
             .iter()
@@ -441,6 +489,7 @@ impl Game {
             vs.anim = None;
             vs.hit = None;
             vs.self_hit = false;
+            vs.landed = None;
             vs.stage = match vs.duel.phase {
                 versus::Phase::Aiming => Stage::Handoff,
                 versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => {
@@ -518,7 +567,7 @@ impl Game {
                 } else {
                     let frame = versus::frame_for(&duel.screen, side);
                     let target = versus::target_in_frame(&duel.screen, side);
-                    versus::shots_at(&frame, target, &duel.loadout, 1)
+                    versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
                         .first()
                         .copied()
                 };

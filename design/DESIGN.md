@@ -999,10 +999,37 @@ terrain only, no figures or skyline, its own art.
 - First to **3 hits** takes a round; **best of 3** rounds takes the match. The
   round's loser does not matter for who opens: the sides take turns opening,
   left first.
+- **Equal shots** (`versus::EQUAL_SHOTS`): the side that did not open gets an
+  answer only when a hit would tie. If the opener makes its third hit one
+  ahead, the other side gets one last shot; if the opener is two or more
+  ahead (3-0, 3-1), no answer could tie and the round ends on the opener's
+  shot. A tie past three plays on in pairs until a pair ends with one side
+  ahead.
+- **The guns roll after a hit** (`versus::GUN_SHIFT`, 16 units each),
+  unless ROLLING GUNS is turned off on the pre-match screen (on by default,
+  kept for a rematch). At the end of any pair of shots that had a hit in it,
+  both guns move one step together, back toward their edges or forward
+  toward each other, with even odds drawn from the match seed. They stand on
+  a ladder of spots a step apart, one step behind `EMPLACEMENT_X` to two in
+  front (`GUN_ROLL_BACK`, `GUN_ROLL_FORWARD`); one step back is as far as the
+  chassis stays on screen. A gun at the end of the ladder rolls the other
+  way, and a spot is only taken if the screen still passes the duel gate
+  (§11.3) from there; otherwise the guns stay put. The range changes by 32
+  units, so the shot that just hit is no better than a fresh aim. Both move,
+  so the duel stays mirrored. Each gun lands on fresh ground (the craters
+  under its chassis are filled) so both are seated alike, and each side's
+  landing mark and last arc move with its gun. They roll at the end of the
+  pair, not straight after the hit, so the side answering a hit aims at the
+  guns it was scored on. A new round puts them back. NOTES §7 has the
+  harness measurements behind these numbers.
 - **Wind** is drawn every turn, uniform in `±2.5`, from the match seed, the
   round and the turn number (`versus::turn_wind`). The HUD shows it to one
   decimal, since every duel wind is small.
-- **Craters** persist for the round (§2.6). Every round is new ground.
+- **Craters** persist for the round (§2.6), with one exception: when the
+  guns roll, the craters under both guns' chassis at their new spots are
+  filled back to the ground as generated, so neither gun starts its next shot
+  in a hole the other dug. Craters anywhere else stay. Every round is new
+  ground.
 - **Unlimited shells**, the base loadout for both guns, no drafts, no refunds.
 - **Aim help**, per player, off by default, set on the pre-match screen: that
   player's last landing mark and arc this round, and a Short arc (the drag
@@ -1067,7 +1094,23 @@ and how it is going should read without reading words.
   mark over it disappears. Everything in a side colour sits on a plate or a
   one-pixel dark backing, for both sides alike.
 - **Pips, not digits:** a big dot per hit a round takes, filled as hits land,
-  over a small dot per round the match takes.
+  over a small dot per round the match takes. When a tie carries a round past
+  three, both rows grow to the higher side's hit count, so every hit has a
+  dot and a lead shows as one filled dot against an empty one (at 4–3 the
+  rows are four wide). The score plate widens to match, up to five dots a
+  row; past that each side's hits are a number in its colour, so the plate
+  stays clear of the pause button and inside the handoff and result plates.
+- **Overtime and roll cues:** the handoff plate adds a line under the name of
+  the player taking the phone. LAST SHOT - HIT TO TIE (in their colour) when
+  the opener has made the winning hit one ahead and they must answer; HIT TO
+  WIN (in their colour) when a hit by them would win the round outright;
+  TIED - KEEP GOING when a pair has ended level past three; and GUNS ROLLED
+  CLOSER or GUNS ROLLED APART after the guns roll. The HIT callout on a hit that leaves the
+  round open reads RIGHT GUN TO ANSWER (or LEFT) or TIED - KEEP GOING instead
+  of naming a scorer, so the opener's third hit does not look like the win.
+  The result plate and its fanfare come only with an actual round win. The
+  rolled guns appear at their new spots when the field comes back; they are
+  not animated there.
 - **Big words:** HIT, MISS and OOPS, whose turn it is and who won are drawn
   in the 3x5 face at two to four times size, on a plate. This is a deliberate
   exception to §5.6 for this mode only: whole blocks on the buffer's grid, so
@@ -1084,6 +1127,12 @@ and how it is going should read without reading words.
 ### 11.5 Open questions
 
 - Should a round's loser open the next round, rather than alternating?
+  (Equal shots has removed most of the edge either way.)
+- Should the guns ease to their new spots when the field comes back after a
+  roll? Today the handoff plate says which way they rolled and they are
+  simply there.
+- Is a round of about 12 turns right for a young player? Rolling guns
+  lengthens rounds by about a fifth over equal shots alone.
 - Should a gun take damage from its own shells?
 - A visible keyed title row (the keyed title snapshot was kept unchanged).
 - Resume after the app is killed: a match is a seed plus shots, so it could be

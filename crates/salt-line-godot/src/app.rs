@@ -571,7 +571,7 @@ pub struct FrameState {
     devices: (bool, bool),
     run: Option<(u32, Phase, i32, u32, u64, u64)>,
     seed: (usize, Focus),
-    versus: (Option<versus::Fingerprint>, [bool; 2]),
+    versus: (Option<versus::Fingerprint>, [bool; 2], bool),
     settings: (
         u8,
         bool,
@@ -1483,7 +1483,11 @@ impl Game {
                 )
             }),
             seed: (self.seed_text.len(), self.input.seed_focus),
-            versus: (self.versus_fingerprint(), self.versus.help),
+            versus: (
+                self.versus_fingerprint(),
+                self.versus.help,
+                self.versus.rolling_off,
+            ),
             settings: (
                 self.save.volume,
                 self.save.muted,
