@@ -549,10 +549,10 @@ final state hashes match.
 Confirm before any public build:
 
 - [ ] No character combatants — targets are structures, not figures
-- [ ] Single player, not alternating two-player duel. **Owner decision
-      pending:** the local versus prototype (§11) is exactly such a duel. It
-      stays playable on development builds; decide here before any public
-      build.
+- [ ] Single player at its core. Local versus (§11), an alternating
+      hot-seat duel, is in scope for now as a secondary mode; the run stays
+      the main game, and versus has to pass every other item on this list
+      (no figures, no skyline, its own terrain and art).
 - [ ] No primate, fruit, or skyline motif anywhere in art or naming
 - [ ] Title has no lineage to either reference game
 - [ ] Zero code, data, or asset lineage from any prior artillery title
@@ -978,10 +978,10 @@ would get less efficient. Revisit it after haze and drift have been played.
 **Status: prototype.** Built for hot-seat play on one phone. Not part of the
 roguelike: nothing here touches a run, the economy, the board or the shot log.
 
-**Before any public build:** §7 lists "Single player, not alternating
-two-player duel" as an independence checkpoint. This mode is exactly an
-alternating two-player duel. It is a private prototype; whether it ships, and
-under what changes, is an owner decision to make against §7 first.
+**Scope (owner, October 2026):** local versus is in scope for now as a
+secondary mode, and §7's single-player item says so. The run stays the main
+game. Versus is held to the rest of §7 like everything else: structures and
+terrain only, no figures or skyline, its own art.
 
 ### 11.1 Rules
 
