@@ -166,11 +166,29 @@ jobs:
         run: cargo run --release -q -p salt-line-sim --bin batch
       - name: each intended build shape
         run: |
-          set -eu
+          set -euo pipefail
           for build in base drift demo precision risk; do
             cargo run --release -q -p salt-line-sim --bin batch -- \
               --seeds 20 --screens 60 --build "$build" | tail -3
           done
+      # Economy regression gate over the documented balance run (100 seeds x 40
+      # screens). The run is deterministic, so it never flakes: the bounds let
+      # small intended tuning through and trip on a larger shift in generation,
+      # refunds, the curve or batch.rs's play model. Each run prints its values
+      # next to its bounds. If a trip was intended, re-centre the bounds around
+      # the new values rather than pinning them to the exact numbers.
+      - name: shell economy stays in its band
+        run: |
+          set -uo pipefail
+          status=0
+          gate() {
+            cargo run --release -q -p salt-line-sim --bin batch -- --seeds 100 --screens 40 --fast "$@" \
+              | grep -E '^(economy gate|unsolvable screens)' || status=1
+          }
+          gate --build base --skill perfect --max-exhausted 0 --ending 58..71
+          gate --build base --skill steady --max-exhausted 2 --ending 29..37
+          gate --build evolving --skill steady --aim scaled --max-exhausted 8 --ending 39..50
+          exit "$status"
 
   lint:
     name: fmt + clippy
