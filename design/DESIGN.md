@@ -999,6 +999,19 @@ terrain only, no figures or skyline, its own art.
 - First to **3 hits** takes a round; **best of 3** rounds takes the match. The
   round's loser does not matter for who opens: the sides take turns opening,
   left first.
+- **Equal shots** (`versus::EQUAL_SHOTS`): a round only ends once both sides
+  have fired as often as each other. If the opener makes its third hit, the
+  other side gets one last shot; a tie past three plays on in pairs until a
+  pair ends with one side ahead.
+- **The guns roll after a hit** (`versus::GUN_SHIFT`, 20 units each). At the
+  end of any pair of shots that had a hit in it, both guns move one step,
+  together, back toward their edges or forward toward each other (drawn from
+  the match seed). The range changes by 40 units, so the shot that just hit
+  stops working. Both move, so the duel stays mirrored; a gun stays within 16
+  units back and 48 forward of `EMPLACEMENT_X`, and a spot is only taken if
+  the screen still passes the duel gate (§11.3) from there. They roll at the
+  end of the pair, not straight after the hit, so the side answering a hit
+  aims at the guns it was scored on. A new round puts them back.
 - **Wind** is drawn every turn, uniform in `±2.5`, from the match seed, the
   round and the turn number (`versus::turn_wind`). The HUD shows it to one
   decimal, since every duel wind is small.
@@ -1081,9 +1094,28 @@ and how it is going should read without reading words.
   match is won, procedural like every other effect.
 - **Rematch** returns to the pre-match aim-help choice, still set as it was.
 
-### 11.5 Open questions
+### 11.5 Measuring the rules
+
+The first rules let a player who had found the range repeat the shot: a
+repeated hit landed again 96% of the time, and the opener won about two rounds
+in three. The duel harness (`just duel`) plays bot matches under any setting of
+the levers in `versus::Rules` (wind range and floor, hit reach, equal shots,
+gun roll) and reports shots per hit, turns per round, how often a repeated hit
+lands, and how often the opener wins. Wind strong enough to spoil a repeat
+swamps every shot, and a shorter reach only makes all shots harder; rolling
+the guns brings repeated hits down to about one in four, and equal shots brings
+the opener's rounds back to about half. Shots per hit rise from about 1.5 to
+2.2 and rounds from about 7 turns to 13. NOTES §7 has the table.
+
+### 11.6 Open questions
 
 - Should a round's loser open the next round, rather than alternating?
+  (Equal shots has removed most of the edge either way.)
+- Should the guns' roll be animated or captioned? Today they are found at
+  their new spots behind the pass-the-phone plate.
+- Is a round of about 13 turns right for a young player, or should
+  `GUN_SHIFT` come down (16 gives about 11 turns, with repeated hits landing
+  about 44% of the time)?
 - Should a gun take damage from its own shells?
 - A visible keyed title row (the keyed title snapshot was kept unchanged).
 - Resume after the app is killed: a match is a seed plus shots, so it could be
