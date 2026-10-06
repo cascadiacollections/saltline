@@ -211,7 +211,7 @@ impl Game {
             self.start_versus();
         } else if self.action_pressed(Action::Back) {
             self.play(Sound::Ui);
-            self.mode = Mode::Title;
+            self.leave_versus();
         }
     }
 

@@ -582,3 +582,22 @@ fn a_miss_is_called_out_for_the_shooter() {
     assert_eq!(vs(&g).callout(), Some((Side::Left, false)));
     assert!(!fx.contains(&Effect::Play(Sound::Hit)));
 }
+
+#[test]
+fn back_from_the_rematch_choice_leaves_versus_as_title_does() {
+    let mut g = in_match();
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::MatchOver(Side::Left);
+    live.stage = Stage::Result;
+    press(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    g.take_effects();
+    let fx = press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Title);
+    assert!(g.versus.live.is_none());
+    // The buffer is put back for the title, as leaving a match does.
+    assert!(
+        fx.iter().any(|e| matches!(e, Effect::Buffer { .. })),
+        "{fx:?}"
+    );
+}
