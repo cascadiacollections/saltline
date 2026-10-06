@@ -243,3 +243,29 @@ with guessed values.
   screen under the new mix. Existing epoch-5 runs are discarded on update
   because generated screens and outcomes change. Epoch digest:
   `0x0e222e08a33eaf8a`.
+
+---
+
+## 7. Local versus prototype (DESIGN §11)
+
+Choices the owner's brief left open, made the simple way:
+
+- **No self-hits.** A shell that lands on its own gun scores nothing. The
+  shooter's own gun is not a collision box; the other gun is.
+- **Openers alternate by round**, left first, rather than the loser opening.
+- **The gate checks three winds** (calm and both extremes), not every turn's
+  draw. Craters change the ground during a round anyway, so no per-turn gate
+  could hold; this proves the screen fair as dealt.
+- **Gun box** is the 26-pixel chassis around the barrel pivot, three rows
+  above it and nine below (two of those in the ground), measured off
+  `tank_base.png` as it is seated.
+- **Title entry.** A LOCAL VERSUS row on a touchscreen only; with keys it is
+  the bindable `versus` action (`2`, pad LB). Adding a keyed row would have
+  changed the pinned title snapshot, which the brief asked to keep.
+- **The score and wind wait for the landing.** The rules score a shot when it
+  is fired; the HUD shows the score and the wind as they were until the
+  shell comes down, like SCREEN CLEAR in a run.
+- **Nothing is saved.** No resume, no board, no onboarding lessons learned
+  from versus input.
+- **Match seed** is the daily seed mixed with a per-session match count, since
+  the core reads no clock.

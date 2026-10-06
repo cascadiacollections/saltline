@@ -131,6 +131,7 @@ request.
 | 1 / 2 / 3 | X / A / B | Tap a card | Take a draft offer |
 | Enter | A | Tap the row | Daily run, confirm, continue |
 | S | — | SEED ENTRY | Seed entry (touch has an on-screen keypad) |
+| 2 | LB (on the title) | LOCAL VERSUS | Local versus, two players on one device (see below) |
 | C | X | COPY SEED | Copy the seed (on the run-over screen) |
 | R | Y | SAME SEED AGAIN | Replay the same seed |
 | V | Back/Select | CONTROLS / AUDIO | Controls and audio screen |
@@ -184,8 +185,25 @@ bindings and resets them with R/Y. For practical custom remapping, add lines
 using `bind ACTION KEY PAD`, for example `bind fire F X`. Supported actions are
 `left`, `right`, `up`, `down`, `fire`, `fuse_down`, `fuse_up`,
 `reposition_left`, `reposition_right`, `draft_1`, `draft_2`, `draft_3`,
-`confirm`, `back`, `copy`, `replay`, `controls`, and `mute`. The displayed
+`confirm`, `back`, `copy`, `replay`, `controls`, `mute`, and `versus`. The displayed
 default token names are accepted; unknown or malformed lines are ignored.
+
+### Local versus
+
+A prototype two-player mode for one phone, hot-seat (DESIGN §11). On a
+touchscreen the title has a LOCAL VERSUS row; with keys it is `2` (pad LB), and
+the keyed title does not list it. The pre-match screen sets AIM HELP for each
+player (Left / Right, or tap the row), off by default; START begins.
+
+The left gun fires right and the right gun fires left; turns alternate. Between
+turns a plate covers the field: pass the phone and tap READY (Enter / A). The
+same aim controls work for both guns; the right gun's drag is mirrored (pull
+back to the right). A hit is any blast that reaches the other gun. First to 3
+hits takes a round, best of 3 rounds takes the match. Wind changes every turn,
+craters last for the round, and every round is new ground. Aim help shows that
+player's last landing mark and arc and a short preview of the current aim.
+Esc / B / `II` pauses; TITLE leaves the match. Nothing about a match is saved,
+and a run kept for CONTINUE is left alone.
 
 The barrel sprite shows the angle rounded to 5°; the numeric field shows the
 true value. That gap is intentional — it is why `Vernier` feels like an
@@ -245,7 +263,9 @@ godot --headless --path . -- --salt-seed 20260907 --salt-screen 96 \
 Dev flags: `--salt-seed <seed>`, `--salt-screen <n>`, `--salt-auto` (aims with
 the solver and takes offer 1), `--salt-miss` (throws the first shot of each
 screen away, to exercise craters and chalk marks), `--salt-hold-draft`,
-`--salt-shot <path>`, `--salt-shot-at <seconds>`, `--salt-gallery <dir>`.
+`--salt-shot <path>`, `--salt-shot-at <seconds>`, `--salt-gallery <dir>`,
+`--salt-versus` (start a local versus match; with `--salt-auto` the autopilot
+plays both guns, and with `--salt-miss` too, every other turn misses).
 
 ## Art
 
