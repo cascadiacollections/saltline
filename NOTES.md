@@ -329,16 +329,16 @@ guesses, so compare rows rather than reading them as forecasts.
 | rules, kid v kid | shots per hit | turns per round | repeat hits | opener wins round | past 3 hits | turns per match (mean, p90) |
 |---|---|---|---|---|---|---|
 | as shipped in #60 | 1.77 | 7.7 | 96% | 59.0% | 0% | 19.2, 26 |
-| equal shots only | 1.65 | 9.5 | 96% | 47.7% | 23% | 24.3, 34 |
-| **equal shots + rolling guns (16, ladder −1..+2)** | **2.27** | **11.7** | **41%** | **47.7%** | **15%** | **29.6, 42** |
-| same, step 20 (hangs 3 px off screen) | 2.55 | 13.0 | 22% | 48.2% | 15% | 32.8, 48 |
-| same, step 16, forward only (ladder 0..+3) | 2.14 | 11.5 | 37% | 46.4% | 20% | 29.4, 40 |
+| equal shots only | 1.66 | 9.1 | 96% | 46.7% | 22% | 23.1, 34 |
+| **equal shots + rolling guns (16, ladder −1..+2)** | **2.28** | **11.5** | **40%** | **46.5%** | **16%** | **28.8, 42** |
+| same, step 20 (hangs 3 px off screen) | 2.58 | 12.8 | 22% | 48.2% | 15% | 32.0, 47 |
+| same, step 16, forward only (ladder 0..+3) | 2.16 | 11.3 | 37% | 45.6% | 20% | 28.5, 40 |
 
 | rules, steady v steady | shots per hit | turns per round | repeat hits | opener wins round | past 3 hits | turns per match (mean, p90) |
 |---|---|---|---|---|---|---|
 | as shipped in #60 | 1.44 | 6.6 | 96% | 67.7% | 0% | 16.7, 22 |
-| equal shots only | 1.28 | 11.9 | 93% | 48.7% | 38% | 28.9, 50 |
-| **equal shots + rolling guns** | **1.87** | **13.0** | **51%** | **50.7%** | **32%** | **32.2, 54** |
+| equal shots only | 1.28 | 11.5 | 93% | 48.5% | 37% | 28.0, 48 |
+| **equal shots + rolling guns** | **1.90** | **12.8** | **51%** | **51.3%** | **33%** | **31.8, 52** |
 
 Kid against steady, the kid's share of matches (the mean over the two ways
 round, since the side that opens round 1 differs):
@@ -346,8 +346,8 @@ round, since the side that opens round 1 differs):
 | rules | kid as left | kid as right | kid's share |
 |---|---|---|---|
 | as shipped in #60 | 30.8% | 25.0% | 27.9% |
-| equal shots only | 15.5% | 19.5% | 17.5% |
-| **equal shots + rolling guns** | **26.8%** | **27.0%** | **26.9%** |
+| equal shots only | 14.8% | 22.2% | 18.5% |
+| **equal shots + rolling guns** | **24.2%** | **24.8%** | **24.5%** |
 
 "Repeat hits" is how often the shot that just hit, fired again unchanged on
 that side's next turn, would hit again. "Past 3 hits" is the share of rounds
@@ -365,24 +365,26 @@ that a tie carried beyond three.
 - **Rolling the guns** is what spoils a repeat. Both guns move together, back
   or forward, so the duel stays mirrored and one value (`Screen::muzzle_x`)
   still places both guns. At a step of 16 a repeated hit lands about as often
-  as a fresh aim does (kid 41% against 1 / 2.27 = 44%; steady 51% against
-  53%), so repeating the last hit stops being worth anything. A step of 20
+  as a fresh aim does (kid 40% against 1 / 2.28 = 44%; steady 51% against
+  1 / 1.90 = 53%), so repeating the last hit stops being worth anything. A step of 20
   would make repeating worse than aiming afresh, but one step back would put
   the pivot at x = 10 and the chassis 3 pixels off the screen; 16 is the
   longest step that can go back once and stay on screen, so both ways are
   reachable from home.
 - **Even odds, both ways.** A forward-only ladder (guns only ever start by
-  closing in) measured about the same (37% repeats, 46.4% opener rounds), so
+  closing in) measured about the same (37% repeats, 45.6% opener rounds), so
   there is no case for it over a random direction.
 - **They roll at the end of a pair**, not straight after the hit. Rolling at
   once left the opener winning 55–61% of rounds even with equal shots: the
   side answering a winning hit had to aim at guns that had just moved.
 - **Equal shots** removes the opener's edge within a round: the side that did
-  not open always gets as many shots. If its answer ties things past three,
-  play goes on in pairs until one pair ends with someone ahead. On its own it
-  hurts a weaker player against a stronger one (the stronger rarely misses
-  the answering shot); with rolling guns the kid's share is back to where it
-  was under the #60 rules.
+  not open gets its shot whenever that shot could still tie. If its answer
+  ties things past three, play goes on in pairs until one pair ends with
+  someone ahead. An opener two or more clear at the mark (3-0, 3-1) wins on
+  its own shot rather than handing the other side a shot that cannot matter.
+  On its own equal shots hurts a weaker player against a stronger one (the
+  stronger rarely misses the answering shot); with rolling guns the kid's
+  share comes most of the way back (24.5% against 27.9% under the #60 rules).
 - **Fresh ground under rolled guns.** A gun could roll into a stretch the
   other side had cratered: the two pivots were up to 16 units apart after a
   roll, against under 5 on the generated ground (what is left of its
@@ -396,7 +398,7 @@ that a tie carried beyond three.
 - **Owner toggle.** ROLLING GUNS on the pre-match screen (on by default, kept
   for a rematch) plays a match with `GUN_SHIFT` at zero, so the rule can be
   tried both ways. Equal shots stays on.
-- What is left: at the match level, the side that opens round 1 won 46–48%
+- What is left: at the match level, the side that opens round 1 won 44–47%
   of same-bot matches under the new rules (±2.5% at 400 matches).
 - **The guns are found moved after the handoff.** During the HIT or MISS
   hold the guns are drawn where the shot found them; the move happens behind
@@ -407,8 +409,13 @@ that a tie carried beyond three.
   every frame for the field, the gun tags and aim help alike, for a move the
   plate already announces.
 - **Overtime cues** (DESIGN §11.4) come from one rules query,
-  `Match::overtime`: LAST SHOT when the side to move must answer a winning
-  hit, TIED when a pair ended level past three. The HIT callout and the
-  handoff plate both read it, so they cannot disagree. Pips past three grow
-  both rows to the higher count rather than adding a +1 marker: the same
-  pips, one more of them, no new glyph to learn.
+  `Match::stakes`: LAST SHOT when the side to move must answer a winning hit
+  and a hit would tie, TIED when a pair ended level past three, HIT TO WIN
+  whenever a hit by the side to move would end the round in their favour
+  (in overtime, and at the ordinary deciding moments such as 2-2 after the
+  opener missed). HIT TO WIN asks `round_winner` itself, so the cue and the
+  rule cannot drift apart, and the HIT callout and the handoff plate read
+  the same query. Pips past three grow both rows to the higher count rather
+  than adding a +1 marker, up to five; past that the score is two numbers
+  in the sides' colours, so the plate stays clear of the pause button and
+  inside the 200-pixel handoff and result plates.

@@ -999,10 +999,12 @@ terrain only, no figures or skyline, its own art.
 - First to **3 hits** takes a round; **best of 3** rounds takes the match. The
   round's loser does not matter for who opens: the sides take turns opening,
   left first.
-- **Equal shots** (`versus::EQUAL_SHOTS`): a round only ends once both sides
-  have fired as often as each other. If the opener makes its third hit, the
-  other side gets one last shot; a tie past three plays on in pairs until a
-  pair ends with one side ahead.
+- **Equal shots** (`versus::EQUAL_SHOTS`): the side that did not open gets an
+  answer only when a hit would tie. If the opener makes its third hit one
+  ahead, the other side gets one last shot; if the opener is two or more
+  ahead (3-0, 3-1), no answer could tie and the round ends on the opener's
+  shot. A tie past three plays on in pairs until a pair ends with one side
+  ahead.
 - **The guns roll after a hit** (`versus::GUN_SHIFT`, 16 units each),
   unless ROLLING GUNS is turned off on the pre-match screen (on by default,
   kept for a rematch). At the end of any pair of shots that had a hit in it,
@@ -1095,12 +1097,15 @@ and how it is going should read without reading words.
   over a small dot per round the match takes. When a tie carries a round past
   three, both rows grow to the higher side's hit count, so every hit has a
   dot and a lead shows as one filled dot against an empty one (at 4–3 the
-  rows are four wide). The score plate widens to match.
+  rows are four wide). The score plate widens to match, up to five dots a
+  row; past that each side's hits are a number in its colour, so the plate
+  stays clear of the pause button and inside the handoff and result plates.
 - **Overtime and roll cues:** the handoff plate adds a line under the name of
   the player taking the phone. LAST SHOT - HIT TO TIE (in their colour) when
-  the opener has made the winning hit and they must answer; TIED - KEEP GOING
-  when a pair has ended level past three; and GUNS ROLLED CLOSER or GUNS
-  ROLLED APART after the guns roll. The HIT callout on a hit that leaves the
+  the opener has made the winning hit one ahead and they must answer; HIT TO
+  WIN (in their colour) when a hit by them would win the round outright;
+  TIED - KEEP GOING when a pair has ended level past three; and GUNS ROLLED
+  CLOSER or GUNS ROLLED APART after the guns roll. The HIT callout on a hit that leaves the
   round open reads RIGHT GUN TO ANSWER (or LEFT) or TIED - KEEP GOING instead
   of naming a scorer, so the opener's third hit does not look like the win.
   The result plate and its fanfare come only with an actual round win. The

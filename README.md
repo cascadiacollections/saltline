@@ -204,9 +204,8 @@ phone and tap READY (Enter / A). The
 same aim controls work for both guns, mirrored for the right one: Left and
 Right (and `<` `>`) move either barrel's tip the same way across the screen, and
 the right gun's drag pulls back to the right. A hit is any blast that reaches the other gun. First to 3
-hits takes a round, but both players always get the same number of shots: if
-the player who went first gets the third hit, the other gets one last shot to
-tie it. Best of 3 rounds takes the match. After a hit, once both have shot, the
+hits takes a round, but if the player who went first gets the third hit only
+one ahead, the other gets one last shot to tie it; a tie plays on. Best of 3 rounds takes the match. After a hit, once both have shot, the
 two guns roll a little (together, so it stays fair) and the range has to be
 found again; turn ROLLING GUNS off to keep them still. Wind changes every turn,
 craters last for the round, and every round is new ground. Aim help shows that
