@@ -1688,6 +1688,64 @@ mod tests {
     }
 
     #[test]
+    fn overtime_and_rolls_are_called_on_the_handoff_plate() {
+        use crate::app::VersusStage;
+        use crate::versus::{RollWay, Side, HITS_TO_WIN_ROUND as N};
+        let mut g = game();
+        g.input.touch_active = true;
+        g.start_versus();
+        let plain = draw(&g).0;
+        let vs = g.versus.live.as_mut().unwrap();
+        assert_eq!(vs.stage, VersusStage::Handoff);
+        assert!(versus::handoff_cues(vs).is_empty(), "an ordinary turn");
+
+        // Left opened and reached the mark; right to answer.
+        vs.duel.hits = [N, N - 1];
+        vs.duel.to_move = Side::Right;
+        vs.duel.turn = 2 * N - 1;
+        let cues = versus::handoff_cues(vs);
+        assert_eq!(
+            cues,
+            [("LAST SHOT - HIT TO TIE", versus::side_slot(Side::Right))]
+        );
+        assert_eq!(
+            versus::hit_line(&vs.duel, Side::Left),
+            "RIGHT GUN TO ANSWER"
+        );
+        let last_shot = draw(&g).0;
+        assert_ne!(last_shot.bytes(), plain.bytes());
+
+        // Right tied it: left to move, level past the mark.
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.duel.hits = [N, N];
+        vs.duel.to_move = Side::Left;
+        vs.rolled = Some(RollWay::Apart);
+        let texts: Vec<&str> = versus::handoff_cues(vs).iter().map(|c| c.0).collect();
+        assert_eq!(texts, ["TIED - KEEP GOING", "GUNS ROLLED APART"]);
+        assert_eq!(versus::hit_line(&vs.duel, Side::Right), "TIED - KEEP GOING");
+        vs.rolled = Some(RollWay::Closer);
+        let texts: Vec<&str> = versus::handoff_cues(vs).iter().map(|c| c.0).collect();
+        assert_eq!(texts, ["TIED - KEEP GOING", "GUNS ROLLED CLOSER"]);
+        // Four hits each: every hit has a pip, and the plates still paint
+        // every pixel and fit the buffer.
+        vs.duel.hits = [N + 1, N];
+        vs.duel.to_move = Side::Right;
+        assert_eq!(versus::pip_count(vs.duel.hits), N + 1);
+        let (c, _) = draw(&g);
+        assert!(!c.palette_text(&Palette::default()).contains('.'));
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.stage = VersusStage::Aiming;
+        let (c, _) = draw(&g);
+        assert!(!c.palette_text(&Palette::default()).contains('.'));
+        // An ordinary hit names the scorer.
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.duel.hits = [1, 0];
+        vs.duel.to_move = Side::Right;
+        assert_eq!(versus::hit_line(&vs.duel, Side::Left), "LEFT GUN SCORES");
+        assert_eq!(versus::pip_count(vs.duel.hits), N);
+    }
+
+    #[test]
     fn the_aim_help_preview_flies_the_quantized_shot() {
         use crate::versus::{Match, Side};
         let duel = Match::new(5, 320);

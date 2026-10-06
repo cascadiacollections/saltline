@@ -137,6 +137,9 @@ pub(crate) struct VersusPlay {
     /// held. They are found at their new spots when the phone has been
     /// passed.
     pub(crate) landed: Option<Screen>,
+    /// Which way the guns rolled after the last shot, if they did: the
+    /// handoff plate says so. Cleared by the next shot.
+    pub(crate) rolled: Option<versus::RollWay>,
 }
 
 impl VersusPlay {
@@ -238,6 +241,7 @@ impl Game {
             score_before: None,
             paused: false,
             landed: None,
+            rolled: None,
         });
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -415,6 +419,7 @@ impl Game {
                 }
             }
         }
+        vs.rolled = report.rolled.as_ref().map(versus::Roll::way);
         vs.landed = report.rolled.map(|roll| roll.landed);
         let longest = report
             .traces

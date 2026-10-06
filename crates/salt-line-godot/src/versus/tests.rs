@@ -402,6 +402,44 @@ fn with_equal_shots_the_side_that_did_not_open_always_answers() {
 }
 
 #[test]
+fn overtime_says_when_a_shot_must_answer_and_when_it_is_tied() {
+    let mut m = Match::new(0x5A17, 320);
+    assert_eq!(m.overtime(), None);
+    for n in 1..=HITS_TO_WIN_ROUND {
+        let shot = hitting_shot(&m, Side::Left);
+        m.fire(shot, false).unwrap();
+        let want = (n == HITS_TO_WIN_ROUND).then_some(Overtime::LastShot);
+        assert_eq!(m.overtime(), want, "after left's hit {n}");
+        if n < HITS_TO_WIN_ROUND {
+            m.fire(MISS, false).unwrap();
+        }
+    }
+    // Right answers with a hit: not yet level, it has fewer hits. Make it
+    // level by hand and look from left's side, as after a tying answer.
+    m.hits = [HITS_TO_WIN_ROUND, HITS_TO_WIN_ROUND];
+    m.to_move = Side::Left;
+    assert_eq!(m.overtime(), Some(Overtime::Tied));
+    // Left goes ahead again: right has a last shot once more.
+    m.hits = [HITS_TO_WIN_ROUND + 1, HITS_TO_WIN_ROUND];
+    m.to_move = Side::Right;
+    assert_eq!(m.overtime(), Some(Overtime::LastShot));
+    // Without equal shots there is no overtime.
+    m.rules.equal_shots = false;
+    assert_eq!(m.overtime(), None);
+}
+
+#[test]
+fn a_roll_says_which_way_it_went() {
+    let landed = Match::new(1, 320).screen;
+    let roll = |dx: f64| Roll {
+        moved: [Vec2::new(dx, 0.0), Vec2::new(-dx, 0.0)],
+        landed: landed.clone(),
+    };
+    assert_eq!(roll(GUN_SHIFT).way(), RollWay::Closer);
+    assert_eq!(roll(-GUN_SHIFT).way(), RollWay::Apart);
+}
+
+#[test]
 fn an_answered_winning_hit_plays_on() {
     let mut m = Match::new(0x5A17, 320);
     for _ in 0..HITS_TO_WIN_ROUND {

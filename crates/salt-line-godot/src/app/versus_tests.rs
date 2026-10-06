@@ -237,6 +237,63 @@ fn rolled_guns_are_found_moved_after_the_handoff() {
 }
 
 #[test]
+fn overtime_holds_the_fanfare_until_someone_actually_wins() {
+    let mut g = in_match();
+    let mut fx = Vec::new();
+    let no_fanfare = |fx: &[Effect]| !fx.contains(&Effect::Play(Sound::Win));
+    // Both hit every time: left's third hit is answered by right's third.
+    for n in 1..=rules::HITS_TO_WIN_ROUND {
+        fx.extend({
+            let shot = hitting(&g);
+            take_turn(&mut g, shot)
+        });
+        assert_eq!(vs(&g).stage, Stage::Handoff, "left's hit {n} is no win");
+        if n == rules::HITS_TO_WIN_ROUND {
+            assert_eq!(vs(&g).duel.overtime(), Some(rules::Overtime::LastShot));
+        }
+        fx.extend({
+            let shot = hitting(&g);
+            take_turn(&mut g, shot)
+        });
+        assert_eq!(vs(&g).stage, Stage::Handoff);
+    }
+    assert_eq!(vs(&g).duel.overtime(), Some(rules::Overtime::Tied));
+    assert!(no_fanfare(&fx), "no fanfare while the round is still open");
+    // Left misses, right hits: right is ahead after the pair and wins.
+    fx.extend(take_turn(&mut g, MISS));
+    assert!(no_fanfare(&fx));
+    fx.extend({
+        let shot = hitting(&g);
+        take_turn(&mut g, shot)
+    });
+    assert_eq!(vs(&g).stage, Stage::Result);
+    assert_eq!(vs(&g).duel.phase, rules::Phase::RoundOver(Side::Right));
+    let wins = fx
+        .iter()
+        .filter(|e| **e == Effect::Play(Sound::Win))
+        .count();
+    assert_eq!(wins, 1, "one fanfare, with the result");
+}
+
+#[test]
+fn the_handoff_knows_which_way_the_guns_rolled_until_the_next_shot() {
+    let mut g = in_match();
+    assert_eq!(vs(&g).rolled, None);
+    let home = vs(&g).duel.screen.muzzle_x;
+    {
+        let shot = hitting(&g);
+        take_turn(&mut g, shot)
+    };
+    assert_eq!(vs(&g).rolled, None, "not before the pair is done");
+    take_turn(&mut g, MISS);
+    let way = vs(&g).rolled.expect("the pair had a hit");
+    let closer = vs(&g).duel.screen.muzzle_x > home;
+    assert_eq!(way == rules::RollWay::Closer, closer);
+    take_turn(&mut g, MISS);
+    assert_eq!(vs(&g).rolled, None, "a new shot clears it");
+}
+
+#[test]
 fn a_whole_match_plays_to_a_result_and_a_rematch() {
     let mut g = in_match();
     // Left wins two rounds straight; right never hits.

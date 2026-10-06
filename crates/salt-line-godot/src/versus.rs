@@ -459,6 +459,37 @@ pub struct Roll {
     pub landed: Screen,
 }
 
+/// Which way a roll took the guns.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RollWay {
+    /// Toward each other: a shorter range.
+    Closer,
+    /// Back toward the edges: a longer range.
+    Apart,
+}
+
+impl Roll {
+    /// Which way the guns went: the left gun moving right is closer.
+    pub fn way(&self) -> RollWay {
+        if self.moved[0].x > 0.0 {
+            RollWay::Closer
+        } else {
+            RollWay::Apart
+        }
+    }
+}
+
+/// Where a round stands once it has gone past its usual end, under equal
+/// shots ([`Match::overtime`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Overtime {
+    /// The opener is one hit ahead with the mark reached, and the side to
+    /// move has one shot to tie it.
+    LastShot,
+    /// A pair has ended level past the mark: play goes on in pairs.
+    Tied,
+}
+
 /// Every distinct shot `frame`'s gun can dial in that hits `target`, up to
 /// `cap`. Candidates come from the solver's closed form (DESIGN §2.4), aimed
 /// at the box centre and just under its top; each is then flown by the
@@ -780,7 +811,10 @@ impl Match {
         // In the shared frame, where both the traces and the box now are.
         // A shell that ended on a structure ended on the other gun, the
         // only box it can strike, so a self-hit is never also a hit.
-        let self_hit = !hit && traces.iter().any(|t| hits(t, own_box, &lo, self.rules.hit_reach));
+        let self_hit = !hit
+            && traces
+                .iter()
+                .any(|t| hits(t, own_box, &lo, self.rules.hit_reach));
 
         if hit {
             self.hits[shooter.index()] += 1;
@@ -875,6 +909,28 @@ impl Match {
             return Some(delta);
         }
         None
+    }
+
+    /// Whether the round has gone past its usual end, as the side to move
+    /// sees it: they must answer a winning hit ([`Overtime::LastShot`]), or
+    /// the last pair ended level past the mark ([`Overtime::Tied`]). `None`
+    /// for an ordinary turn, outside `Phase::Aiming` and without equal
+    /// shots.
+    pub fn overtime(&self) -> Option<Overtime> {
+        if !self.rules.equal_shots || self.phase != Phase::Aiming {
+            return None;
+        }
+        let opener = Match::first_to_move(self.round);
+        let (theirs, mine) = (self.hits[opener.index()], self.hits[opener.other().index()]);
+        if theirs < HITS_TO_WIN_ROUND {
+            None
+        } else if self.to_move != opener && theirs > mine {
+            Some(Overtime::LastShot)
+        } else if self.to_move == opener && theirs == mine {
+            Some(Overtime::Tied)
+        } else {
+            None
+        }
     }
 
     /// Deal the next round: a new screen, hits back to zero, the other side
