@@ -51,8 +51,10 @@ configurations inside a band (the "shell economy stays in its band" step).
   1 at 75% and none from 80%.
 - **Drafting carries long runs.** Over 100 screens a steady player runs dry in
   every run without drafts (around screen 59), against 8 of 100 with them.
-  For a rough player it is 100 against 61. The model credits Salvage and Chalk
-  Marks with assumed effects (see `batch.rs`).
+  For a rough player it is 100 against 61. Salvage's refund share comes from
+  probing where near-solution misses land (about 53% of misses on one-target
+  screens, 78% on three-target ones); Chalk Marks' effect is assumed. See
+  `batch.rs`.
 
 **Score:** screens cleared. Tiebreak on shells remaining, then total shots.
 Never show a score during the run. Show only the shell count and the screen
