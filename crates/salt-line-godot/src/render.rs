@@ -1633,7 +1633,13 @@ mod tests {
         screens.push(c);
         assert_eq!(
             actions(&buttons),
-            [Action::Left, Action::Right, Action::Confirm, Action::Back]
+            [
+                Action::Left,
+                Action::Right,
+                Action::Up,
+                Action::Confirm,
+                Action::Back
+            ]
         );
 
         g.versus.help = [true, true];

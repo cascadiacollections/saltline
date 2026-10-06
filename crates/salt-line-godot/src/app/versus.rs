@@ -92,6 +92,10 @@ pub(crate) struct VersusState {
     /// landing mark, the last arc and a short preview of the current aim.
     /// Off for both by default.
     pub(crate) help: [bool; 2],
+    /// ROLLING GUNS OFF on the pre-match screen: the guns stay where they
+    /// are all match ([`versus::GUN_SHIFT`] off). On by default, and kept
+    /// for a rematch, so the rule can be tried both ways.
+    pub(crate) rolling_off: bool,
     /// Matches started this session, so each gets its own seed.
     pub(crate) started: u64,
     /// Different at every launch (the adapter reads the clock), so the
@@ -182,6 +186,21 @@ impl VersusPlay {
     }
 }
 
+impl VersusState {
+    /// The rules a match started now plays by: the game's, with the guns'
+    /// roll off if the pre-match screen says so.
+    pub(crate) fn rules(&self) -> versus::Rules {
+        versus::Rules {
+            gun_shift: if self.rolling_off {
+                0.0
+            } else {
+                versus::GUN_SHIFT
+            },
+            ..versus::Rules::DEFAULT
+        }
+    }
+}
+
 impl Game {
     /// Something that differs at every launch, for match seeds. The core
     /// reads no clock; the adapter passes the wall clock once at launch.
@@ -207,7 +226,7 @@ impl Game {
         );
         let width = self.display.buffer_w as usize;
         self.versus.live = Some(VersusPlay {
-            duel: Match::new(seed, width),
+            duel: Match::with_rules(seed, width, self.versus.rules()),
             stage: Stage::Handoff,
             anim: None,
             aims: [(900, 600); 2],
@@ -235,8 +254,13 @@ impl Game {
         self.apply_buffer_size();
     }
 
-    /// The pre-match screen: each side's aim help, start, back.
+    /// The pre-match screen: each side's aim help, rolling guns, start,
+    /// back.
     pub(super) fn handle_versus_setup_input(&mut self) {
+        if self.action_pressed(Action::Up) {
+            self.versus.rolling_off = !self.versus.rolling_off;
+            self.play(Sound::Ui);
+        }
         for (action, side) in [(Action::Left, Side::Left), (Action::Right, Side::Right)] {
             if self.action_pressed(action) {
                 let i = side.index();

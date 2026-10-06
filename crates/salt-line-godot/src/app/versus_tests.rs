@@ -112,6 +112,36 @@ fn the_title_opens_versus_and_the_setup_sets_aim_help() {
 }
 
 #[test]
+fn rolling_guns_can_be_turned_off_for_a_match_and_its_rematches() {
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    assert!(!g.versus.rolling_off, "on by default");
+    assert_eq!(g.versus.rules().gun_shift, rules::GUN_SHIFT);
+    press(&mut g, Key::Up);
+    assert!(g.versus.rolling_off);
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).duel.rules.gun_shift, 0.0);
+    // Equal shots stays on either way.
+    assert!(vs(&g).duel.rules.equal_shots);
+    // A hit and its answer: the guns stay put.
+    let home = vs(&g).duel.screen.muzzle_x;
+    let shot = hitting(&g);
+    take_turn(&mut g, shot);
+    take_turn(&mut g, MISS);
+    assert_eq!(vs(&g).duel.screen.muzzle_x, home);
+    // A rematch keeps the choice.
+    let seed = vs(&g).duel.seed;
+    g.start_versus();
+    assert_ne!(vs(&g).duel.seed, seed);
+    assert_eq!(vs(&g).duel.rules.gun_shift, 0.0);
+    // And it turns back on.
+    g.open_versus_setup();
+    press(&mut g, Key::Up);
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).duel.rules.gun_shift, rules::GUN_SHIFT);
+}
+
+#[test]
 fn a_match_leaves_a_saved_run_and_the_disk_alone() {
     let mut g = game();
     g.start_run(77, false);

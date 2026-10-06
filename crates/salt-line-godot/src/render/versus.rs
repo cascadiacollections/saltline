@@ -108,8 +108,8 @@ pub(super) fn aim_preview(duel: &versus::Match, side: Side, aim: (i32, i32)) -> 
 
 impl Painter<'_> {
     /// The pre-match screen, under the title lettering `render_menu` drew:
-    /// the rules in a line, each side's aim help in its colour, start and
-    /// back.
+    /// the rules in a line, each side's aim help in its colour, rolling
+    /// guns, start and back.
     pub(super) fn render_versus_setup(&mut self, mut y: i32) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
@@ -127,6 +127,7 @@ impl Painter<'_> {
         );
         y += 13;
         let help = self.g.versus.help;
+        let rolling = !self.g.versus.rolling_off;
         let on = |b: bool| if b { "ON" } else { "OFF" };
         let rows = [
             (
@@ -139,6 +140,7 @@ impl Painter<'_> {
                 format!("RIGHT AIM HELP: {}", on(help[1])),
                 colour(Side::Right),
             ),
+            (Action::Up, format!("ROLLING GUNS: {}", on(rolling)), fg),
             (Action::Confirm, "START".to_string(), fg),
             (Action::Back, "BACK".to_string(), dim),
         ];
