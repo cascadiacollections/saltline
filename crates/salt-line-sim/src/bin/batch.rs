@@ -50,9 +50,10 @@
 //! calibrated player types.
 //!
 //! Two modifiers act on misses. Salvage refunds its shells for a miss with
-//! the probability measured for that screen by [`salvage_probe`]: the share of
-//! near-solution misses (the dial a step or two off a shot that works) that the
-//! game's own rule would refund. Chalk Marks, which has no such geometry to
+//! the probability in [`SALVAGE_SHARE`], by the screen's target count: the
+//! share of near-solution misses (the dial a step or two off a shot that
+//! works) that the game's own rule would refund, as [`salvage_probe`]
+//! measures it under a stated miss model. Chalk Marks, which has no such geometry to
 //! measure, raises the odds of a hit on each retry at the same target by an
 //! assumed [`CHALK_RETRY_ODDS`]. `--salvage-probe` prints the measured share
 //! by band. Salvage
@@ -77,8 +78,8 @@ use salt_line_sim::run::{generate_screen, refund, Rung, Screen, StructState};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::Template;
 use salt_line_sim::{
-    band_of, BAND_LEN, EMPLACEMENT_X, FAR_EDGE_X, MIN_SOLUTIONS, SCREEN_W_REF, SOLVER_TIME_SAMPLES,
-    START_SHELLS,
+    band_of, ANGLE_QUANTUM_TICKS, BAND_LEN, EMPLACEMENT_X, FAR_EDGE_X, MIN_SOLUTIONS, SCREEN_W_REF,
+    SOLVER_TIME_SAMPLES, START_SHELLS,
 };
 
 /// Which loadout the screens are validated against. Solvability is a property
@@ -539,10 +540,13 @@ fn scaled_hit_percent(hit_percent: u32, difficulty: f64) -> u32 {
     ((odds / (1.0 + odds) * 100.0).round() as u32).clamp(10, 99)
 }
 
-/// Salvage share for a screen where [`salvage_probe`] found no misses to
-/// measure (rare). The measured mean over 100 seeds x 40 screens: 62% on base,
-/// 66% on evolving. It replaced an unmeasured 75%.
-const SALVAGE_FALLBACK_SHARE: f64 = 0.64;
+/// Share of misses Salvage refunds, by the screen's target count (index 0
+/// unused): what [`salvage_probe`] measures for near-solution misses, rounded.
+/// More targets standing means more of the screen is within 30 units of one.
+/// Re-measure with `--salvage-probe` (evolving, 100 seeds x 40 screens) after
+/// changing generation or the probe. Measured: 53/68/78% on evolving,
+/// 51/64/74% on base. Replaced an unmeasured flat 75% (#59).
+const SALVAGE_SHARE: [f64; 4] = [0.0, 0.53, 0.68, 0.78];
 
 /// Chalk Marks keeps the last landing point marked, so a retry at the same
 /// target starts from a visible reference. Modelled as multiplying the odds
@@ -564,14 +568,15 @@ fn chalk_retry_percent(hit_percent: u32, chalk_marks: u8) -> u32 {
     ((odds / (1.0 + odds) * 100.0).round() as u32).clamp(hit_percent, 99)
 }
 
-/// Plays one screen's sampled shots in order against the reserve: `attempts`
-/// holds each target's shot count, the last of which hits. Each shot costs a
-/// shell; a miss refunds `salvage` shells (capped at `cap`) when `near`
-/// says it landed close enough. Returns the reserve left and the shells
-/// salvaged, or `None` if the reserve hits 0 with a shot still to fire.
-/// Angle and power steps the game's aim input moves in: one angle quantum and
-/// the touch aim's 5-tick power step (`salt-line-godot`'s `aim::POWER_STEP`).
-const PROBE_STEPS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 5), (0, -5)];
+/// Dial steps the probe walks in: one base angle quantum (0.5 degrees, even
+/// under Vernier, so every loadout is probed over the same angles) and the
+/// touch aim's 5-tick power step (`salt-line-godot`'s `aim::POWER_STEP`).
+const PROBE_STEPS: [(i32, i32); 4] = [
+    (ANGLE_QUANTUM_TICKS, 0),
+    (-ANGLE_QUANTUM_TICKS, 0),
+    (0, 5),
+    (0, -5),
+];
 /// Candidates probed per target, and misses recorded per direction.
 const PROBE_CANDIDATES: usize = 3;
 const PROBE_MISSES: usize = 2;
@@ -581,10 +586,20 @@ const PROBE_MAX_STEPS: i32 = 60;
 /// Where does a near-solution miss land? From up to [`PROBE_CANDIDATES`]
 /// shots that fell each target, step the dial outward in each of
 /// [`PROBE_STEPS`] until the shot stops felling it, and record the first
-/// [`PROBE_MISSES`] misses in that direction: the misses of a player whose
-/// aim is close but not right. Each is resolved by the game's own
-/// `apply_shot` with Salvage held, so `salvage` is exactly the game's rule.
-/// A shot that fells a different target is not a miss and is skipped.
+/// [`PROBE_MISSES`] misses in that direction. Each is resolved by the game's
+/// own `apply_shot` with Salvage held, so "near" is exactly the game's rule.
+///
+/// A shot that fells a different target is not a miss: before the first miss
+/// the walk steps past it, and after one it ends that direction. A walk that
+/// reaches the end of the dial (angle or power clamped) stops there.
+///
+/// What this measures is the closest misses to a working shot, the most
+/// favourable case for Salvage. Still assumed: misses spread evenly over the
+/// four directions, no combined angle-and-power error, no misjudged wind, no
+/// bias toward missing short. Edges of a wide hit window count too, so some
+/// "near" misses are 10+ steps from the candidate. The share falls as more
+/// distant misses are included (about 64/60/55% on base for the first
+/// 1/4/8 misses per direction).
 ///
 /// Returns (misses Salvage would refund, misses).
 fn salvage_probe(screen: &Screen, lo: &Loadout) -> (u64, u64) {
@@ -592,18 +607,23 @@ fn salvage_probe(screen: &Screen, lo: &Loadout) -> (u64, u64) {
     if probe_lo.salvage_radius <= 0.0 {
         probe_lo.take(Modifier::Salvage);
     }
-    let quantum = lo.angle_quantum_ticks.max(1);
     let (mut near, mut total) = (0u64, 0u64);
     for target in 0..screen.structures.len() {
         let (cands, _) = solver::solve_target_capped(screen, lo, target, PROBE_CANDIDATES);
         for cand in cands.iter().take(PROBE_CANDIDATES) {
             for (da, dp) in PROBE_STEPS {
                 let mut found = 0;
+                let mut previous = cand.shot.quantized(lo);
                 for k in 1..=PROBE_MAX_STEPS {
                     let shot = Shot::new(
-                        cand.shot.angle_ticks + k * da * quantum,
+                        cand.shot.angle_ticks + k * da,
                         cand.shot.power_ticks + k * dp,
-                    );
+                    )
+                    .quantized(lo);
+                    if shot == previous {
+                        break; // pinned at the end of the dial
+                    }
+                    previous = shot;
                     let mut scratch = screen.clone();
                     let report =
                         scratch.apply_shot(shot, &probe_lo, screen.default_fuse(target), false);
@@ -628,6 +648,11 @@ fn salvage_probe(screen: &Screen, lo: &Loadout) -> (u64, u64) {
     (near, total)
 }
 
+/// Plays one screen's sampled shots in order against the reserve: `attempts`
+/// holds each target's shot count, the last of which hits. Each shot costs a
+/// shell; a miss refunds `salvage` shells (capped at `cap`) when `near`
+/// says it landed close enough. Returns the reserve left and the shells
+/// salvaged, or `None` if the reserve hits 0 with a shot still to fire.
 fn play_screen(
     mut reserve: i32,
     attempts: &[u32],
@@ -700,8 +725,9 @@ fn main() {
         }
     );
     println!(
-        "miss modifiers, when held: Salvage near-miss share measured per screen; \
-         Chalk Marks retry odds x{CHALK_RETRY_ODDS} (assumed)\n"
+        "miss modifiers, when held: Salvage share by target count {:?} (probed near \
+         misses, assumed miss model); Chalk Marks retry odds x{CHALK_RETRY_ODDS} (assumed)\n",
+        &SALVAGE_SHARE[1..]
     );
 
     let mut by_band: Vec<Bucket> = Vec::new();
@@ -718,6 +744,8 @@ fn main() {
     let mut economy_salvage = 0u64;
     // (near misses, misses) per band, from --salvage-probe.
     let mut probe_by_band: Vec<(u64, u64)> = Vec::new();
+    // Same, by the screen's target count (index 0 unused).
+    let mut probe_by_targets = [(0u64, 0u64); 4];
     let mut combat_clears = 0u64;
     let mut targets_cleared = 0u64;
     let mut one_shot_clears = 0u64;
@@ -798,6 +826,9 @@ fn main() {
                 let (near, total) = salvage_probe(&screen, &lo);
                 probe_by_band[band].0 += near;
                 probe_by_band[band].1 += total;
+                let k = screen.structures.len().min(3);
+                probe_by_targets[k].0 += near;
+                probe_by_targets[k].1 += total;
             }
             let report = if args.fast {
                 solver::validate(&screen, &lo)
@@ -847,16 +878,7 @@ fn main() {
                     .collect();
                 let shots: u32 = attempts.iter().sum();
                 let before = reserve;
-                // Measured per screen, and only when Salvage is held, so other
-                // builds pay nothing for it.
-                let near_share = if lo.salvage_shells > 0 {
-                    match salvage_probe(&screen, &lo) {
-                        (_, 0) => SALVAGE_FALLBACK_SHARE,
-                        (near, total) => near as f64 / total as f64,
-                    }
-                } else {
-                    0.0
-                };
+                let near_share = SALVAGE_SHARE[target_count.min(3)];
                 let played = play_screen(reserve, &attempts, lo.cap(), lo.salvage_shells, || {
                     salvage_rng.next_f64() < near_share
                 });
@@ -1167,11 +1189,18 @@ fn main() {
                 near as f64 / total as f64 * 100.0
             );
         }
-        println!(
-            "  all {t:>8} {:>7.1}%  (fallback when a screen has none: {:.0}%)",
-            n as f64 / t.max(1) as f64 * 100.0,
-            SALVAGE_FALLBACK_SHARE * 100.0
-        );
+        println!("  all {t:>8} {:>7.1}%", n as f64 / t.max(1) as f64 * 100.0);
+        println!("by target count (what the economy model uses, SALVAGE_SHARE):");
+        for (k, &(near, total)) in probe_by_targets.iter().enumerate().skip(1) {
+            if total > 0 {
+                println!(
+                    "  {k} target{} {total:>8} {:>7.1}%  (table {:.0}%)",
+                    if k == 1 { " " } else { "s" },
+                    near as f64 / total as f64 * 100.0,
+                    SALVAGE_SHARE[k] * 100.0
+                );
+            }
+        }
     }
 
     let mut failed = false;
@@ -1276,6 +1305,13 @@ mod tests {
             salvage_probe(&screen, &plain),
             salvage_probe(&screen, &salvaged)
         );
+    }
+
+    #[test]
+    fn salvage_share_rises_with_targets_and_stays_a_probability() {
+        assert_eq!(SALVAGE_SHARE[0], 0.0);
+        assert!(SALVAGE_SHARE.windows(2).all(|w| w[0] <= w[1]));
+        assert!(SALVAGE_SHARE.iter().all(|p| (0.0..=1.0).contains(p)));
     }
 
     #[test]
