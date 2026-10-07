@@ -125,10 +125,16 @@ jobs:
           arch: x86_64
           disable-animations: false
           script: bash tools/android_digest.sh target/x86_64-linux-android/release/determinism > digest.txt
+      # Shown even when the run failed: its summary, digest included, went to
+      # the file rather than the log.
+      - name: show the emulator's output
+        if: always()
+        run: cat digest.txt || true
       - name: extract the digest
+        shell: bash
         run: |
-          set -eu
-          cat digest.txt
+          set -euo pipefail
+          grep -q '^os: *android$' digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-android-x86_64.txt
           cat digest-android-x86_64.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -213,7 +219,13 @@ jobs:
           found=0
           for f in digest-*.txt; do
             printf '%-28s %s\n' "$f" "$(cat "$f")"
-            found=$((found + 1))
+            # Count only a well-formed digest, so an empty or garbled file
+            # can't pass as a platform that agrees.
+            if grep -qxE '0x[0-9a-f]{16}' "$f"; then
+              found=$((found + 1))
+            else
+              echo "malformed digest in $f" >&2
+            fi
           done
           # One per `sim` matrix entry plus Android and iOS; keep in step
           # with those jobs.

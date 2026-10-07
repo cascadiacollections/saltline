@@ -22,10 +22,14 @@ shift
 adb=${ADB:-adb}
 remote=/data/local/tmp/salt-line-determinism
 
+# Remove the binary however the script ends, a failed step or Ctrl-C included.
+trap '"$adb" shell rm -f "$remote" >/dev/null 2>&1 || true' EXIT
+
 "$adb" push "$bin" "$remote" >/dev/null
 "$adb" shell chmod 755 "$remote"
 "$adb" shell getprop ro.build.fingerprint | sed 's/^/device: /'
+# adb shell joins the arguments and the device shell splits them again, which
+# is fine for the flags the binary takes (--expect 0x...), not for spaces.
 status=0
 "$adb" shell "$remote" "$@" || status=$?
-"$adb" shell rm -f "$remote"
 exit "$status"
