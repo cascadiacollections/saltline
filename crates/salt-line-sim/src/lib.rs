@@ -20,6 +20,8 @@
 //!   assembled and validated from its own seed (§2.2, §2.3).
 //! - [`replay`]: a run persisted as seed plus input log and rebuilt from it,
 //!   and the state hash that catches determinism leaks (§6, §9).
+//! - [`layout`]: a screen as plain integer data rather than a seed, for the
+//!   map editor and custom games (§13).
 //! - [`SIM_EPOCH`] and [`EPOCHS`]: how a change to the sim's outcomes is
 //!   detected and versioned instead of silently breaking old logs (§9.3).
 //!
@@ -34,6 +36,7 @@
 
 pub mod ballistics; // M1 — integration, collision
 pub mod dmath; // platform-stable trig, so the sim never calls libm
+pub mod layout; // DESIGN §13 — a screen as editable, shareable data
 pub mod modifiers; // M3 — pool, draft, loadout deltas
 pub mod replay; // M4 — seed + shot log -> verified reconstruction
 pub mod rng; // M1 — SplitMix64, PCG32

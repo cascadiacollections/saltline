@@ -32,9 +32,13 @@ use common::{play, Decision};
 use proptest::prelude::*;
 use salt_line_sim::ballistics::Shot;
 use salt_line_sim::dmath::{self, MAX_ANGLE_TICKS};
+use salt_line_sim::layout::{
+    Layout, LayoutName, Placed, WindSpec, CODE_PREFIX, MAX_CODE_CHARS, NAME_MAX,
+};
 use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::replay::{decode_log, encode_log, state_hash, Replay};
 use salt_line_sim::rng::Pcg32;
+use salt_line_sim::run::StructureKind;
 use salt_line_sim::{POWER_TICKS_MAX, SCREEN_W_MAX, SCREEN_W_MIN};
 
 /// Up to 40 player decisions. The ranges deliberately overshoot what the
@@ -115,6 +119,99 @@ proptest! {
     fn an_accepted_log_text_encodes_back_to_itself(text in log_text()) {
         if let Ok(log) = decode_log(&text) {
             prop_assert_eq!(encode_log(&log), text.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+    }
+}
+
+/// Any layout the share code can hold (DESIGN §13.7), valid or not: any
+/// width up to the widest buffer, any name, any wind the fields fit, one
+/// or two guns and up to seven structures anywhere. Heights are smooth
+/// ground (a walk whose slope changes a little each column, as real ground
+/// does), terraces, or noise across the whole `u16` range, so both of the
+/// code's modes and its escape for second differences too big for the Rice
+/// code are exercised.
+fn layouts() -> impl Strategy<Value = Layout> {
+    let name = prop::collection::vec(0usize..36, 0..=NAME_MAX).prop_map(|ix| {
+        let text: String = ix.iter().map(|&i| LayoutName::CHARSET[i] as char).collect();
+        LayoutName::parse(&text).expect("keypad characters")
+    });
+    let wind = prop_oneof![
+        Just(WindSpec::Calm),
+        (-8191i32..=8191).prop_map(WindSpec::Fixed),
+        (0i32..8192, 0i32..8192).prop_map(|(min, max)| WindSpec::Range { min, max }),
+    ];
+    let smooth =
+        (1usize..=SCREEN_W_MAX, any::<u16>(), any::<u64>()).prop_map(|(w, start, seed)| {
+            let mut r = Pcg32::new(seed);
+            let mut slope = 0i64;
+            let mut h = start as i64;
+            (0..w)
+                .map(|_| {
+                    let out = h.clamp(0, u16::MAX as i64) as u16;
+                    slope += r.range_u32(0, 8) as i64 - 4;
+                    h = out as i64 + slope;
+                    out
+                })
+                .collect::<Vec<u16>>()
+        });
+    let noisy = prop::collection::vec(any::<u16>(), 1..=SCREEN_W_MAX);
+    // Flat terraces and straight ramps, as the editor makes: long runs of
+    // zero second differences, which the code's run-length mode is for.
+    let terraced = prop::collection::vec((1usize..80, any::<u16>(), -3i64..=3), 1..12).prop_map(
+        |pieces| {
+            let mut out: Vec<u16> = Vec::new();
+            for (len, start, slope) in pieces {
+                for i in 0..len {
+                    if out.len() < SCREEN_W_MAX {
+                        out.push((start as i64 + slope * i as i64).clamp(0, u16::MAX as i64) as u16);
+                    }
+                }
+            }
+            out
+        },
+    );
+    let structures = prop::collection::vec(
+        (0usize..5, 0u16..512).prop_map(|(k, x0)| Placed {
+            kind: StructureKind::ALL[k],
+            x0,
+        }),
+        0..=7,
+    );
+    (
+        name,
+        prop_oneof![smooth, noisy, terraced],
+        structures,
+        prop::collection::vec(0u16..512, 1..=2),
+        wind,
+    )
+        .prop_map(|(name, heights, structures, guns, wind)| Layout {
+            name,
+            heights,
+            structures,
+            guns,
+            wind,
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// A layout's share code reads back as the same layout, field for field.
+    #[test]
+    fn a_layout_survives_its_share_code(layout in layouts()) {
+        let code = layout.to_code().expect("every generated layout fits the format");
+        prop_assert!(code.starts_with(CODE_PREFIX));
+        prop_assert!(code.len() <= MAX_CODE_CHARS);
+        prop_assert_eq!(Layout::from_code(&code), Ok(layout));
+    }
+
+    /// Any text at all is a layout or an error, never a panic; and a layout
+    /// read from text writes back to a code that reads as the same layout.
+    #[test]
+    fn any_text_is_a_layout_or_an_error(text in "(SL|sl)?[0-9A-Za-z -]{0,80}") {
+        if let Ok(layout) = Layout::from_code(&text) {
+            let again = layout.to_code().expect("a decoded layout fits the format");
+            prop_assert_eq!(Layout::from_code(&again), Ok(layout));
         }
     }
 }
