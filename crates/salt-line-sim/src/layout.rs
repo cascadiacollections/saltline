@@ -91,7 +91,7 @@ use crate::rng::{substream, Pcg32};
 use crate::run::{self, generate_screen, Screen, StructureKind, CHASSIS_WIDTH};
 use crate::solver;
 use crate::terrain::{Heightfield, Template, WORLD_CEIL, WORLD_FLOOR};
-use crate::{MIN_TARGET_SEPARATION, SCREEN_W_REF};
+use crate::{BASE_BLAST_RADIUS, MIN_TARGET_SEPARATION, SCREEN_W_REF};
 
 /// Every layout is this wide (owner decision, October 2026): one width, so
 /// a layout plays the same on every phone. Wider buffers show it
@@ -144,6 +144,14 @@ pub const GUN_EDGE_MARGIN: u16 = 14;
 
 /// Clear columns between a gun's chassis and the nearest structure.
 pub const GUN_CLEARANCE: usize = 8;
+
+/// The least distance between a duel's two pivots, in columns: the
+/// 26-column chassis ([`CHASSIS_WIDTH`]) plus twice the base blast radius
+/// (`BASE_BLAST_RADIUS`, 9), the reach a blast has to hit a gun (§11.1).
+/// With the boxes at least 18 apart, no one detonation reaches both guns,
+/// so a shot is never a hit and a self-hit at once, and neither chassis
+/// overlaps the other.
+pub const MIN_GUN_GAP: u16 = CHASSIS_WIDTH as u16 + 2 * BASE_BLAST_RADIUS as u16;
 
 // ------------------------------------------------------------------ name
 
@@ -463,12 +471,16 @@ pub enum Problem {
     /// A duel's guns are not mirror images: versus places the right gun as
     /// the mirror of the left (§11.2).
     GunsNotMirrored,
+    /// A duel's first gun is not the left one.
+    GunsOutOfOrder,
+    /// A duel's pivots are closer than [`MIN_GUN_GAP`].
+    GunsTooClose,
     /// A one-gun layout with no targets.
     NoTargets,
     /// More than [`MAX_TARGETS`] targets.
     TooManyTargets(usize),
     /// A duel layout with structures in it. Phase 1 plays duels on bare
-    /// ground; structures as cover are an open question (§13.12).
+    /// ground; structures as cover are an open question (§13.13).
     StructuresInDuel,
     /// A structure's footprint runs off the screen or onto its edge column.
     StructureOffScreen(usize),
@@ -543,13 +555,25 @@ pub fn check_placement(layout: &Layout) -> Vec<Problem> {
             out.push(Problem::GunOffScreen(i));
             continue;
         }
-        let x0 = (g - half) as usize;
+        // The right gun is seated in the mirrored frame (§11.2), where its
+        // chassis starts one column further right than the left gun's rule
+        // would put it: columns `g - 12 ..= g + 13`, the mirror of the left
+        // gun's `g - 13 ..= g + 12`.
+        let x0 = (g - half) as usize + i;
         if hang(&field, x0, CHASSIS_WIDTH) > GUN_FLOAT_LIMIT {
             out.push(Problem::GunNotSeated(i));
         }
     }
-    if n_guns == 2 && layout.guns[0] as usize + layout.guns[1] as usize != w - 1 {
-        out.push(Problem::GunsNotMirrored);
+    if n_guns == 2 {
+        let (left, right) = (layout.guns[0], layout.guns[1]);
+        if left as usize + right as usize != w - 1 {
+            out.push(Problem::GunsNotMirrored);
+        }
+        if left >= right {
+            out.push(Problem::GunsOutOfOrder);
+        } else if right - left < MIN_GUN_GAP {
+            out.push(Problem::GunsTooClose);
+        }
     }
     if n_guns == 2 && !layout.structures.is_empty() {
         out.push(Problem::StructuresInDuel);

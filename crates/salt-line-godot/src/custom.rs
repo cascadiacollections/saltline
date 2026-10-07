@@ -55,10 +55,11 @@ fn wind_spec(rules: &Rules) -> WindSpec {
     }
 }
 
-/// `base` with a layout's wind in it: a range or calm becomes the rules'
-/// wind range; a fixed wind is held as a range of that one strength, so
-/// the rolling guns' gate (which checks the range's ends and calm) checks
-/// it too. The fixed wind's direction is the [`Ground`]'s.
+/// `base` with a layout's wind in it, and the guns' roll off: a range or
+/// calm becomes the rules' wind range; a fixed wind is held as a range of
+/// that one strength, its direction the [`Ground`]'s. Rolling guns are off
+/// on a layout until they can roll from the layout's own spots (DESIGN
+/// §13.13), whatever the pre-match screen says.
 pub fn duel_rules(layout: &Layout, base: Rules) -> Rules {
     let (min, max) = match layout.wind {
         WindSpec::Calm => (0, 0),
@@ -68,6 +69,7 @@ pub fn duel_rules(layout: &Layout, base: Rules) -> Rules {
     Rules {
         wind_min: wind_units(min),
         wind_max: wind_units(max),
+        gun_shift: 0.0,
         ..base
     }
 }

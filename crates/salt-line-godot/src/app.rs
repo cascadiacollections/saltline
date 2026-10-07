@@ -879,6 +879,9 @@ pub(crate) struct Dev {
     /// `--salt-shot` has a capture still to take. Nobody is watching with
     /// focus, so focus loss does not pause.
     pub(crate) capturing: bool,
+    /// Why `--salt-layout`'s code was not played, for the adapter to log
+    /// (the core has no console of its own).
+    pub(crate) layout_refused: Option<String>,
 }
 
 /// Crash reports: last session's, and whether this one has broken.
@@ -1459,7 +1462,10 @@ impl Game {
                 Ok(layout) if layout.is_duel() => self.start_layout_match(&layout),
                 // A one-gun layout is a challenge, which comes later (§13.9).
                 Ok(_) => self.note("LAYOUT HAS ONE GUN: NOT A DUEL".into()),
-                Err(_) => self.note("LAYOUT CODE NOT PLAYABLE".into()),
+                Err(why) => {
+                    self.dev.layout_refused = Some(why);
+                    self.note("LAYOUT CODE NOT PLAYABLE".into());
+                }
             }
         } else if args.versus {
             self.start_versus();

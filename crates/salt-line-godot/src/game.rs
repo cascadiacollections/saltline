@@ -272,13 +272,13 @@ impl INode2D for SaltLine {
             self.base().get_tree().quit();
             return;
         }
-        if let Some(Err(why)) = args.layout.as_deref().map(crate::custom::read) {
-            godot_warn!("salt-line: --salt-layout: {why}");
-        }
         self.shot_path = args.shot.clone();
         self.shot_at = args.shot_at;
         let fx = self.g.start_dev(&args, Self::today());
         self.apply(fx);
+        if let Some(why) = self.g.dev.layout_refused.take() {
+            godot_warn!("salt-line: --salt-layout: {why}");
+        }
         if !self.art.pal.sampled {
             godot_warn!("salt-line: palette not sampled from art; using the built-in fallback");
         }

@@ -231,6 +231,31 @@ fn each_placement_rule_names_what_breaks_it() {
         ),
         (
             Layout {
+                guns: vec![289, 30],
+                ..duel()
+            },
+            Problem::GunsOutOfOrder,
+        ),
+        (
+            // Mirrored, but the chassis overlap.
+            Layout {
+                guns: vec![150, 169],
+                ..duel()
+            },
+            Problem::GunsTooClose,
+        ),
+        (
+            // One spike under the right gun's last chassis column, which
+            // only the mirrored seating sees (§11.2).
+            {
+                let mut l = duel();
+                l.heights[289 + 13] = height_steps(BASE_ELEVATION + 30.0);
+                l
+            },
+            Problem::GunNotSeated(1),
+        ),
+        (
+            Layout {
                 structures: Vec::new(),
                 ..simple()
             },
@@ -339,6 +364,24 @@ fn each_placement_rule_names_what_breaks_it() {
     for (layout, problem) in cases {
         assert_eq!(check_placement(&layout), vec![problem], "{problem:?}");
         assert_eq!(validate(&layout), Err(vec![problem]));
+    }
+}
+
+#[test]
+fn a_gun_is_seated_on_its_own_chassis_columns() {
+    // The right gun's chassis is the mirror of the left's: columns
+    // 277..=302 for a pivot at 289, so a spike at 276 is beside it, not
+    // under it. The left gun's spans 17..=42.
+    for (column, gun) in [
+        (289 + 13, Some(1)),
+        (289 - 13, None),
+        (30 - 13, Some(0)),
+        (30 + 13, None),
+    ] {
+        let mut l = duel();
+        l.heights[column] = height_steps(BASE_ELEVATION + 30.0);
+        let want: Vec<Problem> = gun.into_iter().map(Problem::GunNotSeated).collect();
+        assert_eq!(check_placement(&l), want, "spike at {column}");
     }
 }
 
@@ -549,6 +592,16 @@ fn decoding_refuses_rather_than_guesses() {
     assert_eq!(
         Layout {
             guns: vec![30, 289, 160],
+            ..simple()
+        }
+        .to_code(),
+        Err(CodeError::Unencodable)
+    );
+    // Wider than any buffer: the decoder would refuse it, so the encoder
+    // does too.
+    assert_eq!(
+        Layout {
+            heights: vec![height_steps(BASE_ELEVATION); crate::SCREEN_W_MAX + 1],
             ..simple()
         }
         .to_code(),

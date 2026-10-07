@@ -791,9 +791,15 @@ impl Match {
     }
 
     /// A fresh match on `ground` rather than on generated screens: every
-    /// round starts on `ground.screen` as it is, under `rules`. `seed` still
-    /// draws the winds (unless the ground fixes one) and the rolls.
+    /// round starts on `ground.screen` as it is, under `rules` with the
+    /// guns' roll off (DESIGN §13.13: rolling from a layout's own spots is
+    /// later work). `seed` still draws the winds, unless the ground fixes
+    /// one.
     pub fn on_ground(seed: u64, ground: Ground, rules: Rules) -> Match {
+        let rules = Rules {
+            gun_shift: 0.0,
+            ..rules
+        };
         let mut m = Match {
             seed,
             loadout: Loadout::new(),
@@ -936,7 +942,14 @@ impl Match {
     /// that fired it.
     pub fn roll_guns(&mut self) -> Option<[Vec2; 2]> {
         let step = self.rules.gun_shift;
-        if step <= 0.0 {
+        // A layout's guns never roll (DESIGN §13.13): the ladder below is
+        // counted from `EMPLACEMENT_X`, not from where the layout stands
+        // them, and `fill_under_guns` would rewrite the author's ground.
+        // TODO(§13.13): a ladder measured from the layout's guns, each spot
+        // seat-checked, gated on the winds the layout can blow (a range's
+        // ends, or a fixed wind's own value) rather than calm and
+        // `rules.wind_max` either way.
+        if step <= 0.0 || self.ground.is_some() {
             return None;
         }
         let stream = substream(

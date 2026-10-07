@@ -113,7 +113,7 @@ fn a_duel_layout_must_pass_the_duel_gate_for_both_guns() {
 fn placement_comes_before_the_gate() {
     // Still in the pit, one column off the mirror.
     let mirrored = Layout {
-        guns: vec![30, 290],
+        guns: vec![30, 288],
         ..pit()
     };
     assert_eq!(validate(&mirrored), Err(vec![Problem::GunsNotMirrored]));
@@ -151,7 +151,8 @@ fn the_wind_maps_onto_the_rules() {
     let base = Rules::DEFAULT;
     let r = duel_rules(&level(), base);
     assert_eq!((r.wind_min, r.wind_max), (0.0, 2.5));
-    assert_eq!(r.gun_shift, base.gun_shift, "the other levers are kept");
+    assert_eq!(r.gun_shift, 0.0, "a layout's guns stay put");
+    assert_eq!(r.hit_reach, base.hit_reach, "the other levers are kept");
     let calm = Layout {
         wind: WindSpec::Calm,
         ..level()
@@ -173,6 +174,7 @@ fn a_match_on_a_layout_plays_every_round_on_it() {
     let ground = Screen::from_layout(&l, 0.0);
     let mut m = layout_match(&l, 77, Rules::DEFAULT);
     assert_eq!(m.screen.field.base, ground.field.base);
+    assert_eq!(m.rules.gun_shift, 0.0, "no rolling on a layout");
     let mut winds = Vec::new();
     let lo = m.loadout.clone();
     // The left gun fires the gate's first shot at the right, which always
@@ -193,7 +195,9 @@ fn a_match_on_a_layout_plays_every_round_on_it() {
             )[0],
             Side::Right => salt_line_sim::run::shot(900, 100),
         };
-        m.fire(shot, false);
+        let report = m.fire(shot, false).expect("aiming");
+        assert!(report.rolled.is_none(), "the guns never roll on a layout");
+        assert_eq!(m.screen.muzzle_x, 30.0);
     }
     assert!(matches!(m.phase, Phase::RoundOver(_)));
     assert!(m.screen.field.scar.iter().any(|&s| s != 0.0), "craters dug");
@@ -215,6 +219,19 @@ fn a_match_on_a_layout_plays_every_round_on_it() {
         assert_eq!(m.screen.wind, 1.5);
         m.fire(salt_line_sim::run::shot(900, 100), false);
     }
+}
+
+#[test]
+fn a_ground_never_rolls_even_under_rolling_rules() {
+    let l = fork_duel(3, 0);
+    let ground = Ground {
+        screen: Screen::from_layout(&l, 0.0),
+        wind: None,
+    };
+    let mut m = Match::on_ground(5, ground, Rules::DEFAULT);
+    assert_eq!(m.rules.gun_shift, 0.0);
+    m.rules.gun_shift = versus::GUN_SHIFT;
+    assert_eq!(m.roll_guns(), None, "nor if the rules are changed after");
 }
 
 #[test]
@@ -274,6 +291,10 @@ fn a_bad_layout_code_leaves_the_title_up_with_a_note() {
         assert_eq!(g.mode, Mode::Title, "{code}");
         assert!(g.versus.live.is_none());
         assert_eq!(g.status, "LAYOUT CODE NOT PLAYABLE");
+        let why = g.dev.layout_refused.as_deref().unwrap_or("");
+        assert!(
+            why.starts_with("not a layout code") || why.starts_with("the layout does not pass")
+        );
     }
     let mut g = game((1280, 720));
     let one_gun = Layout::from_run_screen(1, 0);

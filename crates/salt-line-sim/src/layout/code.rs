@@ -92,8 +92,8 @@ const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// Why a code could not be written or read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CodeError {
-    /// Encoding: the layout has a field the format cannot hold (a width or
-    /// column past 511, more than 7 structures, more than 2 guns or none, a
+    /// Encoding: the layout has a field the format cannot hold (no columns,
+    /// more than `SCREEN_W_MAX`, a column past 511, more than 7 structures, more than 2 guns or none, a
     /// wind past 8191 thousandths or a range with a negative end).
     Unencodable,
     /// Decoding: the text does not start with [`CODE_PREFIX`].
@@ -163,7 +163,7 @@ fn encode_body(l: &Layout) -> Option<Vec<u8>> {
     let w = l.heights.len();
     let fits = |v: usize| v < 1 << COLUMN_BITS;
     if w == 0
-        || !fits(w)
+        || w > SCREEN_W_MAX
         || !(1..=2).contains(&l.guns.len())
         || l.structures.len() > 7
         || l.guns.iter().any(|&g| !fits(g as usize))

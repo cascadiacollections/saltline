@@ -629,8 +629,14 @@ seeds: 4,000 run screens at 40 a seed, 300 duel rounds at 3 a seed).
   wind by at most 0.0005; the fork is a fixed point of forking; and a code
   rebuilds a bit-identical screen on every device. Shots fired at a fork end
   as at the generated screen 99.92% of the time (runs) and 99.3% (duels).
-- **Heights in sixteenths.** Measured over 2,000 run forks and 150 duel
-  forks (`--seeds 50`), changing only `HEIGHT_SCALE`:
+- **Phase 1 was checked on desktop.** `--salt-layout` played a forked duel
+  in Godot at 320 columns, letterboxed in a wider window (a headless
+  screenshot, plus the app test at a 400-column window). A phone has no
+  command line, so nothing here has run on the Pixel; the first phone path
+  is the GROUND row (DESIGN §13.12).
+- **Heights in sixteenths.** Measured on a smaller sample, 2,000 run forks
+  and 150 duel forks (`just layouts --seeds 50`), changing only
+  `HEIGHT_SCALE`:
 
   | Grid | Median code: runs | duels | Shots ending the same: runs | duels |
   |---|---|---|---|---|
@@ -651,11 +657,12 @@ seeds: 4,000 run screens at 40 a seed, 300 duel rounds at 3 a seed).
   layout can have, 400 columns of noise each escaped, is about 3,400; the
   decoder refuses text past 4,096.
 - **Check time** (release build, one core of a Ryzen AI 7 PRO 350):
-  placement plus the one-gun gate median 47 µs, p99 147 µs, max 208 µs; the
-  duel gate median 101 µs, max 224 µs. Cheap enough to run after every edit.
-- **Generated structures float.** 320 of 4,000 run forks (8%) fail the
-  floating rule (at least half the footprint within 4 units of the seat);
-  over 18,000 screens it is 9.2%, by template: `Spires` 25%, `Ridge` 17%,
+  placement plus the one-gun gate median 47 µs, p99 about 150 µs, max
+  210–260 µs across runs; the duel gate median about 100 µs, max 160–225 µs. Cheap enough to run after every edit.
+- **Generated structures float.** About 9% of run screens fail the
+  floating rule (at least half the footprint within 4 units of the seat):
+  9.2% over 18,000 screens (300 seeds, 60 screens each), and 320 of the
+  harness's 4,000 (8%). By template: `Spires` 25%, `Ridge` 17%,
   `Basin` 8.5%, `Chasm` 6%, `Flat` 0.1%, `Mesa` 0. They are second and
   third targets stepping back onto a spire or a ridge's flank. Raising the
   limit does not help much: 6.8% at 6 units, 2.8% at 12, 1.7% at 24 (some
@@ -667,8 +674,20 @@ seeds: 4,000 run screens at 40 a seed, 300 duel rounds at 3 a seed).
   rule (ground above the top on both sides within 3 columns) never fires on
   generated screens; ground above the top on one side does (next to a
   spire), which is shelter, not burial, so it is allowed.
-- **Every fork passes the solvability gate** where it passes placement: all
-  300 duel forks, and every run fork that is not floating.
+- **Every fork in the sample passes the solvability gate** where it passes
+  placement: all 300 duel forks, and every run fork that is not floating.
+- **Duel gun rules from the review.** The right gun is seated in the mirrored
+  frame, one column right of where the left gun's rule would put it (a test
+  puts a one-column spike under each chassis's last column). A duel's guns
+  must be in order and at least `MIN_GUN_GAP` = 44 apart: the 26-column
+  chassis plus twice the base blast radius, so the two boxes are at least 18
+  apart and no one detonation reaches both, and a shot is never a hit and a
+  self-hit at once.
+- **No rolling on a layout.** `Match::on_ground` and `custom::duel_rules`
+  set `gun_shift` to 0, and `roll_guns` refuses on a match with a ground,
+  since the ladder counts from `EMPLACEMENT_X` and `fill_under_guns` would
+  rewrite the layout's ground: a gun at 100 never rolled, and guns at 60 or
+  20 snapped to default spots. DESIGN §13.13 has the Phase 3 fix.
 - **Duel layouts have no structures** in Phase 1: versus flies a duel shot
   against the other gun's box only, so a structure would be drawn and not
   hit. **A duel's guns must be mirror images**, because versus places the
