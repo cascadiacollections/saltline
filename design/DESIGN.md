@@ -1194,9 +1194,39 @@ versus duel.
 | Run (even legs) | the next of `DEMO_RUNS`: a seed and a screen to start on | `DEMO_RUN_SCREENS` (4) screens cleared, the run over, or `DEMO_RUN_TIME` (75 s) |
 | Duel (odd legs) | a local versus match on the cycle's own seed, rolling guns on, aim help on for both | `DEMO_DUEL_ROUNDS` (1) round won, or `DEMO_DUEL_TIME` (40 s) at the next handoff |
 
-Over the first eight cycles a run leg took 17–27 s and a duel 20–42 s. The
-rotation carries on from one demo to the next in a session, so a second look
-starts on the leg after the one that was interrupted.
+Every leg opens with a **mode card** (below), and the caps count play only,
+from the card's end, so they bind as they did before the card. Over the
+first eight cycles a run leg, card and end hold included, takes 19–29 s and
+a duel 22–44 s (17–27 s and 20–42 s before the card). The rotation carries
+on from one demo to the next in a session, so a second look starts on the
+leg after the one that was interrupted.
+
+**Mode cards (owner request, October 2026).** So a viewer knows what they
+are watching, each leg, the very first included, opens with a card naming
+its mode, held `DEMO_CARD` (1.8 s) over the leg's first frame: the run's
+opening screen, or the duel's opening ROUND 1 plate. Nothing plays while it
+is up; the aim and the duel's plate hold still.
+
+| Before | Title | Hook |
+|---|---|---|
+| a run | ROGUELIKE | TOPPLE TARGETS · DRAFT A BUILD |
+| a duel | TWO PLAYERS | ONE PHONE · TAKE TURNS |
+
+The hooks say what §1 and §11 make of each mode: a run clears screens by
+toppling their targets and drafts a modifier every band; a duel passes one
+phone between two players, a shot each. The card sits top centre on a plate,
+level with the corner plates (row 3, below any cutout pad) and between them,
+27 rows tall: it ends at row 29, or row 35 with a phone's pad, above the
+duel's plate and the curated runs' tallest targets (row 40). The banner
+still shows below.
+It follows §5.2 and §5.6 like the banner: the native 3x5 face, the title in
+UI text, the hook in the secondary tone (`SKY_LO` in a run, as the menus
+have it; `ROCK` in a duel, where `SKY_LO` is the right player's colour), no
+side colours and no big type, and like the demo's other plates it does not
+dim the board. A run card does not name its seed: the line pushed the card
+down onto two of the four curated targets, and DUNE or 1984 means nothing to
+someone who has not seen seed entry. Input during a card ends the demo the
+same way as at any other time.
 
 The runs were picked from headless screenshots (`--salt-seed` with
 `--salt-screen` and `--salt-shot`) for a striking first screen, and start
@@ -1216,10 +1246,11 @@ target standing (or the other gun unhit), so craters, chalk and landing marks
 land close to the target and rolling guns get their turn. A high short lob is
 kept for when no near miss is found.
 
-Pacing keeps it moving: each new aim takes 0.8 s, the barrel and readouts
-easing to it over the first 0.55 s and holding there before it fires; the
-draft cards stay 1.6 s before an offer is taken, the duel's heading plate
-0.8 s, a result plate 1.8 s, and a run's last screen 1.2 s before the duel.
+Pacing keeps it moving: each leg's mode card stays 1.8 s; each new aim
+takes 0.8 s, the barrel and readouts easing to it over the first 0.55 s and
+holding there before it fires; the draft cards stay 1.6 s before an offer is
+taken, the duel's heading plate 0.8 s, a result plate 1.8 s, and a run's
+last screen 1.2 s before the duel.
 
 ### 12.3 Nothing the player keeps changes
 
@@ -1296,6 +1327,7 @@ run.
 
 ### 12.5 Open questions
 
-- Should the demo show a short card between legs naming the mode
-  ("ROGUELIKE", "TWO PLAYERS")?
+- ~~Should the demo show a short card between legs naming the mode
+  ("ROGUELIKE", "TWO PLAYERS")?~~ Yes (owner, October 2026): see "Mode
+  cards" in §12.2.
 - Sound on as an option, for a demo started from the menu?

@@ -10,6 +10,12 @@ second. See RELEASING.md for the release steps.
 
 ## [Unreleased]
 
+### Added
+
+- The attract demo opens each part with a short card naming what is coming:
+  ROGUELIKE (topple targets, draft a build) before a run, TWO PLAYERS (one
+  phone, take turns) before a duel.
+
 ## [0.1.0] - 2026-10-04
 
 ### Added

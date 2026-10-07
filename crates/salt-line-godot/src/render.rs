@@ -114,6 +114,7 @@ pub fn frame(
         _ => p.render_menu(),
     }
     if g.in_demo() {
+        p.render_demo_card();
         p.render_demo_banner();
     }
 }
@@ -1327,6 +1328,30 @@ impl Painter<'_> {
             .text_small(x + 5, y + 3, text, pal.get(slot::UI_FG));
     }
 
+    /// The card naming the mode a demo leg is about to play (DESIGN §12.2),
+    /// over the leg's first frame, top centre on a plate: between the
+    /// corner plates and above the duel's handoff plate. Like the banner,
+    /// plain text in the native face and no dimming (the demo's plates leave
+    /// the board in view): the title in UI text, the hook in the secondary
+    /// tone, `SKY_LO` in a run as the menus have it and `ROCK` in a duel,
+    /// where `SKY_LO` is the right player's colour (§11.4).
+    fn render_demo_card(&mut self) {
+        let Some(card) = self.g.demo.as_ref().and_then(|d| d.card()) else {
+            return;
+        };
+        let pal = self.pal;
+        let fg = pal.get(slot::UI_FG);
+        let dim = pal.get(if self.g.mode == Mode::Versus {
+            slot::ROCK
+        } else {
+            slot::SKY_LO
+        });
+        let (x, y, w, h) = demo_card_rect(self.g, &card, self.canvas.w);
+        self.canvas.plate(x, y, w, h, pal);
+        self.centred(y + 6, card.title, fg);
+        self.centred(y + 6 + 5 + 5, card.hook, dim);
+    }
+
     /// The pause plate over the frozen run.
     fn render_pause(&mut self) {
         let pal = self.pal;
@@ -1351,6 +1376,24 @@ impl Painter<'_> {
 }
 
 mod versus;
+
+/// Where the demo's mode card sits: `(x, y, w, h)` in a buffer `buffer_w`
+/// wide: centred, as wide as its longest line plus 8 a side, two lines
+/// tall (27 rows), its top at row 3 below the cutout pad: level with the
+/// corner plates (the run's wind and shells, the duel's score), which it
+/// stays between. It ends at row 29, or row 35 with a phone's 6-row pad,
+/// above the curated runs' tallest targets (row 40) and the duel's handoff
+/// plate, which starts below the middle.
+pub(crate) fn demo_card_rect(
+    g: &Game,
+    card: &crate::app::DemoCard,
+    buffer_w: i32,
+) -> (i32, i32, i32, i32) {
+    let tw = crate::font::small_width(card.title).max(crate::font::small_width(card.hook)) as i32;
+    let (w, h) = (tw + 16, 6 + 5 + 5 + 5 + 6);
+    let y = 3 + g.display.corner_pad.1;
+    ((buffer_w - w) / 2, y, w, h)
+}
 
 /// Menu lines reading "KEY  TEXT", each label padded to the widest of them
 /// and never narrower than ENTER, so the default rows keep their spacing and
@@ -1469,7 +1512,9 @@ mod tests {
 
     /// The demo's first frame of each leg, banner and all: a run on its
     /// first curated screen, and a duel's opening handoff plate with no
-    /// READY prompt.
+    /// READY prompt, each under the card naming its mode (ROGUELIKE, TWO
+    /// PLAYERS). `the_demo_card_is_a_plate_over_the_leg` checks the cards
+    /// change nothing else in these frames.
     #[test]
     fn the_demo_frames_are_pinned() {
         let mut g = game();
@@ -1488,6 +1533,84 @@ mod tests {
         let (duel, buttons) = draw(&g);
         assert!(buttons.is_empty());
         insta::assert_snapshot!("demo_duel", duel.palette_text(&Palette::default()));
+    }
+
+    /// The mode card over each leg's first frame: it paints only its own
+    /// rectangle, the banner and the rest of the frame are as they are
+    /// without it, and it keeps to §5.2: plate, UI text and the secondary
+    /// tone (`SKY_LO` in a run, `ROCK` in a duel), never the alert accent
+    /// or a side's colour. It clears the corner plates, the banner, the
+    /// duel's handoff plate and every curated run's targets (their actual
+    /// top rows, measured in the frame without the card), at the narrowest
+    /// buffer, with and without a phone's cutout pad.
+    #[test]
+    fn the_demo_card_is_a_plate_over_the_leg() {
+        use crate::app::DemoLeg;
+        let pal = Palette::default();
+        for pad in [(0, 0), (10, 6)] {
+            let mut g = game();
+            g.display.corner_pad = pad;
+            g.start_demo(crate::app::DemoStarted::Menu);
+            // The four curated runs and the duels between them.
+            for leg in 0..8u64 {
+                for _ in 0..10_000 {
+                    if g.demo.as_ref().unwrap().leg_index == leg {
+                        break;
+                    }
+                    g.tick(1.0 / 30.0, &idle());
+                }
+                let d = g.demo.as_ref().unwrap();
+                assert_eq!(d.leg_index, leg);
+                let run = d.leg() == DemoLeg::Run;
+                let card = d.card().expect("a card");
+                let (with, _) = draw(&g);
+                let left = std::mem::replace(&mut g.demo.as_mut().unwrap().card, 0.0);
+                let (without, _) = draw(&g);
+                g.demo.as_mut().unwrap().card = left;
+                let (x, y, w, h) = demo_card_rect(&g, &card, with.w);
+                let what = format!("leg {leg}, pad {pad:?}");
+                assert!(x > 30 && x + w < with.w - 30, "{what}: between the corners");
+                assert_eq!(y, 3 + pad.1, "{what}: level with the corner plates");
+                let (a, b) = (with.palette_text(&pal), without.palette_text(&pal));
+                if run {
+                    // The highest structure pixel under the card's columns.
+                    let top = b
+                        .lines()
+                        .position(|row| {
+                            row.chars().enumerate().any(|(px, c)| {
+                                (x..x + w).contains(&(px as i32)) && "abc".contains(c)
+                            })
+                        })
+                        .expect("a target under the card") as i32;
+                    assert!(
+                        y + h <= top,
+                        "{what}: card ends at {} over a target at {top}",
+                        y + h - 1
+                    );
+                } else {
+                    assert!(y + h < 60, "{what}: above the handoff plate");
+                }
+                let secondary = if run { '6' } else { '1' };
+                let mut inside = std::collections::BTreeSet::new();
+                for (py, (ra, rb)) in a.lines().zip(b.lines()).enumerate() {
+                    for (px, (ca, cb)) in ra.chars().zip(rb.chars()).enumerate() {
+                        let (px, py) = (px as i32, py as i32);
+                        if (x..x + w).contains(&px) && (y..y + h).contains(&py) {
+                            inside.insert(ca);
+                        } else {
+                            assert_eq!(ca, cb, "{what}: ({px}, {py}) outside the card");
+                        }
+                    }
+                }
+                let allowed = ['d', 'e', '3', secondary];
+                assert!(
+                    inside.iter().all(|c| allowed.contains(c)),
+                    "{what}: {inside:?}"
+                );
+                assert!(inside.contains(&secondary), "{what}: the hook");
+                assert!(inside.contains(&'d'), "{what}: the title");
+            }
+        }
     }
 
     #[test]

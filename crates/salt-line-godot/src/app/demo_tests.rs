@@ -7,7 +7,8 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 use super::demo::{
-    leg_of, DEMO_RUNS, DEMO_RUN_SCREENS, DEMO_RUN_TIME, IDLE_DEMO_AFTER, IDLE_DEMO_LIMIT, LOB,
+    card_of, leg_of, CARD_DUEL, CARD_RUN, DEMO_CARD, DEMO_DUEL_TIME, DEMO_END_HOLD, DEMO_RUNS,
+    DEMO_RUN_SCREENS, DEMO_RUN_TIME, IDLE_DEMO_AFTER, IDLE_DEMO_LIMIT, LOB,
 };
 use crate::input::{Event, Intents, Key, Pad};
 use crate::resume::Saved;
@@ -730,4 +731,177 @@ fn the_barrel_swings_to_each_aim_before_it_fires() {
     let fired = &g.play.run.as_ref().unwrap().log[0];
     assert_eq!(seen.last(), Some(&(fired.angle_ticks, fired.power_ticks)));
     assert!(seen.len() > 5, "snapped: {seen:?}");
+}
+
+// ------------------------------------------------------------- mode cards
+
+/// Idle frames while the current leg's card is up; panics if the leg
+/// changes first. Returns the frames counted.
+fn frames_of_card(g: &mut Game) -> usize {
+    let leg = leg_index(g);
+    let mut frames = 0;
+    while g.demo.as_ref().and_then(|d| d.card()).is_some() {
+        assert_eq!(leg_index(g), leg);
+        g.tick(FRAME, &idle());
+        frames += 1;
+        assert!(frames < 1000, "the card never went");
+    }
+    frames
+}
+
+#[test]
+fn each_leg_opens_with_a_card_naming_its_mode() {
+    assert_eq!(CARD_RUN.0, "ROGUELIKE");
+    assert_eq!(CARD_DUEL.0, "TWO PLAYERS");
+    assert!((1.5..=2.0).contains(&DEMO_CARD));
+    for leg in 0..4u64 {
+        let card = card_of(leg);
+        let want = if leg_of(leg) == DemoLeg::Run {
+            CARD_RUN
+        } else {
+            CARD_DUEL
+        };
+        assert_eq!((card.title, card.hook), want, "leg {leg}");
+    }
+    let mut g = game();
+    g.start_demo(DemoStarted::Menu);
+    for leg in 0..4u64 {
+        // The card is up from the leg's first frame, the very first leg's
+        // included, over the leg itself rather than a black screen.
+        wait_until(&mut g, DEMO_RUN_TIME + 30.0, |g| leg_index(g) == leg);
+        let d = g.demo.as_ref().unwrap();
+        assert_eq!(d.card(), Some(card_of(leg)), "leg {leg}");
+        let want = if leg_of(leg) == DemoLeg::Run {
+            Mode::Playing
+        } else {
+            Mode::Versus
+        };
+        assert_eq!(g.mode, want, "leg {leg}: the card is over the leg");
+        // Nothing plays under it: the aim holds, no shot is fired, the
+        // duel's opening plate waits, and the leg's caps have not started.
+        let aim = (g.play.angle_ticks, g.play.power_ticks);
+        let shots = g.play.run.as_ref().map(|r| r.log.len());
+        let stage = g.versus.live.as_ref().map(|v| (v.stage, v.duel.turn));
+        let seconds = frames_of_card(&mut g) as f64 * FRAME;
+        assert!(
+            (seconds - DEMO_CARD).abs() <= FRAME * 1.5,
+            "leg {leg}: the card stayed {seconds} s"
+        );
+        assert_eq!((g.play.angle_ticks, g.play.power_ticks), aim, "leg {leg}");
+        assert_eq!(g.play.run.as_ref().map(|r| r.log.len()), shots);
+        assert_eq!(
+            g.versus.live.as_ref().map(|v| (v.stage, v.duel.turn)),
+            stage
+        );
+        assert!(g.demo.as_ref().unwrap().leg_time < FRAME, "leg {leg}");
+        assert!(g.in_demo());
+    }
+}
+
+#[test]
+fn a_demo_that_starts_on_a_duel_opens_with_its_card() {
+    let mut g = game();
+    g.demo_next_leg = 1;
+    g.start_demo(DemoStarted::Idle);
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(g.demo.as_ref().unwrap().card(), Some(card_of(1)));
+}
+
+#[test]
+fn input_during_a_card_ends_the_demo_as_anywhere_else() {
+    let down = Event::FingerDown {
+        index: 0,
+        x: 160.0,
+        y: 90.0,
+    };
+    // On the first leg's card, and on the duel's card mid-demo.
+    for leg in [0u64, 1] {
+        for input in [keys(&[Key::Enter]), finger(vec![down])] {
+            let mut g = title_over_a_suspended_run();
+            let before = kept(&g);
+            g.start_demo(DemoStarted::Idle);
+            // Past the start's own touch settling, so a tap is a new tap.
+            wait_until(&mut g, DEMO_RUN_TIME + 30.0, |g| {
+                leg_index(g) == leg && g.input.touch_settle <= 0.0
+            });
+            assert!(g.demo.as_ref().unwrap().card().is_some(), "leg {leg}");
+            // The worst case: the whole screen a CONTINUE button under it.
+            let continue_button = [Button {
+                rect: Rect::new(0, 0, 400, 216),
+                action: Action::Confirm,
+            }];
+            g.set_buttons(&continue_button);
+            let fx = g.tick(FRAME, &input);
+            assert!(!g.in_demo(), "leg {leg}");
+            assert_eq!(g.mode, Mode::Title, "leg {leg}");
+            assert!(!fx.iter().any(Effect::touches_disk));
+            // Spent: a tap reported again while down, then its lift, press
+            // nothing; the key is still held.
+            g.set_buttons(&continue_button);
+            if input.events.contains(&down) {
+                g.tick(FRAME, &input);
+                g.tick(FRAME, &finger(vec![Event::FingerUp { index: 0 }]));
+            } else {
+                g.tick(
+                    FRAME,
+                    &Intents {
+                        keys_held: vec![Key::Enter],
+                        ..idle()
+                    },
+                );
+            }
+            wait(&mut g, 1.0);
+            assert_eq!(g.mode, Mode::Title, "leg {leg}");
+            assert_eq!(kept(&g), before, "leg {leg}");
+            // The next demo carries on from the leg after.
+            assert_eq!(g.demo_next_leg, leg + 1);
+        }
+    }
+}
+
+/// With the card added, every leg over the first eight cycles still ends
+/// by itself inside its cap: the card, then at most the cap of play, then
+/// a run's end hold or the duel's last turn to the handoff. The caps count
+/// play only, so they bind as they did before the card.
+#[test]
+fn the_legs_with_their_cards_stay_inside_their_caps() {
+    let mut g = game();
+    g.start_demo(DemoStarted::Menu);
+    let (mut runs, mut duels) = (Vec::new(), Vec::new());
+    for leg in 0..16u64 {
+        assert_eq!(leg_index(&g), leg);
+        let mut frames = 0usize;
+        while leg_index(&g) == leg {
+            g.tick(FRAME, &idle());
+            frames += 1;
+            assert!(frames < 10_000, "leg {leg} did not end");
+        }
+        let seconds = frames as f64 * FRAME;
+        if leg_of(leg) == DemoLeg::Run {
+            runs.push(seconds);
+        } else {
+            duels.push(seconds);
+        }
+    }
+    let span = |v: &[f64]| {
+        let lo = v.iter().copied().fold(f64::MAX, f64::min);
+        let hi = v.iter().copied().fold(0.0, f64::max);
+        (lo, hi)
+    };
+    let (runs, duels) = (span(&runs), span(&duels));
+    eprintln!("legs with cards: runs {runs:.1?} s, duels {duels:.1?} s");
+    // Four screens take well over the card, and end a run well inside its
+    // cap.
+    assert!(runs.0 > DEMO_CARD + 10.0, "runs {runs:?}");
+    assert!(
+        runs.1 < DEMO_CARD + DEMO_RUN_TIME * 0.5 + DEMO_END_HOLD,
+        "runs {runs:?}"
+    );
+    // A duel plays its round; the longest may reach its cap and end at the
+    // next handoff, a turn later.
+    assert!(duels.0 > DEMO_CARD + 10.0, "duels {duels:?}");
+    assert!(
+        duels.1 < DEMO_CARD + DEMO_DUEL_TIME + 10.0,
+        "duels {duels:?}"
+    );
 }
