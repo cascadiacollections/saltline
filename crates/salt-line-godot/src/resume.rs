@@ -62,7 +62,9 @@
 //!     cost   nothing
 //! rebuilding at launch (killed, or a log that brings the sim down)
 //!     finds  run-loading.txt
-//!     cost   that run, once: discarded with a note
+//!     cost   that run, once: discarded with a note, run.txt.new with it
+//!            (left by a write that died before its rename, it would be
+//!            picked next, and likely crash the rebuild again)
 //! after RunFile::Restore
 //!     finds  run.txt
 //!     cost   nothing
@@ -448,11 +450,23 @@ fn holds_only(files: &impl RunFiles, paths: Paths, text: &str) -> bool {
 }
 
 /// At launch, over a copy left set aside by a launch that died rebuilding
-/// it: throw that copy away, unread, and nothing else. A `run.txt` beside it
-/// was written after the copy was set aside (the live run put back), so it
-/// is kept for the next launch.
+/// it: throw that copy away, unread, and the temporary file with it. A
+/// `run.txt` beside it was written after the copy was set aside (the live
+/// run put back), so it is kept for the next launch.
+///
+/// The temporary file goes because it can only be a write that died
+/// before its rename, and with the main file gone (moved aside, then
+/// dropped here) the next launch would pick it ([`take_saved`]): most
+/// likely the same log that just brought the rebuild down, costing another
+/// crashed launch. A whole `run.txt` beside it would have won anyway.
 pub fn drop_set_aside(files: &mut impl RunFiles) {
-    files.remove(RUN_LOADING_PATH);
+    drop_set_aside_at(files, RUN_FILES);
+}
+
+/// [`drop_set_aside`] for any kept log, at its own `paths`.
+pub fn drop_set_aside_at(files: &mut impl RunFiles, paths: Paths) {
+    files.remove(paths.loading);
+    files.remove(paths.temp);
 }
 
 /// Leave no run to resume or score: [`replace`] with nothing.

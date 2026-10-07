@@ -151,7 +151,7 @@ impl FakeDisk {
                     self.rename(MATCH_LOADING_PATH, MATCH_PATH);
                 }
                 Effect::MatchFile(MatchFile::Abandon(Abandoned::Interrupted)) => {
-                    self.remove(MATCH_LOADING_PATH);
+                    resume::drop_set_aside_at(self, MATCH_FILES);
                 }
                 Effect::MatchFile(MatchFile::Discard | MatchFile::Abandon(_)) => {
                     resume::replace_at(self, MATCH_FILES, "");
@@ -1226,6 +1226,33 @@ fn a_match_that_crashed_its_rebuild_costs_one_launch() {
     };
     assert!(disk.launch().saved_match.is_none());
     assert!(disk.launch().saved_match.is_some());
+}
+
+/// A launch that died rebuilding, after a crash between a write's fsync and
+/// its rename: a set-aside copy beside a whole temporary file, for the run
+/// and the match alike. The next launch offers nothing and leaves nothing
+/// behind; the temporary file, with its copy gone, would otherwise be
+/// picked by the launch after and likely crash it too.
+#[test]
+fn an_interrupted_launch_takes_a_whole_temp_file_with_it() {
+    let (played, _) = play_and_kill(3, Kill::Plate);
+    let match_line = played.match_main.clone().unwrap();
+    let mut with_run = FakeDisk::default();
+    quit_mid_run(&mut with_run);
+    let run_line = with_run.run.clone().unwrap();
+    let mut disk = FakeDisk {
+        set_aside: Some(run_line.clone()),
+        temp: Some(run_line),
+        match_aside: Some(match_line.clone()),
+        match_temp: Some(match_line),
+        ..FakeDisk::default()
+    };
+    let g = disk.launch();
+    assert!(g.run_file.resumable.is_none());
+    assert!(g.saved_match.is_none());
+    assert_eq!(disk.files(), FakeDisk::default().files(), "nothing left");
+    let g = disk.launch();
+    assert!(g.run_file.resumable.is_none() && g.saved_match.is_none());
 }
 
 #[test]

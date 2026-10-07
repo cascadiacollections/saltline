@@ -119,11 +119,11 @@
 //! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft); [`Game::stored`], for a score that did not reach disk; launch or CONTINUE, dropping a line that will not replay | `resume::replace`: the run file becomes the text (`Game::run_file_text`: finished runs still to score, then the live run) | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
-//! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only the set-aside copy (`resume::drop_set_aside`) | no | yes |
+//! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes the set-aside copy and `run.txt.new`, never `run.txt` (`resume::drop_set_aside`) | no | yes |
 //! | `MatchFile(Write)` | a player's versus match started, then each shot fired and each round dealt (`persist_match`) | `resume::replace_at` at `match_log::MATCH_FILES`: the match file becomes the line | no | yes |
 //! | `MatchFile(Restore)` | [`Game::saved_match`], once the set-aside match has replayed | rename `match-loading.txt` back to `match.txt` | no | yes |
 //! | `MatchFile(Discard)` | a kept match left: its result plate left after the win (REMATCH or TITLE), or quit; a saved match that no longer rebuilds | `resume::replace_at` with `""`: delete every match file, or blank `match.txt` | no | yes |
-//! | `MatchFile(Abandon)` | [`Game::saved_match`], for a match this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only `match-loading.txt` | no | yes |
+//! | `MatchFile(Abandon)` | [`Game::saved_match`], for a match this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes `match-loading.txt` and `match.txt.new`, never `match.txt` (`resume::drop_set_aside_at`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
 //! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play or a versus match not paused, a menu-started demo, each until its quiet limit | `DisplayServer::screen_set_keep_on` | no | no |
 //!
@@ -528,8 +528,8 @@ pub enum RunFile {
     Discard,
     /// Throw away a run this build cannot continue, saying why in the log:
     /// `Discard` for one it could not read, and for one the last launch
-    /// died rebuilding only the copy left set aside, never a `run.txt`
-    /// written since.
+    /// died rebuilding only the copy left set aside and any temporary file,
+    /// never a `run.txt` written since.
     Abandon(Abandoned),
 }
 
@@ -549,7 +549,8 @@ pub enum MatchFile {
     Discard,
     /// Throw away a match this build cannot resume, saying why in the log:
     /// as `Discard` for one it could not read or replay, and only the
-    /// set-aside copy for one the last launch died rebuilding.
+    /// set-aside copy and any temporary file for one the last launch died
+    /// rebuilding.
     Abandon(Abandoned),
 }
 

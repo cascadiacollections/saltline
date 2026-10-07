@@ -633,7 +633,7 @@ impl SaltLine {
                         godot_warn!(
                             "salt-line: discarding {MATCH_LOADING_PATH}: a rebuild did not finish"
                         );
-                        save::remove(MATCH_LOADING_PATH);
+                        resume::drop_set_aside_at(&mut UserFiles, MATCH_FILES);
                     }
                     Abandoned::Unreadable(why) => {
                         godot_warn!("salt-line: discarding {MATCH_PATH}: {why:?}");
