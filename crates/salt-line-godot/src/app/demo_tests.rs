@@ -124,9 +124,9 @@ fn the_idle_demo_starts_after_thirty_quiet_seconds_on_the_title() {
     let fx = wait(&mut g, 1.5);
     assert!(g.in_demo());
     assert_eq!(g.mode, Mode::Playing);
-    // Started by itself: the screen may sleep as usual.
-    assert!(fx.contains(&Effect::ScreenAwake(Awake::LetSleep)));
-    assert!(!fx.contains(&Effect::ScreenAwake(Awake::Keep)));
+    // Started by itself: nothing holds the screen on.
+    assert!(!fx.iter().any(|e| matches!(e, Effect::ScreenAwake(_))));
+    assert!(!g.screen_awake_wanted());
 }
 
 #[test]
@@ -208,10 +208,10 @@ fn the_title_demo_item_starts_it_and_keeps_the_screen_on() {
     let mut g = game();
     let fx = g.tick(FRAME, &keys(&[Key::D]));
     assert!(g.in_demo());
-    assert!(fx.contains(&Effect::ScreenAwake(Awake::Keep)));
+    assert!(fx.contains(&Effect::ScreenAwake(true)));
     let fx = g.tick(FRAME, &keys(&[Key::Space]));
     assert!(!g.in_demo());
-    assert!(fx.contains(&Effect::ScreenAwake(Awake::AsProject)));
+    assert!(fx.contains(&Effect::ScreenAwake(false)));
     // And by pad: d-pad down.
     let fx = g.tick(
         FRAME,
@@ -221,7 +221,7 @@ fn the_title_demo_item_starts_it_and_keeps_the_screen_on() {
         },
     );
     assert!(g.in_demo());
-    assert!(fx.contains(&Effect::ScreenAwake(Awake::Keep)));
+    assert!(fx.contains(&Effect::ScreenAwake(true)));
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn the_dev_flag_starts_the_demo_as_the_menu_does() {
     let args = crate::cli::DevArgs::parse(&["--salt-demo".to_string()]);
     let fx = g.start_dev(&args, TODAY);
     assert!(g.in_demo());
-    assert!(fx.contains(&Effect::ScreenAwake(Awake::Keep)));
+    assert!(fx.contains(&Effect::ScreenAwake(true)));
 }
 
 // ------------------------------------------------------------------- loop
@@ -509,8 +509,8 @@ fn pending_settings_are_written_before_the_demo_not_during_it() {
     assert!(g.in_demo());
     let at = |want: &dyn Fn(&Effect) -> bool| fx.iter().position(want).unwrap();
     assert!(
-        at(&|e| *e == Effect::Store(Store::Settings))
-            < at(&|e| matches!(e, Effect::ScreenAwake(_))),
+        // The demo's mute is its first effect once it counts as running.
+        at(&|e| *e == Effect::Store(Store::Settings)) < at(&|e| matches!(e, Effect::Volume(_))),
         "flushed first: {fx:?}"
     );
     assert!(!g.settings.dirty());
@@ -680,11 +680,11 @@ fn an_unfocused_window_neither_starts_nor_keeps_an_idle_demo() {
     wait(&mut g, IDLE_DEMO_AFTER + 1.0);
     assert!(g.in_demo());
     // Focus goes again: the idle demo hands the title back, with the
-    // screen's setting and the sound.
+    // sound. It never held the screen on, so there is nothing to let go.
     let fx = g.focus_lost(&[]);
     assert!(!g.in_demo());
     assert_eq!(g.mode, Mode::Title);
-    assert!(fx.contains(&Effect::ScreenAwake(Awake::AsProject)));
+    assert!(!fx.iter().any(|e| matches!(e, Effect::ScreenAwake(_))));
     assert!(fx.contains(&Effect::Volume(g.volume_db())));
     // A demo chosen from the menu carries on.
     g.focus_gained();

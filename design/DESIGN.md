@@ -1252,27 +1252,50 @@ run.
 - **Muted.** The demo asks for -80 dB on every player while it runs, the
   same `Volume` effect mute uses, without touching the saved volume or mute;
   the title music stops with the title and comes back with it.
-- **Screen.** The game already keeps the screen on for as long as it is open,
-  title and menus included: that is Godot's default
-  (`display/window/energy_saving/keep_screen_on`), which this project has
-  never changed. So the idle demo does not hold the screen on, it *releases*
-  the hold: a phone left on the title sleeps as the operating system would
-  once its demo starts, and an unattended demo does not burn the screen all
-  night. A demo chosen from the menu holds the screen on, to be watched: to
-  showcase the game, start DEMO from the title. Both put the project's
-  setting back on exit (`Effect::ScreenAwake`).
+- **Screen.** The project turns Godot's default keep-screen-on off
+  (`display/window/energy_saving/keep_screen_on = false`), so the operating
+  system's screen timeout applies unless the game holds the screen on. It
+  holds it only while somebody is watching the phone, and not for ever if
+  nobody touches it:
+
+  | Holds the screen on | Lets it sleep |
+  |---|---|
+  | live play (`Playing`, the draft included), until 4 min without input | the title, Controls, seed entry |
+  | a versus match not paused (aiming, flight, the pass-the-phone plate, the results), until 4 min without input | a paused run, the versus pause |
+  | a demo chosen from the menu (DEMO, `--salt-demo`), for 15 min | the run's result (`GameOver`), the aim-help choice (`VersusSetup`) |
+  | | an idle-started demo, the error screen, any screen while unfocused or the app is paused |
+  | | live play or a menu demo past its quiet limit |
+
+  The quiet limits (`AWAKE_QUIET_LIMIT`, 4 minutes; `DEMO_AWAKE_LIMIT`,
+  15 minutes) count seconds without any input, a held key or stick or a
+  resting finger included (`Game::input_quiet`), from zero on entering a
+  screen that holds. Past one the screen sleeps on the OS timeout, so a
+  phone put down mid-run or on a versus plate does not stay lit; the next
+  input holds it again. A menu demo plays on past its limit, it just stops
+  holding the screen. The dev autopilot (`--salt-auto`, the profiling
+  build) and a pending `--salt-shot` capture are exempt, being untouched
+  by design.
+
+  The idle demo holds nothing, so a phone left on the title sleeps on its
+  normal timeout, demo or not, and an unattended demo does not burn the
+  screen all night. To showcase the game, start DEMO from the title. The
+  wanted state is worked out in one place from the mode, the pause, the
+  demo and the quiet count (`Game::screen_awake_wanted`, over
+  `Game::live_play`, which desktop GameMode also asks) every time effects
+  are taken, and an
+  `Effect::ScreenAwake` goes out only when it changes, so the focus and
+  app-pause notifications let go as surely as a frame does. The adapter
+  calls `DisplayServer::screen_set_keep_on`: on Android the window's
+  keep-screen-on flag, which counts only while the window is visible; on
+  iOS the idle timer; on desktop it holds off the screensaver and display
+  sleep. The error screen after a panic always sends a release, since a
+  panic in the adapter may have skipped the last one.
 - **30 fps.** The demo runs at `frame::IDLE_FPS`, the menus' cap: it is
   watched, not played, a shell's flight reads well enough at 30, and it may
   run for a long while on a battery. It never asks for desktop GameMode.
 
 ### 12.5 Open questions
 
-- **The title keeps the screen on forever.** A pre-existing issue the demo
-  work brought to light, not changed here: with Godot's default, a phone
-  left on the title (or a menu, or a pause) never sleeps. Proposed follow-up:
-  set `keep_screen_on` off in the project and hold the screen on only during
-  live play (`Playing`, an unpaused `Versus`) and a menu-started demo, through
-  the same `ScreenAwake` effect.
 - Should the demo show a short card between legs naming the mode
   ("ROGUELIKE", "TWO PLAYERS")?
 - Sound on as an option, for a demo started from the menu?

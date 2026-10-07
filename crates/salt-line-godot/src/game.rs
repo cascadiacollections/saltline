@@ -76,7 +76,7 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Abandoned, Aspect, Awake, CrashReport, Effect, Game, RunFile, Sound};
+use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, Sound};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
@@ -131,9 +131,6 @@ pub struct SaltLine {
     redraw: Redraw,
     /// The engine's frame cap as the project set it, restored in play.
     project_fps: i32,
-    /// Whether the project keeps the screen on, as it was at launch: what
-    /// `Awake::AsProject` puts back after the demo.
-    project_keep_on: bool,
     fps_cap: i32,
     /// When to read the display's safe area again, and what it last said.
     display: DisplayPoll,
@@ -198,7 +195,6 @@ impl INode2D for SaltLine {
             shadow: Shadow::default(),
             redraw: Redraw::default(),
             project_fps: 0,
-            project_keep_on: true,
             fps_cap: 0,
             display: DisplayPoll::default(),
             cutout: (0, 0),
@@ -241,7 +237,6 @@ impl INode2D for SaltLine {
         self.find_saved_run();
         self.setup_audio();
         self.project_fps = Engine::singleton().get_max_fps();
-        self.project_keep_on = DisplayServer::singleton().screen_is_kept_on();
         self.fps_cap = self.project_fps;
         let window = Self::window_size();
         self.cutout = self.cutout_px(window);
@@ -503,16 +498,11 @@ impl INode2D for SaltLine {
 #[godot_api]
 impl SaltLine {
     /// Presentation-only state for optional desktop services. A paused run
-    /// releases GameMode, and the attract demo never asks for it; neither
-    /// the service nor this query enters the sim.
+    /// releases GameMode, and neither the attract demo nor the error screen
+    /// asks for it; neither the service nor this query enters the sim.
     #[func]
     fn is_active_play(&self) -> bool {
-        if self.g.in_demo() {
-            return false;
-        }
-        self.g.mode == crate::app::Mode::Playing
-            || (self.g.mode == crate::app::Mode::Versus
-                && self.g.versus.live.as_ref().is_some_and(|v| !v.paused))
+        !self.g.in_demo() && !self.g.crash.broken && self.g.live_play()
     }
 }
 
@@ -629,14 +619,12 @@ impl SaltLine {
                         Self::discard_run_file();
                     }
                 },
-                Effect::ScreenAwake(awake) => {
-                    let on = match awake {
-                        Awake::Keep => true,
-                        Awake::LetSleep => false,
-                        Awake::AsProject => self.project_keep_on,
-                    };
-                    DisplayServer::singleton().screen_set_keep_on(on);
-                }
+                // Android: the window's FLAG_KEEP_SCREEN_ON, which counts only
+                // while the window is visible. iOS: the idle timer. Desktop:
+                // holds off the screensaver and display sleep (an inhibitor on
+                // Linux, a power assertion on macOS, SetThreadExecutionState
+                // on Windows).
+                Effect::ScreenAwake(on) => DisplayServer::singleton().screen_set_keep_on(on),
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (
                         save::on_disk(crash::REPORT_PATH),

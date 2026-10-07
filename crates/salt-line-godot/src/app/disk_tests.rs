@@ -680,7 +680,9 @@ fn nothing_queued_before_a_panic_is_replayed_after_it() {
     g.finish_run();
     assert!(!g.fx.is_empty());
     let fx = g.broken_tick(FRAME, &idle(), || None);
-    assert_eq!(fx, vec![]);
+    // Only the error screen's own release of the screen, which is new, not
+    // replayed (`app/awake_tests.rs`).
+    assert_eq!(fx, vec![Effect::ScreenAwake(false)]);
     assert!(g.focus_lost(&[]).iter().all(Effect::survives_panic));
     assert_eq!(g.closing(&[]), vec![]);
 }

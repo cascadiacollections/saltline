@@ -59,9 +59,10 @@
 //! idle-started demo also ends when focus goes or the app pauses, and after
 //! [`IDLE_DEMO_LIMIT`]. Sound is muted by `volume_db` while the demo runs
 //! ([`DEMO_MUTED`]), which leaves the saved volume and mute alone. A demo
-//! started from the menu keeps the screen on ([`Awake::Keep`]); one that
-//! started by itself lets it sleep ([`Awake::LetSleep`]); both put the
-//! project's setting back on exit. The demo runs at `frame::IDLE_FPS` (30).
+//! started from the menu holds the screen on; one that started by itself
+//! does not, so the phone sleeps as it would on the title. Nothing here asks
+//! for that: `Game::screen_awake_wanted` reads [`Started`] each frame. The
+//! demo runs at `frame::IDLE_FPS` (30).
 
 use super::versus::Stage;
 use super::*;
@@ -156,7 +157,9 @@ pub enum Leg {
     Duel,
 }
 
-/// How the demo began, which decides whether it holds the screen on.
+/// How the demo began, which decides whether it holds the screen on
+/// (`Game::screen_awake_wanted`), whether it ends when focus goes, and
+/// whether it has a time limit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Started {
     /// The title sat without input for [`IDLE_DEMO_AFTER`].
@@ -262,6 +265,19 @@ impl Game {
         self.save.idle_demo.unwrap_or(DEFAULT_IDLE_DEMO)
     }
 
+    /// Whether this frame brought any input, or a finger rests on the
+    /// screen: a key, a touch, a pad button or trigger, a held key or pad
+    /// button, the stick. Read by the idle demo's count and the screen's
+    /// quiet limit (`Game::input_quiet`).
+    pub(super) fn any_input(&self, intents: &Intents) -> bool {
+        !intents.events.is_empty()
+            || !intents.pads.is_empty()
+            || !intents.keys_held.is_empty()
+            || !intents.pads_held.is_empty()
+            || intents.stick.iter().any(|&s| s)
+            || self.input.touch.active()
+    }
+
     /// Count the title's quiet time, and start the idle demo once it
     /// reaches [`IDLE_DEMO_AFTER`]. Any input, a finger resting on the
     /// screen, or any other screen starts the count again: the idle demo
@@ -270,13 +286,7 @@ impl Game {
     /// Not while the window is out of focus (a desktop with another window
     /// on top: nobody is looking), and not again after an idle demo ran
     /// its [`IDLE_DEMO_LIMIT`] out, until someone gives some input.
-    pub(super) fn watch_title_idle(&mut self, delta: f64, intents: &Intents) {
-        let input = !intents.events.is_empty()
-            || !intents.pads.is_empty()
-            || !intents.keys_held.is_empty()
-            || !intents.pads_held.is_empty()
-            || intents.stick.iter().any(|&s| s)
-            || self.input.touch.active();
+    pub(super) fn watch_title_idle(&mut self, delta: f64, input: bool) {
         if input {
             self.idle_demo_spent = false;
         }
@@ -329,8 +339,8 @@ impl Game {
     }
 
     /// Start the demo: flush pending settings while writes are still
-    /// allowed, set the player's state aside, mute, say what the screen may
-    /// do, and begin the first run leg.
+    /// allowed, set the player's state aside, mute, and begin the first run
+    /// leg.
     pub(crate) fn start_demo(&mut self, started: Started) {
         if self.in_demo() {
             return;
@@ -369,15 +379,11 @@ impl Game {
         });
         self.settle_touch();
         self.apply_volume();
-        self.fx.push(Effect::ScreenAwake(match started {
-            Started::Idle => Awake::LetSleep,
-            Started::Menu => Awake::Keep,
-        }));
         self.begin_demo_leg(first);
     }
 
     /// End the demo and put everything back as it was: the player's run
-    /// and versus state, the buffer, the volume, the screen's setting. Back
+    /// and versus state, the buffer, the volume. Back
     /// at the title, with touches settled so the ending tap presses nothing.
     pub(crate) fn stop_demo(&mut self) {
         let Some(demo) = self.demo.take() else {
@@ -397,7 +403,6 @@ impl Game {
         self.settle_touch();
         self.title_idle = 0.0;
         self.apply_volume();
-        self.fx.push(Effect::ScreenAwake(Awake::AsProject));
         self.apply_buffer_size();
         self.fx.push(Effect::Redraw);
     }

@@ -480,16 +480,34 @@ and the loop alternates a run and a duel. Everything else was decided here.
   any key event is, read by the game or not. A finger going down during the
   touch settle after DEMO was tapped is that tap reported again, so it does
   not stop the demo it just started.
-- **Screen sleep, and a pre-existing issue.** Godot's `keep_screen_on`
-  defaults to on and this project never changed it, so the game already
-  holds the screen on everywhere, title, menus and pause included: a phone
-  left on the title never sleeps. That predates the demo and is not changed
-  here. "An idle demo lets the screen sleep as normal" is therefore done by
-  releasing the hold while an idle-started demo runs and restoring the
-  project setting (read at launch) afterwards; a menu-started demo holds it
-  explicitly, which is the one to use for showing the game off. Proposed
-  follow-up (DESIGN §12.5): turn the project setting off and hold the screen
-  only during live play and a menu-started demo, through `ScreenAwake`.
+- **Screen sleep.** Godot's `keep_screen_on` defaults to on, which held the
+  screen on everywhere, title, menus and pause included: a phone left on the
+  title never slept. The demo first worked around that by releasing the hold
+  for an idle demo and restoring the setting after. Since then the project
+  sets `keep_screen_on` off, and the core holds the screen on only for live
+  play (`Playing`, the draft included), a versus match not paused (its
+  plates and results too: both players are looking at the phone) and a
+  menu-started demo; everything else, an idle demo included, lets the
+  screen sleep on the OS timeout (DESIGN §12.4 has the table). Even those
+  let go after a spell without input (`AWAKE_QUIET_LIMIT`, 4 minutes;
+  `DEMO_AWAKE_LIMIT`, 15 minutes for a menu demo, which plays on), so a
+  phone put down mid-run sleeps; the next input holds again, and the dev
+  autopilot and `--salt-shot` captures are exempt. `Game::live_play` is the
+  one definition of "a run or an unpaused match", shared with the adapter's
+  `is_active_play` (desktop GameMode), which now also lets go on the error
+  screen.
+  `Game::screen_awake_wanted` derives the state from the mode, the pause
+  and the demo, and `take_effects`, which every effect leaves through,
+  sends `ScreenAwake(bool)` only when it changes, so no transition pushes it
+  and the focus and app-pause notifications (which return their effects at
+  once) let go too. Out of focus or app-paused counts as unwatched: a draft
+  or a versus plate, which focus loss does not pause, lets go until focus
+  comes back. The old three-way `Awake` (keep, let sleep, as project) and
+  the adapter's launch-time read of the project setting are gone.
+  `app/awake_tests.rs` checks every mode, pause and resume, both demos,
+  the quiet limits (release, re-hold, a fresh count, the autopilot's
+  exemption), focus, app pause and the error screen, with a stand-in
+  adapter that fails on any repeated or out-of-step effect.
 - **30 fps.** The demo uses the menus' `IDLE_FPS` cap rather than play's
   uncapped rate. It also stays out of `is_active_play`, so it never asks for
   Linux GameMode.
