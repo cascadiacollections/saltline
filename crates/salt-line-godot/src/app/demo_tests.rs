@@ -509,8 +509,8 @@ fn pending_settings_are_written_before_the_demo_not_during_it() {
     assert!(g.in_demo());
     let at = |want: &dyn Fn(&Effect) -> bool| fx.iter().position(want).unwrap();
     assert!(
-        at(&|e| *e == Effect::Store(Store::Settings))
-            < at(&|e| matches!(e, Effect::ScreenAwake(_))),
+        // The demo's mute is its first effect once it counts as running.
+        at(&|e| *e == Effect::Store(Store::Settings)) < at(&|e| matches!(e, Effect::Volume(_))),
         "flushed first: {fx:?}"
     );
     assert!(!g.settings.dirty());

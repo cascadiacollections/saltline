@@ -1090,6 +1090,11 @@ impl Game {
             self.crash.broken = true;
             self.status_time = 0.0;
             self.fx.clear();
+            // Whatever the screen was last told may not have been carried
+            // out: a panic inside the adapter's `apply` skips the rest of
+            // its list, a `ScreenAwake(false)` included. Assume it is held,
+            // so `take_effects` below lets go for certain.
+            self.display.screen_awake = true;
         }
         self.today = intents.today;
         self.events(&intents.events);

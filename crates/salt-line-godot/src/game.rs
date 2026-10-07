@@ -624,9 +624,11 @@ impl SaltLine {
                         Self::discard_run_file();
                     }
                 },
-                // Android: the window's FLAG_KEEP_SCREEN_ON, dropped by the
-                // platform while the app is in the background. iOS: the idle
-                // timer. Desktop: a screensaver inhibitor, no more.
+                // Android: the window's FLAG_KEEP_SCREEN_ON, which counts only
+                // while the window is visible. iOS: the idle timer. Desktop:
+                // holds off the screensaver and display sleep (an inhibitor on
+                // Linux, a power assertion on macOS, SetThreadExecutionState
+                // on Windows).
                 Effect::ScreenAwake(on) => DisplayServer::singleton().screen_set_keep_on(on),
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (

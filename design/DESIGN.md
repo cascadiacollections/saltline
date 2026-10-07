@@ -1272,9 +1272,10 @@ run.
   `Effect::ScreenAwake` goes out only when it changes, so the focus and
   app-pause notifications let go as surely as a frame does. The adapter
   calls `DisplayServer::screen_set_keep_on`: on Android the window's
-  keep-screen-on flag, which the platform drops while the app is in the
-  background; on iOS the idle timer; on desktop a screensaver inhibitor and
-  no more.
+  keep-screen-on flag, which counts only while the window is visible; on
+  iOS the idle timer; on desktop it holds off the screensaver and display
+  sleep. The error screen after a panic always sends a release, since a
+  panic in the adapter may have skipped the last one.
 - **30 fps.** The demo runs at `frame::IDLE_FPS`, the menus' cap: it is
   watched, not played, a shell's flight reads well enough at 30, and it may
   run for a long while on a battery. It never asks for desktop GameMode.

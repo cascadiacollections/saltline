@@ -401,6 +401,23 @@ fn a_menu_demo_lets_go_while_unfocused_and_holds_again_after() {
 }
 
 #[test]
+fn the_error_screen_lets_go_even_if_the_last_release_was_lost() {
+    // Out of play the core has already sent a release, but a panic in the
+    // adapter may have skipped it: the error screen sends it again.
+    let mut p = Phone::new();
+    p.press(Key::Enter);
+    p.g.finish_run();
+    let fx = p.g.take_effects();
+    assert!(fx.contains(&Effect::ScreenAwake(false)));
+    // (That list died with the adapter; the real screen is still held.)
+    let fx = p.g.broken_tick(FRAME, &idle(), || None);
+    assert!(fx.contains(&Effect::ScreenAwake(false)));
+    // Once only.
+    let fx = p.g.broken_tick(FRAME, &idle(), || None);
+    assert!(!fx.iter().any(|e| matches!(e, Effect::ScreenAwake(_))));
+}
+
+#[test]
 fn the_error_screen_lets_go() {
     let mut p = Phone::new();
     p.press(Key::Enter);

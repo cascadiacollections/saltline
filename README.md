@@ -240,8 +240,8 @@ demo that started by itself does not keep the screen on either, so a phone
 left on the title still goes to sleep; on a desktop it also waits while the
 window is in the background and gives up after ten minutes. To show the game
 off, start DEMO from the title: that one keeps the screen on and runs until
-you stop it. On a desktop, keeping the screen on only holds off the
-screensaver.
+you stop it. On a desktop, keeping the screen on just holds off the
+screensaver and display sleep.
 
 How it stays out of your things is worth a look if you are learning the code:
 `app/demo.rs` moves the player's state aside whole, plays the ordinary run and
