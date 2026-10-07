@@ -312,7 +312,8 @@ pub struct ShotReport {
 
 /// One screen: an emplacement, terrain and a target set. DESIGN §1, §2.
 ///
-/// Built only by [`generate_screen`], then mutated in place by shots
+/// Built by [`generate_screen`], or from a layout's data by
+/// `Screen::from_layout` (DESIGN §13), then mutated in place by shots
 /// ([`Screen::apply_shot`]): craters and debris go into the heightfield's
 /// scar buffer, damage into the structures. A screen is discarded when the
 /// run moves on; nothing from it reaches the next one.
@@ -351,7 +352,9 @@ pub struct Screen {
     pub fell_back: bool,
     /// Which rung of the generation ladder produced the screen (see
     /// [`generate_screen`]); `None` for a supply screen, which is not
-    /// generated against the gate. Not hashed, like `attempts`.
+    /// generated against the gate, and for a screen built from a layout,
+    /// which is checked by `layout::validate` instead. Not hashed, like
+    /// `attempts`.
     pub rung: Option<Rung>,
     /// Scavenger Rites supply screen: no targets, shells instead.
     pub supply: bool,
@@ -825,6 +828,16 @@ fn place_structures(
 fn seat_structure(field: &Heightfield, kind: StructureKind, x: f64, width: usize) -> Structure {
     let fp = kind.footprint();
     let x0 = clamp(x - fp as f64 * 0.5, 1.0, (width - fp - 1) as f64) as usize;
+    seat_at(field, kind, x0)
+}
+
+/// An intact structure of `kind` with its footprint starting at column
+/// `x0`, seated on the highest column of the footprint: the generator's
+/// seating rule, shared with screens built from a layout
+/// (`Screen::from_layout`), so a layout's structure stands exactly where the
+/// generator would stand it on the same ground.
+pub(crate) fn seat_at(field: &Heightfield, kind: StructureKind, x0: usize) -> Structure {
+    let fp = kind.footprint();
     let base = field.seat(x0, fp);
     let mut sum = 0.0;
     for i in x0..x0 + fp {

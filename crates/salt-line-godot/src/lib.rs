@@ -57,6 +57,7 @@ pub mod aim;
 pub mod app;
 pub mod cli;
 pub mod crash;
+pub mod custom;
 pub mod durable;
 pub mod font;
 pub mod frame;

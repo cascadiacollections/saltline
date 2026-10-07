@@ -87,7 +87,8 @@ impl Game {
         self.display.window_size = window;
         self.display.cutout = cutout;
         let want_w = self.pick_width();
-        // A resumed match keeps its width as a resumed run does.
+        // A resumed match, or a match on a layout, keeps its width as a
+        // resumed run does.
         let in_run = matches!(self.mode, Mode::Playing | Mode::Paused)
             || (self.mode == Mode::Versus && self.versus.live.is_some());
         if !in_run && self.display.kept_width {

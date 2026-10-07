@@ -310,6 +310,11 @@ godot --headless --path . -- --salt-gallery /tmp/gallery
 # Look at any screen without playing to it, and screenshot it.
 godot --headless --path . -- --salt-seed 20260907 --salt-screen 96 \
     --salt-shot /tmp/screen96.png
+
+# Layouts (DESIGN §13): fork a generated screen into a share code, then play
+# a custom duel on it. `just layouts` reports code lengths and fork fidelity.
+godot --headless --path . -- --salt-fork-duel 42:0
+godot --path . -- --salt-layout <the code it printed>
 ```
 
 Dev flags: `--salt-seed <seed>`, `--salt-screen <n>`, `--salt-auto` (aims with
@@ -319,7 +324,13 @@ screen away, to exercise craters and chalk marks), `--salt-hold-draft`,
 `--salt-versus` (start a local versus match; with `--salt-auto` the autopilot
 plays both guns, and with `--salt-miss` too, every other turn misses),
 `--salt-demo` (start the attract demo, as the title's DEMO does; add
-`--salt-shot` and `--salt-shot-at` to capture a moment of it).
+`--salt-shot` and `--salt-shot-at` to capture a moment of it),
+`--salt-layout <code>` (start a local versus match on a two-gun layout's
+share code, at 320 columns, letterboxed on a wider screen; a code that does
+not read or pass stays on the title with a note, and the console says why),
+`--salt-fork-run <seed>:<screen>` and `--salt-fork-duel <seed>:<round>`
+(print the share code of that run screen or duel round forked into a layout,
+whether it passes its checks, and quit; screens and rounds count from 0).
 
 ## Art
 

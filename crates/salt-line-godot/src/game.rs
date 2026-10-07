@@ -265,10 +265,20 @@ impl INode2D for SaltLine {
             self.gallery(dir);
             return;
         }
+        if let Some(report) =
+            crate::custom::fork_report(args.fork_run.as_deref(), args.fork_duel.as_deref())
+        {
+            godot_print!("{report}");
+            self.base().get_tree().quit();
+            return;
+        }
         self.shot_path = args.shot.clone();
         self.shot_at = args.shot_at;
         let fx = self.g.start_dev(&args, Self::today());
         self.apply(fx);
+        if let Some(why) = self.g.dev.layout_refused.take() {
+            godot_warn!("salt-line: --salt-layout: {why}");
+        }
         if !self.art.pal.sampled {
             godot_warn!("salt-line: palette not sampled from art; using the built-in fallback");
         }

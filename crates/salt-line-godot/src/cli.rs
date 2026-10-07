@@ -55,6 +55,16 @@ pub struct DevArgs {
     /// `--salt-demo`: start the attract demo at once, as the title's DEMO
     /// does (DESIGN §12): the screen is kept on until it ends.
     pub demo: bool,
+    /// `--salt-layout <code>`: start a local versus match on a layout's
+    /// share code (DESIGN §13), at its first handoff. A code that does not
+    /// read or pass leaves the title up with a note.
+    pub layout: Option<String>,
+    /// `--salt-fork-run <seed>:<screen>`: print the share code of that run
+    /// screen forked into a layout, and quit (`custom::fork_report`).
+    pub fork_run: Option<String>,
+    /// `--salt-fork-duel <seed>:<round>`: as `--salt-fork-run`, for round
+    /// `round` (from 0) of the duel on match seed `seed`.
+    pub fork_duel: Option<String>,
 }
 
 impl DevArgs {
@@ -75,6 +85,9 @@ impl DevArgs {
             gallery: value(args, "--salt-gallery"),
             versus: flag(args, "--salt-versus"),
             demo: flag(args, "--salt-demo"),
+            layout: value(args, "--salt-layout"),
+            fork_run: value(args, "--salt-fork-run"),
+            fork_duel: value(args, "--salt-fork-duel"),
         }
     }
 }
@@ -140,8 +153,22 @@ mod tests {
                 gallery: None,
                 versus: false,
                 demo: false,
+                layout: None,
+                fork_run: None,
+                fork_duel: None,
             }
         );
+    }
+
+    #[test]
+    fn the_layout_flags_take_their_values() {
+        let a = DevArgs::parse(&args(
+            "-- --salt-layout SL04G0 --salt-fork-run DUNE:8 --salt-fork-duel=42:1",
+        ));
+        assert_eq!(a.layout.as_deref(), Some("SL04G0"));
+        assert_eq!(a.fork_run.as_deref(), Some("DUNE:8"));
+        assert_eq!(a.fork_duel.as_deref(), Some("42:1"));
+        assert!(!a.versus && a.seed.is_none());
     }
 
     #[test]

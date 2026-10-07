@@ -18,6 +18,11 @@ second. See RELEASING.md for the release steps.
 - For developers: the cross-platform determinism check now also runs on Android
   (x86_64 emulator) and iOS (arm64 simulator) in CI, and `just android-digest`
   runs it on an attached Android phone as arm64-v8a.
+- For developers: layouts, the groundwork for a map editor and custom games
+  (DESIGN §13). Any generated run screen or duel round can be forked into a
+  layout and shared as a short checked code; `--salt-layout <code>` plays a
+  local duel on one, and `--salt-fork-run` / `--salt-fork-duel` print a
+  fork's code. No editor or menu yet.
 
 ## [0.1.0] - 2026-10-04
 
