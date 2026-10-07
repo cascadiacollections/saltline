@@ -104,6 +104,22 @@ android-lib profile="debug":
         --config 'target.aarch64-linux-android.linker="{{ android_bin }}/aarch64-linux-android24-clang"'
     "{{ android_bin }}/llvm-strip" --strip-debug target/aarch64-linux-android/{{ profile }}/libsalt_line_godot.so
 
+# Run the determinism check (DESIGN §6) on the attached device as arm64-v8a, the ABI the APK
+# ships, and fail unless its digest matches this machine's. CI can only run Android on an
+# x86_64 emulator, so this is how a phone's own bionic and CPU join the comparison. It runs
+# a plain binary from /data/local/tmp over adb shell; nothing is installed.
+android-digest:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustup target add aarch64-linux-android
+    RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build --release -q -p salt-line-sim --bin determinism \
+        --target aarch64-linux-android \
+        --config 'target.aarch64-linux-android.linker="{{ android_bin }}/aarch64-linux-android24-clang"'
+    host=$(RUSTC="$(rustup which rustc)" "$(rustup which cargo)" run --release -q -p salt-line-sim --bin determinism \
+        | grep -oE 'digest: 0x[0-9a-f]+' | cut -d' ' -f2)
+    echo "host ($(uname -sm)) digest: $host"
+    ADB="{{ adb }}" bash tools/android_digest.sh target/aarch64-linux-android/release/determinism --expect "$host"
+
 # Build the debug APK at build/SaltLine.apk.
 android-apk: build android-lib
     mkdir -p build
