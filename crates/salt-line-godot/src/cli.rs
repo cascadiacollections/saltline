@@ -52,6 +52,9 @@ pub struct DevArgs {
     /// `--salt-versus`: start a local versus match at once, at its first
     /// handoff. With `--salt-auto`, the autopilot plays both guns.
     pub versus: bool,
+    /// `--salt-demo`: start the attract demo at once, as the title's DEMO
+    /// does (DESIGN §12): the screen is kept on until it ends.
+    pub demo: bool,
 }
 
 impl DevArgs {
@@ -71,6 +74,7 @@ impl DevArgs {
             continue_run: flag(args, "--salt-continue"),
             gallery: value(args, "--salt-gallery"),
             versus: flag(args, "--salt-versus"),
+            demo: flag(args, "--salt-demo"),
         }
     }
 }
@@ -135,6 +139,7 @@ mod tests {
                 continue_run: false,
                 gallery: None,
                 versus: false,
+                demo: false,
             }
         );
     }
@@ -143,6 +148,13 @@ mod tests {
     fn versus_is_a_flag_of_its_own() {
         let a = DevArgs::parse(&args("--salt-versus --salt-auto"));
         assert!(a.versus && a.auto);
+        assert_eq!(a.seed, None);
+    }
+
+    #[test]
+    fn demo_is_a_flag_of_its_own() {
+        let a = DevArgs::parse(&args("-- --salt-demo"));
+        assert!(a.demo && !a.versus && !a.auto);
         assert_eq!(a.seed, None);
     }
 

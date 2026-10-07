@@ -10,6 +10,7 @@ learned 11
 touch_aim drag
 arc_hint short
 last_arc 0
+idle_demo 0
 bind fire F X
 run 20260907 41 3 88 1
 run 7 12 0 30 0

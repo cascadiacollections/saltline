@@ -704,3 +704,74 @@ fn the_node_drops_every_file_effect_after_a_panic() {
     ];
     assert!(kept.iter().all(Effect::survives_panic));
 }
+
+// ------------------------------------------------------------ attract demo
+
+impl FakeDisk {
+    /// Every file, as text: what a demo must leave exactly as it found.
+    fn files(&self) -> [Option<String>; 6] {
+        [
+            self.save.clone(),
+            self.run.clone(),
+            self.temp.clone(),
+            self.set_aside.clone(),
+            self.crash_report.clone(),
+            self.old_crash_report.clone(),
+        ]
+    }
+}
+
+/// A run quit to the title, then the idle demo through a whole cycle (a run
+/// and a duel) and into the next run, then a key back to the title: the
+/// disk is byte for byte as it was, no disk effect was asked for, and
+/// CONTINUE picks the run up exactly as it was played, now and at the next
+/// launch.
+#[test]
+fn a_suspended_run_survives_a_demo_cycle_byte_for_byte() {
+    let mut disk = with_crash_report();
+    let mut g = disk.launch();
+    tick(&mut g, &mut disk, keys(&[Key::Enter]));
+    throw_one(&mut g, &mut disk);
+    throw_one(&mut g, &mut disk);
+    tick(&mut g, &mut disk, keys(&[Key::Escape]));
+    tick(&mut g, &mut disk, keys(&[Key::R]));
+    assert_eq!(g.mode, Mode::Title);
+    let played = Played::of(&g);
+    let files = disk.files();
+    assert!(files[1].is_some(), "the run is on disk");
+    let offered = g.run_file.resumable.clone();
+
+    // Quiet on the title until the demo starts, then a full cycle.
+    let mut during = Vec::new();
+    for _ in 0..30_000 {
+        let fx = g.tick(1.0 / 30.0, &idle());
+        if g.in_demo() {
+            during.extend(fx.iter().cloned());
+        }
+        disk.apply(&mut g, fx);
+        if g.demo.as_ref().is_some_and(|d| d.leg_index == 2) {
+            break;
+        }
+    }
+    assert!(g.demo.as_ref().is_some_and(|d| d.leg_index == 2));
+    let disk_fx: Vec<_> = during.iter().filter(|e| e.touches_disk()).collect();
+    assert!(disk_fx.is_empty(), "the demo asked for {disk_fx:?}");
+    assert_eq!(disk.files(), files, "the demo changed a file");
+
+    tick(&mut g, &mut disk, keys(&[Key::Space]));
+    assert_eq!(g.mode, Mode::Title);
+    assert_eq!(disk.files(), files);
+    assert_eq!(g.run_file.resumable, offered);
+    assert_eq!(Played::of(&g).log, played.log);
+
+    // A relaunch on this disk offers it exactly as it was played.
+    let mut relaunched = disk.clone();
+    let saved = relaunched.launch().run_file.resumable.expect("offered");
+    assert_eq!((saved.seed, &saved.log), (played.seed, &played.log));
+
+    // And CONTINUE now plays on from the very shot it was left at.
+    tick(&mut g, &mut disk, keys(&[Key::Enter]));
+    assert_eq!(g.mode, Mode::Playing);
+    let run = g.play.run.as_ref().unwrap();
+    assert_eq!((run.run_seed, &run.log), (played.seed, &played.log));
+}

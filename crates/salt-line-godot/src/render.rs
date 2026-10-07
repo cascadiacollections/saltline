@@ -113,7 +113,14 @@ pub fn frame(
         Mode::Versus => p.render_versus(),
         _ => p.render_menu(),
     }
+    if g.in_demo() {
+        p.render_demo_banner();
+    }
 }
+
+/// The attract demo's banner (DESIGN §12): always on screen while the demo
+/// runs, so nobody mistakes it for a game in progress.
+pub const DEMO_BANNER: &str = "DEMO \u{b7} TAP TO PLAY";
 
 /// Draw the playfield alone, whatever the mode, adding its buttons to
 /// `buttons`. For `--salt-gallery`.
@@ -255,6 +262,10 @@ impl Painter<'_> {
                         "MUS OFF"
                     };
                     self.draw_touch_button(w - 42 - ex, 3 + ey, 42, 13, label, Action::TitleMusic);
+                    // The demo mirrors the music toggle in the other corner,
+                    // which keeps the menu rows (and the board under them)
+                    // where they were.
+                    self.draw_touch_button(3 + ex, 3 + ey, 42, 13, "DEMO", Action::Demo);
                 }
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
@@ -313,6 +324,11 @@ impl Painter<'_> {
                     "CONTROLS / AUDIO",
                     fg,
                 );
+                // On a touchscreen the demo is the corner plate above.
+                if !self.plated() {
+                    let demo = self.g.input_label(Action::Demo);
+                    y = self.menu_row(y, Action::Demo, &format!("{demo}  DEMO"), "DEMO", fg);
+                }
                 let back = self.g.input_label(Action::Back);
                 y = self.menu_row(y, Action::Back, &format!("{back}  QUIT"), "QUIT", dim);
                 if self.g.crash.last_crash.is_some() {
@@ -382,6 +398,12 @@ impl Painter<'_> {
                     "LAST ARC: OFF"
                 };
                 y = self.menu_row(y, Action::LastArc, "", last, fg);
+                let demo = if self.g.idle_demo_on() {
+                    "IDLE DEMO: ON"
+                } else {
+                    "IDLE DEMO: OFF"
+                };
+                y = self.menu_row(y, Action::Demo, "", demo, fg);
                 let aim = match self.g.touch_aim() {
                     TouchAim::Buttons => "AIM: BUTTONS",
                     TouchAim::Drag => "AIM: DRAG",
@@ -446,6 +468,10 @@ impl Painter<'_> {
                 y += 7;
                 let on = if self.g.last_arc_on() { "ON" } else { "OFF" };
                 let toggle = format!("{}  LAST ARC: {on}", self.g.input_label(Action::LastArc));
+                self.centred(y, &toggle, fg);
+                y += 7;
+                let on = if self.g.idle_demo_on() { "ON" } else { "OFF" };
+                let toggle = format!("{}  IDLE DEMO: {on}", self.g.input_label(Action::Demo));
                 self.centred(y, &toggle, fg);
                 y += 9;
                 self.centred(y, "EDIT bind LINES IN salt_line.txt TO REMAP", dim);
@@ -739,7 +765,11 @@ impl Painter<'_> {
         self.render_hud(
             shells, index, wind_shown, range, fuse, &loadout, &screen, phase,
         );
-        if self.g.input.touch_active && self.g.mode == Mode::Playing && phase != Phase::Drafting {
+        if self.g.input.touch_active
+            && self.g.mode == Mode::Playing
+            && phase != Phase::Drafting
+            && !self.g.in_demo()
+        {
             self.draw_play_controls(&loadout);
         }
 
@@ -1220,7 +1250,7 @@ impl Painter<'_> {
         for (i, m) in offers.iter().enumerate() {
             let x = gap + i as i32 * (card_w + gap);
             self.canvas.plate(x, top, card_w, card_h, pal);
-            if self.g.input.touch_active {
+            if self.g.input.touch_active && !self.g.in_demo() {
                 let action = [Action::Draft1, Action::Draft2, Action::Draft3][i.min(2)];
                 self.touch_button(Rect::new(x, top, card_w, card_h), action);
             }
@@ -1259,6 +1289,10 @@ impl Painter<'_> {
             }
         }
 
+        // The demo picks for itself; its banner says what a tap does.
+        if self.g.in_demo() {
+            return;
+        }
         let hint = if self.g.input.touch_active {
             "TAP A CARD"
         } else {
@@ -1266,6 +1300,23 @@ impl Painter<'_> {
         };
         let hx = (w - crate::font::small_width(hint) as i32) / 2;
         self.canvas.text_small(hx, top + card_h + 6, hint, fg);
+    }
+
+    /// The demo banner, bottom centre on a plate: clear of the instruments
+    /// bottom left, the screen index or round bottom right, the draft cards
+    /// and the versus plates. Plain text in the native face, for runs and
+    /// duels alike: the alert accent stays reserved (§5.2) and the duel's
+    /// side colours mean only a side (§11.4).
+    fn render_demo_banner(&mut self) {
+        let pal = self.pal;
+        let ey = self.g.display.corner_pad.1;
+        let tw = crate::font::small_width(DEMO_BANNER) as i32;
+        let (pw, ph) = (tw + 10, 11);
+        let x = (self.canvas.w - pw) / 2;
+        let y = self.canvas.h - ph - 2 - ey;
+        self.canvas.plate(x, y, pw, ph, pal);
+        self.canvas
+            .text_small(x + 5, y + 3, DEMO_BANNER, pal.get(slot::UI_FG));
     }
 
     /// The pause plate over the frozen run.
@@ -1408,6 +1459,47 @@ mod tests {
         insta::assert_snapshot!(canvas.palette_text(&Palette::default()));
     }
 
+    /// The demo's first frame of each leg, banner and all: a run on its
+    /// first curated screen, and a duel's opening handoff plate with no
+    /// READY prompt.
+    #[test]
+    fn the_demo_frames_are_pinned() {
+        let mut g = game();
+        g.start_demo(crate::app::DemoStarted::Menu);
+        assert_eq!(g.mode, Mode::Playing);
+        let (run, buttons) = draw(&g);
+        assert!(buttons.is_empty());
+        insta::assert_snapshot!("demo_run", run.palette_text(&Palette::default()));
+        for _ in 0..10_000 {
+            if g.mode == Mode::Versus {
+                break;
+            }
+            g.tick(1.0 / 30.0, &idle());
+        }
+        assert_eq!(g.mode, Mode::Versus);
+        let (duel, buttons) = draw(&g);
+        assert!(buttons.is_empty());
+        insta::assert_snapshot!("demo_duel", duel.palette_text(&Palette::default()));
+    }
+
+    #[test]
+    fn the_demo_banner_fits_and_is_drawn_on_touchscreens_too() {
+        let mut g = game();
+        g.input.touch_active = true;
+        g.display.corner_pad = (10, 6);
+        g.start_demo(crate::app::DemoStarted::Idle);
+        let (with, buttons) = draw(&g);
+        assert!(buttons.is_empty(), "no FIRE or pause in the demo");
+        let tw = crate::font::small_width(DEMO_BANNER) as i32;
+        assert!(
+            tw + 10 < g.display.buffer_w - 2 * 90,
+            "clear of the corners"
+        );
+        g.demo = None;
+        let (without, _) = draw(&g);
+        assert_ne!(with.bytes(), without.bytes());
+    }
+
     #[test]
     fn every_pixel_of_every_screen_is_painted() {
         let mut g = game();
@@ -1495,6 +1587,7 @@ mod tests {
             actions(&buttons),
             [
                 Action::TitleMusic,
+                Action::Demo,
                 Action::Confirm,
                 Action::Seed,
                 Action::Versus,
@@ -1513,6 +1606,7 @@ mod tests {
             actions(&buttons),
             [
                 Action::TitleMusic,
+                Action::Demo,
                 Action::Confirm,
                 Action::NewRun,
                 Action::Seed,

@@ -507,7 +507,7 @@ impl Painter<'_> {
             self.canvas.text_small(x, 28 + ey, &text, fg);
         }
 
-        if self.g.input.touch_active && !vs.paused {
+        if self.g.input.touch_active && !vs.paused && !self.g.in_demo() {
             if aiming {
                 self.draw_play_controls(&duel.loadout);
             } else if vs.stage == Stage::Flight {
@@ -639,7 +639,12 @@ impl Painter<'_> {
         let heading_h = if opening { 5 } else { SCORE_H };
         let cues = handoff_cues(vs);
         let body = 7 + heading_h + 6 + 10 + 6 + 8 * cues.len() as i32 + 5 + 13;
-        let ph = body + if plated { 20 } else { 12 };
+        // The demo has no READY line: the plate ends under its last words.
+        let ph = if self.g.in_demo() {
+            body - 6
+        } else {
+            body + if plated { 20 } else { 12 }
+        };
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
         self.side_border(px, top, 200, ph, side);
@@ -666,7 +671,9 @@ impl Painter<'_> {
         }
         self.centred(y, "TAKE THE PHONE - NO PEEKING", fg);
         y += 13;
-        if plated {
+        if self.g.in_demo() {
+            // The demo readies itself: no button, and no prompt to press.
+        } else if plated {
             self.menu_row(y + 4, Action::Confirm, "", "READY", fg);
             // The pause button, so a touchscreen can leave between turns.
             let ey = self.g.display.corner_pad.1;
@@ -692,7 +699,11 @@ impl Painter<'_> {
         };
         let plated = self.plated();
         let body = 7 + 10 + 5 + 5 + 7 + SCORE_H + 8;
-        let ph = body + if plated { 40 } else { 20 };
+        let ph = if self.g.in_demo() {
+            body
+        } else {
+            body + if plated { 40 } else { 20 }
+        };
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
         self.side_border(px, top, 200, ph, winner);
@@ -716,6 +727,12 @@ impl Painter<'_> {
             .iter()
             .map(|&(action, text)| (self.g.input_label(action), text))
             .collect();
+        // The demo moves on by itself: no buttons, and no prompts.
+        let rows = if self.g.in_demo() {
+            &rows[..0]
+        } else {
+            &rows[..]
+        };
         for (&(action, text), keyed) in rows.iter().zip(keyed_rows(&labels)) {
             let c = if action == Action::Confirm { fg } else { dim };
             y = self.menu_row(if plated { y + 4 } else { y }, action, &keyed, text, c);

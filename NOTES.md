@@ -419,3 +419,66 @@ that a tie carried beyond three.
   than adding a +1 marker, up to five; past that the score is two numbers
   in the sides' colours, so the plate stays clear of the pause button and
   inside the 200-pixel handoff and result plates.
+
+## 8. Attract demo (DESIGN §12)
+
+The owner settled two things: the idle demo is on by default with an opt-out,
+and the loop alternates a run and a duel. Everything else was decided here.
+
+- **Set aside, not copied.** The demo reuses the run and versus code rather
+  than a second renderer, so it moves the player's whole `Play` (and the
+  versus state and buffer width) into its own stash and moves it back. A copy
+  would have needed `Play` to be `Clone` and left two runs in memory that could
+  drift; a move means the player's run cannot be reached at all while the demo
+  runs. The CONTINUE offer (`run_file`) is never moved: nothing in the demo
+  reads it.
+- **Guards at the source, a backstop at the end.** `persist_run`,
+  `finish_run`, `learn`, `write_settings`/`tick_settings` and
+  `retire_last_crash` each return early in the demo. `persist_run` is the one
+  that matters most: after a quit to the title `run_persist` is still set for
+  the suspended run, so without the guard the demo's run would have been
+  written over `run.txt` on its first shot. (Removing that guard fails four of
+  the demo tests.) `Game::tick` then strips any disk effect a demo frame still
+  asked for and `debug_assert!`s there was none.
+- **Pending settings are flushed on entry**, while writes are still allowed,
+  so "no write during the demo" holds without losing a change made the frame
+  before.
+- **The demo's run is jumped, not played to.** Each curated run starts on a
+  chosen screen, as `--salt-screen` does, because the early bands are plain
+  ground and one structure. Screens were picked from headless screenshots of a
+  dozen seeds at several screens: `DUNE` 7, `TOWER` 12, `1984` 8, `MESA` 16
+  (zero-based).
+- **Near misses had to search angle as well as power.** A first cut moved only
+  the power, up to ±240 ticks, and on fast flat shots (power 800–900) every
+  step still brought the target down, so the demo fell back to its short lob
+  on most first shots. Steeper and flatter barrels (±170 to ±420 angle ticks)
+  after the power steps found a real near miss for every miss in the four
+  curated run legs; the
+  run-leg test now fails if more than a quarter of the shots are the lob.
+- **Pacing.** 0.8 s to show an aim before it fires, 1.6 s of draft cards,
+  0.8 s of handoff plate, 1.8 s of result plate, 1.2 s on a run's last
+  screen. Over the first four cycles a run leg took 11–23 s and a duel
+  55–91 s; the longest duels end on the 90 s cap at a handoff.
+- **Exit is any new input, counted from events.** Held keys are not input to
+  stop on (the key that chose DEMO is often still down the next frame), but
+  any key event is, read by the game or not. A finger going down during the
+  touch settle after DEMO was tapped is that tap reported again, so it does
+  not stop the demo it just started.
+- **Screen sleep.** Godot's `keep_screen_on` defaults to on and this project
+  never changed it, so the game already holds the screen on everywhere, title
+  included. "An idle demo lets the screen sleep as normal" is therefore done
+  by releasing the hold while an idle-started demo runs and restoring the
+  project setting (read at launch) afterwards; a menu-started demo holds it
+  explicitly. Whether the title should hold the screen at all is left for the
+  owner (DESIGN §12.5).
+- **30 fps.** The demo uses the menus' `IDLE_FPS` cap rather than play's
+  uncapped rate. It also stays out of `is_active_play`, so it never asks for
+  Linux GameMode.
+- **Title layout.** The keyed title gains a `D  DEMO` row (the pinned title
+  snapshot changes by that one row, which the brief allowed). The touch title
+  instead gets a DEMO plate in the top-left corner, mirroring MUS ON/OFF: a
+  further plated row would have pushed DEVELOPMENT PREVIEW off the bottom of a
+  phone's title once a run is kept for CONTINUE and the board has a best.
+- **Snapshots.** Changed: the title (the new row) and the save format (the
+  pinned save now sets `idle_demo 0`). New: the demo's first run frame and
+  its first duel handoff, banner and all.
