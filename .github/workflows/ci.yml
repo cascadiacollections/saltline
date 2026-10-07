@@ -82,12 +82,123 @@ jobs:
           name: digest-${{ matrix.os }}
           path: digest-${{ matrix.os }}.txt
 
+  # The phones join the determinism comparison: versus play in lockstep needs
+  # two phones to agree bit for bit, and Android brings its own libc and libm
+  # (bionic). Hosted arm64 Linux runners have no KVM, and an arm64 system image
+  # on an x86_64 host is unaccelerated and far too slow, so this runs the
+  # x86_64-linux-android build on an x86_64 emulator: real Android and real
+  # bionic, on the other shipped architecture's codegen. The arm64-v8a build the
+  # APK ships is checked on a phone with `just android-digest`; arm64 codegen
+  # itself is already in the `sim` matrix. Only the dependency-free sim crate is
+  # built, which takes seconds, so there is no rust-cache here.
+  sim-android:
+    name: sim (android x86_64 emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - name: build the determinism check for Android (x86_64)
+        run: |
+          set -eu
+          rustup target add x86_64-linux-android
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cargo build --release -q -p salt-line-sim --bin determinism --target x86_64-linux-android \
+            --config "target.x86_64-linux-android.linker=\"$bin/x86_64-linux-android24-clang\""
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # The action runs each line of `script` on its own through sh, so the
+      # whole check is one line that writes to a file; the next step reads it.
+      # aosp_atd is the headless test image, the quickest to boot.
+      - name: determinism digest (emulator)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          target: aosp_atd
+          arch: x86_64
+          disable-animations: false
+          script: bash tools/android_digest.sh target/x86_64-linux-android/release/determinism > digest.txt
+      - name: extract the digest
+        run: |
+          set -eu
+          cat digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-android-x86_64.txt
+          cat digest-android-x86_64.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-android-x86_64
+          path: digest-android-x86_64.txt
+
+  # iOS on the simulator: an aarch64-apple-ios-sim binary run inside a booted
+  # iPhone simulator with `simctl spawn`, so it loads the iOS runtime's own
+  # libSystem and libm on the Apple silicon runner. That is the arm64 code the
+  # device build (aarch64-apple-ios) compiles to, against the simulator's copy
+  # of the iOS libraries; a device run needs signing, which CI does not have.
+  sim-ios:
+    name: sim (ios arm64 simulator)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - name: build the determinism check for the iOS simulator
+        run: |
+          set -eu
+          rustup target add aarch64-apple-ios-sim
+          cargo build --release -q -p salt-line-sim --bin determinism --target aarch64-apple-ios-sim
+      # The first available iPhone on the newest iOS runtime the image has.
+      # Booting it is most of this job's time.
+      - name: boot a simulator
+        id: sim
+        run: |
+          set -eu
+          udid=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          ios = sorted((r for r in runtimes if ".iOS-" in r),
+                       key=lambda r: [int(p) for p in r.rsplit(".iOS-", 1)[1].split("-")])
+          for runtime in reversed(ios):
+              phones = [d for d in runtimes[runtime] if d["name"].startswith("iPhone")]
+              if phones:
+                  print(runtime, phones[0]["name"], file=sys.stderr)
+                  print(phones[0]["udid"])
+                  break
+          else:
+              sys.exit("no available iPhone simulator")
+          ')
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl bootstatus "$udid" -b
+      - name: determinism digest (simulator)
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl spawn "$UDID" "$PWD/target/aarch64-apple-ios-sim/release/determinism" | tee digest.txt
+          grep -q '^os: *ios$' digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-ios-arm64.txt
+          cat digest-ios-arm64.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-ios-arm64
+          path: digest-ios-arm64.txt
+
   # DESIGN §3: same seed plus same input sequence produces a byte-identical
   # final state on every platform. If these digests diverge, stop and fix the
   # determinism leak — do not paper over it with tolerances.
   determinism:
     name: determinism across platforms
-    needs: sim
+    needs: [sim, sim-android, sim-ios]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -104,8 +215,9 @@ jobs:
             printf '%-28s %s\n' "$f" "$(cat "$f")"
             found=$((found + 1))
           done
-          # One per `sim` matrix entry; keep in step with that list.
-          expected=5
+          # One per `sim` matrix entry plus Android and iOS; keep in step
+          # with those jobs.
+          expected=7
           if [ "$found" -ne "$expected" ]; then
             echo "expected $expected platform digests, got $found" >&2
             exit 1

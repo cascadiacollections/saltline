@@ -544,7 +544,10 @@ the surviving-candidate counts by band. That harness is how you tune §2.5
 without playing the game a thousand times.
 
 Determinism test: replay 200 recorded runs on every CI platform and assert the
-final state hashes match.
+final state hashes match. The platforms are Linux and Windows (x86_64 and
+arm64), macOS (arm64), Android (x86_64 emulator, bionic) and iOS (arm64
+simulator). The shipped Android ABI, arm64-v8a, is checked on a phone with
+`just android-digest`, because hosted runners cannot run an arm64 emulator.
 
 ---
 

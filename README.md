@@ -96,6 +96,13 @@ screen awake: an asleep device never renders. It is signed with a throwaway
 key generated under `build/`; delete `build/` and the next install needs
 `adb uninstall com.cascadiacollections.saltline.profile` first.
 
+`just android-digest` runs the determinism check (see Determinism) on the
+attached device as an arm64-v8a binary, the ABI the APK ships, and fails
+unless the phone's digest matches this machine's. It pushes a plain executable
+to `/data/local/tmp` and runs it over `adb shell`; nothing is installed. CI
+can only run Android on an x86_64 emulator, so run this on a phone after any
+change to the toolchain or to the sim's arithmetic.
+
 ### iOS
 
 On a Mac, `just ios` builds the extension for arm64, exports an Xcode project
@@ -293,7 +300,8 @@ cargo run --release -p salt-line-sim --bin batch
 cargo run --release -p salt-line-sim --bin batch -- --seeds 50 --screens 100 --build demo
 
 # Determinism: 200 runs played, replayed from (seed, shot log), hashed.
-# CI compares the digest across Linux, macOS and Windows.
+# CI compares the digest across Linux, macOS, Windows, Android and iOS;
+# `just android-digest` checks an attached Android phone against this machine.
 cargo run --release -p salt-line-sim --bin determinism
 
 # Art review: one frame per shape template plus a damaged variant of each.
@@ -389,9 +397,12 @@ platform. What that costs, concretely:
   multiplication is not associative.
 - A run persists as `(run_seed, width, shot log)` and nothing else. Draft picks
   ride in the same triple with `angle_ticks = -1`.
-- CI holds it to that: the sim runs on Linux and Windows (x86_64 and arm64) and
-  on macOS (Apple silicon), and the determinism job fails unless all five
-  digests are identical.
+- CI holds it to that: the sim runs on Linux and Windows (x86_64 and arm64), on
+  macOS (Apple silicon), on Android (an x86_64 emulator, so bionic's libc and
+  libm) and on iOS (the arm64 simulator), and the determinism job fails unless
+  all seven digests are identical. Hosted runners cannot emulate arm64 Android
+  at a usable speed, so `just android-digest` covers the arm64-v8a build on a
+  real phone. Versus play in lockstep across two phones depends on this.
 
 ## Nothing for sale
 

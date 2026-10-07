@@ -51,8 +51,10 @@ step that no amount of CI will cover.
 - [ ] `cargo test -p salt-line-godot`
 - [ ] `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -D warnings`
 - [ ] `salt-line-sim` still has zero dependencies
-- [ ] Determinism digests identical across all five sim platforms (Linux
-      x86_64 and arm64, macOS arm64, Windows x86_64 and arm64)
+- [ ] Determinism digests identical across all seven sim platforms (Linux
+      x86_64 and arm64, macOS arm64, Windows x86_64 and arm64, Android x86_64
+      emulator, iOS arm64 simulator)
+- [ ] `just android-digest` on an arm64 Android phone matches them
 - [ ] Version consistency (`version` job, `just version-check`); on a tag it
       also checks the tag and the CHANGELOG section
 - [ ] Batch solvability: 5,000 screens, zero unsolvable, zero `Flat` fallbacks
@@ -106,7 +108,7 @@ more at the end. What changed in each version lives in
    `## [X.Y.Z] - YYYY-MM-DD`, and merge it to `main`.
 2. Tag the merge commit and push the tag:
    `git tag -a vX.Y.Z -m "Salt Line X.Y.Z"`, then `git push origin vX.Y.Z`.
-3. CI builds and tests everything (sim on five platforms, determinism,
+3. CI builds and tests everything (sim on seven platforms, determinism,
    solvability, lint, the three desktop exports with their smoke launch,
    Windows arm64, Android). The `version` job fails the build if the tag does
    not match the tree, or if CHANGELOG.md has no section for it.

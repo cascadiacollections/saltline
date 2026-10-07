@@ -4,10 +4,11 @@
 //! replays each from `(run_seed, shot log)` alone, and asserts the
 //! reconstruction hashes match. Then prints one digest over all 200 hashes.
 //!
-//! CI runs this on Linux, macOS and Windows and compares the digest. If the
-//! digests differ there is a determinism leak — a libm call, a `HashMap`
-//! iteration, a variable timestep — and it must be fixed rather than papered
-//! over with a tolerance.
+//! CI runs this on Linux, macOS, Windows, Android and iOS and compares the
+//! digest; `just android-digest` runs it on a phone. If the digests differ
+//! there is a determinism leak — a libm call, a `HashMap` iteration, a
+//! variable timestep — and it must be fixed rather than papered over with a
+//! tolerance.
 //!
 //! ```text
 //! cargo run --release -p salt-line-sim --bin determinism

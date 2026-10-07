@@ -15,6 +15,9 @@ second. See RELEASING.md for the release steps.
 - The attract demo opens each part with a short card naming what is coming:
   ROGUELIKE (topple targets, draft a build) before a run, TWO PLAYERS (one
   phone, take turns) before a duel.
+- For developers: the cross-platform determinism check now also runs on Android
+  (x86_64 emulator) and iOS (arm64 simulator) in CI, and `just android-digest`
+  runs it on an attached Android phone as arm64-v8a.
 
 ## [0.1.0] - 2026-10-04
 
