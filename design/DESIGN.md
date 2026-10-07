@@ -532,7 +532,8 @@ salt-line-sim/          # Rust, no_std-friendly, zero Godot dependency
   ├─ solver.rs          # solvability validation
   ├─ modifiers.rs       # pool, draft, effect application
   ├─ run.rs             # state machine, economy, shot log
-  └─ replay.rs          # seed + shot log → verified reconstruction
+  ├─ replay.rs          # seed + shot log → verified reconstruction
+  └─ layout.rs          # a screen as data: forks, share codes, checks (§13)
 
 salt-line-godot/        # gdext binding
   └─ GDExtension nodes wrapping run.rs; rendering, input, audio, UI
@@ -1078,6 +1079,9 @@ saturating the gate cap (8 shots) at every wind. That is easy on purpose for a
 first prototype: amplitude and template weights are the levers if duels need
 more terrain to fight over.
 
+A custom duel (§13.9) skips all of this: every round is dealt the same
+layout's ground, which passed the same gate when it was loaded.
+
 ### 11.4 Reading it at a glance
 
 The mode is played by a parent and a young child on one phone, so who is who
@@ -1201,6 +1205,8 @@ match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
   the other untouched.
 - **The attract demo** never writes or clears the match file, and never
   touches the offer (§12.3).
+- **A match on a layout** (`--salt-layout`, §13.9) is not kept yet: its line
+  would need the layout's code (§13.4).
 
 ---
 
@@ -1399,3 +1405,452 @@ run.
   ("ROGUELIKE", "TWO PLAYERS")?~~ Yes (owner, October 2026): see "Mode
   cards" in §12.2.
 - Sound on as an option, for a demo started from the menu?
+
+---
+
+## 13. Layouts, the editor and custom games
+
+**Status: Phase 1 built; the rest proposed.** Phase 1 is the data model,
+forking a generated screen into it, the share code, validation, and a dev
+flag that plays a custom duel on a code (`--salt-layout`). There is no
+editor and no menu for any of it yet; §13.8 onward is a plan.
+
+**Owner decisions (October 2026):**
+
+- Custom duels come first. Single-player challenges come later.
+- The editor is in the game, built for a phone first (touch), and usable
+  with a mouse.
+- A layout sets the wind and nothing else about the rules: a fixed wind, a
+  range, or calm. No loadout or modifier overrides yet.
+- Every layout is 320 columns wide, letterboxed on wider buffers.
+- **Fork from a seed** is the base of the editor. Any generated screen, a run
+  seed and a screen index or a duel's match seed and round, can be turned
+  into an editable layout. The generator is the first draft.
+
+### 13.1 Concepts
+
+| Term | Meaning |
+|---|---|
+| **Layout** | One screen written down as data: the ground, the targets, the guns, the wind and a name. Built (Phase 1). |
+| **Custom duel** | A local versus match (§11) whose every round is played on one layout. Built behind a dev flag (Phase 1). |
+| **Challenge** | A one-gun layout played for shots, as a run screen is. Later. |
+| **Course** | An ordered list of layouts played as a short run, for challenges. Later. |
+
+A generated screen and a layout are opposites. A generated screen is a
+function of its seed (§2.2): nothing about it is stored, because the
+generator can always make it again, and a 20-character seed is the whole of
+it. A layout stores everything and generates nothing. That costs about two
+hundred characters instead of twenty, and buys two things a seed cannot
+offer:
+
+- **It can be edited.** A seed means what the generator makes of it, all or
+  nothing; a layout is just numbers, and an editor can change any of them.
+- **It outlives the generator.** A seed means a different screen after any
+  change to generation (§9.3); a layout means the same ground for ever. Only
+  how shots fly over it can change (§13.4).
+
+### 13.2 The data model
+
+`salt_line_sim::layout::Layout`, all integers:
+
+| Field | Holds | Unit |
+|---|---|---|
+| `heights` | ground height per column; its length is the width | sixteenths of a world unit |
+| `structures` | each target's kind and leftmost column | columns |
+| `guns` | barrel pivot columns: one for a challenge, two for a duel | columns |
+| `wind` | `Calm`, `Fixed(w)` or `Range { min, max }` | thousandths of a unit/s² |
+| `name` | up to 12 characters from the seed keypad, `A`–`Z` and `0`–`9` | |
+
+**Why integers, when the sim keeps everything in `f64` (§3)?** A layout is
+not sim state. It is something a person edits, a share code carries and a
+file keeps, and integers make all three exact:
+
+- An edit is a whole number of steps, so undo, redo and mirroring give back
+  exactly what was there.
+- The share code can code differences between columns without rounding
+  anything (§13.7).
+- Every device builds the same doubles from the same layout. `h / 16` and
+  `w / 1000` are single correctly rounded IEEE operations, and `h / 16` is
+  exact, so nothing depends on the platform's maths library.
+
+**Why sixteenths.** A height is used four ways: drawn in whole pixels, collided
+with between columns (sub-pixel matters a little, §2.1), and read for seating
+and support (the highest and the mean of a footprint, §2.7). Rounding to the
+nearest sixteenth moves a height by at most 1/32 of a pixel. The harness
+(`just layouts`, NOTES §9) measured each grid over 2,000 run forks and 150
+duel forks: how long the codes get, and how often a shot fired at a fork
+ends the same way as at the screen it was forked from:
+
+| Grid | Median code: runs | duels | Shots ending the same: runs | duels |
+|---|---|---|---|---|
+| whole units | 113 | 103 | 98.25% | 86.4% |
+| quarters | 150 | 143 | 99.76% | 97.0% |
+| **sixteenths** | **202** | **198** | **99.93%** | **99.3%** |
+| 1/64 | 305 | 298 | 99.97% | 99.8% |
+| 1/256 | 426 | 423 | 99.98% | 99.97% |
+| every bit | about 3,080 | 3,050 | 100% | 100% |
+
+Each halving of the grid costs at least a bit a column (64 characters), and
+more at the finer grids.
+Sixteenths is where the curve flattens: the shots that still differ are
+grazing ones, where a ground moved by 1/32 changes which 1/120 s step a shell
+lands on. Wind is in thousandths for the same reason: a fork moves it by at
+most 0.0005 units/s², which drifts a three-second shot by about two
+thousandths of a pixel.
+
+**Structures store a kind and a column, not a height.** A structure is seated
+by the generator's own rule, on the highest column of its footprint
+(`run::seat_at`, shared by both). So editing the ground under a structure can
+never bury it or leave it hanging in mid-air: it moves with the ground. The
+same holds for the guns.
+
+**Names** use only what the seed keypad can type (§13.10).
+
+### 13.3 From layout to screen
+
+`Screen::from_layout(&layout, wind)` builds the same kind of `Screen` the
+generator does, with one difference: the base buffer (§2.1) is the layout's
+heights instead of the generator's output. Everything after that is
+unchanged, because none of it can tell where a base came from:
+
+- Scars, materials, craters and their clamps (§2.6), collapse and debris
+  (§2.7) act on the scar buffer, as on any screen.
+- Structures are seated by the generator's rule and start intact.
+- The first gun is the emplacement (`muzzle_x`). In a duel, versus places the
+  second gun as the mirror of the first (§11.2), which is why a duel layout's
+  guns must be mirror images (§13.5).
+- The solver, the integrator and versus's mirrored frame run on it as they
+  are.
+
+The screen's `seed` is a digest of the layout, so the renderer's ground
+speckle is the same every time the layout is shown. Its `template` reads
+`Flat` and its `rung` is `None`, since nothing was generated.
+
+A match on a layout keeps the layout's width. `Game::start_layout_match`
+sets the buffer to 320 the way a resumed run keeps its recorded width
+(§9.6), and the display poll leaves it there while the match is on.
+
+### 13.4 Determinism and versioning
+
+**Nothing that existed changes.** Generation, runs, duels, replays, the
+pinned screen digests, the golden runs and the CI determinism digest are
+untouched, so there is no `SIM_EPOCH` bump. The only edit inside the sim's
+generation path is a refactor: seating a structure at a column
+(`run::seat_at`) is split out of seating it near an x, and the pinned
+digests prove the split changed nothing. A match without a layout runs
+exactly as before; versus gained an optional `Ground` that a generated match
+never sets.
+
+**The share code has its own version, `LAYOUT_FORMAT`**, the first byte of
+every code. A decoder reads only its own format and names any other
+(`CodeError::Format`); a later format is a new number and a new decoder
+branch, never a reinterpretation. The format version and `SIM_EPOCH` are
+independent, on purpose:
+
+- A layout is not a seed. A change to generation, which bumps `SIM_EPOCH`,
+  does not change what a layout means. That is the main reason layouts are
+  data (§13.14).
+- A change to ballistics can still change how a layout *plays*, and in
+  principle whether it passes the solvability gate. So validation is not a
+  certificate stamped on a layout when it is made. It runs every time a
+  layout is loaded (it costs well under a millisecond, §13.5), and a layout
+  that stops passing is shown as such, not silently dropped.
+- A fork's code does move with the generator: the same seed forks to a
+  different layout after an epoch bump. The snapshot test pins two codes, a
+  hand-made layout (moves only with `LAYOUT_FORMAT`) and a fork (moves with
+  either), so a change to either is seen.
+
+**Resuming a match on a layout (later).** A suspended match is its seed,
+its choices and its shots (§11.6); a match on a layout needs the layout as
+well, so its line would carry the code, and a new `match_log` format number.
+In Phase 1 a match on a layout is not kept on disk: it is a dev-flag match,
+started outside `start_versus`, which is what marks a match kept.
+
+### 13.5 Validation
+
+`layout::check_placement` applies cheap rules, flying no shots, and returns
+every problem it finds, in a fixed order, each naming the structure or gun
+at fault, so the editor can mark it:
+
+| Rule | Problem |
+|---|---|
+| exactly 320 columns | `Width` |
+| every column from `WORLD_FLOOR` to `WORLD_CEIL` (12–108) | `HeightOutOfWorld` |
+| one gun or two | `GunCount` |
+| a gun's whole chassis on screen (pivot 14 or more from either edge) | `GunOffScreen` |
+| **gun seated:** at least half its 26-column chassis within 12 units of its seat | `GunNotSeated` |
+| a duel's guns are mirror images | `GunsNotMirrored` |
+| a challenge has 1–3 targets; a duel has none (Phase 1) | `NoTargets`, `TooManyTargets`, `StructuresInDuel` |
+| a structure's footprint is off the edge columns | `StructureOffScreen` |
+| **not floating:** at least half its footprint within 4 units of its seat | `StructureFloating` |
+| **not buried:** no ground higher than its top on both sides within 3 columns | `StructureBuried` |
+| in front of the gun, 8 columns clear of its chassis | `StructureBehindGun`, `StructureOnGun` |
+| target centres at least 40 apart (§2.3 step 5) | `StructuresTooClose` |
+| wind within 7.0 either way; a range's ends in order | `Wind` |
+
+Floating is measured at the footprint's median column because a structure
+always stands on its highest column: on a slope, part of it is always in the
+air. "At least half its footprint near the ground" lets a silo stand on a
+hillside and stops one balanced on a spire's tip.
+
+**The generator does not meet that rule.** It stands about 9% of run screens'
+structures on a spire, a ridge's flank or a chasm lip with most of the
+footprint in the air (a quarter of `Spires` screens, a sixth of `Ridge`
+ones; NOTES §9). Forks of those screens need an edit before they pass. That
+is the rule working, but it is also a question about the generator (§13.13).
+
+**Solvability.** A layout that passes placement then goes through the same
+gate as a generated screen (§2.4), for the base loadout, at each **extreme
+of its wind**: the fixed wind itself; or, for a range, its strongest and
+weakest strengths blowing each way (calm, when the range starts at zero).
+
+- **One gun** (`layout::validate`): every target needs `MIN_SOLUTIONS` (3)
+  distinct shots that fell it, from `solver::validate`.
+- **Two guns** (`custom::validate`, in the Godot crate because the sim knows
+  nothing of versus): each gun needs 3 distinct shots that hit the other, from
+  the duel gate's own `shots_at` in the mirrored frame (§11.3).
+
+A one-gun check takes 47 µs at the median and 210 µs at worst, a duel check
+about 100 µs, so the editor can recheck after every edit.
+
+**Fairness and mirror tools** for duels: `Layout::asymmetry` (the largest
+difference between a column and its mirror), `Layout::mirror_left` (copy the
+left half onto the right, exactly) and `custom::duel_counts` (each gun's
+shot count in each wind checked; a side with fewer shots has the harder
+ground). On mirrored ground the counts are mirror images exactly, which a
+test holds.
+
+### 13.6 Fork from a seed
+
+- `Layout::from_run_screen(seed, screen)`: the run's screen generated at 320
+  for the base loadout, written down. Its wind becomes a fixed wind.
+- `custom::fork_duel(match_seed, round)`: the duel round generated at 320
+  under the game's rules. Its guns are at 30 and 289, its wind the game's
+  per-turn range (`Range { min: 0, max: 2500 }`), held exactly.
+
+Two things the fork cannot carry, both documented on the functions:
+
+- **The loadout.** A layout has none, so a run screen is forked as a fresh run
+  with the base loadout meets it. A real run deep into its drafts may have
+  been dealt a screen the base loadout could not reach.
+- **Another width.** A fork is generated at 320. On a wider phone a run's
+  screen can differ toward its right edge, and a duel's differs everywhere,
+  since it is laid out between the guns and mirrored about the middle.
+
+**What is exact and what is not.** The fork keeps the structures (kind and
+column), the guns and a duel's wind exactly, and moves every height and
+structure seat by at most 1/32 and a run's wind by at most 0.0005. It is
+**not** bit-identical to the generated screen, so its state hash is not the
+generated screen's hash. The hash covers every height's bit pattern (§9.3)
+and a generated height is an arbitrary double, which no grid of integers
+short of the full 49-bit fixed point can hold (about 3,080 characters a
+code, §13.2).
+
+What is exact, and tested:
+
+- A fork is a fixed point: forking the screen a fork builds gives back the
+  same layout.
+- A fork's code rebuilds a screen whose state hash equals that of the screen
+  the fork builds, so every device that reads a code plays the same screen.
+- Shots fired at a fork end as they do at the generated screen 99.92% of the
+  time for runs and 99.3% for duels, over 4,000 run screens and 300 duel
+  rounds (NOTES §9). Every forked duel, and every forked run screen that
+  passes placement, passes the solvability gate.
+
+The brief asked for the generated screen's own hash. That is only possible
+by keeping every bit, or by keeping the seed, both rejected in §13.14.
+
+### 13.7 Share codes
+
+A code is `SL` and then Crockford base32 of the bytes: the format byte, a
+bit-packed body, and a CRC-16. The body is the width, the name, the wind,
+the guns, the structures, the first height, and each later column's
+**second difference**, the change in slope, Rice-coded. The layout of every
+field is in `layout/code.rs`.
+
+- **Second differences**, because ground is smooth: a column is almost where
+  the two before it point, so a hill becomes a run of small numbers and a
+  flat or evenly sloping stretch becomes zeros.
+- **Rice coding**, with the parameter chosen per code, spends `1 + k` bits on
+  small values. A value that would run long is escaped and written raw, so no
+  column costs more than 42 bits.
+- **Run-length** as a second mode, picked by one bit when it is shorter:
+  editor-made ground has long flat or straight stretches, and level ground
+  codes in 28 characters rather than 89.
+- **Base32, not base64.** A fifth longer, but every character is on the seed
+  keypad and in a QR code's alphanumeric set, case does not matter, and
+  reading `O` as `0` and `I` or `L` as `1` (spaces and hyphens skipped) lets
+  a code survive being read aloud or retyped.
+- **CRC-16** catches every single mistyped character (a test tries them all)
+  and all but one in 65,536 other errors. A layout that passes the checksum
+  still goes through validation before it is played.
+
+**Size budget: 400 characters for any fork.** Measured over 4,000 run forks
+and 300 duel forks: a median of 206 (runs) and 194 (duels), a worst case of
+380 and 374. A hand-made layout of level ground and one target is 28.
+Copying, pasting, a QR code or a relay message carries that easily; typing
+it on the keypad does not, and isn't meant to.
+
+**Decoding is total.** Text longer than 4,096 characters is refused before
+anything is read, every count comes from a fixed-width field and is checked
+against its limit before it is used, and every read past the end is an
+error. Any text at all is a layout or a `CodeError`, never a panic, and a
+code that decodes re-encodes to a code for the same layout. A property test
+round-trips random layouts, and a fuzz target (`layout_code`, in the weekly
+job) feeds the decoder both raw text and bodies framed with a valid checksum,
+so mutations reach the bit-level decoder rather than stopping at the CRC.
+
+### 13.8 Local storage (proposed)
+
+- **Slots in a text file**, `user://layouts.txt`: one line per saved layout,
+  `layout <slot> <code>`, the slot a number from 1 to 12. Plain text the
+  player owns, like the save (README, "Nothing for sale"): a layout is
+  already text, so the file is just a list of codes.
+- **Durable as the save is** (`app.rs`, "Order is behaviour"): written only
+  through an `Effect::Store`, replaced atomically through a temp file and a
+  rename (`save::store`), never written after a panic, and reported back
+  through `Game::stored` so a failed write says so on screen.
+- **Bundled layouts** ship read-only as codes in `res://`, and are listed
+  before the slots.
+- **Kept when unread.** A line in a newer `LAYOUT_FORMAT` is kept verbatim
+  and written back unchanged, and a layout that no longer passes validation
+  is shown dimmed with its problem rather than deleted. Nothing a player made
+  is thrown away by a build that does not understand it.
+- **Demo isolation (§12.3).** The demo never reads or writes the layouts
+  file. If a demo leg ever plays a layout, it plays a bundled one.
+
+### 13.9 Custom duels
+
+**Built (Phase 1).** `custom::layout_match` turns a two-gun layout into a
+versus `Match`. Its screen becomes a `versus::Ground`, dealt fresh (no
+craters, guns home) at the start of every round instead of a generated
+screen. Its wind becomes the rules' wind range, so each turn draws from the
+layout's range by `turn_wind`, or, for a fixed wind, holds that wind every
+turn in the shared frame. Hits, rounds, equal shots, rolling guns and aim
+help are versus's own. `--salt-layout <code>` starts one at the first
+handoff; a code that does not read or pass, or a one-gun layout, leaves the
+title up with a note (and the console says why).
+
+**Proposed (Phase 2).**
+
+- The pre-match screen gets a GROUND row: GENERATED (today's duel), the
+  bundled layouts, then the player's slots, each with its name and a small
+  silhouette of its ground.
+- A rematch keeps the ground. Today the dev flag's rematch deals a generated
+  match.
+- A match on a layout is kept on disk like any other (§11.6), its line
+  carrying the layout's code (§13.4).
+- A small set of bundled duel layouts, forked from good generated rounds and
+  touched up, so the mode has something to pick before anyone makes one.
+
+**Challenges and courses (later).** A one-gun layout plays as a run screen
+does: a gun, targets, the base loadout, shots counted. A course strings a few
+together with a par. Both reuse `Screen::from_layout` and the one-gun gate as
+they are. Scoring and where results are kept are open (§13.13).
+
+**Sharing (later).** The online versus design (an async relay with invite
+codes) could carry layout codes as they are: a code is text, small, and
+checks itself. Nothing in Phase 1 depends on it.
+
+### 13.10 Independence and scope (§7)
+
+- **Existing structures only.** A layout places the five kinds of §5.4 and
+  nothing else: no figures, no new art, no imported images.
+- **No free text.** A name is at most 12 characters from the seed keypad
+  (`A`–`Z`, `0`–`9`), the same as a seed already allows, and nothing else in
+  a code is text. Whatever a shared code carries, it can say no more than a
+  shared seed can. (Whether names need a word filter before sharing exists
+  is an open question.)
+- **Its own terrain.** Layouts are ground the game's own generator drafted or
+  the player drew, with the game's own rules.
+
+### 13.11 The editor (proposed)
+
+In the game, phone-first. Every tool works by touch, with a finger in the way,
+and maps to a mouse: drag is drag, the wheel sizes the brush.
+
+| Tool | Does |
+|---|---|
+| SCULPT | drag up or down to raise or lower the ground under a soft brush |
+| SMOOTH | drag to even out bumps |
+| STAMP | drop one of the generator's shapes (ridge, chasm, mesa, spires, basin) at a point, from `terrain::shape` |
+| PLACE | pick one of the five structures and drag it along the ground; it seats itself |
+| GUNS | drag the left gun; in a duel the right one follows as its mirror |
+| MIRROR | copy the left half onto the right |
+| WIND | CALM, FIXED or RANGE, in tenths |
+| UNDO / REDO | whole-layout snapshots: a layout is under a kilobyte, so 64 steps cost nothing |
+| TEST FIRE | fire either gun with aim help, as in a duel; leaving the test puts the ground back |
+| HINTS | draw the gate's shots as arcs, so a player can see the ways through |
+
+- **Validation is live.** It is cheap enough (§13.5) to run after every edit.
+  A problem shows as a mark on the structure or gun at fault, with a symbol
+  rather than a sentence (floating, buried, too close, no way through). A
+  green flag means the layout can be played and saved.
+- **Kid-friendly.** Big touch targets, no smaller than the aim buttons;
+  nothing that a wrong tap cannot undo; the ground can never leave the world
+  (the brush clamps at 12 and 108).
+- **Fork from here.** The editor opens on a generated screen: the current
+  duel round, the screen a run is on, or a seed typed on the keypad.
+
+### 13.12 Phases
+
+| Phase | What | Done when |
+|---|---|---|
+| **1 (built)** | data model, forks, share code, validation, `--salt-layout`, `--salt-fork-run`, `--salt-fork-duel`, `just layouts` | forks within 1/32 and the code round trip are tested; the decoder is fuzzed; generation and goldens unchanged; a code plays as a custom duel on a phone |
+| 2 | custom duels in the menus: the GROUND row, bundled layouts, pasting a code, the layouts file, rematch keeps the ground, resume carries it | the owner and his son pick a bundled layout from the pre-match screen on the Pixel and play it through |
+| 3 | the editor's first cut: SCULPT, SMOOTH, PLACE, GUNS, MIRROR, WIND, UNDO, TEST FIRE, save to a slot, fork from the current round | a child makes a duel layout and plays it without help, in a playtest |
+| 4 | challenges and courses: one-gun layouts as a mode, STAMP and HINTS | a course of bundled challenges plays start to finish with a result |
+| 5 | sharing through the relay | a code sent from one phone plays on another |
+
+### 13.13 Open questions
+
+- **Floating generated structures.** About 9% of run screens stand a target
+  on a spire or a lip (§13.5). Options: let the rule stand and have the
+  editor flag forks; move a fork's floating structure to the nearest place it
+  stands (fork only, nothing generated changes); or make the generator obey
+  the rule too, which changes generation and needs a `SIM_EPOCH` bump.
+- **Structures in duels**, as cover. Versus flies a duel shot against the
+  other gun's box only, so structures would need adding to its world, and
+  rules for a gun behind a collapsed one.
+- **Rolling guns on a custom duel.** The ladder is counted from
+  `EMPLACEMENT_X` (§11.1), so on a layout with its guns elsewhere the rolls
+  land on spots the layout's author did not choose. Count it from the
+  layout's guns instead, or turn rolling off on layouts?
+- **Guns that are not mirror images.** Versus places the right gun as the
+  left's mirror. Freeing that means a second muzzle in its frames.
+- **A fixed wind in a duel** blows the same way for both, so it helps one
+  side. Allow it with the fairness reading showing which, or keep fixed
+  winds for challenges?
+- **Provenance.** Should a fork's code say where it came from (seed and
+  screen), for display? It costs about 15 characters.
+- **Names.** A word filter for names once codes can be shared?
+- **Challenge scoring**, and where its results are kept.
+
+### 13.14 Alternatives considered
+
+- **A seed plus a diff.** An unedited fork would be a seed and nothing
+  else, which is short. But it ties every layout to one version of the
+  generator: each `SIM_EPOCH` bump would turn every shared layout into a
+  different screen, unless old generators were kept for ever (§9.6 already
+  declines that for replays). A diff against arbitrary doubles is no smaller
+  than the heights themselves once anything is edited, and loading a layout
+  would mean generating first. Layouts would stop being data.
+- **Keeping every bit of the generated heights.** It gives the exact state
+  hash of the generated screen, at about 3,080 characters a code, fifteen
+  times the size, for differences in under 0.1% of shots (§13.2).
+- **Base64url** is a fifth shorter than base32, but case-sensitive, full of
+  characters easily misread (`l`, `1`, `I`, `O`, `0`), and has characters
+  the keypad cannot type.
+- **A readable text format** (one number per column) would be hand-editable,
+  but a kilobyte or more per layout, and nobody edits 320 heights by hand. The
+  layouts file is still plain text, as a list of codes.
+- **Coding first differences, or bytes.** Slopes cost bits on every column
+  under first differences; byte-aligned varints cost at least eight bits a
+  column, over 500 characters.
+- **Control points (a spline).** Small and pleasant to drag, but a fork of
+  generated ground would not be exact to any useful grid, and stamping and
+  sculpting would fight the spline. The editor can still offer smooth brushes
+  over a heightfield.
+- **Layouts at any width.** Each phone would show a different amount of the
+  same layout, or stretch it. One width, letterboxed, means a layout plays
+  the same everywhere (owner decision).

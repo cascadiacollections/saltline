@@ -46,3 +46,10 @@ path = "fuzz_targets/match_log.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "layout_code"
+path = "fuzz_targets/layout_code.rs"
+test = false
+doc = false
+bench = false

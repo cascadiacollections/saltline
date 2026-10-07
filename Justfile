@@ -66,6 +66,12 @@ balance-sweep seeds="100" screens="40" build="base" from="40" to="100" step="5" 
 duel matches="200" bot="kid" *flags:
     cargo run --release -p salt-line-godot --example duel -- --matches {{ matches }} --bot {{ bot }} {{ flags }}
 
+# Layouts (DESIGN §13): fork generated run screens and duel rounds, and report share-code
+# lengths, how closely forks play, and what the checks cost. Or one at a time:
+# `just layouts fork-run DUNE:8`, `just layouts fork-duel 42:0`, `just layouts check SL…`.
+layouts *args:
+    cargo run --release -p salt-line-godot --example layouts -- {{ args }}
+
 # macOS exports ship one universal dylib: `macos.release` in salt_line.gdextension points at
 # target/universal-apple-darwin/release. Debug builds stay host-only at target/debug, so
 # `just run` does not need this; run it before `godot --export-release "macOS"` on a Mac.
@@ -280,7 +286,8 @@ miri:
 bench:
     cargo bench -p salt-line-sim --bench sim
 
-# Fuzz one target for a while (nightly + cargo-fuzz): save_parse, seed_parse, replay or match_log.
+# Fuzz one target for a while (nightly + cargo-fuzz): save_parse, seed_parse, replay, match_log
+# or layout_code.
 fuzz target="save_parse" seconds="60":
     cd fuzz && rustup run nightly cargo fuzz run {{ target }} -- -max_total_time={{ seconds }}
 

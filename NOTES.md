@@ -610,3 +610,77 @@ and the loop alternates a run and a duel. Everything else was decided here.
   inside the card's rectangle (135x27 and 103x27 px), which
   `the_demo_card_is_a_plate_over_the_leg` checks against the same frame
   with the card cleared.
+
+## 9. Layouts (DESIGN §13), Phase 1
+
+The owner fixed the scope (custom duels first; wind only; 320 columns; fork
+from a seed as the editor's base). These were decided here, with the
+measurements behind them. Reproduce the numbers with `just layouts` (100
+seeds: 4,000 run screens at 40 a seed, 300 duel rounds at 3 a seed).
+
+- **Fork parity is "within a rounding", not hash-equal.** The brief asked
+  for a fork to rebuild a screen whose state hash equals the generated one.
+  The hash covers every height's bit pattern, and generated heights are
+  arbitrary doubles, so only keeping all of their bits could do that (a
+  fixed point with 49 fraction bits: every double from 12 to 108 is a whole
+  number of 2^-49). That costs about 3,080 characters a code against about
+  200. What the tests hold instead: structures (kind and column), guns and a
+  duel's wind are exact; heights and seats move by at most 1/32 and a run's
+  wind by at most 0.0005; the fork is a fixed point of forking; and a code
+  rebuilds a bit-identical screen on every device. Shots fired at a fork end
+  as at the generated screen 99.92% of the time (runs) and 99.3% (duels).
+- **Heights in sixteenths.** Measured over 2,000 run forks and 150 duel
+  forks (`--seeds 50`), changing only `HEIGHT_SCALE`:
+
+  | Grid | Median code: runs | duels | Shots ending the same: runs | duels |
+  |---|---|---|---|---|
+  | whole units | 113 | 103 | 98.25% | 86.4% |
+  | quarters | 150 | 143 | 99.76% | 97.0% |
+  | **sixteenths** | **202** | **198** | **99.93%** | **99.3%** |
+  | 1/64 | 305 | 298 | 99.97% | 99.8% |
+  | 1/256 | 426 | 423 | 99.98% | 99.97% |
+
+  "Ending the same" means the same kind of end within a unit, the same
+  structures down or leaning and the same clear (runs), or the same hit
+  (duels), for the gate's own shots and as many random ones. Sixteenths is
+  where the curve flattens; the shots that still differ graze the ground.
+- **Code lengths** (characters, `SL` included): run forks median 206, p99
+  354, max 380; duel forks median 194, p99 366, max 374. A hand-made layout
+  of level ground with one target is 28 (the run-length mode; 89 without
+  it). The budget in DESIGN §13.7 is 400 for any fork. The longest code any
+  layout can have, 400 columns of noise each escaped, is about 3,400; the
+  decoder refuses text past 4,096.
+- **Check time** (release build, one core of a Ryzen AI 7 PRO 350):
+  placement plus the one-gun gate median 47 µs, p99 147 µs, max 208 µs; the
+  duel gate median 101 µs, max 224 µs. Cheap enough to run after every edit.
+- **Generated structures float.** 320 of 4,000 run forks (8%) fail the
+  floating rule (at least half the footprint within 4 units of the seat);
+  over 18,000 screens it is 9.2%, by template: `Spires` 25%, `Ridge` 17%,
+  `Basin` 8.5%, `Chasm` 6%, `Flat` 0.1%, `Mesa` 0. They are second and
+  third targets stepping back onto a spire or a ridge's flank. Raising the
+  limit does not help much: 6.8% at 6 units, 2.8% at 12, 1.7% at 24 (some
+  stand on a single column 50 units above the rest of their footprint). The
+  rule is kept and the generator question is DESIGN §13.13's.
+- **Other placement limits from the generator.** The gun rule (half the
+  chassis within 12 units of the seat) is above the worst a generated run
+  screen does (10.4 over 18,000 screens); every duel fork passes. The burial
+  rule (ground above the top on both sides within 3 columns) never fires on
+  generated screens; ground above the top on one side does (next to a
+  spire), which is shelter, not burial, so it is allowed.
+- **Every fork passes the solvability gate** where it passes placement: all
+  300 duel forks, and every run fork that is not floating.
+- **Duel layouts have no structures** in Phase 1: versus flies a duel shot
+  against the other gun's box only, so a structure would be drawn and not
+  hit. **A duel's guns must be mirror images**, because versus places the
+  right gun as the left's mirror (one `muzzle_x` for both).
+- **A layout match shares the start of every match.** `start_versus_on`
+  now hands its `Match` to `start_versus_with`, which `start_layout_match`
+  calls with the layout's; nothing else about starting a match changed. It
+  keeps the layout's width through `set_run_width`, which the display poll
+  already leaves alone while a versus match is on (§11.6's resumed matches
+  needed the same). It is never kept on disk: `start_versus` marks a match
+  kept, and the match log has no field for a layout yet.
+- **Fuzzing.** `layout_code` ran 11.8 million inputs in 150 s locally with no
+  finding. It frames each input as a code with a valid checksum as well as
+  trying it as text, since random text almost never passes a CRC and would
+  leave the bit-level decoder unfuzzed.
