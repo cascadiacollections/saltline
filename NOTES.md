@@ -523,3 +523,24 @@ and the loop alternates a run and a duel. Everything else was decided here.
 - **Snapshots.** Changed: the title (the new row) and the save format (the
   pinned save now sets `idle_demo 0`). New: the demo's first run frame and
   its first duel handoff, banner and all.
+- **Mode cards (the §12.5 question, settled yes).** Each leg opens with a
+  card, ROGUELIKE / TOPPLE TARGETS · DRAFT A BUILD or TWO PLAYERS / ONE
+  PHONE · TAKE TURNS, for `DEMO_CARD` (1.8 s) over the leg's first frame.
+  The card is a hold at the start of the leg rather than a gap between legs:
+  `begin_demo_leg` sets it, and `demo_step` drives nothing and counts no
+  `leg_time` or wait until it runs out, so the screen under it is the leg's
+  real opening (never black) and the caps (`DEMO_RUN_TIME`,
+  `DEMO_DUEL_TIME`) still measure play. Exit needed nothing new: input is
+  read before `demo_step`, card or not. Placement: top centre at row 8,
+  since the duel's opening plate takes the middle and the curated runs'
+  targets reach row 40; the card ends at row 34. Native 3x5 text only, as
+  the banner: the 5x7 face has no letters, and scaled type is §11.4's
+  versus-only exception. The duel card's hook is in `ROCK`, as versus draws
+  secondary text, since `SKY_LO` is the right side's colour. A third line
+  with the run's seed (SEED DUNE) read fine but sat on the TOWER and 1984
+  targets and means nothing to a first-time viewer, so it was dropped.
+  Legs with their cards now take 19–29 s (run) and 22–44 s (duel) over the
+  first eight cycles. Snapshots: `demo_run` and `demo_duel` change only
+  inside the card's rectangle (135x27 and 103x27 px), which
+  `the_demo_card_is_a_plate_over_the_leg` checks against the same frame
+  with the card cleared.

@@ -16,8 +16,10 @@
 //! how they look) and plays until [`DEMO_RUN_SCREENS`] screens are cleared,
 //! the run ends, or [`DEMO_RUN_TIME`] passes. A *duel leg* plays a local
 //! versus match on its own seed until [`DEMO_DUEL_ROUNDS`] round is won or
-//! [`DEMO_DUEL_TIME`] passes. The legs carry on from one demo to the next in
-//! a session (`Game::demo_next_leg`). Both aim with the solver, as
+//! [`DEMO_DUEL_TIME`] passes. Each leg opens with a card naming its mode
+//! ([`card_of`]), held [`DEMO_CARD`] over the leg's first frame before
+//! anything moves; the caps count from the card's end. The legs carry on
+//! from one demo to the next in a session (`Game::demo_next_leg`). Both aim with the solver, as
 //! `--salt-auto` does, and miss on purpose now and then, so craters, chalk
 //! and landing marks and rolling guns all get shown. Which shots miss is a
 //! hash of the demo cycle (two legs) and the shot's place in it, so a given
@@ -110,6 +112,37 @@ pub const DEMO_HANDOFF: f64 = 0.8;
 pub const DEMO_RESULT: f64 = 1.8;
 /// Seconds a run leg's last screen is held before the duel.
 pub const DEMO_END_HOLD: f64 = 1.2;
+/// Seconds the card naming the mode stays over a leg's first frame before
+/// the leg starts to play (DESIGN §12.2). Not counted in the leg's
+/// [`DEMO_RUN_TIME`] or [`DEMO_DUEL_TIME`].
+pub const DEMO_CARD: f64 = 1.8;
+
+/// The card before a run leg: the mode, and what a run asks of you
+/// (DESIGN §1: clear each screen's targets; a draft every band).
+pub const CARD_RUN: (&str, &str) = ("ROGUELIKE", "TOPPLE TARGETS \u{b7} DRAFT A BUILD");
+/// The card before a duel leg: the mode, and how it is played (DESIGN §11:
+/// two players pass one phone, a shot each).
+pub const CARD_DUEL: (&str, &str) = ("TWO PLAYERS", "ONE PHONE \u{b7} TAKE TURNS");
+
+/// What the card before a leg says: the mode, and one line on it. A run's
+/// seed name is left off: it is a third line that pushed the card down onto
+/// the tallest curated targets, and a word a first-time viewer cannot read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Card {
+    /// The mode, in plain UI text.
+    pub title: &'static str,
+    /// One line on what it is.
+    pub hook: &'static str,
+}
+
+/// The card before leg `index`.
+pub fn card_of(index: u64) -> Card {
+    let (title, hook) = match leg_of(index) {
+        Leg::Run => CARD_RUN,
+        Leg::Duel => CARD_DUEL,
+    };
+    Card { title, hook }
+}
 
 /// Mixed into duel seeds and miss hashes, so the demo's matches are not
 /// any player's.
@@ -222,8 +255,11 @@ pub(crate) struct Demo {
     pub(crate) time: f64,
     /// The leg on screen, counted from 0; [`leg_of`] says which kind.
     pub(crate) leg_index: u64,
-    /// Seconds into the leg.
+    /// Seconds into the leg's play, from the end of its card.
     pub(crate) leg_time: f64,
+    /// Seconds the leg's card has left on screen; nothing plays until it
+    /// runs out ([`DEMO_CARD`]).
+    pub(crate) card: f64,
     /// Seconds before the driver acts on its current cue.
     wait: f64,
     cue: Option<Cue>,
@@ -236,6 +272,11 @@ pub(crate) struct Demo {
 impl Demo {
     pub(crate) fn leg(&self) -> Leg {
         leg_of(self.leg_index)
+    }
+
+    /// The card on screen, while it is.
+    pub(crate) fn card(&self) -> Option<Card> {
+        (self.card > 0.0).then(|| card_of(self.leg_index))
     }
 
     /// Two legs, a run and a duel, make a cycle.
@@ -371,6 +412,7 @@ impl Game {
             time: 0.0,
             leg_index: first,
             leg_time: 0.0,
+            card: 0.0,
             wait: 0.0,
             cue: None,
             pending: None,
@@ -408,13 +450,14 @@ impl Game {
     }
 
     /// Begin leg `index`: a run on the next of [`DEMO_RUNS`], or a duel on
-    /// the cycle's own seed.
+    /// the cycle's own seed, under its card.
     pub(super) fn begin_demo_leg(&mut self, index: u64) {
         let Some(d) = self.demo.as_mut() else {
             return;
         };
         d.leg_index = index;
         d.leg_time = 0.0;
+        d.card = DEMO_CARD;
         d.wait = 0.0;
         d.cue = None;
         d.pending = None;
@@ -455,14 +498,14 @@ impl Game {
         self.apply_buffer_size();
     }
 
-    /// One frame of the demo's play, in place of the player's input.
+    /// One frame of the demo's play, in place of the player's input. While
+    /// a leg's card is up nothing is driven, so the leg holds its first
+    /// frame under it; the leg's time and waits start when the card goes.
     pub(super) fn demo_step(&mut self, delta: f64) {
         let Some(d) = self.demo.as_mut() else {
             return;
         };
-        d.leg_time += delta;
         d.time += delta;
-        d.wait -= delta;
         if d.started == Started::Idle && d.time >= IDLE_DEMO_LIMIT {
             self.stop_demo();
             self.idle_demo_spent = true;
@@ -476,6 +519,12 @@ impl Game {
             }
             return;
         }
+        if d.card > 0.0 {
+            d.card -= delta;
+            return;
+        }
+        d.leg_time += delta;
+        d.wait -= delta;
         match d.leg() {
             Leg::Run => self.demo_run_step(),
             Leg::Duel => self.demo_duel_step(),

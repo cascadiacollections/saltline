@@ -1836,7 +1836,7 @@ mod session;
 mod versus;
 
 pub(crate) use demo::Demo;
-pub use demo::{Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};
+pub use demo::{Card as DemoCard, Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};
 pub use versus::{Call as VersusCall, Stage as VersusStage, DING_DELAY, VERSUS_HOLD};
 pub(crate) use versus::{VersusPlay, VersusState};
 

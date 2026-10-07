@@ -225,9 +225,11 @@ Leave the title alone for 30 seconds and the game plays itself (DESIGN §12): a
 run on one of a few hand-picked seeds, then a short local versus duel, then the
 next run, and so on, carrying on where the last demo left off. DEMO on the title
 (`D`, d-pad down, or the plate in the top-left corner of a touchscreen) starts
-it at once. A banner says `DEMO · TAP TO PLAY` (`DEMO · PRESS ANY KEY` with keys
-or a controller); any key, button, trigger, stick push or tap goes back to the
-title, and that press does nothing else. The demo is silent, and it never
+it at once. Each part opens with a short card naming what is coming,
+ROGUELIKE or TWO PLAYERS, with a line on how it plays. A banner says
+`DEMO · TAP TO PLAY` (`DEMO · PRESS ANY KEY` with keys or a controller); any
+key, button, trigger, stick push or tap goes back to the title, and that press
+does nothing else. The demo is silent, and it never
 touches your saved run, scores, settings or onboarding: a run quit to the title
 is still there to CONTINUE, exactly as you left it. Turn IDLE DEMO off on
 CONTROLS / AUDIO to stop it starting by itself (the menu's DEMO still works).
