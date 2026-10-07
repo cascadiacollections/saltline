@@ -400,6 +400,9 @@ pub enum Event {
     },
     /// The platform's back gesture (Android).
     Back,
+    /// An analog trigger pulled past halfway. No action reads it; it is
+    /// someone there, for the idle demo's count and to end the demo.
+    Trigger,
 }
 
 impl Event {

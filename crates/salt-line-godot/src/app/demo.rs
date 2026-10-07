@@ -9,14 +9,15 @@
 //!                                       ▼
 //!          leg 0: run ──► leg 1: duel ──► leg 2: run ──► leg 3: duel ──► …
 //!                                       │
-//!          any key, tap, pad button, stick or back ──► title (input spent)
+//!   any key, tap, pad button, trigger, stick or back ──► title (input spent)
 //! ```
 //!
 //! A *run leg* starts one of [`DEMO_RUNS`] (a seed and a screen picked for
 //! how they look) and plays until [`DEMO_RUN_SCREENS`] screens are cleared,
 //! the run ends, or [`DEMO_RUN_TIME`] passes. A *duel leg* plays a local
-//! versus match on its own seed until the match is won or
-//! [`DEMO_DUEL_ROUNDS`] rounds are done. Both aim with the solver, as
+//! versus match on its own seed until [`DEMO_DUEL_ROUNDS`] round is won or
+//! [`DEMO_DUEL_TIME`] passes. The legs carry on from one demo to the next in
+//! a session (`Game::demo_next_leg`). Both aim with the solver, as
 //! `--salt-auto` does, and miss on purpose now and then, so craters, chalk
 //! and landing marks and rolling guns all get shown. Which shots miss is a
 //! hash of the demo cycle (two legs) and the shot's place in it, so a given
@@ -53,7 +54,10 @@
 //! no action is read that frame, key and pad presses are dropped at the
 //! next frame's `Controls::begin`, and touches are settled
 //! (`settle_touch`) so the tap that ended the demo cannot press a title
-//! button. Sound is muted by `volume_db` while the demo runs
+//! button. Only the demo's start settles touches: its duel's plate changes
+//! do not (`Game::tick`), or a tap just after one would be ignored. An
+//! idle-started demo also ends when focus goes or the app pauses, and after
+//! [`IDLE_DEMO_LIMIT`]. Sound is muted by `volume_db` while the demo runs
 //! ([`DEMO_MUTED`]), which leaves the saved volume and mute alone. A demo
 //! started from the menu keeps the screen on ([`Awake::Keep`]); one that
 //! started by itself lets it sleep ([`Awake::LetSleep`]); both put the
@@ -78,16 +82,25 @@ pub const DEMO_MUTED: bool = true;
 /// Night skies, a water tower over a chasm, two targets on a mesa, spires.
 pub const DEMO_RUNS: [(&str, u32); 4] = [("DUNE", 7), ("TOWER", 12), ("1984", 8), ("MESA", 16)];
 /// Screens a run leg clears before the duel.
-pub const DEMO_RUN_SCREENS: u32 = 3;
+pub const DEMO_RUN_SCREENS: u32 = 4;
 /// Longest a run leg plays, in seconds, should its screens go slowly.
 pub const DEMO_RUN_TIME: f64 = 75.0;
-/// Rounds a duel leg plays at most (a match is best of three).
-pub const DEMO_DUEL_ROUNDS: u32 = 2;
+/// Rounds a duel leg plays at most (a match is best of three): one, so
+/// the duel is a taste of versus rather than most of the loop.
+pub const DEMO_DUEL_ROUNDS: u32 = 1;
 /// Longest a duel leg plays, in seconds; it ends at the next handoff.
-pub const DEMO_DUEL_TIME: f64 = 90.0;
+pub const DEMO_DUEL_TIME: f64 = 40.0;
+/// Longest an idle-started demo runs before it gives the title back, in
+/// seconds. It does not start again by itself until someone touches
+/// something. A demo chosen from the menu runs until it is stopped.
+pub const IDLE_DEMO_LIMIT: f64 = 600.0;
 
-/// Seconds the new aim is shown, barrel and readouts, before it fires.
+/// Seconds the new aim is shown, barrel and readouts, before it fires. The
+/// barrel swings to it over the first [`DEMO_SWING`] of that.
 pub const DEMO_AIM: f64 = 0.8;
+/// Seconds the barrel and readouts take to swing from the last aim to the
+/// new one; the rest of [`DEMO_AIM`] holds it still, so it is read.
+pub const DEMO_SWING: f64 = 0.55;
 /// Seconds the draft cards stay up before an offer is taken.
 pub const DEMO_DRAFT: f64 = 1.6;
 /// Seconds the pass-the-phone plate stays up.
@@ -188,8 +201,22 @@ struct Stash {
     kept_width: bool,
 }
 
+/// An aim chosen and swinging into place, waiting [`DEMO_AIM`] to fire.
+#[derive(Clone, Copy)]
+struct Pending {
+    /// The aim it swings from (angle ticks, power ticks).
+    from: (i32, i32),
+    /// The shot that fires.
+    to: Shot,
+    /// The fuse a run shot sets.
+    fuse: Option<f64>,
+}
+
 /// The demo while it runs. See the module docs.
 pub(crate) struct Demo {
+    pub(crate) started: Started,
+    /// Seconds since the demo began, for [`IDLE_DEMO_LIMIT`].
+    pub(crate) time: f64,
     /// The leg on screen, counted from 0; [`leg_of`] says which kind.
     pub(crate) leg_index: u64,
     /// Seconds into the leg.
@@ -197,9 +224,7 @@ pub(crate) struct Demo {
     /// Seconds before the driver acts on its current cue.
     wait: f64,
     cue: Option<Cue>,
-    /// An aim is on screen, waiting [`DEMO_AIM`] to fire; with the fuse a
-    /// run shot sets.
-    pending: Option<Option<f64>>,
+    pending: Option<Pending>,
     /// The leg is over; seconds before the next one begins.
     ending: Option<f64>,
     stash: Stash,
@@ -241,6 +266,10 @@ impl Game {
     /// reaches [`IDLE_DEMO_AFTER`]. Any input, a finger resting on the
     /// screen, or any other screen starts the count again: the idle demo
     /// comes only from the title.
+    ///
+    /// Not while the window is out of focus (a desktop with another window
+    /// on top: nobody is looking), and not again after an idle demo ran
+    /// its [`IDLE_DEMO_LIMIT`] out, until someone gives some input.
     pub(super) fn watch_title_idle(&mut self, delta: f64, intents: &Intents) {
         let input = !intents.events.is_empty()
             || !intents.pads.is_empty()
@@ -248,7 +277,16 @@ impl Game {
             || !intents.pads_held.is_empty()
             || intents.stick.iter().any(|&s| s)
             || self.input.touch.active();
-        if self.mode != Mode::Title || self.in_demo() || self.crash.broken || input {
+        if input {
+            self.idle_demo_spent = false;
+        }
+        let quiet = self.mode == Mode::Title
+            && !self.in_demo()
+            && !self.crash.broken
+            && !input
+            && !self.unfocused
+            && !self.idle_demo_spent;
+        if !quiet {
             self.title_idle = 0.0;
             return;
         }
@@ -261,14 +299,29 @@ impl Game {
         }
     }
 
+    /// Focus lost or the app paused: an idle-started demo has nobody
+    /// watching it, so it gives the title back. A demo chosen from the menu
+    /// carries on (it is paused with the app anyway).
+    pub(super) fn demo_unwatched(&mut self) {
+        if self
+            .demo
+            .as_ref()
+            .is_some_and(|d| d.started == Started::Idle)
+        {
+            self.stop_demo();
+        }
+    }
+
     /// Whether this frame's input ends the demo: a key (any key, read by
-    /// the game or not), a pad button, the stick, the back gesture, or a
-    /// finger going down. A finger that goes down while touches settle is
-    /// the one that started a menu demo, reported again, not a new tap.
+    /// the game or not), a pad button, an analog trigger, the stick, the
+    /// back gesture, or a finger going down. A finger that goes down while
+    /// touches settle is the one that started a menu demo, reported again,
+    /// not a new tap: the demo's own screen changes (a duel's plates) do
+    /// not settle touches (`Game::tick`), so only its start does.
     pub(super) fn demo_interrupted(&self, intents: &Intents) -> bool {
         let settling = self.input.touch_settle > 0.0;
         intents.events.iter().any(|e| match e {
-            Event::Key { .. } | Event::Back => true,
+            Event::Key { .. } | Event::Back | Event::Trigger => true,
             Event::FingerDown { .. } => !settling,
             Event::FingerMoved { .. } | Event::FingerUp { .. } => false,
         }) || !intents.pads.is_empty()
@@ -285,6 +338,9 @@ impl Game {
         self.flush_settings();
         self.title_idle = 0.0;
         self.status_time = 0.0;
+        // A half-confirmed new run on the title is forgotten, as leaving
+        // the title forgets it: the press after the demo asks again.
+        self.run_file.discard_armed = None;
         let stash = Stash {
             play: std::mem::take(&mut self.play),
             versus_live: self.versus.live.take(),
@@ -297,8 +353,13 @@ impl Game {
         // guns roll, as in a player's match by default.
         self.versus.help = [true; 2];
         self.versus.rolling_off = false;
+        // The rotation carries on from the last demo this session, so a
+        // second look is not the same run again.
+        let first = self.demo_next_leg;
         self.demo = Some(Demo {
-            leg_index: 0,
+            started,
+            time: 0.0,
+            leg_index: first,
             leg_time: 0.0,
             wait: 0.0,
             cue: None,
@@ -312,7 +373,7 @@ impl Game {
             Started::Idle => Awake::LetSleep,
             Started::Menu => Awake::Keep,
         }));
-        self.begin_demo_leg(0);
+        self.begin_demo_leg(first);
     }
 
     /// End the demo and put everything back as it was: the player's run
@@ -322,6 +383,7 @@ impl Game {
         let Some(demo) = self.demo.take() else {
             return;
         };
+        self.demo_next_leg = demo.leg_index + 1;
         let s = demo.stash;
         self.play = s.play;
         self.versus.live = s.versus_live;
@@ -394,7 +456,13 @@ impl Game {
             return;
         };
         d.leg_time += delta;
+        d.time += delta;
         d.wait -= delta;
+        if d.started == Started::Idle && d.time >= IDLE_DEMO_LIMIT {
+            self.stop_demo();
+            self.idle_demo_spent = true;
+            return;
+        }
         if let Some(t) = d.ending.as_mut() {
             *t -= delta;
             if *t <= 0.0 {
@@ -452,33 +520,57 @@ impl Game {
                 }
             }
             Phase::Cleared => self.play.clear_hold = CLEAR_HOLD,
-            Phase::Firing => match d.pending {
-                None => {
+            Phase::Firing => {
+                if d.pending.is_none() {
                     if !d.ready(Cue::Aim, 0.0) {
                         return;
                     }
                     let (shot, fuse) = self.demo_run_shot(cycle);
-                    (self.play.angle_ticks, self.play.power_ticks) =
-                        (shot.angle_ticks, shot.power_ticks);
-                    if let Some(d) = self.demo.as_mut() {
-                        d.pending = Some(fuse);
-                        d.wait = DEMO_AIM;
-                    }
-                }
-                Some(fuse) => {
-                    if d.wait > 0.0 {
-                        return;
-                    }
-                    d.pending = None;
-                    d.cue = None;
-                    if let (Some(f), Some(run)) = (fuse, self.play.run.as_mut()) {
+                    self.aim_demo(shot, fuse);
+                } else if let Some(p) = self.swing_demo_aim() {
+                    if let (Some(f), Some(run)) = (p.fuse, self.play.run.as_mut()) {
                         run.set_fuse(f);
                     }
                     self.fire();
                 }
-            },
+            }
             Phase::Over(_) => {}
         }
+    }
+
+    /// Choose `shot` as the next aim: the barrel swings to it, then it
+    /// fires ([`DEMO_AIM`]).
+    fn aim_demo(&mut self, shot: Shot, fuse: Option<f64>) {
+        let from = (self.play.angle_ticks, self.play.power_ticks);
+        if let Some(d) = self.demo.as_mut() {
+            d.pending = Some(Pending {
+                from,
+                to: shot,
+                fuse,
+            });
+            d.wait = DEMO_AIM;
+        }
+    }
+
+    /// Swing the aim toward the pending shot, eased in and out, so the
+    /// barrel and the readouts move as a hand would move them. Returns the
+    /// shot, with the aim exactly on it, once [`DEMO_AIM`] is up.
+    fn swing_demo_aim(&mut self) -> Option<Pending> {
+        let d = self.demo.as_mut()?;
+        let p = d.pending?;
+        let to = (p.to.angle_ticks, p.to.power_ticks);
+        if d.wait > 0.0 {
+            let t = ((DEMO_AIM - d.wait) / DEMO_SWING).clamp(0.0, 1.0);
+            let e = t * t * (3.0 - 2.0 * t);
+            let lerp = |a: i32, b: i32| a + ((b - a) as f64 * e).round() as i32;
+            (self.play.angle_ticks, self.play.power_ticks) =
+                (lerp(p.from.0, to.0), lerp(p.from.1, to.1));
+            return None;
+        }
+        d.pending = None;
+        d.cue = None;
+        (self.play.angle_ticks, self.play.power_ticks) = to;
+        Some(p)
     }
 
     /// The run leg's next shot and fuse: the solver's, or a deliberate near
@@ -543,28 +635,17 @@ impl Game {
                     self.begin_versus_turn();
                 }
             }
-            Stage::Aiming => match d.pending {
-                None => {
+            Stage::Aiming => {
+                if d.pending.is_none() {
                     if !d.ready(Cue::Aim, 0.0) {
                         return;
                     }
                     let shot = self.demo_duel_shot(cycle);
-                    (self.play.angle_ticks, self.play.power_ticks) =
-                        (shot.angle_ticks, shot.power_ticks);
-                    if let Some(d) = self.demo.as_mut() {
-                        d.pending = Some(None);
-                        d.wait = DEMO_AIM;
-                    }
-                }
-                Some(_) => {
-                    if d.wait > 0.0 {
-                        return;
-                    }
-                    d.pending = None;
-                    d.cue = None;
+                    self.aim_demo(shot, None);
+                } else if self.swing_demo_aim().is_some() {
                     self.versus_fire();
                 }
-            },
+            }
             Stage::Flight => {
                 d.ready(Cue::Busy, 0.0);
             }

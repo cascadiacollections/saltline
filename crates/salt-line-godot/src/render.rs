@@ -118,9 +118,12 @@ pub fn frame(
     }
 }
 
-/// The attract demo's banner (DESIGN §12): always on screen while the demo
-/// runs, so nobody mistakes it for a game in progress.
+/// The attract demo's banner (DESIGN §12), on a touchscreen: always on
+/// screen while the demo runs, so nobody mistakes it for a game in
+/// progress.
 pub const DEMO_BANNER: &str = "DEMO \u{b7} TAP TO PLAY";
+/// The banner when keys or a controller are the input in use.
+pub const DEMO_BANNER_KEYS: &str = "DEMO \u{b7} PRESS ANY KEY";
 
 /// Draw the playfield alone, whatever the mode, adding its buttons to
 /// `buttons`. For `--salt-gallery`.
@@ -1310,13 +1313,18 @@ impl Painter<'_> {
     fn render_demo_banner(&mut self) {
         let pal = self.pal;
         let ey = self.g.display.corner_pad.1;
-        let tw = crate::font::small_width(DEMO_BANNER) as i32;
+        let text = if self.g.input.touch_active {
+            DEMO_BANNER
+        } else {
+            DEMO_BANNER_KEYS
+        };
+        let tw = crate::font::small_width(text) as i32;
         let (pw, ph) = (tw + 10, 11);
         let x = (self.canvas.w - pw) / 2;
         let y = self.canvas.h - ph - 2 - ey;
         self.canvas.plate(x, y, pw, ph, pal);
         self.canvas
-            .text_small(x + 5, y + 3, DEMO_BANNER, pal.get(slot::UI_FG));
+            .text_small(x + 5, y + 3, text, pal.get(slot::UI_FG));
     }
 
     /// The pause plate over the frozen run.
@@ -1490,11 +1498,10 @@ mod tests {
         g.start_demo(crate::app::DemoStarted::Idle);
         let (with, buttons) = draw(&g);
         assert!(buttons.is_empty(), "no FIRE or pause in the demo");
-        let tw = crate::font::small_width(DEMO_BANNER) as i32;
-        assert!(
-            tw + 10 < g.display.buffer_w - 2 * 90,
-            "clear of the corners"
-        );
+        for text in [DEMO_BANNER, DEMO_BANNER_KEYS] {
+            let tw = crate::font::small_width(text) as i32;
+            assert!(tw + 10 < 320 - 2 * 90, "{text}: clear of the corners");
+        }
         g.demo = None;
         let (without, _) = draw(&g);
         assert_ne!(with.bytes(), without.bytes());

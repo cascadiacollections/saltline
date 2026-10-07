@@ -155,6 +155,9 @@ pub struct SaltLine {
     pads: Pads,
     /// Seconds until the joypad list is checked against the connected ones.
     pad_prune: f64,
+    /// Each analog trigger (left, right) is pulled past `TRIGGER_PULL`, on
+    /// any pad, as last reported: `Event::Trigger` is sent on the pull.
+    triggers: [bool; 2],
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
     /// One player per `Sound`, in `Sound::ALL` order, so `sound as usize`
@@ -205,6 +208,7 @@ impl INode2D for SaltLine {
             intents: Intents::default(),
             pads: Pads::default(),
             pad_prune: 0.0,
+            triggers: [false; 2],
             touch_buttons: Vec::new(),
             audio: Vec::new(),
             audio_db: -80.0,
@@ -372,6 +376,17 @@ impl INode2D for SaltLine {
             // Stick deflection is polled; `busy` keeps frames coming while
             // one is held over.
             Ok(motion) => {
+                if let Some(t) = trigger_slot(motion.get_axis()) {
+                    // An edge only, so a trigger resting past halfway is
+                    // not input every frame.
+                    let pulled = motion.get_axis_value() > TRIGGER_PULL;
+                    if pulled && !self.triggers[t] {
+                        self.events.push(Event::Trigger);
+                        self.redraw.mark();
+                    }
+                    self.triggers[t] = pulled;
+                    return;
+                }
                 let axis = match motion.get_axis() {
                     JoyAxis::LEFT_X => 0,
                     JoyAxis::LEFT_Y => 1,
@@ -464,6 +479,7 @@ impl INode2D for SaltLine {
             CanvasItemNotification::WM_WINDOW_FOCUS_IN
             | CanvasItemNotification::APPLICATION_FOCUS_IN
             | CanvasItemNotification::APPLICATION_RESUMED => {
+                self.g.focus_gained();
                 self.display.invalidate();
                 self.redraw.mark();
             }
@@ -1074,6 +1090,18 @@ impl SaltLine {
             let err = image.save_png(&GString::from(path));
             godot_print!("salt-line: wrote {path} ({w}x{h}) -> {err:?}");
         }
+    }
+}
+
+/// How far an analog trigger is pulled before it counts as input.
+const TRIGGER_PULL: f32 = 0.5;
+
+/// Which trigger an axis is, if it is one.
+fn trigger_slot(axis: JoyAxis) -> Option<usize> {
+    match axis {
+        JoyAxis::TRIGGER_LEFT => Some(0),
+        JoyAxis::TRIGGER_RIGHT => Some(1),
+        _ => None,
     }
 }
 

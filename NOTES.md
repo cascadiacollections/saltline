@@ -455,22 +455,41 @@ and the loop alternates a run and a duel. Everything else was decided here.
   after the power steps found a real near miss for every miss in the four
   curated run legs; the
   run-leg test now fails if more than a quarter of the shots are the lob.
-- **Pacing.** 0.8 s to show an aim before it fires, 1.6 s of draft cards,
-  0.8 s of handoff plate, 1.8 s of result plate, 1.2 s on a run's last
-  screen. Over the first four cycles a run leg took 11–23 s and a duel
-  55–91 s; the longest duels end on the 90 s cap at a handoff.
+- **Pacing and balance.** 0.8 s per aim (the barrel eases to it over
+  0.55 s, then holds), 1.6 s of draft cards, 0.8 s of heading plate, 1.8 s
+  of result plate, 1.2 s on a run's last screen. The first cut (3 screens a
+  run, 2 rounds or 90 s a duel) gave duels 75–80% of each cycle, so review
+  rebalanced it to 4 screens a run and 1 round or 40 s a duel. Over the
+  first eight cycles a run leg now takes 17–27 s and a duel 20–42 s (a 3-0
+  round is the short end), a little over half of each cycle.
+- **Taps in a duel.** Every versus screen change settles touches for 0.3 s
+  ("one touch, one screen"), and the demo's duel changes plate several
+  times a turn, so about one tap in five on a demo duel was ignored. In the
+  demo only its own start settles touches now; a test taps on the frame after
+  each of a duel's first plate changes and expects the title.
+- **Unwatched demos end.** An idle-started demo ends when the window or app
+  loses focus (`focus_lost`, `app_paused`), does not start while unfocused
+  (the adapter's FOCUS_IN calls `focus_gained`), and gives the title back
+  after 10 minutes, after which the title waits for input before trying
+  again. Analog triggers, which no action reads, now reach the core as
+  `Event::Trigger` on the pull past halfway, so they count as input too.
+- **Rotation across demos.** The next demo in a session starts on the leg
+  after the last one shown, so a second look is not the same run again.
 - **Exit is any new input, counted from events.** Held keys are not input to
   stop on (the key that chose DEMO is often still down the next frame), but
   any key event is, read by the game or not. A finger going down during the
   touch settle after DEMO was tapped is that tap reported again, so it does
   not stop the demo it just started.
-- **Screen sleep.** Godot's `keep_screen_on` defaults to on and this project
-  never changed it, so the game already holds the screen on everywhere, title
-  included. "An idle demo lets the screen sleep as normal" is therefore done
-  by releasing the hold while an idle-started demo runs and restoring the
+- **Screen sleep, and a pre-existing issue.** Godot's `keep_screen_on`
+  defaults to on and this project never changed it, so the game already
+  holds the screen on everywhere, title, menus and pause included: a phone
+  left on the title never sleeps. That predates the demo and is not changed
+  here. "An idle demo lets the screen sleep as normal" is therefore done by
+  releasing the hold while an idle-started demo runs and restoring the
   project setting (read at launch) afterwards; a menu-started demo holds it
-  explicitly. Whether the title should hold the screen at all is left for the
-  owner (DESIGN §12.5).
+  explicitly, which is the one to use for showing the game off. Proposed
+  follow-up (DESIGN §12.5): turn the project setting off and hold the screen
+  only during live play and a menu-started demo, through `ScreenAwake`.
 - **30 fps.** The demo uses the menus' `IDLE_FPS` cap rather than play's
   uncapped rate. It also stays out of `is_active_play`, so it never asks for
   Linux GameMode.
@@ -479,6 +498,10 @@ and the loop alternates a run and a duel. Everything else was decided here.
   instead gets a DEMO plate in the top-left corner, mirroring MUS ON/OFF: a
   further plated row would have pushed DEVELOPMENT PREVIEW off the bottom of a
   phone's title once a run is kept for CONTINUE and the board has a best.
+- **Duel plates in the demo** keep the side heading and score but drop TAKE
+  THE PHONE - NO PEEKING and READY, and do not dim the board.
+- **Banner text** follows the input in use: `TAP TO PLAY` on a touchscreen,
+  `PRESS ANY KEY` otherwise.
 - **Snapshots.** Changed: the title (the new row) and the save format (the
   pinned save now sets `idle_demo 0`). New: the demo's first run frame and
   its first duel handoff, banner and all.

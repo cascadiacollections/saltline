@@ -1154,36 +1154,49 @@ versus duel.
 ### 12.1 Starting and stopping
 
 - **From the title only.** After `IDLE_DEMO_AFTER` (30 s) on the title with
-  no input at all (no key, no pad button or stick, no finger down), or at once
-  from the title's DEMO: `D` (pad d-pad down) and a keyed DEMO row, or the
-  DEMO plate in the top-left corner of a touchscreen title, which mirrors the
-  music toggle so the menu rows and the board stay where they were. Never
-  from Controls, seed entry, a pause, versus setup or a result.
+  no input at all (no key, no pad button, trigger or stick, no finger down)
+  while the window has focus, or at once from the title's DEMO: `D` (pad
+  d-pad down) and a keyed DEMO row, or the DEMO plate in the top-left corner
+  of a touchscreen title, which mirrors the music toggle so the menu rows and
+  the board stay where they were. Never from Controls, seed entry, a pause,
+  versus setup or a result. Starting forgets a half-confirmed new run
+  (`discard_armed`), as leaving the title does.
 - **IDLE DEMO: ON/OFF** in Controls (`D` there too, or tap the row). A setting
   like LAST ARC: `idle_demo` in the save, written only once chosen, so every
   save from before the demo reads as on. No `VERSION` bump: older builds skip
   the line.
 - **Any input ends it** and returns to the title: any key (read by the game or
-  not), a pad button, the stick, the back gesture, a tap. That input is
-  spent: no action is read on the frame it arrives, and touches are settled
-  as a versus screen change settles them (§11.4's "one touch, one screen"),
-  so the tap that ends the demo cannot also press CONTINUE under it. A finger
-  that goes down while the touches settle after DEMO was tapped is the same
-  tap reported again, not a request to stop.
-- **A banner, always.** `DEMO · TAP TO PLAY` on a plate, bottom centre, in
-  the native 3x5 face and plain UI text: clear of the instruments, the screen
+  not), a pad button, an analog trigger, the stick, the back gesture, a tap.
+  That input is spent: no action is read on the frame it arrives, and touches
+  are settled (§11.4's "one touch, one screen"), so the tap that ends the
+  demo cannot also press CONTINUE under it. Only the demo's own start settles
+  touches; its duel plates do not, so a tap is never ignored mid-demo. A
+  finger that goes down while the touches settle after DEMO was tapped is
+  the same tap reported again, not a request to stop.
+- **An idle-started demo also ends by itself** when the window loses focus
+  or the app is paused (nobody is watching), and after `IDLE_DEMO_LIMIT`
+  (10 min), after which the title waits for some input before it starts
+  another. A demo chosen from the menu runs until it is stopped.
+- **A banner, always.** `DEMO · TAP TO PLAY` on a touchscreen, `DEMO · PRESS
+  ANY KEY` with keys or a controller, on a plate, bottom centre, in the
+  native 3x5 face and plain UI text: clear of the instruments, the screen
   index or round, the draft cards and the duel's plates. It follows §5.2 and
   §5.6 in a run and in a duel alike; §11.4's relaxations (side colours, big
   type) stay inside versus proper. The demo draws no touch controls, no
-  prompts and no onboarding, and the duel's handoff and result plates lose
-  their READY / NEXT ROUND / TITLE rows.
+  prompts and no onboarding. The duel's handoff plate keeps its side heading
+  and score but drops TAKE THE PHONE and READY, and neither plate dims the
+  board: nobody is passing a phone.
 
 ### 12.2 The loop
 
 | Leg | What plays | Ends |
 |---|---|---|
-| Run (even legs) | the next of `DEMO_RUNS`: a seed and a screen to start on | `DEMO_RUN_SCREENS` (3) screens cleared, the run over, or `DEMO_RUN_TIME` (75 s) |
-| Duel (odd legs) | a local versus match on the cycle's own seed, rolling guns on, aim help on for both | the match won, `DEMO_DUEL_ROUNDS` (2) rounds played, or `DEMO_DUEL_TIME` (90 s) at the next handoff |
+| Run (even legs) | the next of `DEMO_RUNS`: a seed and a screen to start on | `DEMO_RUN_SCREENS` (4) screens cleared, the run over, or `DEMO_RUN_TIME` (75 s) |
+| Duel (odd legs) | a local versus match on the cycle's own seed, rolling guns on, aim help on for both | `DEMO_DUEL_ROUNDS` (1) round won, or `DEMO_DUEL_TIME` (40 s) at the next handoff |
+
+Over the first eight cycles a run leg took 17–27 s and a duel 20–42 s. The
+rotation carries on from one demo to the next in a session, so a second look
+starts on the leg after the one that was interrupted.
 
 The runs were picked from headless screenshots (`--salt-seed` with
 `--salt-screen` and `--salt-shot`) for a striking first screen, and start
@@ -1203,10 +1216,10 @@ target standing (or the other gun unhit), so craters, chalk and landing marks
 land close to the target and rolling guns get their turn. A high short lob is
 kept for when no near miss is found.
 
-Pacing keeps it moving: each new aim is shown for 0.8 s (barrel and
-readouts) before it fires, the draft cards for 1.6 s before an offer is taken,
-the pass-the-phone plate for 0.8 s, a result plate for 1.8 s, and a run's last
-screen for 1.2 s before the duel.
+Pacing keeps it moving: each new aim takes 0.8 s, the barrel and readouts
+easing to it over the first 0.55 s and holding there before it fires; the
+draft cards stay 1.6 s before an offer is taken, the duel's heading plate
+0.8 s, a result plate 1.8 s, and a run's last screen 1.2 s before the duel.
 
 ### 12.3 Nothing the player keeps changes
 
@@ -1218,7 +1231,8 @@ Controls), crash reports or replays. Two rules (`app/demo.rs`):
 1. **Set aside whole.** The player's `Play` (which holds the run kept for
    CONTINUE), the versus state and the buffer width are moved out on entry
    and moved back on exit; nothing reads or writes them in between. The
-   CONTINUE offer itself (`run_file`) is never touched.
+   CONTINUE offer itself (`run_file`) is never touched, but for forgetting a
+   half-confirmed discard.
 2. **No write is asked for.** Every place that would ask for a disk effect
    checks for the demo first: the run file, scoring, learned lessons,
    settings, the crash report's retirement. Settings pending when the demo
@@ -1238,21 +1252,27 @@ run.
 - **Muted.** The demo asks for -80 dB on every player while it runs, the
   same `Volume` effect mute uses, without touching the saved volume or mute;
   the title music stops with the title and comes back with it.
-- **Screen.** Godot keeps the screen on for the whole session by default
-  (`display/window/energy_saving/keep_screen_on`, which this project leaves
-  at its default). A demo that started by itself releases that while it runs,
-  so a phone left on the title sleeps as the operating system would, and an
-  unattended demo does not burn the screen all night. One chosen from the
-  menu holds the screen on, to be watched. Both put the project's setting
-  back on exit (`Effect::ScreenAwake`).
+- **Screen.** The game already keeps the screen on for as long as it is open,
+  title and menus included: that is Godot's default
+  (`display/window/energy_saving/keep_screen_on`), which this project has
+  never changed. So the idle demo does not hold the screen on, it *releases*
+  the hold: a phone left on the title sleeps as the operating system would
+  once its demo starts, and an unattended demo does not burn the screen all
+  night. A demo chosen from the menu holds the screen on, to be watched: to
+  showcase the game, start DEMO from the title. Both put the project's
+  setting back on exit (`Effect::ScreenAwake`).
 - **30 fps.** The demo runs at `frame::IDLE_FPS`, the menus' cap: it is
   watched, not played, a shell's flight reads well enough at 30, and it may
-  run for hours on a battery. It never asks for desktop GameMode.
+  run for a long while on a battery. It never asks for desktop GameMode.
 
 ### 12.5 Open questions
 
-- Should the demo show the title between legs, or a short card naming the
-  mode ("ROGUELIKE", "TWO PLAYERS")?
-- Should the screen-on default itself change? Today the title, menus and
-  pause hold the screen on for as long as the app is open.
+- **The title keeps the screen on forever.** A pre-existing issue the demo
+  work brought to light, not changed here: with Godot's default, a phone
+  left on the title (or a menu, or a pause) never sleeps. Proposed follow-up:
+  set `keep_screen_on` off in the project and hold the screen on only during
+  live play (`Playing`, an unpaused `Versus`) and a menu-started demo, through
+  the same `ScreenAwake` effect.
+- Should the demo show a short card between legs naming the mode
+  ("ROGUELIKE", "TWO PLAYERS")?
 - Sound on as an option, for a demo started from the menu?

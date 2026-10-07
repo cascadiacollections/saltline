@@ -6,7 +6,9 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
-use super::demo::{leg_of, DEMO_RUNS, DEMO_RUN_SCREENS, DEMO_RUN_TIME, IDLE_DEMO_AFTER, LOB};
+use super::demo::{
+    leg_of, DEMO_RUNS, DEMO_RUN_SCREENS, DEMO_RUN_TIME, IDLE_DEMO_AFTER, IDLE_DEMO_LIMIT, LOB,
+};
 use crate::input::{Event, Intents, Key, Pad};
 use crate::resume::Saved;
 use crate::touch::{Button, Rect};
@@ -481,7 +483,8 @@ fn nothing_is_written_or_changed_during_a_demo_cycle() {
     g.save.learned = 0;
     g.crash.last_crash = Some("SALT LINE CRASH REPORT".into());
     let before = kept(&g);
-    g.start_demo(DemoStarted::Idle);
+    // Chosen from the menu: an idle-started demo ends when focus goes.
+    g.start_demo(DemoStarted::Menu);
     // A whole cycle, a run and a duel, and into the next run.
     let mut fx = wait_until(&mut g, 400.0, |g| leg_index(g) == 2);
     // Focus lost and the app paused mid-demo: no pause plate, no write.
@@ -574,4 +577,157 @@ fn draw(g: &Game) -> (crate::raster::Canvas, Vec<Button>) {
         &mut crate::render::Cache::default(),
     );
     (canvas, buttons)
+}
+
+// ------------------------------------------------------- review follow-ups
+
+/// The demo's duel plates change the versus screen several times a turn.
+/// Each change used to settle touches, which ignored a tap for 0.3 s: about
+/// one tap in five went unheard. A tap on the frame after a plate change
+/// must end the demo.
+#[test]
+fn a_tap_just_after_a_duel_plate_changes_ends_the_demo() {
+    let screen = |g: &Game| g.versus.live.as_ref().map(|v| (v.stage, v.duel.turn));
+    // The frames on which the duel's plates change, over its first turns.
+    let mut g = game();
+    g.start_demo(DemoStarted::Idle);
+    let (mut frames, mut changes, mut last) = (0, Vec::new(), None);
+    while changes.len() < 10 {
+        g.tick(FRAME, &idle());
+        frames += 1;
+        let now = screen(&g);
+        if now.is_some() && now != last {
+            changes.push(frames);
+        }
+        last = now;
+        assert!(frames < 10_000, "no duel");
+    }
+    // The same demo again to each of those frames, then a tap.
+    for n in changes {
+        let mut g = game();
+        g.start_demo(DemoStarted::Idle);
+        for _ in 0..n {
+            g.tick(FRAME, &idle());
+        }
+        let at = screen(&g);
+        g.tick(
+            FRAME,
+            &finger(vec![Event::FingerDown {
+                index: 0,
+                x: 100.0,
+                y: 100.0,
+            }]),
+        );
+        assert!(!g.in_demo(), "the tap after the change to {at:?} was spent");
+        assert_eq!(g.mode, Mode::Title);
+    }
+}
+
+#[test]
+fn an_analog_trigger_ends_the_demo_and_counts_as_input() {
+    let mut g = game();
+    g.start_demo(DemoStarted::Idle);
+    wait(&mut g, 2.0);
+    g.tick(FRAME, &finger(vec![Event::Trigger]));
+    assert!(!g.in_demo());
+    assert_eq!(g.mode, Mode::Title);
+    wait(&mut g, IDLE_DEMO_AFTER - 2.0);
+    g.tick(FRAME, &finger(vec![Event::Trigger]));
+    wait(&mut g, IDLE_DEMO_AFTER - 2.0);
+    assert!(!g.in_demo(), "the trigger restarted the count");
+}
+
+#[test]
+fn a_half_confirmed_new_run_is_forgotten_by_the_demo() {
+    let mut g = title_over_a_suspended_run();
+    // N once over a saved run: asks to press again.
+    g.tick(FRAME, &keys(&[Key::N]));
+    assert_eq!(g.run_file.discard_armed, Some("daily"));
+    wait(&mut g, IDLE_DEMO_AFTER + 1.0);
+    assert!(g.in_demo());
+    assert_eq!(g.run_file.discard_armed, None);
+    g.tick(FRAME, &keys(&[Key::Space]));
+    // The next N asks again rather than throwing the run away.
+    g.tick(FRAME, &keys(&[Key::N]));
+    assert_eq!(g.mode, Mode::Title);
+    assert!(g.run_file.resumable.is_some());
+}
+
+#[test]
+fn the_rotation_carries_on_from_the_last_demo() {
+    let mut g = game();
+    g.start_demo(DemoStarted::Menu);
+    assert_eq!(leg_index(&g), 0);
+    g.tick(FRAME, &keys(&[Key::Space]));
+    g.tick(FRAME, &keys(&[Key::D]));
+    // The duel that would have come next.
+    assert_eq!(leg_index(&g), 1);
+    assert_eq!(g.mode, Mode::Versus);
+    g.tick(FRAME, &keys(&[Key::Space]));
+    g.tick(FRAME, &keys(&[Key::D]));
+    let (seed, screen) = DEMO_RUNS[1];
+    let run = g.play.run.as_ref().unwrap();
+    assert_eq!((run.run_seed, run.screen_index), (parse_seed(seed), screen));
+}
+
+#[test]
+fn an_unfocused_window_neither_starts_nor_keeps_an_idle_demo() {
+    let mut g = game();
+    g.focus_lost(&[]);
+    wait(&mut g, IDLE_DEMO_AFTER * 2.0);
+    assert!(!g.in_demo(), "nobody is looking");
+    g.focus_gained();
+    wait(&mut g, IDLE_DEMO_AFTER + 1.0);
+    assert!(g.in_demo());
+    // Focus goes again: the idle demo hands the title back, with the
+    // screen's setting and the sound.
+    let fx = g.focus_lost(&[]);
+    assert!(!g.in_demo());
+    assert_eq!(g.mode, Mode::Title);
+    assert!(fx.contains(&Effect::ScreenAwake(Awake::AsProject)));
+    assert!(fx.contains(&Effect::Volume(g.volume_db())));
+    // A demo chosen from the menu carries on.
+    g.focus_gained();
+    g.tick(FRAME, &keys(&[Key::D]));
+    g.focus_lost(&[]);
+    assert!(g.in_demo());
+}
+
+#[test]
+fn an_idle_demo_gives_the_title_back_after_ten_minutes() {
+    let mut g = game();
+    wait(&mut g, IDLE_DEMO_AFTER + 1.0);
+    assert!(g.in_demo());
+    let fx = wait_until(&mut g, IDLE_DEMO_LIMIT + 5.0, |g| !g.in_demo());
+    assert!(!fx.iter().any(Effect::touches_disk));
+    assert_eq!(g.mode, Mode::Title);
+    // And stays there until someone comes back.
+    wait(&mut g, IDLE_DEMO_AFTER * 3.0);
+    assert!(!g.in_demo());
+    g.tick(FRAME, &keys(&[Key::Shift]));
+    wait(&mut g, IDLE_DEMO_AFTER + 1.0);
+    assert!(g.in_demo());
+    // A demo chosen from the menu has no limit.
+    let mut g = game();
+    g.tick(FRAME, &keys(&[Key::D]));
+    wait(&mut g, IDLE_DEMO_LIMIT + 30.0);
+    assert!(g.in_demo());
+}
+
+#[test]
+fn the_barrel_swings_to_each_aim_before_it_fires() {
+    let mut g = game();
+    g.start_demo(DemoStarted::Menu);
+    let start = (g.play.angle_ticks, g.play.power_ticks);
+    let mut seen = vec![start];
+    while g.play.run.as_ref().is_some_and(|r| r.log.is_empty()) {
+        g.tick(FRAME, &idle());
+        let aim = (g.play.angle_ticks, g.play.power_ticks);
+        if seen.last() != Some(&aim) {
+            seen.push(aim);
+        }
+    }
+    let fired = &g.play.run.as_ref().unwrap().log[0];
+    assert_eq!(seen.last(), Some(&(fired.angle_ticks, fired.power_ticks)));
+    assert!(seen.len() > 5, "snapped: {seen:?}");
 }

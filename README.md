@@ -215,29 +215,35 @@ player's last landing mark and arc and a short preview of the current aim.
 Esc / B / `II` pauses; TITLE leaves the match. Nothing about a match is saved,
 and a run kept for CONTINUE is left alone.
 
+The barrel sprite shows the angle rounded to 5°; the numeric field shows the
+true value. That gap is intentional — it is why `Vernier` feels like an
+instrument rather than a stat.
+
 ### Attract demo
 
 Leave the title alone for 30 seconds and the game plays itself (DESIGN §12): a
-run on one of a few hand-picked seeds, then a local versus duel, then the next
-run, and so on. DEMO on the title (`D`, d-pad down, or the plate in the top-left
-corner of a touchscreen) starts it at once. A banner says `DEMO · TAP TO PLAY`;
-any key, button, stick push or tap goes back to the title, and that press does
-nothing else. The demo is silent, and it never touches your saved run, scores,
-settings or onboarding: a run quit to the title is still there to CONTINUE,
-exactly as you left it. Turn IDLE DEMO off on CONTROLS / AUDIO to stop it
-starting by itself (the menu's DEMO still works). A demo that started by itself
-lets the phone's screen sleep as it normally would; one you chose from the menu
-keeps the screen on until you leave it.
+run on one of a few hand-picked seeds, then a short local versus duel, then the
+next run, and so on, carrying on where the last demo left off. DEMO on the title
+(`D`, d-pad down, or the plate in the top-left corner of a touchscreen) starts
+it at once. A banner says `DEMO · TAP TO PLAY` (`DEMO · PRESS ANY KEY` with keys
+or a controller); any key, button, trigger, stick push or tap goes back to the
+title, and that press does nothing else. The demo is silent, and it never
+touches your saved run, scores, settings or onboarding: a run quit to the title
+is still there to CONTINUE, exactly as you left it. Turn IDLE DEMO off on
+CONTROLS / AUDIO to stop it starting by itself (the menu's DEMO still works).
+
+About the screen: the game keeps the screen on the whole time it is open,
+title included (Godot's default, unchanged here). A demo that started by
+itself lets go of that, so a phone left on the title still goes to sleep, and
+on a desktop it waits while the window is in the background and gives up
+after ten minutes. To show the game off, start DEMO from the title: that one
+keeps the screen on and runs until you stop it.
 
 How it stays out of your things is worth a look if you are learning the code:
 `app/demo.rs` moves the player's state aside whole, plays the ordinary run and
 versus code on an empty slate, and moves it back, and every place that would
 write a file checks for the demo first. `app/demo_tests.rs` and the last test in
 `app/disk_tests.rs` prove it, down to the bytes on the (simulated) disk.
-
-The barrel sprite shows the angle rounded to 5°; the numeric field shows the
-true value. That gap is intentional — it is why `Vernier` feels like an
-instrument rather than a stat.
 
 ## Tools
 

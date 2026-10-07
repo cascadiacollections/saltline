@@ -629,7 +629,11 @@ impl Painter<'_> {
     fn render_handoff(&mut self, vs: &crate::app::VersusPlay) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
-        self.dither_dim();
+        // The demo leaves the board in plain view: nobody is peeking.
+        let demo = self.g.in_demo();
+        if !demo {
+            self.dither_dim();
+        }
         let (w, h) = (self.canvas.w, self.canvas.h);
         let duel = &vs.duel;
         let side = vs.side();
@@ -639,9 +643,10 @@ impl Painter<'_> {
         let heading_h = if opening { 5 } else { SCORE_H };
         let cues = handoff_cues(vs);
         let body = 7 + heading_h + 6 + 10 + 6 + 8 * cues.len() as i32 + 5 + 13;
-        // The demo has no READY line: the plate ends under its last words.
-        let ph = if self.g.in_demo() {
-            body - 6
+        // The demo has neither the pass-the-phone line nor READY: the plate
+        // ends under the name, or under its cues.
+        let ph = if demo {
+            7 + heading_h + 6 + 10 + 7 + 8 * cues.len() as i32
         } else {
             body + if plated { 20 } else { 12 }
         };
@@ -669,11 +674,13 @@ impl Painter<'_> {
             self.centred(y, text, c);
             y += 8;
         }
+        if demo {
+            // The demo readies itself: no phone to pass, nothing to press.
+            return;
+        }
         self.centred(y, "TAKE THE PHONE - NO PEEKING", fg);
         y += 13;
-        if self.g.in_demo() {
-            // The demo readies itself: no button, and no prompt to press.
-        } else if plated {
+        if plated {
             self.menu_row(y + 4, Action::Confirm, "", "READY", fg);
             // The pause button, so a touchscreen can leave between turns.
             let ey = self.g.display.corner_pad.1;
@@ -689,7 +696,9 @@ impl Painter<'_> {
     fn render_result(&mut self, vs: &crate::app::VersusPlay) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
-        self.dither_dim();
+        if !self.g.in_demo() {
+            self.dither_dim();
+        }
         let (w, h) = (self.canvas.w, self.canvas.h);
         let duel = &vs.duel;
         let (winner, over) = match duel.phase {

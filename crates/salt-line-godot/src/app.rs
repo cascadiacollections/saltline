@@ -652,6 +652,15 @@ pub struct Game {
     /// Seconds the title has gone without input, towards the idle demo
     /// (`demo::IDLE_DEMO_AFTER`). Zero anywhere but the title.
     pub(crate) title_idle: f64,
+    /// The leg the next demo begins on: the rotation carries on across
+    /// demos in a session rather than restarting at the first run.
+    pub(crate) demo_next_leg: u64,
+    /// An idle demo ran its `demo::IDLE_DEMO_LIMIT` out; the title waits
+    /// for some input before it starts another by itself.
+    pub(crate) idle_demo_spent: bool,
+    /// The window or app is out of focus (since `focus_lost`, until
+    /// `focus_gained`): the idle demo does not start.
+    pub(crate) unfocused: bool,
 
     /// Effects asked for since they were last taken.
     fx: Vec<Effect>,
@@ -884,6 +893,9 @@ impl Default for Game {
             versus: VersusState::default(),
             demo: None,
             title_idle: 0.0,
+            demo_next_leg: 0,
+            idle_demo_spent: false,
+            unfocused: false,
             fx: Vec::new(),
         }
     }
@@ -981,7 +993,9 @@ impl Game {
         self.watch_title_idle(delta, intents);
         self.step(delta);
         self.step_versus(delta);
-        if self.versus_screen() != versus_before {
+        // The demo's own plates change nobody's screen: any tap on them is
+        // a request to stop (`demo_interrupted`), never to be spent.
+        if self.versus_screen() != versus_before && !self.in_demo() {
             self.settle_touch();
         }
         self.persist_run();
@@ -1148,6 +1162,8 @@ impl Game {
                     self.input.touch.finger_up(index);
                 }
                 Event::Back => self.input.back_requested = true,
+                // Only the demo and the idle count look at triggers.
+                Event::Trigger => {}
             }
         }
     }
@@ -1171,8 +1187,13 @@ impl Game {
     /// Window or application focus lost: every finger is up, a live screen
     /// pauses, and pending settings go to disk. `pending` are the events
     /// that arrived since the last frame, which happened first.
+    ///
+    /// An idle-started demo ends here (`demo_unwatched`), and the idle demo
+    /// waits for focus to come back before it can start again.
     pub fn focus_lost(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
+        self.unfocused = true;
+        self.demo_unwatched();
         self.input.touch.release_all();
         self.auto_pause();
         self.flush_settings();
@@ -1184,9 +1205,17 @@ impl Game {
     /// app can be killed: a phone may never resume a paused app.
     pub fn app_paused(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
+        self.demo_unwatched();
         self.auto_pause();
         self.flush_settings();
         self.take_effects()
+    }
+
+    /// Focus is back: the idle demo may start again once the title has been
+    /// quiet for long enough, counted from now.
+    pub fn focus_gained(&mut self) {
+        self.unfocused = false;
+        self.title_idle = 0.0;
     }
 
     /// The window is closing or the node leaving the tree: a close is final.
