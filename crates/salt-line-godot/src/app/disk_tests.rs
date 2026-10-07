@@ -1013,13 +1013,17 @@ fn a_resumed_match_plays_on_to_the_same_end() {
         format!("{:?}|{:?}", vs(&g).duel, vs(&g).log),
         format!("{:?}|{:?}", vs(&whole).duel, vs(&whole).log)
     );
-    // Won: nothing is left to resume.
+    // Won, and its result plate left: nothing is left to resume.
+    until(&mut g, &mut disk, |g| stage(g) == versus::Stage::Result);
+    press(&mut g, &mut disk, Key::R);
     assert_eq!(disk.match_main, None);
     assert!(disk.launch().saved_match.is_none());
 }
 
+/// A match killed while its winning shell is in the air comes back on the
+/// result plate that says who won; leaving that plate clears it.
 #[test]
-fn a_won_match_is_cleared_as_its_winning_shot_is_fired() {
+fn a_won_match_is_kept_until_its_result_plate_is_left() {
     let mut disk = FakeDisk::default();
     let mut g = start_match(&mut disk);
     loop {
@@ -1028,16 +1032,25 @@ fn a_won_match_is_cleared_as_its_winning_shot_is_fired() {
         if matches!(vs(&g).duel.phase, crate::versus::Phase::MatchOver(_)) {
             break;
         }
-        assert!(disk.match_main.is_some(), "kept while the match is open");
         until(&mut g, &mut disk, |g| stage(g) != versus::Stage::Flight);
     }
-    // Still in the air, and already gone from disk.
+    // Still in the air, and its winning shot is on disk.
     assert_eq!(stage(&g), versus::Stage::Flight);
-    assert_eq!(disk.match_main, None);
-    let mut relaunched = disk.clone();
-    assert!(relaunched.launch().saved_match.is_none());
-    // The rematch is a new match, kept from its start.
+    let live = match_state(&g);
+    let mut killed = disk.clone();
+    let mut back = relaunch_and_resume(&mut killed);
+    assert_eq!(stage(&back), versus::Stage::Result);
+    assert_eq!(match_state(&back), live);
+    // REMATCH from the resumed result plate clears it.
+    press(&mut back, &mut killed, Key::Enter);
+    assert_eq!(back.mode, Mode::VersusSetup);
+    assert_eq!(killed.match_main, None);
+    assert!(killed.launch().saved_match.is_none());
+
+    // Live: kept on the result plate, cleared by REMATCH, and the
+    // rematch is a new match, kept from its start.
     until(&mut g, &mut disk, |g| stage(g) == versus::Stage::Result);
+    assert!(disk.match_main.is_some());
     press(&mut g, &mut disk, Key::Enter);
     assert_eq!(g.mode, Mode::VersusSetup);
     assert_eq!(disk.match_main, None);
@@ -1227,6 +1240,9 @@ fn a_lost_run_and_a_lost_match_are_both_noted() {
         g.status,
         "SAVED RUN COULD NOT BE RESTORED - SAVED MATCH COULD NOT BE RESTORED"
     );
+    // The title centres it in the narrowest buffer, clear of the edges.
+    let w = crate::font::small_width(&g.status) as i32;
+    assert!(w + 8 <= salt_line_sim::SCREEN_W_MIN as i32, "{w} px");
 }
 
 /// A run quit to the title and a match killed later the same session: both

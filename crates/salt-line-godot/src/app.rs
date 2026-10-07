@@ -120,9 +120,9 @@
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
 //! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only the set-aside copy (`resume::drop_set_aside`) | no | yes |
-//! | `MatchFile(Write)` | a player's versus match started, then each shot fired (`persist_match`) | `resume::replace_at` at `match_log::MATCH_FILES`: the match file becomes the line | no | yes |
+//! | `MatchFile(Write)` | a player's versus match started, then each shot fired and each round dealt (`persist_match`) | `resume::replace_at` at `match_log::MATCH_FILES`: the match file becomes the line | no | yes |
 //! | `MatchFile(Restore)` | [`Game::saved_match`], once the set-aside match has replayed | rename `match-loading.txt` back to `match.txt` | no | yes |
-//! | `MatchFile(Discard)` | the match won (the frame its last shot is fired) or quit; a saved match that finished, or no longer rebuilds | `resume::replace_at` with `""`: delete every match file, or blank `match.txt` | no | yes |
+//! | `MatchFile(Discard)` | a kept match left: its result plate left after the win (REMATCH or TITLE), or quit; a saved match that no longer rebuilds | `resume::replace_at` with `""`: delete every match file, or blank `match.txt` | no | yes |
 //! | `MatchFile(Abandon)` | [`Game::saved_match`], for a match this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only `match-loading.txt` | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
 //! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play or a versus match not paused, a menu-started demo, each until its quiet limit | `DisplayServer::screen_set_keep_on` | no | no |
@@ -1543,8 +1543,7 @@ impl Game {
     /// match, or throw away one this build must not replay (DESIGN §11.6).
     /// The adapter has set the file aside, as for the run; it goes back
     /// (`MatchFile::Restore`) only once its log has replayed. A match whose
-    /// last shot won it is cleared without a word: there is nothing to
-    /// resume, and nothing was lost.
+    /// last shot won it is offered too, and resumes on its result plate.
     pub fn saved_match(&mut self, found: SavedRun) -> Vec<Effect> {
         let text = match found {
             SavedRun::Interrupted => {
@@ -1557,11 +1556,20 @@ impl Game {
             SavedRun::Found(text) => text,
         };
         match match_log::judge(Some(&text)) {
-            match_log::Found::Resume(saved) => {
+            // The full rebuild RESUME MATCH will do (paths, arcs, the ease),
+            // here, while the file is still set aside: one that brings the
+            // game down costs this launch only, never every tap of the row.
+            match_log::Found::Resume(saved) if VersusPlay::rebuild(&saved).is_some() => {
                 self.saved_match = Some(saved);
                 self.fx.push(Effect::MatchFile(MatchFile::Restore));
             }
-            match_log::Found::Nothing | match_log::Found::Finished => {
+            match_log::Found::Resume(_) => {
+                self.fx.push(Effect::MatchFile(MatchFile::Abandon(
+                    Abandoned::Unreadable(resume::Stale::Diverged),
+                )));
+                self.note_at_launch(match_log::note(resume::Stale::Diverged));
+            }
+            match_log::Found::Nothing => {
                 self.fx.push(Effect::MatchFile(MatchFile::Discard));
             }
             match_log::Found::Discard(why) => {

@@ -442,21 +442,28 @@ DESIGN §11.6. Two §11.5 follow-ups, decided here:
   match (bot-played, rolling guns, two rounds, 18 shots) whose final state
   hash is pinned. The line also carries `FORMAT` and `SIM_EPOCH`; any of the
   three differing discards the file with a note.
-- **A shot count and the newline.** A torn line could otherwise end in a
+- **The newline, and a count.** A torn line could otherwise end in a
   shorter but valid shot (`900:6` for `900:640`) and replay as a different
-  match; with both, every truncation is damaged (a test cuts at every byte).
-- **Finished and quit matches clear at once.** The winning shot clears the
-  file the frame it is fired (a kill mid-flight then resumes nothing, which
-  costs only the result plate); quitting from the pause or result plate
-  clears it as it leaves.
+  match. Requiring the trailing newline is what makes every truncation
+  damaged (a test cuts at every byte); the entry count catches an entry
+  lost from the middle, as a hand edit could.
+- **A won match is kept until its result plate is left.** The first cut
+  cleared the file the frame the winning shot was fired; review pointed
+  out that a kill mid-flight then lost the one plate a young winner cares
+  about. Now the winning shot is written like any other, a resume lands on
+  the match's result plate, and REMATCH or TITLE clears it. Quitting from
+  the pause or a round's result plate clears it as it leaves.
 - **The title.** On a touchscreen a suspended match turns the LOCAL VERSUS
   row into RESUME MATCH (amber, as CONTINUE is), in the same slot: the phone
   title's worst case (saved run, crash report, a launch note) already fills
   the screen, so no new row. With keys a `2  RESUME MATCH` row appears only
   while there is one, so the default keyed title snapshot is unchanged. A
-  new match while one is suspended is had by resuming and quitting it: no
-  second-press confirm as for a new run, because the touch title has no row
-  for NEW MATCH and a match is short.
+  new match while one is suspended is had by resuming and quitting it
+  (RESUME MATCH, pause, QUIT, LOCAL VERSUS): four taps, the cost of giving
+  up a match in play. Not a NEW MATCH row (one more row on a full phone
+  title) and not a second-press confirm on the versus row (a double tap
+  would throw away the match it offers). Whether a long-suspended match
+  should expire is left open.
 - **A run and a match side by side.** Each offer sits in its own mode's
   slot: CONTINUE on confirm (the run is the main game), RESUME MATCH on the
   versus row. They are independent files and independent state; taking one
@@ -467,8 +474,8 @@ DESIGN §11.6. Two §11.5 follow-ups, decided here:
   dims and covers the field, so the guns are drawn at their old spots behind
   it and roll over `ROLL_EASE` (0.45 s, smoothstep) once the next player is
   ready, in full view. Only the drawn pivot moves (`VersusPlay::shown_muzzle`,
-  gun and tag); the terrain, crater fills included, is already the new one,
-  and the ground-detail mask stays at the new spots. Aim help appears once
+  gun and tag, and the ground-detail mask with them); the terrain, crater
+  fills included, is already the new one. Aim help appears once
   the guns are home rather than following them, which keeps the landing mark
   on the ground it fell on. A pause holds the ease; a shot fired mid-ease
   fires from the real spot, as the rules always did.

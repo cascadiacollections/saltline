@@ -49,9 +49,8 @@
 //! it). A shot in the air when the app died was already resolved when it
 //! was fired, as in a run, so it is in the log and the match resumes with it
 //! landed, on the pass-the-phone plate for whoever is next (or on the
-//! round's result plate, if that shot won the round). A shot that won the
-//! match ends it: a finished match leaves nothing to resume, and its line is
-//! cleared the moment that shot is fired.
+//! round's or the match's result plate, if that shot won one). The line is
+//! cleared when the players leave a won match's result plate, or quit.
 //!
 //! # Epochs
 //!
@@ -221,7 +220,12 @@ impl SavedMatch {
         if n > MAX_ENTRIES {
             return Err(Stale::Damaged);
         }
-        let log = fields.map(entry).collect::<Result<Vec<_>, _>>()?;
+        // At most one past the count: enough to see a line that runs long,
+        // without reading all of a damaged one.
+        let log = fields
+            .take(n + 1)
+            .map(entry)
+            .collect::<Result<Vec<_>, _>>()?;
         if log.len() != n {
             return Err(Stale::Damaged);
         }
@@ -329,11 +333,9 @@ pub fn sound(text: &str) -> bool {
 pub enum Found {
     /// No file, or a blank one.
     Nothing,
-    /// Offer RESUME MATCH.
+    /// Offer RESUME MATCH. A match whose last shot won it is offered too:
+    /// it resumes on its result plate, so the players still see who won.
     Resume(SavedMatch),
-    /// The last shot won the match, and the app died before its line was
-    /// cleared: nothing to resume or keep.
-    Finished,
     /// Throw it away and say why.
     Discard(Stale),
 }
@@ -349,7 +351,6 @@ pub fn judge(text: Option<&str>) -> Found {
     };
     match saved.replay() {
         None => Found::Discard(Stale::Diverged),
-        Some(duel) if matches!(duel.phase, Phase::MatchOver(_)) => Found::Finished,
         Some(_) => Found::Resume(saved),
     }
 }

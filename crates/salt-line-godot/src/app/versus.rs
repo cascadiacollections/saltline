@@ -34,10 +34,11 @@
 //!
 //! ```text
 //!  start_versus ─► kept; persist_match writes the line on every shot
-//!                    │
+//!                    │   and every round dealt, the winning shot included
 //!   app killed ──────┤ kept; launch offers RESUME MATCH ─► resume_match
-//!   match won ───────┤ cleared the frame the winning shot is fired
-//!   quit (pause or ──┘ cleared (leave_versus); a rematch starts a new one
+//!   match won, ──────┤ cleared (drop_live_match); a rematch starts a new
+//!    its plate left  │   one. Killed before that, it resumes on the plate
+//!   quit (pause or ──┘ cleared (leave_versus)
 //!    result: TITLE)
 //! ```
 //!
@@ -285,9 +286,9 @@ impl VersusPlay {
     /// The match `saved` logged, rebuilt by taking its entries again
     /// through [`VersusPlay::fire_turn`] and [`VersusPlay::next_round`]. It
     /// lands on the pass-the-phone plate for whoever is next, or on the
-    /// result plate if the last shot won a round. `None` for a log that
-    /// does not replay, or one whose last shot won the match: nothing is
-    /// left to resume.
+    /// result plate if the last shot won a round or the match (so a match
+    /// killed as it was won still says who won). `None` for a log that
+    /// does not replay.
     pub(crate) fn rebuild(saved: &SavedMatch) -> Option<VersusPlay> {
         let duel = Match::with_rules(saved.seed, saved.width, saved.rules());
         let mut vs = VersusPlay::new(duel);
@@ -302,8 +303,7 @@ impl VersusPlay {
         }
         vs.stage = match vs.duel.phase {
             versus::Phase::Aiming => Stage::Handoff,
-            versus::Phase::RoundOver(_) => Stage::Result,
-            versus::Phase::MatchOver(_) => return None,
+            versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => Stage::Result,
         };
         Some(vs)
     }
@@ -454,9 +454,11 @@ impl Game {
         }
     }
 
-    /// Write the match's line whenever a shot has been fired, and once at
-    /// its start; clear it the frame the match is won. Checked every frame,
-    /// written only on a change, never during the demo.
+    /// Write the match's line once at its start and whenever a shot is
+    /// fired or a round dealt, the winning shot included: a match killed
+    /// as it was won comes back on its result plate. The line is cleared
+    /// when the players leave that plate (`drop_live_match`). Checked every
+    /// frame, written only on a change, never during the demo.
     pub(super) fn persist_match(&mut self) {
         if self.in_demo() {
             return;
@@ -466,12 +468,6 @@ impl Game {
             return;
         };
         if !vs.kept {
-            return;
-        }
-        if matches!(vs.duel.phase, versus::Phase::MatchOver(_)) {
-            // A finished match leaves nothing to resume.
-            vs.kept = false;
-            self.fx.push(Effect::MatchFile(MatchFile::Discard));
             return;
         }
         let len = vs.log.len();

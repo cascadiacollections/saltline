@@ -240,7 +240,9 @@ impl Painter<'_> {
             0.0,
         );
         raster::draw_terrain(self.canvas, &view, &screen.field, pal);
-        let guns = Side::BOTH.map(|gun| versus::muzzle_of(screen, gun).x);
+        // Where the guns are drawn, mid-ease included, so no tuft shows
+        // through a chassis rolling over it.
+        let guns = Side::BOTH.map(|gun| vs.shown_muzzle(gun).x);
         raster::draw_ground_detail_around(self.canvas, &view, screen, &guns, pal);
 
         // A marker over each gun in its player's colour; a big one over the

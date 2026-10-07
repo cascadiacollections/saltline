@@ -1156,9 +1156,10 @@ match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
 ```
 
 - **The log** is `A:P` per shot (the aim as dialled) and `/` when the
-  players move on from a round's result; `n` counts the entries and the
-  line must end in its newline, so a line cut anywhere is damaged rather
-  than a shorter or different match.
+  players move on from a round's result. The line must end in its newline,
+  so a line cut anywhere is damaged rather than a shorter or different
+  match; `n` counts the entries, so one lost from the middle (a hand edit)
+  is caught too.
 - **Versioned three ways.** `format` is the line's layout; `sim epoch` is
   `SIM_EPOCH` (§9.3); `match epoch` (`match_log::MATCH_EPOCH`) covers the
   duel rules, which live outside the sim and so outside its digest: a golden
@@ -1171,18 +1172,25 @@ match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
   same steps live play takes, so it is the match as played, byte for byte:
   the rules' state, each side's kept aim and last arc, and the roll the plate
   announces. It lands on the pass-the-phone plate for whoever is next, or on
-  the round's result plate if the last shot won a round. A shot in the air
-  at the kill is committed, as in a run. Aim help and rolling guns come back
-  as they were chosen, and the match keeps its width, letterboxed if the
-  device's differs.
-- **Cleared** the frame a match's winning shot is fired, and when the players
-  quit it (the pause plate, or TITLE on a result). A rematch is a new match.
+  the result plate if the last shot won a round or the match. A shot in the
+  air at the kill is committed, as in a run. Aim help and rolling guns come
+  back as they were chosen, and the match keeps its width, letterboxed if
+  the device's differs.
+- **Cleared** when the players leave a won match's result plate (REMATCH or
+  TITLE), and when they quit it (the pause plate, or TITLE on a round's
+  result). A match killed as it was won comes back on the plate that says
+  who won. A rematch is a new match.
 - **The title.** On a touchscreen the LOCAL VERSUS row reads RESUME MATCH
   (amber, like CONTINUE) while a match is suspended: the same row, not an
   extra one, since the phone title's worst case (a saved run, a crash report,
   a launch note) already fills the screen. With keys, `2  RESUME MATCH`
   shows under SEED ENTRY only then. A new match over a suspended one is had
-  by resuming it and quitting.
+  by resuming it and quitting: RESUME MATCH, pause, QUIT, then LOCAL
+  VERSUS. That is a deliberate four taps, the same as giving up a match in
+  play; a NEW MATCH row would cost the phone title a row, and a
+  second-press confirm on the versus row would make RESUME MATCH a trap for
+  whoever taps it twice. (Open question: whether a long-suspended match
+  should expire.)
 - **A run and a match can both be suspended.** Each offer stays in its
   mode's place, CONTINUE on confirm at the top (the run is the main game) and
   RESUME MATCH on the versus row, so neither moves the other and both read at

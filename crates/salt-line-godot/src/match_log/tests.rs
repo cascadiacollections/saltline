@@ -151,7 +151,7 @@ fn a_saved_match_round_trips_and_replays_to_the_match_as_played() {
 }
 
 #[test]
-fn judge_offers_a_match_in_play_and_clears_a_finished_one() {
+fn judge_offers_a_match_in_play_or_just_won() {
     let (shots, live) = bot_match(9, 320, true, 7);
     let line = SavedMatch::of(&live, [false; 2], &shots).to_line();
     match judge(Some(&line)) {
@@ -159,7 +159,8 @@ fn judge_offers_a_match_in_play_and_clears_a_finished_one() {
         other => panic!("{other:?}"),
     }
     let (saved, _) = golden();
-    assert!(matches!(judge(Some(&saved.to_line())), Found::Finished));
+    // Won by its last shot: offered, to come back on its result plate.
+    assert!(matches!(judge(Some(&saved.to_line())), Found::Resume(_)));
     assert!(matches!(judge(None), Found::Nothing));
     assert!(matches!(judge(Some(" \n")), Found::Nothing));
 }
