@@ -121,7 +121,7 @@
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
 //! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only the set-aside copy (`resume::drop_set_aside`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
-//! | `ScreenAwake(Awake)` | the attract demo starting and ending (`app/demo.rs`) | `DisplayServer::screen_set_keep_on`: on, off, or back to the project's setting | no | no |
+//! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play, a versus match not paused, a menu-started demo | `DisplayServer::screen_set_keep_on` | no | no |
 //!
 //! # Scoring at most once
 //!
@@ -485,23 +485,12 @@ pub enum Effect {
     RunFile(RunFile),
     /// Something to do with last session's crash report.
     CrashReport(CrashReport),
-    /// Whether the operating system may turn the screen off. See [`Awake`].
-    ScreenAwake(Awake),
-}
-
-/// Whether the screen is held on (DESIGN §12). Godot keeps the screen on
-/// for the whole session by default (the project setting
-/// `display/window/energy_saving/keep_screen_on`); the demo overrides that
-/// while it runs and puts it back after.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Awake {
-    /// Keep the screen on: a demo someone chose from the menu, to watch.
-    Keep,
-    /// Let the screen sleep as the operating system would: a demo that
-    /// started on its own, which may have nobody watching.
-    LetSleep,
-    /// Back to the project's own setting, as it was at launch.
-    AsProject,
+    /// Hold the screen on (`true`), or let the operating system turn it
+    /// off as it normally would (`false`). The project leaves
+    /// `display/window/energy_saving/keep_screen_on` off, so the screen
+    /// sleeps unless this holds it (DESIGN §12.4). Asked for only when
+    /// [`Game::screen_awake_wanted`] changes; see [`Game::take_effects`].
+    ScreenAwake(bool),
 }
 
 /// What to do with the saved run (DESIGN §9.6). Which files that means is the
@@ -658,8 +647,9 @@ pub struct Game {
     /// An idle demo ran its `demo::IDLE_DEMO_LIMIT` out; the title waits
     /// for some input before it starts another by itself.
     pub(crate) idle_demo_spent: bool,
-    /// The window or app is out of focus (since `focus_lost`, until
-    /// `focus_gained`): the idle demo does not start.
+    /// The window or app is out of focus or paused (since `focus_lost` or
+    /// `app_paused`, until `focus_gained`): the idle demo does not start,
+    /// and nothing holds the screen on (`screen_awake_wanted`).
     pub(crate) unfocused: bool,
 
     /// Effects asked for since they were last taken.
@@ -691,6 +681,10 @@ pub(crate) struct Display {
     /// The buffer is at a resumed run's width, not the device's, and the
     /// window letterboxes it (`set_run_width`).
     pub(crate) kept_width: bool,
+    /// Whether the adapter was last told to hold the screen on
+    /// (`Effect::ScreenAwake`): the change detector behind
+    /// [`Game::take_effects`]. Starts off, as the project setting does.
+    pub(crate) screen_awake: bool,
 }
 
 /// The run on screen and how it is being shown.
@@ -867,6 +861,7 @@ impl Default for Game {
                 buffer_h: SCREEN_H as i32,
                 letterbox: (0, 0),
                 kept_width: false,
+                screen_awake: false,
             },
             play: Play::default(),
             input: InputState {
@@ -934,8 +929,56 @@ impl Game {
     /// The effects asked for so far, oldest first. Every method below that
     /// returns effects takes them itself; this is for the ones that do not
     /// (`start_run` from a test, say).
+    ///
+    /// Every effect leaves through here, so this is also where the screen's
+    /// keep-on is settled: if [`Game::screen_awake_wanted`] differs from what
+    /// the adapter was last told, one `Effect::ScreenAwake` goes last. No
+    /// transition asks for it itself; whatever changed the mode, the demo or
+    /// the pause, the state is read afresh, and only a change is sent. That
+    /// covers the notification paths (`focus_lost`, `app_paused`) as well
+    /// as the frame.
     pub fn take_effects(&mut self) -> Vec<Effect> {
+        let awake = self.screen_awake_wanted();
+        if awake != self.display.screen_awake {
+            self.display.screen_awake = awake;
+            self.fx.push(Effect::ScreenAwake(awake));
+        }
         std::mem::take(&mut self.fx)
+    }
+
+    /// Whether the screen should be held on now (DESIGN §12.4): only while
+    /// somebody is watching the phone without touching it.
+    ///
+    /// * **Live play** (`Mode::Playing`, the draft included): a long flight
+    ///   or a think over the next shot should not dim the screen.
+    /// * **A versus match not paused** (`Mode::Versus`): aiming, flight, the
+    ///   pass-the-phone plate and the results, all of which are looked at
+    ///   while the phone changes hands.
+    /// * **A demo chosen from the menu**, to be watched. A demo that started
+    ///   by itself may have nobody watching, so it lets the screen sleep.
+    ///
+    /// Everything else lets it sleep: the title and the menus, a paused run
+    /// or match, the run's result, the error screen, and any mode while the
+    /// window or app is out of focus (the platform drops a backgrounded
+    /// app's hold anyway; this keeps desktop from inhibiting the
+    /// screensaver behind another window).
+    pub fn screen_awake_wanted(&self) -> bool {
+        if self.crash.broken || self.unfocused {
+            return false;
+        }
+        if let Some(demo) = &self.demo {
+            return demo.started == DemoStarted::Menu;
+        }
+        match self.mode {
+            Mode::Playing => true,
+            Mode::Versus => self.versus.live.as_ref().is_some_and(|vs| !vs.paused),
+            Mode::Title
+            | Mode::Controls
+            | Mode::SeedEntry
+            | Mode::Paused
+            | Mode::GameOver
+            | Mode::VersusSetup => false,
+        }
     }
 
     /// One frame: the events since the last, then timers, the display,
@@ -1202,9 +1245,13 @@ impl Game {
     }
 
     /// The platform paused the app. Pending settings go to disk before the
-    /// app can be killed: a phone may never resume a paused app.
+    /// app can be killed: a phone may never resume a paused app. Counted as
+    /// out of focus until it resumes (`focus_gained`), so the screen is let
+    /// go even on a screen a pause does not freeze (a versus plate, a
+    /// draft).
     pub fn app_paused(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
+        self.unfocused = true;
         self.demo_unwatched();
         self.auto_pause();
         self.flush_settings();
@@ -1732,6 +1779,8 @@ pub use demo::{Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};
 pub use versus::{Call as VersusCall, Stage as VersusStage, DING_DELAY, VERSUS_HOLD};
 pub(crate) use versus::{VersusPlay, VersusState};
 
+#[cfg(test)]
+mod awake_tests;
 #[cfg(test)]
 mod demo_tests;
 #[cfg(test)]

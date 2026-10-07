@@ -49,6 +49,11 @@ window/size/window_height_override=720
 window/stretch/mode="viewport"
 window/stretch/aspect="keep"
 window/vsync/vsync_mode=1
+; Off, so the operating system's screen timeout applies on the title and in
+; menus. The game holds the screen on itself while it is being watched: live
+; play, a versus match, a demo chosen from the menu (Effect::ScreenAwake,
+; DESIGN §12.4).
+window/energy_saving/keep_screen_on=false
 
 [input_devices]
 

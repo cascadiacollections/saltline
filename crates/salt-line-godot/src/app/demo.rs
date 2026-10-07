@@ -59,9 +59,10 @@
 //! idle-started demo also ends when focus goes or the app pauses, and after
 //! [`IDLE_DEMO_LIMIT`]. Sound is muted by `volume_db` while the demo runs
 //! ([`DEMO_MUTED`]), which leaves the saved volume and mute alone. A demo
-//! started from the menu keeps the screen on ([`Awake::Keep`]); one that
-//! started by itself lets it sleep ([`Awake::LetSleep`]); both put the
-//! project's setting back on exit. The demo runs at `frame::IDLE_FPS` (30).
+//! started from the menu holds the screen on; one that started by itself
+//! does not, so the phone sleeps as it would on the title. Nothing here asks
+//! for that: `Game::screen_awake_wanted` reads [`Started`] each frame. The
+//! demo runs at `frame::IDLE_FPS` (30).
 
 use super::versus::Stage;
 use super::*;
@@ -156,7 +157,9 @@ pub enum Leg {
     Duel,
 }
 
-/// How the demo began, which decides whether it holds the screen on.
+/// How the demo began, which decides whether it holds the screen on
+/// (`Game::screen_awake_wanted`), whether it ends when focus goes, and
+/// whether it has a time limit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Started {
     /// The title sat without input for [`IDLE_DEMO_AFTER`].
@@ -329,8 +332,8 @@ impl Game {
     }
 
     /// Start the demo: flush pending settings while writes are still
-    /// allowed, set the player's state aside, mute, say what the screen may
-    /// do, and begin the first run leg.
+    /// allowed, set the player's state aside, mute, and begin the first run
+    /// leg.
     pub(crate) fn start_demo(&mut self, started: Started) {
         if self.in_demo() {
             return;
@@ -369,15 +372,11 @@ impl Game {
         });
         self.settle_touch();
         self.apply_volume();
-        self.fx.push(Effect::ScreenAwake(match started {
-            Started::Idle => Awake::LetSleep,
-            Started::Menu => Awake::Keep,
-        }));
         self.begin_demo_leg(first);
     }
 
     /// End the demo and put everything back as it was: the player's run
-    /// and versus state, the buffer, the volume, the screen's setting. Back
+    /// and versus state, the buffer, the volume. Back
     /// at the title, with touches settled so the ending tap presses nothing.
     pub(crate) fn stop_demo(&mut self) {
         let Some(demo) = self.demo.take() else {
@@ -397,7 +396,6 @@ impl Game {
         self.settle_touch();
         self.title_idle = 0.0;
         self.apply_volume();
-        self.fx.push(Effect::ScreenAwake(Awake::AsProject));
         self.apply_buffer_size();
         self.fx.push(Effect::Redraw);
     }

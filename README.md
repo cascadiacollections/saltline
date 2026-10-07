@@ -232,12 +232,16 @@ touches your saved run, scores, settings or onboarding: a run quit to the title
 is still there to CONTINUE, exactly as you left it. Turn IDLE DEMO off on
 CONTROLS / AUDIO to stop it starting by itself (the menu's DEMO still works).
 
-About the screen: the game keeps the screen on the whole time it is open,
-title included (Godot's default, unchanged here). A demo that started by
-itself lets go of that, so a phone left on the title still goes to sleep, and
-on a desktop it waits while the window is in the background and gives up
-after ten minutes. To show the game off, start DEMO from the title: that one
-keeps the screen on and runs until you stop it.
+About the screen: the game keeps the screen on only while you are playing
+(a run, or a versus match including its pass-the-phone and result screens)
+or watching a demo you started from the menu. On the title, the menus, a
+pause or the end-of-run screen, the phone sleeps on its normal timeout. A
+demo that started by itself does not keep the screen on either, so a phone
+left on the title still goes to sleep; on a desktop it also waits while the
+window is in the background and gives up after ten minutes. To show the game
+off, start DEMO from the title: that one keeps the screen on and runs until
+you stop it. On a desktop, keeping the screen on only holds off the
+screensaver.
 
 How it stays out of your things is worth a look if you are learning the code:
 `app/demo.rs` moves the player's state aside whole, plays the ordinary run and
