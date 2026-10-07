@@ -21,8 +21,12 @@
 use super::*;
 
 impl Game {
-    /// Show `text` on the status line for `STATUS_TIME` seconds.
+    /// Show `text` on the status line for `STATUS_TIME` seconds. Not in
+    /// the attract demo, whose only words are its banner.
     pub(super) fn note(&mut self, text: String) {
+        if self.in_demo() {
+            return;
+        }
         self.status = text;
         self.status_time = STATUS_TIME;
         self.fx.push(Effect::Redraw);
@@ -46,7 +50,11 @@ impl Game {
     /// The player has done the thing onboarding bit `bit` teaches. Written
     /// at once, and only the first time, so a lesson learned is never shown
     /// again even if the app is killed straight after.
+    /// The attract demo learns nothing: its shots are not the player's.
     pub(super) fn learn(&mut self, bit: u32) {
+        if self.in_demo() {
+            return;
+        }
         if self.save.learned & bit == 0 {
             self.save.learned |= bit;
             self.fx.push(Effect::Store(Store::Learned));
@@ -115,6 +123,11 @@ impl Game {
     /// Write pending settings once they settle, or as soon as the player
     /// leaves Controls. Not every volume repeat: see `durable::Debounce`.
     pub(super) fn tick_settings(&mut self, delta: f64) {
+        // Settings are flushed as the demo starts, and none can change
+        // during it; anything pending would wait for it to end.
+        if self.in_demo() {
+            return;
+        }
         if self.settings.tick(delta, self.mode == Mode::Controls) {
             self.write_settings();
         }
@@ -127,8 +140,13 @@ impl Game {
         }
     }
 
-    /// Ask for the save to be written for a settings change.
+    /// Ask for the save to be written for a settings change. During the
+    /// attract demo the change is kept pending instead, for after it.
     pub(super) fn write_settings(&mut self) {
+        if self.in_demo() {
+            self.settings.touch();
+            return;
+        }
         self.fx.push(Effect::Store(Store::Settings));
     }
 
@@ -161,6 +179,9 @@ impl Game {
     /// The player has moved on from last session's report (started a run):
     /// stop offering it.
     pub(super) fn retire_last_crash(&mut self) {
+        if self.in_demo() {
+            return;
+        }
         if self.crash.last_crash.take().is_some() && !self.crash.crash_copied {
             self.fx.push(Effect::CrashReport(CrashReport::Retire));
         }
@@ -176,8 +197,11 @@ impl Game {
     /// the cards themselves say where the player was; a pause screen over
     /// them would only cost a tap. Not for the dev autopilot or screenshots,
     /// which nobody is watching with focus.
+    ///
+    /// Nor for the attract demo: it has no pause plate, and a phone that
+    /// sleeps its screen stops the demo with the app anyway.
     pub(super) fn auto_pause(&mut self) {
-        if self.dev.auto || self.dev.capturing {
+        if self.dev.auto || self.dev.capturing || self.in_demo() {
             return;
         }
         self.auto_pause_versus();
@@ -228,8 +252,11 @@ impl Game {
     /// Save the run whenever the log has grown: a shot fired or a
     /// draft taken (a reposition rides in the next shot's entry). Checked
     /// every frame, written only on a change.
+    ///
+    /// Never during the attract demo: `run_persist` may still be set for the
+    /// suspended run, and the run on screen is the demo's.
     pub(super) fn persist_run(&mut self) {
-        if !self.run_file.run_persist {
+        if !self.run_file.run_persist || self.in_demo() {
             return;
         }
         let Some(run) = self.play.run.as_ref() else {

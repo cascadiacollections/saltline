@@ -227,9 +227,15 @@ impl Game {
             self.versus.entropy
                 ^ salt_line_sim::rng::mix64(daily_seed(self.today) ^ self.versus.started),
         );
+        self.start_versus_on(seed, self.versus.rules());
+    }
+
+    /// Start a match on `seed` by `rules` at the buffer's width: a player's
+    /// match, or the demo's (`app/demo.rs`).
+    pub(super) fn start_versus_on(&mut self, seed: u64, rules: versus::Rules) {
         let width = self.display.buffer_w as usize;
         self.versus.live = Some(VersusPlay {
-            duel: Match::with_rules(seed, width, self.versus.rules()),
+            duel: Match::with_rules(seed, width, rules),
             stage: Stage::Handoff,
             anim: None,
             aims: [(900, 600); 2],
@@ -339,7 +345,7 @@ impl Game {
     }
 
     /// The player taking the phone is ready: their own aim comes back.
-    fn begin_versus_turn(&mut self) {
+    pub(super) fn begin_versus_turn(&mut self) {
         let Some(vs) = self.versus.live.as_mut() else {
             return;
         };
@@ -387,7 +393,7 @@ impl Game {
     }
 
     /// Fire the aim of the side whose turn it is and start its playback.
-    fn versus_fire(&mut self) {
+    pub(super) fn versus_fire(&mut self) {
         let shot = Shot::new(self.play.angle_ticks, self.play.power_ticks);
         let aim = (self.play.angle_ticks, self.play.power_ticks);
         let Some(vs) = self.versus.live.as_mut() else {
@@ -509,7 +515,7 @@ impl Game {
     /// rematch goes back to the pre-match screen rather than straight into
     /// a new match, so each player can turn aim help on or off before the
     /// next one; the choices from the last match are still set there.
-    fn after_versus_result(&mut self) {
+    pub(super) fn after_versus_result(&mut self) {
         let Some(vs) = self.versus.live.as_mut() else {
             return;
         };

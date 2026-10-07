@@ -218,6 +218,9 @@ impl Game {
                     // there is nothing to confirm.
                     self.play(Sound::Ui);
                     self.open_versus_setup();
+                } else if self.action_pressed(Action::Demo) {
+                    // Like versus, the demo never touches the kept run.
+                    self.start_demo(DemoStarted::Menu);
                 } else if self.crash.last_crash.is_some() && self.action_pressed(Action::Copy) {
                     self.copy_last_crash();
                 } else if self.action_pressed(Action::Controls) {
@@ -257,6 +260,11 @@ impl Game {
                 }
                 if self.action_pressed(Action::LastArc) {
                     self.save.last_arc = Some(!self.last_arc_on());
+                    self.settings.touch();
+                    self.play(Sound::Ui);
+                }
+                if self.action_pressed(Action::Demo) {
+                    self.save.idle_demo = Some(!self.idle_demo_on());
                     self.settings.touch();
                     self.play(Sound::Ui);
                 }

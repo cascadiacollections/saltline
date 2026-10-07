@@ -65,6 +65,7 @@ pub enum Key {
     V,
     M,
     L,
+    D,
     /// The debug overlay. Not bindable.
     F1,
     /// Held for coarse aim steps. Not bindable.
@@ -72,7 +73,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 25] = [
+    pub const ALL: [Key; 26] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -96,6 +97,7 @@ impl Key {
         Self::V,
         Self::M,
         Self::L,
+        Self::D,
         Self::F1,
         Self::Shift,
     ];
@@ -126,6 +128,7 @@ impl Key {
             "V" => Self::V,
             "M" => Self::M,
             "L" => Self::L,
+            "D" => Self::D,
             _ => return None,
         })
     }
@@ -215,6 +218,9 @@ pub enum Action {
     NewRun,
     /// The title's way into a local versus match.
     Versus,
+    /// The attract demo: started from the title, and IDLE DEMO toggled in
+    /// Controls (DESIGN §12).
+    Demo,
     AimMode,
     ArcHint,
     /// A seed keypad key: types its character.
@@ -226,7 +232,7 @@ pub enum Action {
 impl Action {
     /// Every action a `bind` line can name, in the order the save file and
     /// the Controls screen know them.
-    pub const BINDABLE: [Action; 22] = [
+    pub const BINDABLE: [Action; 23] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -249,6 +255,7 @@ impl Action {
         Self::Seed,
         Self::NewRun,
         Self::Versus,
+        Self::Demo,
     ];
 
     /// The action's name in a `bind` line (`bind fire SPACE A`). `None` for a
@@ -277,6 +284,7 @@ impl Action {
             Self::Seed => "seed",
             Self::NewRun => "new_run",
             Self::Versus => "versus",
+            Self::Demo => "demo",
             Self::TitleMusic | Self::AimMode | Self::ArcHint | Self::Type(_) | Self::Delete => {
                 return None;
             }
@@ -326,6 +334,9 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         Action::NewRun => ("N", "RB"),
         // "2" for two players. LB is free on the title, where this is read.
         Action::Versus => ("2", "LB"),
+        // D for demo. D-pad down is read by neither the title nor Controls,
+        // the two screens that ask for this.
+        Action::Demo => ("D", "DPAD_DOWN"),
         _ => ("", ""),
     }
 }
@@ -389,6 +400,9 @@ pub enum Event {
     },
     /// The platform's back gesture (Android).
     Back,
+    /// An analog trigger pulled past halfway. No action reads it; it is
+    /// someone there, for the idle demo's count and to end the demo.
+    Trigger,
 }
 
 impl Event {
@@ -607,6 +621,7 @@ mod tests {
                 "seed",
                 "new_run",
                 "versus",
+                "demo",
             ]
         );
     }

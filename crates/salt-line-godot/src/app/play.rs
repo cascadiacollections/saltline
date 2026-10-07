@@ -260,6 +260,11 @@ impl Game {
 
     /// The run is over: score it and show the result.
     pub(crate) fn finish_run(&mut self) {
+        // A demo run that ends is not scored, and its result screen is not
+        // shown: the demo moves on to its next leg (`demo_step`).
+        if self.in_demo() {
+            return;
+        }
         // The run file goes before the score is recorded, never after, and
         // the score only if it is confirmed gone (`Store::Score`'s `clear`):
         // a crash in between costs this score, where the other order would
@@ -330,6 +335,16 @@ impl Game {
         self.note_not_saved("SCORE NOT SAVED");
     }
 
+    /// A shot the solver says brings down the first standing target, and
+    /// that target's index: the autopilot's aim, and the demo's.
+    pub(super) fn solver_shot(&self) -> Option<(Shot, usize)> {
+        let run = self.play.run.as_ref()?;
+        let target = run.screen.structures.iter().position(|s| !s.is_down())?;
+        salt_line_sim::solver::solve_target(&run.screen, &run.loadout, target)
+            .first()
+            .map(|c| (c.shot, target))
+    }
+
     /// Play the game for the camera: aim with the solver, take offer 1.
     pub(super) fn autopilot(&mut self, delta: f64) {
         self.dev.auto_cooldown -= delta;
@@ -367,18 +382,7 @@ impl Game {
                     self.dev.auto_cooldown = 0.35;
                     return;
                 }
-                let pick = {
-                    let Some(run) = self.play.run.as_ref() else {
-                        return;
-                    };
-                    let target = run.screen.structures.iter().position(|s| !s.is_down());
-                    target.and_then(|t| {
-                        salt_line_sim::solver::solve_target(&run.screen, &run.loadout, t)
-                            .first()
-                            .map(|c| (c.shot, t))
-                    })
-                };
-                if let Some((shot, target)) = pick {
+                if let Some((shot, target)) = self.solver_shot() {
                     self.play.angle_ticks = shot.angle_ticks;
                     self.play.power_ticks = shot.power_ticks;
                     if let Some(run) = self.play.run.as_mut() {

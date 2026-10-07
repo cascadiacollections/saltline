@@ -14,8 +14,8 @@
 //! run <seed> <screens> <shells> <shots> <daily>
 //! ```
 //!
-//! Optional lines (`touch_aim`, `arc_hint`, `last_arc`) appear only once the
-//! player has chosen a value; there is one `bind` line per overridden action and
+//! Optional lines (`touch_aim`, `arc_hint`, `last_arc`, `idle_demo`) appear
+//! only once the player has chosen a value; there is one `bind` line per overridden action and
 //! one `run` line per board entry, best first.
 //!
 //! # A line-based format with forward-compatible versioning
@@ -185,6 +185,10 @@ pub struct Save {
     /// Keep the last shot's arc drawn until the next one. `None` until the
     /// player toggles it, like the touch settings.
     pub last_arc: Option<bool>,
+    /// The title starts the attract demo after a spell of no input (DESIGN
+    /// §12). `None` until the player toggles it in Controls, so a save from
+    /// before the demo existed reads as the default, which is on.
+    pub idle_demo: Option<bool>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
@@ -203,6 +207,7 @@ impl Default for Save {
             touch_aim: None,
             arc_hint: None,
             last_arc: None,
+            idle_demo: None,
             from_the_future: false,
         }
     }
@@ -248,6 +253,13 @@ impl Save {
                 Some("arc_hint") => save.arc_hint = it.next().and_then(ArcHint::from_token),
                 Some("last_arc") => {
                     save.last_arc = match it.next() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    }
+                }
+                Some("idle_demo") => {
+                    save.idle_demo = match it.next() {
                         Some("1") => Some(true),
                         Some("0") => Some(false),
                         _ => None,
@@ -326,6 +338,9 @@ impl Save {
         }
         if let Some(on) = self.last_arc {
             out.push_str(&format!("last_arc {}\n", on as u8));
+        }
+        if let Some(on) = self.idle_demo {
+            out.push_str(&format!("idle_demo {}\n", on as u8));
         }
         for (action, key, pad) in &self.bindings {
             out.push_str(&format!("bind {action} {key} {pad}\n"));
@@ -601,6 +616,23 @@ mod tests {
         assert_eq!(Save::parse("last_arc maybe\n").last_arc, None);
     }
 
+    #[test]
+    fn the_idle_demo_setting_defaults_for_old_saves_and_is_saved_once_toggled() {
+        // A save from before the demo has no line: not chosen, so the
+        // game's default (on) applies, and nothing new is written for it.
+        let old = Save::parse("version 2\nvolume 40\nlast_arc 0\n");
+        assert_eq!(old.idle_demo, None);
+        assert!(!old.serialize().contains("idle_demo"));
+        for on in [true, false] {
+            let chosen = Save {
+                idle_demo: Some(on),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&chosen.serialize()).idle_demo, Some(on));
+        }
+        assert_eq!(Save::parse("idle_demo sometimes\n").idle_demo, None);
+    }
+
     mod props {
         use super::*;
         use proptest::prelude::*;
@@ -645,13 +677,18 @@ mod tests {
                     any::<u32>(),
                     prop::collection::vec((action(), token(), token()), 0..6),
                 ),
-                (aim, hint, prop::option::of(any::<bool>())),
+                (
+                    aim,
+                    hint,
+                    prop::option::of(any::<bool>()),
+                    prop::option::of(any::<bool>()),
+                ),
             )
                 .prop_map(
                     |(
                         (scores, volume, muted),
                         (learned, bindings),
-                        (touch_aim, arc_hint, last_arc),
+                        (touch_aim, arc_hint, last_arc, idle_demo),
                     )| Save {
                         scores,
                         volume,
@@ -661,6 +698,7 @@ mod tests {
                         touch_aim,
                         arc_hint,
                         last_arc,
+                        idle_demo,
                         ..Save::default()
                     },
                 )
@@ -674,7 +712,7 @@ mod tests {
 
             #[test]
             fn any_line_soup_parses_without_panicking(
-                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
+                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
             ) {
                 let _ = Save::parse(&lines.join("\n"));
             }
@@ -745,6 +783,7 @@ mod tests {
             touch_aim: Some(TouchAim::Drag),
             arc_hint: Some(ArcHint::Short),
             last_arc: Some(false),
+            idle_demo: Some(false),
             ..Save::default()
         };
         insta::assert_snapshot!(save.serialize());

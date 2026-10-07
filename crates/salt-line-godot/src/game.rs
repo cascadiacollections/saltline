@@ -76,7 +76,7 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, Sound};
+use crate::app::{Abandoned, Aspect, Awake, CrashReport, Effect, Game, RunFile, Sound};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
@@ -131,6 +131,9 @@ pub struct SaltLine {
     redraw: Redraw,
     /// The engine's frame cap as the project set it, restored in play.
     project_fps: i32,
+    /// Whether the project keeps the screen on, as it was at launch: what
+    /// `Awake::AsProject` puts back after the demo.
+    project_keep_on: bool,
     fps_cap: i32,
     /// When to read the display's safe area again, and what it last said.
     display: DisplayPoll,
@@ -152,6 +155,9 @@ pub struct SaltLine {
     pads: Pads,
     /// Seconds until the joypad list is checked against the connected ones.
     pad_prune: f64,
+    /// Each analog trigger (left, right) is pulled past `TRIGGER_PULL`, on
+    /// any pad, as last reported: `Event::Trigger` is sent on the pull.
+    triggers: [bool; 2],
     /// On-screen buttons drawn last frame, hit-tested by this frame's touches.
     touch_buttons: Vec<Button>,
     /// One player per `Sound`, in `Sound::ALL` order, so `sound as usize`
@@ -192,6 +198,7 @@ impl INode2D for SaltLine {
             shadow: Shadow::default(),
             redraw: Redraw::default(),
             project_fps: 0,
+            project_keep_on: true,
             fps_cap: 0,
             display: DisplayPoll::default(),
             cutout: (0, 0),
@@ -201,6 +208,7 @@ impl INode2D for SaltLine {
             intents: Intents::default(),
             pads: Pads::default(),
             pad_prune: 0.0,
+            triggers: [false; 2],
             touch_buttons: Vec::new(),
             audio: Vec::new(),
             audio_db: -80.0,
@@ -233,6 +241,7 @@ impl INode2D for SaltLine {
         self.find_saved_run();
         self.setup_audio();
         self.project_fps = Engine::singleton().get_max_fps();
+        self.project_keep_on = DisplayServer::singleton().screen_is_kept_on();
         self.fps_cap = self.project_fps;
         let window = Self::window_size();
         self.cutout = self.cutout_px(window);
@@ -296,7 +305,9 @@ impl INode2D for SaltLine {
                 g.mode_name(),
                 g.play.run.as_ref(),
                 (g.play.angle_ticks, g.play.power_ticks),
-                g.run_file.resumed,
+                // The demo's run was never continued, whatever the
+                // player's was; its mode name says it is the demo's.
+                g.run_file.resumed && !g.in_demo(),
             )
         });
         #[cfg(feature = "profiling")]
@@ -365,6 +376,17 @@ impl INode2D for SaltLine {
             // Stick deflection is polled; `busy` keeps frames coming while
             // one is held over.
             Ok(motion) => {
+                if let Some(t) = trigger_slot(motion.get_axis()) {
+                    // An edge only, so a trigger resting past halfway is
+                    // not input every frame.
+                    let pulled = motion.get_axis_value() > TRIGGER_PULL;
+                    if pulled && !self.triggers[t] {
+                        self.events.push(Event::Trigger);
+                        self.redraw.mark();
+                    }
+                    self.triggers[t] = pulled;
+                    return;
+                }
                 let axis = match motion.get_axis() {
                     JoyAxis::LEFT_X => 0,
                     JoyAxis::LEFT_Y => 1,
@@ -457,6 +479,7 @@ impl INode2D for SaltLine {
             CanvasItemNotification::WM_WINDOW_FOCUS_IN
             | CanvasItemNotification::APPLICATION_FOCUS_IN
             | CanvasItemNotification::APPLICATION_RESUMED => {
+                self.g.focus_gained();
                 self.display.invalidate();
                 self.redraw.mark();
             }
@@ -480,9 +503,13 @@ impl INode2D for SaltLine {
 #[godot_api]
 impl SaltLine {
     /// Presentation-only state for optional desktop services. A paused run
-    /// releases GameMode; neither the service nor this query enters the sim.
+    /// releases GameMode, and the attract demo never asks for it; neither
+    /// the service nor this query enters the sim.
     #[func]
     fn is_active_play(&self) -> bool {
+        if self.g.in_demo() {
+            return false;
+        }
         self.g.mode == crate::app::Mode::Playing
             || (self.g.mode == crate::app::Mode::Versus
                 && self.g.versus.live.as_ref().is_some_and(|v| !v.paused))
@@ -602,6 +629,14 @@ impl SaltLine {
                         Self::discard_run_file();
                     }
                 },
+                Effect::ScreenAwake(awake) => {
+                    let on = match awake {
+                        Awake::Keep => true,
+                        Awake::LetSleep => false,
+                        Awake::AsProject => self.project_keep_on,
+                    };
+                    DisplayServer::singleton().screen_set_keep_on(on);
+                }
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (
                         save::on_disk(crash::REPORT_PATH),
@@ -907,12 +942,15 @@ impl SaltLine {
         self.g.busy() || stick || Input::singleton().is_anything_pressed()
     }
 
-    /// Menus, overlays and the error screen run at `frame::IDLE_FPS`; play
-    /// runs uncapped, or at whatever the project asked for. `Engine` max FPS
+    /// Menus, overlays, the error screen and the attract demo run at
+    /// `frame::IDLE_FPS`; play runs uncapped, or at whatever the project
+    /// asked for. The demo is watched, not played, and may run unattended
+    /// for hours on a phone: 30 frames a second shows a shell's flight well
+    /// enough, at half the work. `Engine` max FPS
     /// rather than low-processor mode, which would also throttle play and
     /// the shot replay.
     fn apply_frame_cap(&mut self) {
-        let cap = frame::frame_cap(self.g.idle(), self.project_fps);
+        let cap = frame::frame_cap(self.g.idle() || self.g.in_demo(), self.project_fps);
         if cap != self.fps_cap {
             self.fps_cap = cap;
             Engine::singleton().set_max_fps(cap);
@@ -1055,12 +1093,24 @@ impl SaltLine {
     }
 }
 
+/// How far an analog trigger is pulled before it counts as input.
+const TRIGGER_PULL: f32 = 0.5;
+
+/// Which trigger an axis is, if it is one.
+fn trigger_slot(axis: JoyAxis) -> Option<usize> {
+    match axis {
+        JoyAxis::TRIGGER_LEFT => Some(0),
+        JoyAxis::TRIGGER_RIGHT => Some(1),
+        _ => None,
+    }
+}
+
 fn title_volume_db(master: f32) -> f32 {
     (master + TITLE_GAIN_DB).max(-80.0)
 }
 
 /// The keys the core reads, and the engine's names for them.
-const KEYS: [(input::Key, Key); 25] = [
+const KEYS: [(input::Key, Key); 26] = [
     (input::Key::Left, Key::LEFT),
     (input::Key::Right, Key::RIGHT),
     (input::Key::Up, Key::UP),
@@ -1084,6 +1134,7 @@ const KEYS: [(input::Key, Key); 25] = [
     (input::Key::V, Key::V),
     (input::Key::M, Key::M),
     (input::Key::L, Key::L),
+    (input::Key::D, Key::D),
     (input::Key::F1, Key::F1),
     (input::Key::Shift, Key::SHIFT),
 ];

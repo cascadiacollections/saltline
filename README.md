@@ -132,6 +132,8 @@ request.
 | Enter | A | Tap the row | Daily run, confirm, continue |
 | S | — | SEED ENTRY | Seed entry (touch has an on-screen keypad) |
 | 2 | LB (on the title) | LOCAL VERSUS | Local versus, two players on one device (see below) |
+| D | D-pad down (on the title) | DEMO (top-left corner) | Watch the attract demo (see below) |
+| D | D-pad down (on Controls) | IDLE DEMO | Start the demo by itself after 30 s on the title (on by default) |
 | C | X | COPY SEED | Copy the seed (on the run-over screen) |
 | R | Y | SAME SEED AGAIN | Replay the same seed |
 | V | Back/Select | CONTROLS / AUDIO | Controls and audio screen |
@@ -185,7 +187,7 @@ bindings and resets them with R/Y. For practical custom remapping, add lines
 using `bind ACTION KEY PAD`, for example `bind fire F X`. Supported actions are
 `left`, `right`, `up`, `down`, `fire`, `fuse_down`, `fuse_up`,
 `reposition_left`, `reposition_right`, `draft_1`, `draft_2`, `draft_3`,
-`confirm`, `back`, `copy`, `replay`, `controls`, `mute`, and `versus`. The displayed
+`confirm`, `back`, `copy`, `replay`, `controls`, `mute`, `versus` and `demo`. The displayed
 default token names are accepted; unknown or malformed lines are ignored.
 
 ### Local versus
@@ -216,6 +218,32 @@ and a run kept for CONTINUE is left alone.
 The barrel sprite shows the angle rounded to 5°; the numeric field shows the
 true value. That gap is intentional — it is why `Vernier` feels like an
 instrument rather than a stat.
+
+### Attract demo
+
+Leave the title alone for 30 seconds and the game plays itself (DESIGN §12): a
+run on one of a few hand-picked seeds, then a short local versus duel, then the
+next run, and so on, carrying on where the last demo left off. DEMO on the title
+(`D`, d-pad down, or the plate in the top-left corner of a touchscreen) starts
+it at once. A banner says `DEMO · TAP TO PLAY` (`DEMO · PRESS ANY KEY` with keys
+or a controller); any key, button, trigger, stick push or tap goes back to the
+title, and that press does nothing else. The demo is silent, and it never
+touches your saved run, scores, settings or onboarding: a run quit to the title
+is still there to CONTINUE, exactly as you left it. Turn IDLE DEMO off on
+CONTROLS / AUDIO to stop it starting by itself (the menu's DEMO still works).
+
+About the screen: the game keeps the screen on the whole time it is open,
+title included (Godot's default, unchanged here). A demo that started by
+itself lets go of that, so a phone left on the title still goes to sleep, and
+on a desktop it waits while the window is in the background and gives up
+after ten minutes. To show the game off, start DEMO from the title: that one
+keeps the screen on and runs until you stop it.
+
+How it stays out of your things is worth a look if you are learning the code:
+`app/demo.rs` moves the player's state aside whole, plays the ordinary run and
+versus code on an empty slate, and moves it back, and every place that would
+write a file checks for the demo first. `app/demo_tests.rs` and the last test in
+`app/disk_tests.rs` prove it, down to the bytes on the (simulated) disk.
 
 ## Tools
 
@@ -273,7 +301,9 @@ the solver and takes offer 1), `--salt-miss` (throws the first shot of each
 screen away, to exercise craters and chalk marks), `--salt-hold-draft`,
 `--salt-shot <path>`, `--salt-shot-at <seconds>`, `--salt-gallery <dir>`,
 `--salt-versus` (start a local versus match; with `--salt-auto` the autopilot
-plays both guns, and with `--salt-miss` too, every other turn misses).
+plays both guns, and with `--salt-miss` too, every other turn misses),
+`--salt-demo` (start the attract demo, as the title's DEMO does; add
+`--salt-shot` and `--salt-shot-at` to capture a moment of it).
 
 ## Art
 

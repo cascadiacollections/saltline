@@ -58,8 +58,10 @@
 //! `Game`'s methods are split by concern: this file has the frame, the
 //! environment events, launch and the read-only queries; `app/controls.rs`
 //! reads actions and runs each mode's input; `app/play.rs` is a run in play;
-//! `app/versus.rs` is a local versus match in play; `app/session.rs` is the
-//! buffer, sound, settings, crash reports and the run on disk.
+//! `app/versus.rs` is a local versus match in play; `app/demo.rs` is the
+//! attract demo, which plays both of those for the camera without touching
+//! anything the player keeps; `app/session.rs` is the buffer, sound,
+//! settings, crash reports and the run on disk.
 //!
 //! # Order is behaviour
 //!
@@ -119,6 +121,7 @@
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
 //! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only the set-aside copy (`resume::drop_set_aside`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
+//! | `ScreenAwake(Awake)` | the attract demo starting and ending (`app/demo.rs`) | `DisplayServer::screen_set_keep_on`: on, off, or back to the project's setting | no | no |
 //!
 //! # Scoring at most once
 //!
@@ -482,6 +485,23 @@ pub enum Effect {
     RunFile(RunFile),
     /// Something to do with last session's crash report.
     CrashReport(CrashReport),
+    /// Whether the operating system may turn the screen off. See [`Awake`].
+    ScreenAwake(Awake),
+}
+
+/// Whether the screen is held on (DESIGN §12). Godot keeps the screen on
+/// for the whole session by default (the project setting
+/// `display/window/energy_saving/keep_screen_on`); the demo overrides that
+/// while it runs and puts it back after.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Awake {
+    /// Keep the screen on: a demo someone chose from the menu, to watch.
+    Keep,
+    /// Let the screen sleep as the operating system would: a demo that
+    /// started on its own, which may have nobody watching.
+    LetSleep,
+    /// Back to the project's own setting, as it was at launch.
+    AsProject,
 }
 
 /// What to do with the saved run (DESIGN §9.6). Which files that means is the
@@ -532,7 +552,14 @@ impl Effect {
     /// What is left is what the error screen needs: sound, drawing, the
     /// clipboard, quitting.
     pub fn survives_panic(&self) -> bool {
-        !matches!(
+        !self.touches_disk()
+    }
+
+    /// Whether this effect writes, moves or deletes a file. None may be
+    /// asked for while the attract demo runs (DESIGN §12), and none is
+    /// carried out after a panic.
+    pub fn touches_disk(&self) -> bool {
+        matches!(
             self,
             Effect::Store(_) | Effect::RunFile(_) | Effect::CrashReport(_)
         )
@@ -581,6 +608,8 @@ pub struct FrameState {
         Option<ArcHint>,
         u32,
     ),
+    /// The attract demo running, and the IDLE DEMO setting.
+    demo: (bool, Option<bool>),
     misc: (bool, bool, bool),
 }
 
@@ -617,6 +646,21 @@ pub struct Game {
     pub(crate) crash: CrashInfo,
     /// Local versus: the pre-match choices and the match on screen.
     pub(crate) versus: VersusState,
+    /// The attract demo, while it runs (`app/demo.rs`). It holds whatever
+    /// of the player's it set aside, untouched, until it ends.
+    pub(crate) demo: Option<Demo>,
+    /// Seconds the title has gone without input, towards the idle demo
+    /// (`demo::IDLE_DEMO_AFTER`). Zero anywhere but the title.
+    pub(crate) title_idle: f64,
+    /// The leg the next demo begins on: the rotation carries on across
+    /// demos in a session rather than restarting at the first run.
+    pub(crate) demo_next_leg: u64,
+    /// An idle demo ran its `demo::IDLE_DEMO_LIMIT` out; the title waits
+    /// for some input before it starts another by itself.
+    pub(crate) idle_demo_spent: bool,
+    /// The window or app is out of focus (since `focus_lost`, until
+    /// `focus_gained`): the idle demo does not start.
+    pub(crate) unfocused: bool,
 
     /// Effects asked for since they were last taken.
     fx: Vec<Effect>,
@@ -687,6 +731,27 @@ pub(crate) struct Play {
     /// Bumped whenever the drag preview must be worked out afresh for a
     /// reason its key cannot see (a new loadout, a new run).
     pub(crate) preview_epoch: u32,
+}
+
+impl Default for Play {
+    /// Nothing on screen yet: the aim in the middle of its range.
+    fn default() -> Self {
+        Play {
+            run: None,
+            anim: None,
+            clear_hold: 0.0,
+            sky_time: 0.0,
+            angle_ticks: 900,
+            power_ticks: 600,
+            cam_x: 0,
+            cam_target: 0.0,
+            daily: true,
+            last_seed: 0,
+            last_arc: Vec::new(),
+            low_shell_warned: false,
+            preview_epoch: 0,
+        }
+    }
 }
 
 /// What the player's devices are doing.
@@ -803,21 +868,7 @@ impl Default for Game {
                 letterbox: (0, 0),
                 kept_width: false,
             },
-            play: Play {
-                run: None,
-                anim: None,
-                clear_hold: 0.0,
-                sky_time: 0.0,
-                angle_ticks: 900,
-                power_ticks: 600,
-                cam_x: 0,
-                cam_target: 0.0,
-                daily: true,
-                last_seed: 0,
-                last_arc: Vec::new(),
-                low_shell_warned: false,
-                preview_epoch: 0,
-            },
+            play: Play::default(),
             input: InputState {
                 controls: Controls::default(),
                 seed_focus: Focus::default(),
@@ -840,6 +891,11 @@ impl Default for Game {
             dev: Dev::default(),
             crash: CrashInfo::default(),
             versus: VersusState::default(),
+            demo: None,
+            title_idle: 0.0,
+            demo_next_leg: 0,
+            idle_demo_spent: false,
+            unfocused: false,
             fx: Vec::new(),
         }
     }
@@ -912,25 +968,48 @@ impl Game {
         // compare once input and the step have run.
         let before = self.frame_state();
         let title_music_before = self.title_music_playing();
+        let demo_before = self.in_demo();
         self.begin_input_frame(delta, intents);
         let versus_before = self.versus_screen();
-        self.handle_mode_input(delta);
+        if demo_before {
+            // The demo reads no action: any input ends it, and is spent.
+            if self.demo_interrupted(intents) {
+                self.stop_demo();
+            }
+        } else {
+            self.handle_mode_input(delta);
+        }
         // The back gesture is a one-frame press, like a key's.
         self.input.back_requested = false;
-        if self.dev.auto {
+        if self.in_demo() {
+            self.demo_step(delta);
+        } else if self.dev.auto {
             if matches!(self.mode, Mode::Versus | Mode::VersusSetup) {
                 self.versus_autopilot(delta);
             } else {
                 self.autopilot(delta);
             }
         }
+        self.watch_title_idle(delta, intents);
         self.step(delta);
         self.step_versus(delta);
-        if self.versus_screen() != versus_before {
+        // The demo's own plates change nobody's screen: any tap on them is
+        // a request to stop (`demo_interrupted`), never to be spent.
+        if self.versus_screen() != versus_before && !self.in_demo() {
             self.settle_touch();
         }
         self.persist_run();
         self.tick_settings(delta);
+        if demo_before && self.in_demo() {
+            // Every write is stopped where it would be asked for (DESIGN
+            // §12); this is the backstop, and the tests fail if it is hit.
+            debug_assert!(
+                !self.fx.iter().any(Effect::touches_disk),
+                "the demo asked for a disk write: {:?}",
+                self.fx
+            );
+            self.fx.retain(|e| !e.touches_disk());
+        }
         let after = self.frame_state();
         let title_music_after = self.title_music_playing();
         if title_music_after != title_music_before {
@@ -1004,6 +1083,7 @@ impl Game {
             || self.play.clear_hold > 0.0
             || self.status_time > 0.0
             || self.dev.auto
+            || self.demo.is_some()
             || self.input.touch.active()
     }
 
@@ -1015,8 +1095,12 @@ impl Game {
     /// Every sound player's volume, in dB: the save's percentage as an
     /// amplitude ratio (`20·log10(v/100)`, so 50% is about -6 dB), and -80 dB,
     /// the bottom of Godot's volume range, for muted or zero.
+    ///
+    /// The attract demo plays silent (`demo::DEMO_MUTED`) by asking for
+    /// -80 dB here while it runs; the save's volume and mute are left alone.
     pub fn volume_db(&self) -> f32 {
-        if self.save.muted || self.save.volume == 0 {
+        let demo_muted = self.demo.is_some() && demo::DEMO_MUTED;
+        if demo_muted || self.save.muted || self.save.volume == 0 {
             -80.0
         } else {
             20.0 * (self.save.volume as f32 / 100.0).log10()
@@ -1078,6 +1162,8 @@ impl Game {
                     self.input.touch.finger_up(index);
                 }
                 Event::Back => self.input.back_requested = true,
+                // Only the demo and the idle count look at triggers.
+                Event::Trigger => {}
             }
         }
     }
@@ -1101,8 +1187,13 @@ impl Game {
     /// Window or application focus lost: every finger is up, a live screen
     /// pauses, and pending settings go to disk. `pending` are the events
     /// that arrived since the last frame, which happened first.
+    ///
+    /// An idle-started demo ends here (`demo_unwatched`), and the idle demo
+    /// waits for focus to come back before it can start again.
     pub fn focus_lost(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
+        self.unfocused = true;
+        self.demo_unwatched();
         self.input.touch.release_all();
         self.auto_pause();
         self.flush_settings();
@@ -1114,9 +1205,17 @@ impl Game {
     /// app can be killed: a phone may never resume a paused app.
     pub fn app_paused(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
+        self.demo_unwatched();
         self.auto_pause();
         self.flush_settings();
         self.take_effects()
+    }
+
+    /// Focus is back: the idle demo may start again once the title has been
+    /// quiet for long enough, counted from now.
+    pub fn focus_gained(&mut self) {
+        self.unfocused = false;
+        self.title_idle = 0.0;
     }
 
     /// The window is closing or the node leaving the tree: a close is final.
@@ -1211,7 +1310,9 @@ impl Game {
         self.dev.auto_miss = args.miss;
         self.dev.auto_hold_draft = args.hold_draft;
         self.dev.auto_seed = args.seed;
-        if args.versus {
+        if args.demo {
+            self.start_demo(DemoStarted::Menu);
+        } else if args.versus {
             self.start_versus();
         } else if let Some(seed) = args.seed {
             self.start_run(seed, false);
@@ -1497,6 +1598,7 @@ impl Game {
                 self.save.arc_hint,
                 self.save.learned,
             ),
+            demo: (self.demo.is_some(), self.save.idle_demo),
             misc: (
                 self.debug,
                 self.crash.crash_copied,
@@ -1525,8 +1627,17 @@ impl Game {
         self.input.touch_active && self.touch_aim() == TouchAim::Drag
     }
 
-    /// The mode as the crash report names it.
+    /// The mode as the crash report names it. A frame of the attract demo
+    /// is tagged as such (`Demo/Playing`, `Demo/Versus`), so a report from
+    /// one is not read as a player's run.
     pub fn mode_name(&self) -> &'static str {
+        if self.in_demo() {
+            return match self.mode {
+                Mode::Versus => "Demo/Versus",
+                Mode::Playing => "Demo/Playing",
+                _ => "Demo",
+            };
+        }
         match self.mode {
             Mode::Title => "Title",
             Mode::Controls => "Controls",
@@ -1542,6 +1653,11 @@ impl Game {
     /// The prompt that teaches the next thing the player has not done yet
     /// (`presentation`'s `LEARN_*` bits), if any.
     pub(crate) fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
+        // The demo teaches nothing: its prompts would name controls that
+        // only end it.
+        if self.in_demo() {
+            return None;
+        }
         if phase == Phase::Drafting
             && self.save.learned & LEARN_DRAFT == 0
             && self.input.touch_active
@@ -1606,13 +1722,18 @@ impl Game {
 }
 
 mod controls;
+mod demo;
 mod play;
 mod session;
 mod versus;
 
+pub(crate) use demo::Demo;
+pub use demo::{Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};
 pub use versus::{Call as VersusCall, Stage as VersusStage, DING_DELAY, VERSUS_HOLD};
 pub(crate) use versus::{VersusPlay, VersusState};
 
+#[cfg(test)]
+mod demo_tests;
 #[cfg(test)]
 mod disk_tests;
 #[cfg(test)]
