@@ -531,11 +531,15 @@ and the loop alternates a run and a duel. Everything else was decided here.
   `leg_time` or wait until it runs out, so the screen under it is the leg's
   real opening (never black) and the caps (`DEMO_RUN_TIME`,
   `DEMO_DUEL_TIME`) still measure play. Exit needed nothing new: input is
-  read before `demo_step`, card or not. Placement: top centre at row 8,
-  since the duel's opening plate takes the middle and the curated runs'
-  targets reach row 40; the card ends at row 34. Native 3x5 text only, as
-  the banner: the 5x7 face has no letters, and scaled type is §11.4's
-  versus-only exception. The duel card's hook is in `ROCK`, as versus draws
+  read before `demo_step`, card or not. Placement: top centre, level with
+  the corner plates (row 3 plus the cutout pad), since the duel's opening
+  plate takes the middle and the curated runs' targets reach row 40; the
+  card ends at row 29, or 35 with a phone's 6-row pad. (A first cut at row
+  8 plus the pad reached row 40 on a phone and covered the TOWER and 1984
+  targets' top rows; the render test now measures those targets' actual
+  top rows for all four runs, with and without the pad.) Native 3x5 text
+  only, as the banner: the 5x7 face has no letters, and scaled type is
+  §11.4's versus-only exception. The duel card's hook is in `ROCK`, as versus draws
   secondary text, since `SKY_LO` is the right side's colour. A third line
   with the run's seed (SEED DUNE) read fine but sat on the TOWER and 1984
   targets and means nothing to a first-time viewer, so it was dropped.

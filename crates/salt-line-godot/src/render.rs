@@ -1379,10 +1379,11 @@ mod versus;
 
 /// Where the demo's mode card sits: `(x, y, w, h)` in a buffer `buffer_w`
 /// wide: centred, as wide as its longest line plus 8 a side, two lines
-/// tall, its top 8 pixels down. That is level with the corner plates (the
-/// run's wind and shells, the duel's score), which it stays between, and
-/// ends above row 35: the curated runs' tallest targets reach row 40, and
-/// the duel's handoff plate starts below the middle.
+/// tall (27 rows), its top at row 3 below the cutout pad: level with the
+/// corner plates (the run's wind and shells, the duel's score), which it
+/// stays between. It ends at row 29, or row 35 with a phone's 6-row pad,
+/// above the curated runs' tallest targets (row 40) and the duel's handoff
+/// plate, which starts below the middle.
 pub(crate) fn demo_card_rect(
     g: &Game,
     card: &crate::app::DemoCard,
@@ -1390,7 +1391,7 @@ pub(crate) fn demo_card_rect(
 ) -> (i32, i32, i32, i32) {
     let tw = crate::font::small_width(card.title).max(crate::font::small_width(card.hook)) as i32;
     let (w, h) = (tw + 16, 6 + 5 + 5 + 5 + 6);
-    let y = 8 + g.display.corner_pad.1;
+    let y = 3 + g.display.corner_pad.1;
     ((buffer_w - w) / 2, y, w, h)
 }
 
@@ -1538,35 +1539,58 @@ mod tests {
     /// rectangle, the banner and the rest of the frame are as they are
     /// without it, and it keeps to §5.2: plate, UI text and the secondary
     /// tone (`SKY_LO` in a run, `ROCK` in a duel), never the alert accent
-    /// or a side's colour. It clears the corner plates, the banner and the
-    /// duel's handoff plate, at the narrowest buffer and with a cutout pad.
+    /// or a side's colour. It clears the corner plates, the banner, the
+    /// duel's handoff plate and every curated run's targets (their actual
+    /// top rows, measured in the frame without the card), at the narrowest
+    /// buffer, with and without a phone's cutout pad.
     #[test]
     fn the_demo_card_is_a_plate_over_the_leg() {
+        use crate::app::DemoLeg;
+        let pal = Palette::default();
         for pad in [(0, 0), (10, 6)] {
             let mut g = game();
             g.display.corner_pad = pad;
             g.start_demo(crate::app::DemoStarted::Menu);
-            for leg in 0..2 {
-                if leg == 1 {
-                    for _ in 0..10_000 {
-                        if g.mode == Mode::Versus {
-                            break;
-                        }
-                        g.tick(1.0 / 30.0, &idle());
+            // The four curated runs and the duels between them.
+            for leg in 0..8u64 {
+                for _ in 0..10_000 {
+                    if g.demo.as_ref().unwrap().leg_index == leg {
+                        break;
                     }
-                    assert_eq!(g.mode, Mode::Versus);
+                    g.tick(1.0 / 30.0, &idle());
                 }
-                let card = g.demo.as_ref().unwrap().card().expect("a card");
+                let d = g.demo.as_ref().unwrap();
+                assert_eq!(d.leg_index, leg);
+                let run = d.leg() == DemoLeg::Run;
+                let card = d.card().expect("a card");
                 let (with, _) = draw(&g);
                 let left = std::mem::replace(&mut g.demo.as_mut().unwrap().card, 0.0);
                 let (without, _) = draw(&g);
                 g.demo.as_mut().unwrap().card = left;
                 let (x, y, w, h) = demo_card_rect(&g, &card, with.w);
-                assert!(x > 30 && x + w < with.w - 30, "between the corners");
-                assert!(y + h < 40 + pad.1, "above the targets and plates");
-                let secondary = if leg == 0 { '6' } else { '1' };
-                let pal = Palette::default();
+                let what = format!("leg {leg}, pad {pad:?}");
+                assert!(x > 30 && x + w < with.w - 30, "{what}: between the corners");
+                assert_eq!(y, 3 + pad.1, "{what}: level with the corner plates");
                 let (a, b) = (with.palette_text(&pal), without.palette_text(&pal));
+                if run {
+                    // The highest structure pixel under the card's columns.
+                    let top = b
+                        .lines()
+                        .position(|row| {
+                            row.chars().enumerate().any(|(px, c)| {
+                                (x..x + w).contains(&(px as i32)) && "abc".contains(c)
+                            })
+                        })
+                        .expect("a target under the card") as i32;
+                    assert!(
+                        y + h <= top,
+                        "{what}: card ends at {} over a target at {top}",
+                        y + h - 1
+                    );
+                } else {
+                    assert!(y + h < 60, "{what}: above the handoff plate");
+                }
+                let secondary = if run { '6' } else { '1' };
                 let mut inside = std::collections::BTreeSet::new();
                 for (py, (ra, rb)) in a.lines().zip(b.lines()).enumerate() {
                     for (px, (ca, cb)) in ra.chars().zip(rb.chars()).enumerate() {
@@ -1574,17 +1598,17 @@ mod tests {
                         if (x..x + w).contains(&px) && (y..y + h).contains(&py) {
                             inside.insert(ca);
                         } else {
-                            assert_eq!(ca, cb, "leg {leg}: ({px}, {py}) outside the card");
+                            assert_eq!(ca, cb, "{what}: ({px}, {py}) outside the card");
                         }
                     }
                 }
                 let allowed = ['d', 'e', '3', secondary];
                 assert!(
                     inside.iter().all(|c| allowed.contains(c)),
-                    "leg {leg}: {inside:?}"
+                    "{what}: {inside:?}"
                 );
-                assert!(inside.contains(&secondary), "leg {leg}: the hook");
-                assert!(inside.contains(&'d'), "leg {leg}: the title");
+                assert!(inside.contains(&secondary), "{what}: the hook");
+                assert!(inside.contains(&'d'), "{what}: the title");
             }
         }
     }

@@ -1215,8 +1215,10 @@ is up; the aim and the duel's plate hold still.
 The hooks say what §1 and §11 make of each mode: a run clears screens by
 toppling their targets and drafts a modifier every band; a duel passes one
 phone between two players, a shot each. The card sits top centre on a plate,
-8 px down, between the corner plates and above the duel's plate and the
-curated runs' tallest targets (row 40), with the banner still showing below.
+level with the corner plates (row 3, below any cutout pad) and between them,
+27 rows tall: it ends at row 29, or row 35 with a phone's pad, above the
+duel's plate and the curated runs' tallest targets (row 40). The banner
+still shows below.
 It follows §5.2 and §5.6 like the banner: the native 3x5 face, the title in
 UI text, the hook in the secondary tone (`SKY_LO` in a run, as the menus
 have it; `ROCK` in a duel, where `SKY_LO` is the right player's colour), no

@@ -19,11 +19,12 @@
 //! [`DEMO_DUEL_TIME`] passes. Each leg opens with a card naming its mode
 //! ([`card_of`]), held [`DEMO_CARD`] over the leg's first frame before
 //! anything moves; the caps count from the card's end. The legs carry on
-//! from one demo to the next in a session (`Game::demo_next_leg`). Both aim with the solver, as
-//! `--salt-auto` does, and miss on purpose now and then, so craters, chalk
-//! and landing marks and rolling guns all get shown. Which shots miss is a
-//! hash of the demo cycle (two legs) and the shot's place in it, so a given
-//! cycle always plays the same way ([`demo_hash`]).
+//! from one demo to the next in a session (`Game::demo_next_leg`). Both aim
+//! with the solver, as `--salt-auto` does, and miss on purpose now and
+//! then, so craters, chalk and landing marks and rolling guns all get
+//! shown. Which shots miss is a hash of the demo cycle (two legs) and the
+//! shot's place in it, so a given cycle always plays the same way
+//! ([`demo_hash`]).
 //!
 //! # Isolation: set aside, never touched
 //!
