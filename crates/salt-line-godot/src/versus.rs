@@ -93,8 +93,10 @@
 //! reach only makes every shot harder. [`Rules`] gathers the levers.
 //!
 //! Everything is deterministic from the match seed and the shots, like a
-//! run, but nothing here is logged or saved: a versus match is not resumed
-//! after the app is killed and never reaches the board.
+//! run, so a match is kept on disk as exactly that and resumed after the
+//! app is killed (`match_log`, DESIGN §11.6). It never reaches the board.
+//! A change here that changes what a logged match replays to needs
+//! `match_log::MATCH_EPOCH` bumped; its golden match test says so.
 
 use salt_line_sim::ballistics::{self, Aabb, End, FireOptions, Shot, Trace, World};
 use salt_line_sim::modifiers::Loadout;

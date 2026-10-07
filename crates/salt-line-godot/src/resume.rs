@@ -62,7 +62,9 @@
 //!     cost   nothing
 //! rebuilding at launch (killed, or a log that brings the sim down)
 //!     finds  run-loading.txt
-//!     cost   that run, once: discarded with a note
+//!     cost   that run, once: discarded with a note, run.txt.new with it
+//!            (left by a write that died before its rename, it would be
+//!            picked next, and likely crash the rebuild again)
 //! after RunFile::Restore
 //!     finds  run.txt
 //!     cost   nothing
@@ -126,6 +128,25 @@ pub const RUN_TEMP_PATH: &str = "user://run.txt.new";
 /// rebuild brings the game down, the next launch finds the file here rather
 /// than at `RUN_PATH`, and throws it away instead of crashing again.
 pub const RUN_LOADING_PATH: &str = "user://run-loading.txt";
+
+/// The three paths one kept log moves through: the file itself, the
+/// temporary file its atomic replace writes first, and where launch sets it
+/// aside while it is rebuilt. The run's are [`RUN_FILES`]; a suspended
+/// versus match keeps its own three (`match_log::MATCH_FILES`) under the
+/// same rules, so the functions below take the paths they work on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Paths {
+    pub main: &'static str,
+    pub temp: &'static str,
+    pub loading: &'static str,
+}
+
+/// The run file's paths.
+pub const RUN_FILES: Paths = Paths {
+    main: RUN_PATH,
+    temp: RUN_TEMP_PATH,
+    loading: RUN_LOADING_PATH,
+};
 
 /// First token of the line. Not `run`, which DESIGN §9.2 gives the finished
 /// run history's lines, so neither file can be mistaken for the other.
@@ -354,17 +375,27 @@ pub fn sound(text: &str) -> bool {
 /// discarded with a note. A blank `run.txt` is what a discard that could not
 /// delete leaves: no run, unless a whole `run.txt.new` was written since.
 pub fn take_saved(files: &mut impl RunFiles) -> Option<SavedRun> {
-    if files.read(RUN_LOADING_PATH).is_some() {
+    take_aside(files, RUN_FILES, sound)
+}
+
+/// [`take_saved`] for any kept log: its own `paths`, and its own test of a
+/// whole copy (`sound`).
+pub fn take_aside(
+    files: &mut impl RunFiles,
+    paths: Paths,
+    sound: impl Fn(&str) -> bool,
+) -> Option<SavedRun> {
+    if files.read(paths.loading).is_some() {
         return Some(SavedRun::Interrupted);
     }
-    let main = files.read(RUN_PATH);
-    let temp = files.read(RUN_TEMP_PATH);
+    let main = files.read(paths.main);
+    let temp = files.read(paths.temp);
     let (path, text) = match durable::pick_by(main.as_deref(), temp.as_deref(), sound) {
-        Pick::Main => (RUN_PATH, main?),
-        Pick::Temp => (RUN_TEMP_PATH, temp?),
+        Pick::Main => (paths.main, main?),
+        Pick::Temp => (paths.temp, temp?),
         Pick::Empty => return None,
     };
-    files.rename(path, RUN_LOADING_PATH);
+    files.rename(path, paths.loading);
     Some(SavedRun::Found(text))
 }
 
@@ -385,27 +416,32 @@ pub fn take_saved(files: &mut impl RunFiles) -> Option<SavedRun> {
 /// set-aside copy that will not delete does not count against it: a launch
 /// that finds one throws it away unread.
 pub fn replace(files: &mut impl RunFiles, text: &str) -> bool {
+    replace_at(files, RUN_FILES, text)
+}
+
+/// [`replace`] for any kept log, at its own `paths`.
+pub fn replace_at(files: &mut impl RunFiles, paths: Paths, text: &str) -> bool {
     let placed = if text.is_empty() {
-        files.remove(RUN_PATH);
-        !files.exists(RUN_PATH) || files.write(RUN_PATH, RUN_TEMP_PATH, "")
+        files.remove(paths.main);
+        !files.exists(paths.main) || files.write(paths.main, paths.temp, "")
     } else {
-        files.write(RUN_PATH, RUN_TEMP_PATH, text)
+        files.write(paths.main, paths.temp, text)
     };
     if !placed {
         return false;
     }
-    files.remove(RUN_LOADING_PATH);
-    files.remove(RUN_TEMP_PATH);
-    if holds_only(files, text) {
+    files.remove(paths.loading);
+    files.remove(paths.temp);
+    if holds_only(files, paths, text) {
         return true;
     }
-    files.write(RUN_PATH, RUN_TEMP_PATH, text) && holds_only(files, text)
+    files.write(paths.main, paths.temp, text) && holds_only(files, paths, text)
 }
 
-/// Neither `run.txt` nor `run.txt.new` holds a run other than `text`. A
-/// file there that cannot be read may hold anything.
-fn holds_only(files: &impl RunFiles, text: &str) -> bool {
-    [RUN_PATH, RUN_TEMP_PATH]
+/// Neither the main file nor its temporary file holds a log other than
+/// `text`. A file there that cannot be read may hold anything.
+fn holds_only(files: &impl RunFiles, paths: Paths, text: &str) -> bool {
+    [paths.main, paths.temp]
         .into_iter()
         .all(|path| match files.read(path) {
             Some(t) => t.trim().is_empty() || t == text,
@@ -414,11 +450,23 @@ fn holds_only(files: &impl RunFiles, text: &str) -> bool {
 }
 
 /// At launch, over a copy left set aside by a launch that died rebuilding
-/// it: throw that copy away, unread, and nothing else. A `run.txt` beside it
-/// was written after the copy was set aside (the live run put back), so it
-/// is kept for the next launch.
+/// it: throw that copy away, unread, and the temporary file with it. A
+/// `run.txt` beside it was written after the copy was set aside (the live
+/// run put back), so it is kept for the next launch.
+///
+/// The temporary file goes because it can only be a write that died
+/// before its rename, and with the main file gone (moved aside, then
+/// dropped here) the next launch would pick it ([`take_saved`]): most
+/// likely the same log that just brought the rebuild down, costing another
+/// crashed launch. A whole `run.txt` beside it would have won anyway.
 pub fn drop_set_aside(files: &mut impl RunFiles) {
-    files.remove(RUN_LOADING_PATH);
+    drop_set_aside_at(files, RUN_FILES);
+}
+
+/// [`drop_set_aside`] for any kept log, at its own `paths`.
+pub fn drop_set_aside_at(files: &mut impl RunFiles, paths: Paths) {
+    files.remove(paths.loading);
+    files.remove(paths.temp);
 }
 
 /// Leave no run to resume or score: [`replace`] with nothing.

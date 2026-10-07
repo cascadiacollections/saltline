@@ -119,7 +119,11 @@
 //! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft); [`Game::stored`], for a score that did not reach disk; launch or CONTINUE, dropping a line that will not replay | `resume::replace`: the run file becomes the text (`Game::run_file_text`: finished runs still to score, then the live run) | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
-//! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only the set-aside copy (`resume::drop_set_aside`) | no | yes |
+//! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes the set-aside copy and `run.txt.new`, never `run.txt` (`resume::drop_set_aside`) | no | yes |
+//! | `MatchFile(Write)` | a player's versus match started, then each shot fired and each round dealt (`persist_match`) | `resume::replace_at` at `match_log::MATCH_FILES`: the match file becomes the line | no | yes |
+//! | `MatchFile(Restore)` | [`Game::saved_match`], once the set-aside match has replayed | rename `match-loading.txt` back to `match.txt` | no | yes |
+//! | `MatchFile(Discard)` | a kept match left: its result plate left after the win (REMATCH or TITLE), or quit; a saved match that no longer rebuilds | `resume::replace_at` with `""`: delete every match file, or blank `match.txt` | no | yes |
+//! | `MatchFile(Abandon)` | [`Game::saved_match`], for a match this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes `match-loading.txt` and `match.txt.new`, never `match.txt` (`resume::drop_set_aside_at`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
 //! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play or a versus match not paused, a menu-started demo, each until its quiet limit | `DisplayServer::screen_set_keep_on` | no | no |
 //!
@@ -219,6 +223,7 @@ use crate::durable::Debounce;
 use crate::input::Typed;
 use crate::input::{self, Action, Controls, Event, Intents, Key, Pad};
 use crate::keypad::{self, Focus};
+use crate::match_log;
 use crate::presentation::{
     self, LEARN_ANGLE, LEARN_CRATER, LEARN_DRAFT, LEARN_FIRE, LEARN_POWER, LEARN_SHELLS, LEARN_WIND,
 };
@@ -491,6 +496,8 @@ pub enum Effect {
     Store(Store),
     /// Something to do with the run kept on disk for CONTINUE.
     RunFile(RunFile),
+    /// Something to do with the versus match kept on disk for RESUME MATCH.
+    MatchFile(MatchFile),
     /// Something to do with last session's crash report.
     CrashReport(CrashReport),
     /// Hold the screen on (`true`), or let the operating system turn it
@@ -521,12 +528,33 @@ pub enum RunFile {
     Discard,
     /// Throw away a run this build cannot continue, saying why in the log:
     /// `Discard` for one it could not read, and for one the last launch
-    /// died rebuilding only the copy left set aside, never a `run.txt`
-    /// written since.
+    /// died rebuilding only the copy left set aside and any temporary file,
+    /// never a `run.txt` written since.
     Abandon(Abandoned),
 }
 
-/// Why a saved run was thrown away at launch.
+/// What to do with the suspended versus match (DESIGN §11.6). `game.rs`
+/// keeps it in `user://match.txt` by `resume`'s rules at `match_log`'s own
+/// paths: written by way of `match.txt.new`, moved aside to
+/// `match-loading.txt` while a launch rebuilds it. Simpler than the run
+/// file: a match has no score to keep, so a finished or quit match is just
+/// cleared.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MatchFile {
+    /// Make the kept match this line (`resume::replace_at`).
+    Write(String),
+    /// The match set aside at launch rebuilt: put it back to be resumed.
+    Restore,
+    /// Leave no match to resume, the copy set aside at launch included.
+    Discard,
+    /// Throw away a match this build cannot resume, saying why in the log:
+    /// as `Discard` for one it could not read or replay, and only the
+    /// set-aside copy and any temporary file for one the last launch died
+    /// rebuilding.
+    Abandon(Abandoned),
+}
+
+/// Why a saved run or match was thrown away at launch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Abandoned {
     /// The last launch died rebuilding it.
@@ -558,7 +586,7 @@ impl Effect {
     pub fn touches_disk(&self) -> bool {
         matches!(
             self,
-            Effect::Store(_) | Effect::RunFile(_) | Effect::CrashReport(_)
+            Effect::Store(_) | Effect::RunFile(_) | Effect::MatchFile(_) | Effect::CrashReport(_)
         )
     }
 }
@@ -643,6 +671,10 @@ pub struct Game {
     pub(crate) crash: CrashInfo,
     /// Local versus: the pre-match choices and the match on screen.
     pub(crate) versus: VersusState,
+    /// The versus match found on disk at launch, already checked, that
+    /// RESUME MATCH would rebuild (DESIGN §11.6). Taken when it is
+    /// resumed or another match is started; the demo never touches it.
+    pub(crate) saved_match: Option<match_log::SavedMatch>,
     /// The attract demo, while it runs (`app/demo.rs`). It holds whatever
     /// of the player's it set aside, untouched, until it ends.
     pub(crate) demo: Option<Demo>,
@@ -906,6 +938,7 @@ impl Default for Game {
             dev: Dev::default(),
             crash: CrashInfo::default(),
             versus: VersusState::default(),
+            saved_match: None,
             demo: None,
             title_idle: 0.0,
             demo_next_leg: 0,
@@ -1086,6 +1119,7 @@ impl Game {
             self.settle_touch();
         }
         self.persist_run();
+        self.persist_match();
         self.tick_settings(delta);
         self.watch_input_quiet(delta, input);
         if demo_before && self.in_demo() {
@@ -1172,7 +1206,7 @@ impl Game {
                 .versus
                 .live
                 .as_ref()
-                .is_some_and(|v| v.anim.is_some() && !v.paused)
+                .is_some_and(|v| (v.anim.is_some() || v.easing()) && !v.paused)
             || self.play.clear_hold > 0.0
             || self.status_time > 0.0
             || self.dev.auto
@@ -1504,6 +1538,61 @@ impl Game {
             self.status_time = STALE_STATUS_TIME;
         }
         self.take_effects()
+    }
+
+    /// At launch, after [`Game::saved_run`]: offer the suspended versus
+    /// match, or throw away one this build must not replay (DESIGN §11.6).
+    /// The adapter has set the file aside, as for the run; it goes back
+    /// (`MatchFile::Restore`) only once its log has replayed. A match whose
+    /// last shot won it is offered too, and resumes on its result plate.
+    pub fn saved_match(&mut self, found: SavedRun) -> Vec<Effect> {
+        let text = match found {
+            SavedRun::Interrupted => {
+                self.fx.push(Effect::MatchFile(MatchFile::Abandon(
+                    Abandoned::Interrupted,
+                )));
+                self.note_at_launch(match_log::note(resume::Stale::Diverged));
+                return self.take_effects();
+            }
+            SavedRun::Found(text) => text,
+        };
+        match match_log::judge(Some(&text)) {
+            // The full rebuild RESUME MATCH will do (paths, arcs, the ease),
+            // here, while the file is still set aside: one that brings the
+            // game down costs this launch only, never every tap of the row.
+            match_log::Found::Resume(saved) if VersusPlay::rebuild(&saved).is_some() => {
+                self.saved_match = Some(saved);
+                self.fx.push(Effect::MatchFile(MatchFile::Restore));
+            }
+            match_log::Found::Resume(_) => {
+                self.fx.push(Effect::MatchFile(MatchFile::Abandon(
+                    Abandoned::Unreadable(resume::Stale::Diverged),
+                )));
+                self.note_at_launch(match_log::note(resume::Stale::Diverged));
+            }
+            match_log::Found::Nothing => {
+                self.fx.push(Effect::MatchFile(MatchFile::Discard));
+            }
+            match_log::Found::Discard(why) => {
+                self.fx.push(Effect::MatchFile(MatchFile::Abandon(
+                    Abandoned::Unreadable(why),
+                )));
+                self.note_at_launch(match_log::note(why));
+            }
+        }
+        self.take_effects()
+    }
+
+    /// A note launch leaves on the title for a while: beside, not over, one
+    /// already there (a saved run and a saved match may both be lost).
+    fn note_at_launch(&mut self, text: &str) {
+        let text = if self.status_time > 0.0 && !self.status.is_empty() {
+            format!("{} - {text}", self.status)
+        } else {
+            text.to_string()
+        };
+        self.note(text);
+        self.status_time = STALE_STATUS_TIME;
     }
 
     /// The runs `--salt-gallery` draws: one screen per terrain template, and

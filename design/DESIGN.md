@@ -827,7 +827,8 @@ This follows the no-words direction (§5.6) and the touch menus.
   the run is scored instead. Another epoch, or a log that does not replay, is
   discarded with a note. Quitting to title keeps the run; starting a new one
   replaces it, after a second press. The resumed run keeps its recorded
-  width, letterboxed if the device's differs.
+  width, letterboxed if the device's differs. A local versus match is kept
+  and resumed the same way, in a file of its own (§11.6).
 - **Replays across epochs.** Old sims could be kept around to replay old runs
   (a versioned sim, or a pinned build). That's likely not worth it: the seed
   survives, and the seed is what players share.
@@ -981,6 +982,8 @@ would get less efficient. Revisit it after haze and drift have been played.
 
 **Status: prototype.** Built for hot-seat play on one phone. Not part of the
 roguelike: nothing here touches a run, the economy, the board or the shot log.
+A match in play is kept in a file of its own, to resume after the app is
+killed (§11.6).
 
 **Scope (owner, October 2026):** local versus is in scope for now as a
 secondary mode, and §7's single-player item says so. The run stays the main
@@ -1108,9 +1111,13 @@ and how it is going should read without reading words.
   CLOSER or GUNS ROLLED APART after the guns roll. The HIT callout on a hit that leaves the
   round open reads RIGHT GUN TO ANSWER (or LEFT) or TIED - KEEP GOING instead
   of naming a scorer, so the opener's third hit does not look like the win.
-  The result plate and its fanfare come only with an actual round win. The
-  rolled guns appear at their new spots when the field comes back; they are
-  not animated there.
+  The result plate and its fanfare come only with an actual round win.
+  Rolled guns stay drawn where they stood while the handoff plate covers the
+  field, then roll to their new spots over 0.45 s once the next player is
+  ready (`app::versus::ROLL_EASE`). Only the drawn gun and its tag move: the
+  ground, its filled footprints included, is already the new one, the next
+  shot fires from the new spot whenever it is fired, and aim help appears
+  once the guns are home.
 - **Big words:** HIT, MISS and OOPS, whose turn it is and who won are drawn
   in the 3x5 face at two to four times size, on a plate. This is a deliberate
   exception to §5.6 for this mode only: whole blocks on the buffer's grid, so
@@ -1128,15 +1135,69 @@ and how it is going should read without reading words.
 
 - Should a round's loser open the next round, rather than alternating?
   (Equal shots has removed most of the edge either way.)
-- Should the guns ease to their new spots when the field comes back after a
-  roll? Today the handoff plate says which way they rolled and they are
-  simply there.
 - Is a round of about 12 turns right for a young player? Rolling guns
   lengthens rounds by about a fifth over equal shots alone.
 - Should a gun take damage from its own shells?
-- A visible keyed title row (the keyed title snapshot was kept unchanged).
-- Resume after the app is killed: a match is a seed plus shots, so it could be
-  logged like a run (§9.6), but nothing is saved today.
+- A visible keyed title row for a new match (the keyed title snapshot was
+  kept unchanged; a keyed RESUME MATCH row shows only over a suspended
+  match, §11.6).
+
+### 11.6 Resume after the app is killed
+
+**Built** (`crates/salt-line-godot/src/match_log.rs`). A match is a seed,
+its pre-match choices and its shots, so the match in play is kept the way a
+run is (§9.6): `user://match.txt`, one line, rewritten atomically after each
+shot and each new round, moved aside while a launch rebuilds it, by the run
+file's own rules.
+
+```
+match <format> <sim epoch> <match epoch> <seed> <width> <rolling> <help L> <help R> <n> <log>
+match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
+```
+
+- **The log** is `A:P` per shot (the aim as dialled) and `/` when the
+  players move on from a round's result. The line must end in its newline,
+  so a line cut anywhere is damaged rather than a shorter or different
+  match; `n` counts the entries, so one lost from the middle (a hand edit)
+  is caught too.
+- **Versioned three ways.** `format` is the line's layout; `sim epoch` is
+  `SIM_EPOCH` (§9.3); `match epoch` (`match_log::MATCH_EPOCH`) covers the
+  duel rules, which live outside the sim and so outside its digest: a golden
+  match pinned by its final state hash fails until it is bumped. Any of the
+  three differing, or a log that does not replay, discards the file at launch
+  with a note on the title (SAVED MATCH FROM AN OLDER VERSION, ... COULD NOT
+  BE RESTORED). A file that brings the rebuild down is set aside and costs
+  one launch, as the run file's does.
+- **Resuming** rebuilds the match by taking its entries again through the
+  same steps live play takes, so it is the match as played, byte for byte:
+  the rules' state, each side's kept aim and last arc, and the roll the plate
+  announces. It lands on the pass-the-phone plate for whoever is next, or on
+  the result plate if the last shot won a round or the match. A shot in the
+  air at the kill is committed, as in a run. Aim help and rolling guns come
+  back as they were chosen, and the match keeps its width, letterboxed if
+  the device's differs.
+- **Cleared** when the players leave a won match's result plate (REMATCH or
+  TITLE), and when they quit it (the pause plate, or TITLE on a round's
+  result). A match killed as it was won comes back on the plate that says
+  who won. A rematch is a new match.
+- **The title.** On a touchscreen the LOCAL VERSUS row reads RESUME MATCH
+  (amber, like CONTINUE) while a match is suspended: the same row, not an
+  extra one, since the phone title's worst case (a saved run, a crash report,
+  a launch note) already fills the screen. With keys, `2  RESUME MATCH`
+  shows under SEED ENTRY only then. A new match over a suspended one is had
+  by resuming it and quitting: RESUME MATCH, pause, QUIT, then LOCAL
+  VERSUS. That is a deliberate four taps, the same as giving up a match in
+  play; a NEW MATCH row would cost the phone title a row, and a
+  second-press confirm on the versus row would make RESUME MATCH a trap for
+  whoever taps it twice. (Open question: whether a long-suspended match
+  should expire.)
+- **A run and a match can both be suspended.** Each offer stays in its
+  mode's place, CONTINUE on confirm at the top (the run is the main game) and
+  RESUME MATCH on the versus row, so neither moves the other and both read at
+  a glance. They are separate files and separate state: taking either leaves
+  the other untouched.
+- **The attract demo** never writes or clears the match file, and never
+  touches the offer (§12.3).
 
 ---
 
@@ -1256,17 +1317,20 @@ last screen 1.2 s before the duel.
 
 The demo drives the ordinary run and versus code, so it looks exactly like
 the game, and must not touch the suspended run or CONTINUE, the run files,
-the board, learned lessons, settings (other than its own toggle, set in
+the suspended versus match, RESUME MATCH or the match file (§11.6), the
+board, learned lessons, settings (other than its own toggle, set in
 Controls), crash reports or replays. Two rules (`app/demo.rs`):
 
 1. **Set aside whole.** The player's `Play` (which holds the run kept for
    CONTINUE), the versus state and the buffer width are moved out on entry
    and moved back on exit; nothing reads or writes them in between. The
    CONTINUE offer itself (`run_file`) is never touched, but for forgetting a
-   half-confirmed discard.
+   half-confirmed discard; nor is RESUME MATCH's (`saved_match`).
 2. **No write is asked for.** Every place that would ask for a disk effect
-   checks for the demo first: the run file, scoring, learned lessons,
-   settings, the crash report's retirement. Settings pending when the demo
+   checks for the demo first: the run file, scoring, the match file (whose
+   writes and clears also need a match marked kept, which the demo's duels
+   never are), learned lessons, settings, the crash report's retirement.
+   Settings pending when the demo
    starts are written first, before it counts as running. A backstop in the
    frame drops any disk effect a demo frame asks for, and debug builds and
    the tests fail if it ever finds one.
@@ -1274,7 +1338,8 @@ Controls), crash reports or replays. Two rules (`app/demo.rs`):
 The tests play a run quit to the title through a whole demo cycle and back,
 and check that every file is byte for byte as it was, that no disk effect was
 asked for, and that CONTINUE (and a relaunch) picks the run up from the shot
-it was left at. A crash during the demo still writes its report, with the
+it was left at; and the same for a suspended versus match and RESUME MATCH.
+A crash during the demo still writes its report, with the
 mode named `Demo/Playing` or `Demo/Versus` so it is not read as a player's
 run.
 

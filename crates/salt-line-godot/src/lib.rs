@@ -40,6 +40,7 @@
 //!            durable        atomic replace and which copy to trust on load
 //!            save           `user://` paths and file IO through them
 //!            resume         the in-progress run file, for CONTINUE
+//!            match_log      the suspended versus match's file, for RESUME MATCH
 //!            crash          the panic hook and its report
 //! dev        profiling      opt-in (`--features profiling`) frame-upload timing
 //! ```
@@ -63,6 +64,7 @@ pub mod game;
 pub mod icons;
 pub mod input;
 pub mod keypad;
+pub mod match_log;
 pub mod pads;
 pub mod palette;
 pub mod presentation;

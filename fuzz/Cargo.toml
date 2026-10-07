@@ -39,3 +39,10 @@ path = "fuzz_targets/replay.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "match_log"
+path = "fuzz_targets/match_log.rs"
+test = false
+doc = false
+bench = false
