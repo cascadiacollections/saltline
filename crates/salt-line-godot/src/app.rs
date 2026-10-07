@@ -1454,6 +1454,13 @@ impl Game {
         self.dev.auto_seed = args.seed;
         if args.demo {
             self.start_demo(DemoStarted::Menu);
+        } else if let Some(code) = args.layout.as_deref() {
+            match crate::custom::read(code) {
+                Ok(layout) if layout.is_duel() => self.start_layout_match(&layout),
+                // A one-gun layout is a challenge, which comes later (§13.9).
+                Ok(_) => self.note("LAYOUT HAS ONE GUN: NOT A DUEL".into()),
+                Err(_) => self.note("LAYOUT CODE NOT PLAYABLE".into()),
+            }
         } else if args.versus {
             self.start_versus();
         } else if let Some(seed) = args.seed {

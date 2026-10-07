@@ -47,6 +47,10 @@
 //! that hit the other, checked at both extremes of the wind and in calm air,
 //! with the same retry-then-fall-back ladder.
 //!
+//! A custom duel (DESIGN §13.9, `custom.rs`) plays every round on one
+//! layout's ground instead: the match holds it as a [`Ground`] and deals it
+//! fresh each round.
+//!
 //! # A match
 //!
 //! [`Match`] is the state machine. Players alternate shots; a hit is any
@@ -696,6 +700,19 @@ pub fn generate_duel(
 
 // ------------------------------------------------------------- the match
 
+/// Ground a match keeps for every round, in place of a generated duel
+/// screen per round: a custom duel on a layout (DESIGN §13.9,
+/// `custom::layout_match`).
+#[derive(Clone, Debug)]
+pub struct Ground {
+    /// The screen each round starts on, in the shared frame, with no
+    /// craters. Its `wind` is ignored; the match sets each turn's.
+    pub screen: Screen,
+    /// A wind for every turn, in the shared frame, in place of
+    /// [`turn_wind`]'s draw; `None` draws as usual, by the rules' range.
+    pub wind: Option<f64>,
+}
+
 /// Where a match is. Each variant names the call that moves it on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
@@ -739,6 +756,9 @@ pub struct Match {
     /// Someone has hit since the guns last had a chance to roll: they roll
     /// once the side that did not open has shot ([`Match::roll_guns`]).
     pub roll_due: bool,
+    /// The ground every round is played on, for a match on a layout;
+    /// `None` deals a generated screen per round ([`generate_duel`]).
+    pub ground: Option<Ground>,
 }
 
 impl Match {
@@ -766,6 +786,40 @@ impl Match {
             phase: Phase::Aiming,
             rules,
             roll_due: false,
+            ground: None,
+        }
+    }
+
+    /// A fresh match on `ground` rather than on generated screens: every
+    /// round starts on `ground.screen` as it is, under `rules`. `seed` still
+    /// draws the winds (unless the ground fixes one) and the rolls.
+    pub fn on_ground(seed: u64, ground: Ground, rules: Rules) -> Match {
+        let mut m = Match {
+            seed,
+            loadout: Loadout::new(),
+            round: 0,
+            turn: 0,
+            to_move: Match::first_to_move(0),
+            hits: [0, 0],
+            rounds: [0, 0],
+            screen: ground.screen.clone(),
+            landing: [None, None],
+            phase: Phase::Aiming,
+            rules,
+            roll_due: false,
+            ground: Some(ground),
+        };
+        m.screen.index = 0;
+        m.screen.wind = m.wind_at(0);
+        m
+    }
+
+    /// The wind for turn `turn` of this round, in the shared frame: the
+    /// ground's fixed wind if it has one, else [`turn_wind`]'s draw.
+    pub fn wind_at(&self, turn: u32) -> f64 {
+        match &self.ground {
+            Some(Ground { wind: Some(w), .. }) => *w,
+            _ => turn_wind(self.seed, self.round, turn, &self.rules),
         }
     }
 
@@ -848,7 +902,7 @@ impl Match {
             }
             self.turn += 1;
             self.to_move = shooter.other();
-            self.screen.wind = turn_wind(self.seed, self.round, self.turn, &self.rules);
+            self.screen.wind = self.wind_at(self.turn);
         }
         Some(TurnReport {
             shooter,
@@ -945,8 +999,9 @@ impl Match {
         }
     }
 
-    /// Deal the next round: a new screen, hits back to zero, the other side
-    /// opening. Returns false unless a round has just ended.
+    /// Deal the next round: a new screen (or the ground again, fresh), hits
+    /// back to zero, the other side opening. Returns false unless a round
+    /// has just ended.
     pub fn next_round(&mut self) -> bool {
         if !matches!(self.phase, Phase::RoundOver(_)) {
             return false;
@@ -957,14 +1012,20 @@ impl Match {
         self.landing = [None, None];
         self.roll_due = false;
         self.to_move = Match::first_to_move(self.round);
-        self.screen = generate_duel(
-            self.seed,
-            self.round,
-            self.width(),
-            &self.loadout,
-            &self.rules,
-        );
-        self.screen.wind = turn_wind(self.seed, self.round, 0, &self.rules);
+        self.screen = match &self.ground {
+            Some(ground) => Screen {
+                index: self.round,
+                ..ground.screen.clone()
+            },
+            None => generate_duel(
+                self.seed,
+                self.round,
+                self.width(),
+                &self.loadout,
+                &self.rules,
+            ),
+        };
+        self.screen.wind = self.wind_at(0);
         self.phase = Phase::Aiming;
         true
     }

@@ -425,12 +425,33 @@ impl Game {
     /// match is marked kept by [`Game::start_versus`].
     pub(super) fn start_versus_on(&mut self, seed: u64, rules: versus::Rules) {
         let width = self.display.buffer_w as usize;
-        self.versus.live = Some(VersusPlay::new(Match::with_rules(seed, width, rules)));
+        self.start_versus_with(Match::with_rules(seed, width, rules));
+    }
+
+    /// Put `duel` on screen at its first handoff, not kept on disk.
+    fn start_versus_with(&mut self, duel: Match) {
+        self.versus.live = Some(VersusPlay::new(duel));
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
         self.mode = Mode::Versus;
         // Long Lens belongs to a run; a duel is drawn at the usual height.
         self.apply_buffer_size();
+    }
+
+    /// Start a match on a two-gun layout (DESIGN §13.9) at the layout's
+    /// width, letterboxed on a wider phone, under the pre-match screen's
+    /// rules with the layout's wind. For `--salt-layout`; the pre-match
+    /// screen's layout picker comes later (§13.9). Not kept on disk: a
+    /// match log holds a seed and shots, not a layout, so a match on one
+    /// cannot be resumed yet.
+    pub(crate) fn start_layout_match(&mut self, layout: &salt_line_sim::layout::Layout) {
+        self.versus.started += 1;
+        let seed = salt_line_sim::rng::mix64(
+            self.versus.entropy ^ salt_line_sim::rng::mix64(layout.digest() ^ self.versus.started),
+        );
+        let rules = self.versus.rules();
+        self.set_run_width(Some(layout.width()));
+        self.start_versus_with(crate::custom::layout_match(layout, seed, rules));
     }
 
     /// Leave versus for the title. The match is dropped, and with it its

@@ -265,6 +265,16 @@ impl INode2D for SaltLine {
             self.gallery(dir);
             return;
         }
+        if let Some(report) =
+            crate::custom::fork_report(args.fork_run.as_deref(), args.fork_duel.as_deref())
+        {
+            godot_print!("{report}");
+            self.base().get_tree().quit();
+            return;
+        }
+        if let Some(Err(why)) = args.layout.as_deref().map(crate::custom::read) {
+            godot_warn!("salt-line: --salt-layout: {why}");
+        }
         self.shot_path = args.shot.clone();
         self.shot_at = args.shot_at;
         let fx = self.g.start_dev(&args, Self::today());
