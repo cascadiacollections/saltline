@@ -488,7 +488,14 @@ and the loop alternates a run and a duel. Everything else was decided here.
   play (`Playing`, the draft included), a versus match not paused (its
   plates and results too: both players are looking at the phone) and a
   menu-started demo; everything else, an idle demo included, lets the
-  screen sleep on the OS timeout (DESIGN §12.4 has the table).
+  screen sleep on the OS timeout (DESIGN §12.4 has the table). Even those
+  let go after a spell without input (`AWAKE_QUIET_LIMIT`, 4 minutes;
+  `DEMO_AWAKE_LIMIT`, 15 minutes for a menu demo, which plays on), so a
+  phone put down mid-run sleeps; the next input holds again, and the dev
+  autopilot and `--salt-shot` captures are exempt. `Game::live_play` is the
+  one definition of "a run or an unpaused match", shared with the adapter's
+  `is_active_play` (desktop GameMode), which now also lets go on the error
+  screen.
   `Game::screen_awake_wanted` derives the state from the mode, the pause
   and the demo, and `take_effects`, which every effect leaves through,
   sends `ScreenAwake(bool)` only when it changes, so no transition pushes it
@@ -498,8 +505,9 @@ and the loop alternates a run and a duel. Everything else was decided here.
   comes back. The old three-way `Awake` (keep, let sleep, as project) and
   the adapter's launch-time read of the project setting are gone.
   `app/awake_tests.rs` checks every mode, pause and resume, both demos,
-  focus, app pause and the error screen, with a stand-in adapter that fails
-  on any repeated or out-of-step effect.
+  the quiet limits (release, re-hold, a fresh count, the autopilot's
+  exemption), focus, app pause and the error screen, with a stand-in
+  adapter that fails on any repeated or out-of-step effect.
 - **30 fps.** The demo uses the menus' `IDLE_FPS` cap rather than play's
   uncapped rate. It also stays out of `is_active_play`, so it never asks for
   Linux GameMode.

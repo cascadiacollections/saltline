@@ -234,13 +234,15 @@ CONTROLS / AUDIO to stop it starting by itself (the menu's DEMO still works).
 
 About the screen: the game keeps the screen on only while you are playing
 (a run, or a versus match including its pass-the-phone and result screens)
-or watching a demo you started from the menu. On the title, the menus, a
-pause or the end-of-run screen, the phone sleeps on its normal timeout. A
+or watching a demo you started from the menu, and even then it lets the
+phone sleep if nothing is touched for 4 minutes (15 for a demo); touch it
+again and it stays on. On the title, the menus, a pause or the end-of-run
+screen, the phone sleeps on its normal timeout. A
 demo that started by itself does not keep the screen on either, so a phone
 left on the title still goes to sleep; on a desktop it also waits while the
 window is in the background and gives up after ten minutes. To show the game
-off, start DEMO from the title: that one keeps the screen on and runs until
-you stop it. On a desktop, keeping the screen on just holds off the
+off, start DEMO from the title: that one keeps the screen on for 15 minutes
+and runs until you stop it. On a desktop, keeping the screen on just holds off the
 screensaver and display sleep.
 
 How it stays out of your things is worth a look if you are learning the code:

@@ -265,6 +265,19 @@ impl Game {
         self.save.idle_demo.unwrap_or(DEFAULT_IDLE_DEMO)
     }
 
+    /// Whether this frame brought any input, or a finger rests on the
+    /// screen: a key, a touch, a pad button or trigger, a held key or pad
+    /// button, the stick. Read by the idle demo's count and the screen's
+    /// quiet limit (`Game::input_quiet`).
+    pub(super) fn any_input(&self, intents: &Intents) -> bool {
+        !intents.events.is_empty()
+            || !intents.pads.is_empty()
+            || !intents.keys_held.is_empty()
+            || !intents.pads_held.is_empty()
+            || intents.stick.iter().any(|&s| s)
+            || self.input.touch.active()
+    }
+
     /// Count the title's quiet time, and start the idle demo once it
     /// reaches [`IDLE_DEMO_AFTER`]. Any input, a finger resting on the
     /// screen, or any other screen starts the count again: the idle demo
@@ -273,13 +286,7 @@ impl Game {
     /// Not while the window is out of focus (a desktop with another window
     /// on top: nobody is looking), and not again after an idle demo ran
     /// its [`IDLE_DEMO_LIMIT`] out, until someone gives some input.
-    pub(super) fn watch_title_idle(&mut self, delta: f64, intents: &Intents) {
-        let input = !intents.events.is_empty()
-            || !intents.pads.is_empty()
-            || !intents.keys_held.is_empty()
-            || !intents.pads_held.is_empty()
-            || intents.stick.iter().any(|&s| s)
-            || self.input.touch.active();
+    pub(super) fn watch_title_idle(&mut self, delta: f64, input: bool) {
         if input {
             self.idle_demo_spent = false;
         }

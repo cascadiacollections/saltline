@@ -498,16 +498,11 @@ impl INode2D for SaltLine {
 #[godot_api]
 impl SaltLine {
     /// Presentation-only state for optional desktop services. A paused run
-    /// releases GameMode, and the attract demo never asks for it; neither
-    /// the service nor this query enters the sim.
+    /// releases GameMode, and neither the attract demo nor the error screen
+    /// asks for it; neither the service nor this query enters the sim.
     #[func]
     fn is_active_play(&self) -> bool {
-        if self.g.in_demo() {
-            return false;
-        }
-        self.g.mode == crate::app::Mode::Playing
-            || (self.g.mode == crate::app::Mode::Versus
-                && self.g.versus.live.as_ref().is_some_and(|v| !v.paused))
+        !self.g.in_demo() && !self.g.crash.broken && self.g.live_play()
     }
 }
 

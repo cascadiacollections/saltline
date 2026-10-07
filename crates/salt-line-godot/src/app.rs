@@ -121,7 +121,7 @@
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
 //! | `RunFile(Abandon)` | [`Game::saved_run`], for a run this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes only the set-aside copy (`resume::drop_set_aside`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
-//! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play, a versus match not paused, a menu-started demo | `DisplayServer::screen_set_keep_on` | no | no |
+//! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play or a versus match not paused, a menu-started demo, each until its quiet limit | `DisplayServer::screen_set_keep_on` | no | no |
 //!
 //! # Scoring at most once
 //!
@@ -261,6 +261,14 @@ pub const DEFAULT_ARC_HINT: ArcHint = ArcHint::Short;
 pub const SHORT_ARC_SECONDS: f64 = 0.3;
 /// The last shot's arc stays on screen until the player turns it off.
 pub const DEFAULT_LAST_ARC: bool = true;
+/// Seconds of live play without any input after which the screen is no
+/// longer held on (DESIGN §12.4): a phone put down mid-run or on a versus
+/// plate sleeps on its own timeout after this. The next input holds it
+/// again.
+pub const AWAKE_QUIET_LIMIT: f64 = 4.0 * 60.0;
+/// The same for a demo chosen from the menu, which is watched without
+/// input by design, so it gets longer before it lets the screen sleep.
+pub const DEMO_AWAKE_LIMIT: f64 = 15.0 * 60.0;
 
 /// Where the player is. Playing and Paused have a run on screen; the rest are
 /// menus.
@@ -650,7 +658,19 @@ pub struct Game {
     /// The window or app is out of focus or paused (since `focus_lost` or
     /// `app_paused`, until `focus_gained`): the idle demo does not start,
     /// and nothing holds the screen on (`screen_awake_wanted`).
+    ///
+    /// The adapter calls `focus_gained` on APPLICATION_RESUMED as well as
+    /// on focus in, so a resume clears this even if the window has not got
+    /// focus back (Android split screen, say, with the other app focused).
+    /// The run was auto-paused on the way out, so the worst case is a
+    /// versus plate or a draft holding a screen that is still visible.
     pub(crate) unfocused: bool,
+    /// Seconds without any input (a key, a touch, a pad button, a held key
+    /// or stick) while the screen could be held: live play or a demo. Zero
+    /// anywhere else, so entering a screen that holds starts it afresh.
+    /// Past `AWAKE_QUIET_LIMIT` (`DEMO_AWAKE_LIMIT` in a menu demo) the
+    /// screen is let go (`screen_awake_wanted`).
+    pub(crate) input_quiet: f64,
 
     /// Effects asked for since they were last taken.
     fx: Vec<Effect>,
@@ -891,6 +911,7 @@ impl Default for Game {
             demo_next_leg: 0,
             idle_demo_spent: false,
             unfocused: false,
+            input_quiet: 0.0,
             fx: Vec::new(),
         }
     }
@@ -947,28 +968,38 @@ impl Game {
     }
 
     /// Whether the screen should be held on now (DESIGN §12.4): only while
-    /// somebody is watching the phone without touching it.
+    /// somebody is watching the phone, and not for ever if nobody touches it.
     ///
-    /// * **Live play** (`Mode::Playing`, the draft included): a long flight
-    ///   or a think over the next shot should not dim the screen.
-    /// * **A versus match not paused** (`Mode::Versus`): aiming, flight, the
-    ///   pass-the-phone plate and the results, all of which are looked at
-    ///   while the phone changes hands.
-    /// * **A demo chosen from the menu**, to be watched. A demo that started
-    ///   by itself may have nobody watching, so it lets the screen sleep.
+    /// * **Live play** ([`Game::live_play`]: `Playing`, the draft included,
+    ///   or a versus match not paused, its pass-the-phone plate and results
+    ///   too), until [`AWAKE_QUIET_LIMIT`] passes without input.
+    /// * **A demo chosen from the menu**, to be watched, until
+    ///   [`DEMO_AWAKE_LIMIT`]. A demo that started by itself may have nobody
+    ///   watching, so it lets the screen sleep.
     ///
     /// Everything else lets it sleep: the title and the menus, a paused run
     /// or match, the run's result, the error screen, and any mode while the
-    /// window or app is out of focus (the platform drops a backgrounded
+    /// window or app is out of focus (the platform ignores a backgrounded
     /// app's hold anyway; this keeps desktop from inhibiting the
-    /// screensaver behind another window).
+    /// screensaver behind another window). The quiet limits do not apply to
+    /// the dev autopilot (`--salt-auto`, the profiling build) or a pending
+    /// `--salt-shot` capture, which nobody touches by design.
     pub fn screen_awake_wanted(&self) -> bool {
         if self.crash.broken || self.unfocused {
             return false;
         }
+        let exempt = self.dev.auto || self.dev.capturing;
         if let Some(demo) = &self.demo {
-            return demo.started == DemoStarted::Menu;
+            return demo.started == DemoStarted::Menu
+                && (exempt || self.input_quiet < DEMO_AWAKE_LIMIT);
         }
+        self.live_play() && (exempt || self.input_quiet < AWAKE_QUIET_LIMIT)
+    }
+
+    /// A run or a versus match on screen and running: `Playing`, or
+    /// `Versus` not paused. What holds the screen on and asks for desktop
+    /// GameMode (the adapter's `is_active_play`).
+    pub fn live_play(&self) -> bool {
         match self.mode {
             Mode::Playing => true,
             Mode::Versus => self.versus.live.as_ref().is_some_and(|vs| !vs.paused),
@@ -978,6 +1009,18 @@ impl Game {
             | Mode::Paused
             | Mode::GameOver
             | Mode::VersusSetup => false,
+        }
+    }
+
+    /// Count `input_quiet`: up while the screen could be held and nothing
+    /// came in this frame, back to zero on any input or outside live play
+    /// and the demo. Runs at the end of the frame, once the mode has
+    /// settled, so a screen entered this frame starts from zero.
+    fn watch_input_quiet(&mut self, delta: f64, input: bool) {
+        if input || !(self.live_play() || self.in_demo()) {
+            self.input_quiet = 0.0;
+        } else {
+            self.input_quiet += delta;
         }
     }
 
@@ -1033,7 +1076,8 @@ impl Game {
                 self.autopilot(delta);
             }
         }
-        self.watch_title_idle(delta, intents);
+        let input = self.any_input(intents);
+        self.watch_title_idle(delta, input);
         self.step(delta);
         self.step_versus(delta);
         // The demo's own plates change nobody's screen: any tap on them is
@@ -1043,6 +1087,7 @@ impl Game {
         }
         self.persist_run();
         self.tick_settings(delta);
+        self.watch_input_quiet(delta, input);
         if demo_before && self.in_demo() {
             // Every write is stopped where it would be asked for (DESIGN
             // §12); this is the backstop, and the tests fail if it is hit.
@@ -1297,6 +1342,12 @@ impl Game {
     /// not. The adapter applies what this returns before anything after the
     /// `Store` in the list it came from.
     pub fn stored(&mut self, why: Store, ok: bool) -> Vec<Effect> {
+        // The adapter applies what this returns in the middle of the list it
+        // was working through, after the `ScreenAwake` change (if any) that
+        // list already carried. A screen change sent from here would go out
+        // ahead of that one and be overwritten by it, so nothing here may
+        // change what the screen wants.
+        let awake = self.screen_awake_wanted();
         match why {
             Store::Learned => {}
             Store::Settings => {
@@ -1337,6 +1388,11 @@ impl Game {
                 }
             }
         }
+        debug_assert_eq!(
+            self.screen_awake_wanted(),
+            awake,
+            "stored() changed the wanted screen state"
+        );
         self.take_effects()
     }
 }

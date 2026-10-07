@@ -84,6 +84,15 @@ impl Phone {
         self.tick(idle());
     }
 
+    /// `seconds` of quiet frames, at the longest step a frame takes
+    /// (`resume::frame_delta` caps it at a tenth of a second).
+    fn wait(&mut self, seconds: f64) {
+        for _ in 0..(seconds / 0.1).round() as usize {
+            let fx = self.g.tick(0.1, &idle());
+            self.apply(fx);
+        }
+    }
+
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             self.tick(idle());
@@ -283,6 +292,121 @@ fn a_versus_match_holds_the_screen_through_its_plates_but_not_its_pause() {
     assert!(!p.held());
 }
 
+// ---------------------------------------------------------- quiet limit
+
+#[test]
+fn a_run_left_alone_lets_go_after_the_quiet_limit_and_input_holds_again() {
+    let mut p = Phone::new();
+    p.press(Key::Enter);
+    assert!(p.on);
+    let sent = p.sent;
+    p.wait(AWAKE_QUIET_LIMIT - 1.0);
+    assert!(p.on, "still inside the limit");
+    p.wait(2.0);
+    assert_eq!(p.g.mode, Mode::Playing);
+    assert!(!p.on, "nobody has touched it for the limit");
+    assert_eq!(p.sent, sent + 1, "one release");
+    // Any input holds it again, a key the game ignores included.
+    p.tick(Intents {
+        events: vec![Event::Key {
+            key: None,
+            typed: None,
+        }],
+        ..idle()
+    });
+    assert!(p.on);
+    assert_eq!(p.sent, sent + 2);
+    // And the count starts again from that input.
+    p.wait(AWAKE_QUIET_LIMIT - 1.0);
+    assert!(p.on);
+}
+
+#[test]
+fn a_held_key_or_stick_counts_as_someone_there() {
+    let mut p = Phone::new();
+    p.press(Key::Enter);
+    for _ in 0..((AWAKE_QUIET_LIMIT + 5.0) / 0.1) as usize {
+        let fx = p.g.tick(
+            0.1,
+            &Intents {
+                stick: [false, false, true, false],
+                ..idle()
+            },
+        );
+        p.apply(fx);
+    }
+    assert!(p.on);
+}
+
+#[test]
+fn a_versus_plate_left_alone_lets_go_too() {
+    let mut p = Phone::new();
+    p.press(Key::Num2);
+    p.press(Key::Enter);
+    assert_eq!(p.stage(), Stage::Handoff);
+    p.wait(AWAKE_QUIET_LIMIT + 1.0);
+    assert!(!p.on);
+    p.press(Key::Enter);
+    assert_eq!(p.stage(), Stage::Aiming);
+    assert!(p.on);
+}
+
+#[test]
+fn entering_a_screen_that_holds_starts_the_count_afresh() {
+    let mut p = Phone::new();
+    p.press(Key::Enter);
+    p.wait(AWAKE_QUIET_LIMIT - 10.0);
+    // Paused and resumed: a fresh count, not the old one carried on.
+    p.press(Key::Escape);
+    assert_eq!(p.g.input_quiet, 0.0);
+    p.press(Key::Enter);
+    p.wait(AWAKE_QUIET_LIMIT - 1.0);
+    assert!(p.on);
+}
+
+#[test]
+fn a_menu_demo_has_the_longer_limit() {
+    let mut p = Phone::new();
+    p.press(Key::D);
+    assert!(p.on);
+    p.wait(AWAKE_QUIET_LIMIT + 10.0);
+    assert!(p.g.in_demo());
+    assert!(p.on, "a demo is watched without input");
+    p.wait(DEMO_AWAKE_LIMIT - AWAKE_QUIET_LIMIT - 10.0);
+    assert!(p.g.in_demo(), "the demo plays on");
+    assert!(!p.on, "but lets the screen sleep");
+    assert_eq!(p.sent, 2);
+}
+
+#[test]
+fn the_dev_autopilot_is_exempt_from_the_quiet_limit() {
+    let mut p = Phone::new();
+    p.press(Key::Enter);
+    p.g.dev.auto = true;
+    p.g.input_quiet = AWAKE_QUIET_LIMIT + 60.0;
+    assert!(p.g.screen_awake_wanted(), "--salt-auto and profiling runs");
+    p.g.dev.auto = false;
+    p.g.dev.capturing = true;
+    assert!(p.g.screen_awake_wanted(), "a --salt-shot capture");
+    p.g.dev.capturing = false;
+    assert!(!p.g.screen_awake_wanted());
+    // Stepped, the autopilot plays on untouched, and whenever it is in
+    // live play the screen is held, well past the limit.
+    p.g.input_quiet = 0.0;
+    p.g.dev.auto = true;
+    let mut live = 0;
+    for _ in 0..((AWAKE_QUIET_LIMIT + 10.0) / 0.1) as usize {
+        let fx = p.g.tick(0.1, &idle());
+        p.apply(fx);
+        if p.g.live_play() {
+            live += 1;
+            assert!(p.on);
+        }
+    }
+    assert!(p.g.input_quiet > AWAKE_QUIET_LIMIT);
+    assert!(live > 0);
+}
+
 // ------------------------------------------------------------ the demo
 
 #[test]
@@ -386,6 +510,30 @@ fn focus_loss_lets_go_of_screens_a_pause_does_not_freeze() {
     assert!(!p.on);
     p.focus_gained();
     assert!(!p.held());
+}
+
+#[test]
+fn focus_coming_back_sends_nothing_itself_and_the_next_frame_holds() {
+    let mut p = Phone::new();
+    p.press(Key::Enter);
+    p.g.play.run.as_mut().unwrap().phase = Phase::Drafting;
+    p.focus_lost();
+    assert!(!p.on);
+    p.g.focus_gained();
+    assert!(
+        !p.g.fx.iter().any(|e| matches!(e, Effect::ScreenAwake(_))),
+        "nothing queued by focus_gained"
+    );
+    assert!(!p.on, "not yet");
+    let fx = p.g.tick(FRAME, &idle());
+    assert_eq!(
+        fx.iter()
+            .filter(|e| matches!(e, Effect::ScreenAwake(_)))
+            .collect::<Vec<_>>(),
+        [&Effect::ScreenAwake(true)]
+    );
+    p.apply(fx);
+    assert!(p.on);
 }
 
 #[test]
