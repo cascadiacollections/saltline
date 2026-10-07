@@ -30,24 +30,28 @@
 //!
 //! The demo drives the ordinary run and versus code, so it looks exactly
 //! like the game. What it must not do is change anything the player keeps
-//! (the suspended run and CONTINUE, the run files, the board, the learned
-//! lessons, the settings, crash reports). Two rules make that so:
+//! (the suspended run and CONTINUE, the run files, the suspended versus
+//! match and its file, the board, the learned lessons, the settings, crash
+//! reports). Two rules make that so:
 //!
 //! 1. **Set aside whole.** On entry the player's [`Play`] (which holds the
 //!    run kept for CONTINUE), the versus state and the buffer width are
 //!    moved into [`Demo`]'s stash with `mem::take`, and moved back on exit.
-//!    Nothing reads or writes them in between; `run_file` (the CONTINUE
-//!    offer itself) is never touched at all.
+//!    Nothing reads or writes them in between; `run_file` and
+//!    `saved_match` (the CONTINUE and RESUME MATCH offers themselves) are
+//!    never touched at all.
 //! 2. **No write is asked for.** Every place that would ask for a disk
 //!    effect checks [`Game::in_demo`] first: `persist_run`, `finish_run`
-//!    (a demo run is not scored), `learn`, `write_settings` and
-//!    `tick_settings`, `retire_last_crash`. Pending settings are flushed
-//!    as the demo starts, before it counts as running. `Game::tick` keeps
-//!    a backstop that drops any disk effect a demo frame asks for, and
-//!    `debug_assert!`s that there was none, so the tests fail if a guard is
-//!    ever missed.
+//!    (a demo run is not scored), `persist_match` and `drop_live_match`
+//!    (the demo's duels are never marked kept in the first place),
+//!    `learn`, `write_settings` and `tick_settings`, `retire_last_crash`.
+//!    Pending settings are flushed as the demo starts, before it counts as
+//!    running. `Game::tick` keeps a backstop that drops any disk effect a
+//!    demo frame asks for, and `debug_assert!`s that there was none, so the
+//!    tests fail if a guard is ever missed.
 //!
-//! `app/demo_tests.rs` checks both: a run suspended to the title survives a
+//! `app/demo_tests.rs` checks both (and `app/disk_tests.rs` the same for a
+//! suspended versus match): a run suspended to the title survives a
 //! demo cycle byte for byte, on disk and in memory, and no disk effect is
 //! asked for while the demo runs.
 //!

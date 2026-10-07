@@ -36,6 +36,7 @@ use pretty_assertions::assert_eq;
 use salt_line_sim::run::Phase;
 
 use crate::input::{Event, Intents, Key};
+use crate::match_log::{self, MATCH_FILES, MATCH_LOADING_PATH, MATCH_PATH, MATCH_TEMP_PATH};
 use crate::resume::{self, RunFiles, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
 
 const FRAME: f64 = 1.0 / 60.0;
@@ -70,6 +71,11 @@ struct FakeDisk {
     run: Option<String>,
     temp: Option<String>,
     set_aside: Option<String>,
+    /// The versus match kept for RESUME MATCH, its temporary file and its
+    /// set-aside copy (`match_log::MATCH_FILES`).
+    match_main: Option<String>,
+    match_temp: Option<String>,
+    match_aside: Option<String>,
     crash_report: Option<String>,
     old_crash_report: Option<String>,
     budget: Option<usize>,
@@ -138,6 +144,18 @@ impl FakeDisk {
                 Effect::RunFile(RunFile::Discard | RunFile::Abandon(_)) => {
                     resume::discard(self);
                 }
+                Effect::MatchFile(MatchFile::Write(text)) => {
+                    resume::replace_at(self, MATCH_FILES, &text);
+                }
+                Effect::MatchFile(MatchFile::Restore) => {
+                    self.rename(MATCH_LOADING_PATH, MATCH_PATH);
+                }
+                Effect::MatchFile(MatchFile::Abandon(Abandoned::Interrupted)) => {
+                    self.remove(MATCH_LOADING_PATH);
+                }
+                Effect::MatchFile(MatchFile::Discard | MatchFile::Abandon(_)) => {
+                    resume::replace_at(self, MATCH_FILES, "");
+                }
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let Some(text) = self.crash_report.take() {
                         self.old_crash_report = Some(text);
@@ -155,6 +173,10 @@ impl FakeDisk {
         g.set_last_crash(self.crash_report.clone());
         if let Some(found) = resume::take_saved(self) {
             let fx = g.saved_run(found);
+            self.apply(&mut g, fx);
+        }
+        if let Some(found) = resume::take_aside(self, MATCH_FILES, match_log::sound) {
+            let fx = g.saved_match(found);
             self.apply(&mut g, fx);
         }
         let fx = g.fit_display(WINDOW, (0, 0));
@@ -176,6 +198,9 @@ impl FakeDisk {
             RUN_PATH => &mut self.run,
             RUN_TEMP_PATH => &mut self.temp,
             RUN_LOADING_PATH => &mut self.set_aside,
+            MATCH_PATH => &mut self.match_main,
+            MATCH_TEMP_PATH => &mut self.match_temp,
+            MATCH_LOADING_PATH => &mut self.match_aside,
             _ => unreachable!("{path}"),
         }
     }
@@ -189,6 +214,9 @@ impl resume::RunFiles for FakeDisk {
             RUN_PATH => self.run.clone(),
             RUN_TEMP_PATH => self.temp.clone(),
             RUN_LOADING_PATH => self.set_aside.clone(),
+            MATCH_PATH => self.match_main.clone(),
+            MATCH_TEMP_PATH => self.match_temp.clone(),
+            MATCH_LOADING_PATH => self.match_aside.clone(),
             _ => unreachable!("{path}"),
         }
     }
@@ -695,6 +723,10 @@ fn the_node_drops_every_file_effect_after_a_panic() {
         Effect::RunFile(RunFile::Discard),
         Effect::RunFile(RunFile::Restore),
         Effect::RunFile(RunFile::Abandon(Abandoned::Interrupted)),
+        Effect::MatchFile(MatchFile::Write(String::new())),
+        Effect::MatchFile(MatchFile::Discard),
+        Effect::MatchFile(MatchFile::Restore),
+        Effect::MatchFile(MatchFile::Abandon(Abandoned::Interrupted)),
         Effect::CrashReport(CrashReport::Retire),
     ];
     assert!(dropped.iter().all(|e| !e.survives_panic()));
@@ -711,12 +743,15 @@ fn the_node_drops_every_file_effect_after_a_panic() {
 
 impl FakeDisk {
     /// Every file, as text: what a demo must leave exactly as it found.
-    fn files(&self) -> [Option<String>; 6] {
+    fn files(&self) -> [Option<String>; 9] {
         [
             self.save.clone(),
             self.run.clone(),
             self.temp.clone(),
             self.set_aside.clone(),
+            self.match_main.clone(),
+            self.match_temp.clone(),
+            self.match_aside.clone(),
             self.crash_report.clone(),
             self.old_crash_report.clone(),
         ]
@@ -776,4 +811,548 @@ fn a_suspended_run_survives_a_demo_cycle_byte_for_byte() {
     assert_eq!(g.mode, Mode::Playing);
     let run = g.play.run.as_ref().unwrap();
     assert_eq!((run.run_seed, &run.log), (played.seed, &played.log));
+}
+
+// ---------------------------------------------------------- the match file
+//
+// A versus match kept on disk (DESIGN §11.6), killed at each moment a phone
+// may kill it, and resumed: the match as played, byte for byte.
+
+fn vs(g: &Game) -> &VersusPlay {
+    g.versus.live.as_ref().expect("a match on screen")
+}
+
+fn stage(g: &Game) -> versus::Stage {
+    vs(g).stage
+}
+
+/// Press `key` and let it go, so the next press of it is a press.
+fn press(g: &mut Game, disk: &mut FakeDisk, key: Key) {
+    tick(g, disk, keys(&[key]));
+    tick(g, disk, idle());
+}
+
+/// Launch and start a match from the title: versus, then START.
+fn start_match(disk: &mut FakeDisk) -> Game {
+    let mut g = disk.launch();
+    press(&mut g, disk, Key::Num2);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    press(&mut g, disk, Key::Enter);
+    assert_eq!(g.mode, Mode::Versus);
+    g
+}
+
+/// A high lob that lands short of the other gun.
+const LOB: (i32, i32) = (1400, 330);
+
+/// Shots in a match's log, new rounds aside.
+fn shots_fired(vs: &VersusPlay) -> usize {
+    vs.log
+        .iter()
+        .filter(|e| matches!(e, match_log::Entry::Shot(..)))
+        .count()
+}
+
+/// The scripted aim for the next shot: a hit, except every third shot,
+/// which lobs short, so pairs with a hit roll the guns and rounds are won.
+fn scripted(g: &Game) -> (i32, i32) {
+    let vs = vs(g);
+    if shots_fired(vs) % 3 == 1 {
+        return LOB;
+    }
+    let duel = &vs.duel;
+    let side = duel.to_move;
+    let frame = crate::versus::frame_for(&duel.screen, side);
+    let target = crate::versus::target_in_frame(&duel.screen, side);
+    crate::versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
+        .first()
+        .map_or(LOB, |s| (s.angle_ticks, s.power_ticks))
+}
+
+/// From the handoff plate (or a round's result, which deals the next
+/// round): ready, and dial the scripted aim.
+fn ready_and_aim(g: &mut Game, disk: &mut FakeDisk) {
+    if stage(g) == versus::Stage::Result {
+        press(g, disk, Key::Enter);
+    }
+    assert_eq!(stage(g), versus::Stage::Handoff);
+    press(g, disk, Key::Enter);
+    assert_eq!(stage(g), versus::Stage::Aiming);
+    (g.play.angle_ticks, g.play.power_ticks) = scripted(g);
+}
+
+/// One whole turn: ready, aim, fire, and wait for the next plate.
+fn match_turn(g: &mut Game, disk: &mut FakeDisk) {
+    ready_and_aim(g, disk);
+    tick(g, disk, keys(&[Key::Space]));
+    assert_eq!(stage(g), versus::Stage::Flight);
+    until(g, disk, |g| stage(g) != versus::Stage::Flight);
+}
+
+/// Everything a resumed match must have back, as text, every float by its
+/// `Debug` form (exact for a finite float): the rules' state, each side's
+/// kept aim and last arc, the log, the roll the handoff plate announces,
+/// whose turn and the pre-match choices it is played under.
+fn match_state(g: &Game) -> String {
+    let vs = vs(g);
+    format!(
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        vs.duel,
+        vs.aims,
+        vs.arcs,
+        vs.log,
+        vs.rolled,
+        vs.side(),
+        g.versus.help,
+        g.versus.rolling_off,
+    )
+}
+
+/// Where a match is killed.
+#[derive(Clone, Copy, Debug)]
+enum Kill {
+    /// Between turns, on the pass-the-phone plate (or a round's result).
+    Plate,
+    /// A player has readied up and is aiming, the shot not yet fired.
+    MidTurn,
+    /// The shot is fired and still in the air.
+    MidFlight,
+}
+
+/// Start a match with aim help on the right, play `turns` scripted turns,
+/// then stop at `kill`: the disk as the app left it, and the game.
+fn play_and_kill(turns: usize, kill: Kill) -> (FakeDisk, Game) {
+    let mut disk = FakeDisk::default();
+    let mut g = disk.launch();
+    press(&mut g, &mut disk, Key::Num2);
+    press(&mut g, &mut disk, Key::Right);
+    press(&mut g, &mut disk, Key::Enter);
+    for _ in 0..turns {
+        match_turn(&mut g, &mut disk);
+    }
+    match kill {
+        Kill::Plate => {}
+        Kill::MidTurn => ready_and_aim(&mut g, &mut disk),
+        Kill::MidFlight => {
+            ready_and_aim(&mut g, &mut disk);
+            tick(&mut g, &mut disk, keys(&[Key::Space]));
+            tick(&mut g, &mut disk, idle());
+            assert_eq!(stage(&g), versus::Stage::Flight);
+            assert!(!vs(&g).anim.as_ref().unwrap().done(), "still in the air");
+        }
+    }
+    (disk, g)
+}
+
+/// Relaunch on `disk` and take RESUME MATCH from the title.
+fn relaunch_and_resume(disk: &mut FakeDisk) -> Game {
+    let mut g = disk.launch();
+    assert_eq!(g.mode, Mode::Title);
+    assert!(g.saved_match.is_some(), "RESUME MATCH is offered");
+    press(&mut g, disk, Key::Num2);
+    assert_eq!(g.mode, Mode::Versus);
+    g
+}
+
+#[test]
+fn a_killed_match_resumes_byte_for_byte_wherever_it_was_killed() {
+    let mut rolls = 0;
+    let mut results = 0;
+    for turns in 0..10 {
+        for kill in [Kill::Plate, Kill::MidTurn, Kill::MidFlight] {
+            let (mut disk, live) = play_and_kill(turns, kill);
+            let want = match_state(&live);
+            rolls += vs(&live).rolled.is_some() as u32;
+            let back = relaunch_and_resume(&mut disk);
+            assert_eq!(match_state(&back), want, "{turns} turns, killed {kill:?}");
+            // On the pass-the-phone plate for whoever is next, or on the
+            // result plate of a round the last shot won.
+            let won = matches!(vs(&back).duel.phase, crate::versus::Phase::RoundOver(_));
+            results += won as u32;
+            let plate = if won {
+                versus::Stage::Result
+            } else {
+                versus::Stage::Handoff
+            };
+            assert_eq!(stage(&back), plate, "{turns} turns, killed {kill:?}");
+            // On the plate the guns are where the live game had them: a
+            // roll not yet eased is eased once the next player is ready.
+            if matches!(kill, Kill::Plate) {
+                assert_eq!(vs(&back).ease, vs(&live).ease);
+            }
+            // Nothing new was written by the resume: the file is the line.
+            assert_eq!(
+                disk.match_main.as_deref(),
+                Some(
+                    match_log::SavedMatch::of(&vs(&back).duel, back.versus.help, &vs(&back).log)
+                        .to_line()
+                        .as_str()
+                )
+            );
+        }
+    }
+    assert!(rolls > 0, "no kill came after a roll");
+    assert!(results > 0, "no kill came after a round was won");
+}
+
+#[test]
+fn a_resumed_match_plays_on_to_the_same_end() {
+    // Uninterrupted.
+    let mut disk = FakeDisk::default();
+    let mut whole = start_match(&mut disk);
+    while !matches!(vs(&whole).duel.phase, crate::versus::Phase::MatchOver(_)) {
+        match_turn(&mut whole, &mut disk);
+    }
+    // Killed in mid-flight five turns in, resumed, and played on.
+    let (mut disk, _) = play_and_kill(5, Kill::MidFlight);
+    let mut g = relaunch_and_resume(&mut disk);
+    while !matches!(vs(&g).duel.phase, crate::versus::Phase::MatchOver(_)) {
+        match_turn(&mut g, &mut disk);
+    }
+    assert_eq!(
+        format!("{:?}|{:?}", vs(&g).duel, vs(&g).log),
+        format!("{:?}|{:?}", vs(&whole).duel, vs(&whole).log)
+    );
+    // Won: nothing is left to resume.
+    assert_eq!(disk.match_main, None);
+    assert!(disk.launch().saved_match.is_none());
+}
+
+#[test]
+fn a_won_match_is_cleared_as_its_winning_shot_is_fired() {
+    let mut disk = FakeDisk::default();
+    let mut g = start_match(&mut disk);
+    loop {
+        ready_and_aim(&mut g, &mut disk);
+        tick(&mut g, &mut disk, keys(&[Key::Space]));
+        if matches!(vs(&g).duel.phase, crate::versus::Phase::MatchOver(_)) {
+            break;
+        }
+        assert!(disk.match_main.is_some(), "kept while the match is open");
+        until(&mut g, &mut disk, |g| stage(g) != versus::Stage::Flight);
+    }
+    // Still in the air, and already gone from disk.
+    assert_eq!(stage(&g), versus::Stage::Flight);
+    assert_eq!(disk.match_main, None);
+    let mut relaunched = disk.clone();
+    assert!(relaunched.launch().saved_match.is_none());
+    // The rematch is a new match, kept from its start.
+    until(&mut g, &mut disk, |g| stage(g) == versus::Stage::Result);
+    press(&mut g, &mut disk, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    assert_eq!(disk.match_main, None);
+    press(&mut g, &mut disk, Key::Enter);
+    let line = disk.match_main.clone().expect("the rematch is kept");
+    assert_eq!(
+        match_log::SavedMatch::parse(&line).unwrap().seed,
+        vs(&g).duel.seed
+    );
+}
+
+#[test]
+fn a_quit_match_is_cleared() {
+    // From the pause plate.
+    let (mut disk, mut g) = play_and_kill(3, Kill::MidTurn);
+    assert!(disk.match_main.is_some());
+    press(&mut g, &mut disk, Key::Escape);
+    assert!(vs(&g).paused);
+    press(&mut g, &mut disk, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    assert_eq!(disk.match_main, None);
+    assert!(disk.launch().saved_match.is_none());
+    // From a round's result plate (TITLE).
+    let mut disk = FakeDisk::default();
+    let mut g = start_match(&mut disk);
+    while stage(&g) != versus::Stage::Result {
+        match_turn(&mut g, &mut disk);
+    }
+    assert!(disk.match_main.is_some());
+    press(&mut g, &mut disk, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    assert_eq!(disk.match_main, None);
+    // A resumed match, quit again.
+    let (mut disk, _) = play_and_kill(2, Kill::Plate);
+    let mut g = relaunch_and_resume(&mut disk);
+    press(&mut g, &mut disk, Key::Escape);
+    press(&mut g, &mut disk, Key::R);
+    assert_eq!(disk.match_main, None);
+    assert!(disk.launch().saved_match.is_none());
+}
+
+/// Start a match, play four turns, then let the app be killed.
+fn match_then_killed(disk: &mut FakeDisk) -> Vec<match_log::Entry> {
+    let mut g = start_match(disk);
+    for _ in 0..4 {
+        match_turn(&mut g, disk);
+    }
+    vs(&g).log.clone()
+}
+
+/// Start a match, play four turns, then quit it from the pause plate.
+fn match_then_quit(disk: &mut FakeDisk) -> Vec<match_log::Entry> {
+    let mut g = start_match(disk);
+    for _ in 0..4 {
+        match_turn(&mut g, disk);
+    }
+    let shots = vs(&g).log.clone();
+    press(&mut g, disk, Key::Escape);
+    press(&mut g, disk, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    shots
+}
+
+/// `flow` played once through, then again with the process killed after
+/// each disk operation in turn: whatever a launch offers is the match as
+/// played up to some shot, and it rebuilds.
+fn match_survives_a_crash_anywhere(flow: fn(&mut FakeDisk) -> Vec<match_log::Entry>) -> FakeDisk {
+    let mut whole = FakeDisk::default();
+    let played = flow(&mut whole);
+    let ops = whole.done;
+    for k in 0..=ops {
+        let mut disk = FakeDisk {
+            budget: Some(k),
+            ..FakeDisk::default()
+        };
+        flow(&mut disk);
+        disk.budget = None;
+        for _ in 0..2 {
+            let mut g = disk.launch();
+            if let Some(saved) = g.saved_match.clone() {
+                assert!(
+                    played.starts_with(&saved.log),
+                    "crash after {k}: the offered match is not the one played"
+                );
+                press(&mut g, &mut disk, Key::Num2);
+                assert_eq!(vs(&g).log, saved.log, "crash after {k}");
+                // Leave it on disk for the second launch: the app killed
+                // again rather than quit.
+            }
+        }
+    }
+    whole
+}
+
+#[test]
+fn a_kept_match_survives_a_crash_anywhere() {
+    let mut whole = match_survives_a_crash_anywhere(match_then_killed);
+    let offered = whole.launch().saved_match.expect("offered");
+    assert_eq!(offered.log.len(), 4);
+}
+
+#[test]
+fn quitting_a_match_survives_a_crash_anywhere() {
+    let mut whole = match_survives_a_crash_anywhere(match_then_quit);
+    assert!(whole.launch().saved_match.is_none());
+}
+
+#[rstest::rstest]
+#[case::garbage("match 1 banana\n", "SAVED MATCH COULD NOT BE RESTORED")]
+#[case::nul_tail("match 1\0\0\0\0\n", "SAVED MATCH COULD NOT BE RESTORED")]
+#[case::older(
+    &format!("match 1 {} 0 7 320 1 0 0 0\n", salt_line_sim::SIM_EPOCH),
+    "SAVED MATCH FROM AN OLDER VERSION"
+)]
+#[case::newer_sim(
+    &format!("match 1 {} 1 7 320 1 0 0 0\n", salt_line_sim::SIM_EPOCH + 1),
+    "SAVED MATCH FROM A NEWER VERSION"
+)]
+#[case::newer_format("match 2 x\n", "SAVED MATCH FROM A NEWER VERSION")]
+fn a_match_file_that_will_not_do_is_cleared_with_a_note(#[case] text: &str, #[case] note: &str) {
+    let mut disk = FakeDisk {
+        match_main: Some(text.into()),
+        ..FakeDisk::default()
+    };
+    let g = disk.launch();
+    assert!(g.saved_match.is_none());
+    assert_eq!(g.status, note);
+    assert!(g.status_time > STATUS_TIME, "kept up long enough to read");
+    assert_eq!(disk.files(), FakeDisk::default().files(), "cleared");
+}
+
+#[test]
+fn a_truncated_match_file_is_cleared_with_a_note() {
+    let (disk, _) = play_and_kill(5, Kill::Plate);
+    let line = disk.match_main.clone().unwrap();
+    for cut in [1, line.len() / 2, line.len() - 3, line.len() - 1] {
+        let mut torn = FakeDisk {
+            match_main: Some(line[..cut].into()),
+            ..FakeDisk::default()
+        };
+        let g = torn.launch();
+        assert!(g.saved_match.is_none(), "cut at {cut}");
+        assert_eq!(g.status, "SAVED MATCH COULD NOT BE RESTORED");
+        assert_eq!(torn.match_main, None);
+    }
+    // A torn main file beside a whole temporary file: the write that died
+    // before its rename is the copy to trust, as for the run file.
+    let mut torn = FakeDisk {
+        match_main: Some(line[..line.len() / 2].into()),
+        match_temp: Some(line.clone()),
+        ..FakeDisk::default()
+    };
+    let g = torn.launch();
+    assert!(g.saved_match.is_some());
+    assert_eq!(torn.match_main.as_deref(), Some(line.as_str()));
+}
+
+#[test]
+fn a_match_that_crashed_its_rebuild_costs_one_launch() {
+    let (mut disk, _) = play_and_kill(3, Kill::Plate);
+    let line = disk.match_main.clone().unwrap();
+    // As a launch that died rebuilding it would leave it.
+    disk.match_aside = disk.match_main.take();
+    let g = disk.launch();
+    assert!(g.saved_match.is_none());
+    assert_eq!(g.status, "SAVED MATCH COULD NOT BE RESTORED");
+    assert_eq!(disk.match_aside, None);
+    // A match file written since is kept for the launch after.
+    let mut disk = FakeDisk {
+        match_main: Some(line.clone()),
+        match_aside: Some(line),
+        ..FakeDisk::default()
+    };
+    assert!(disk.launch().saved_match.is_none());
+    assert!(disk.launch().saved_match.is_some());
+}
+
+#[test]
+fn a_lost_run_and_a_lost_match_are_both_noted() {
+    let mut disk = FakeDisk {
+        run: Some("resume junk\n".into()),
+        match_main: Some("match junk\n".into()),
+        ..FakeDisk::default()
+    };
+    let g = disk.launch();
+    assert_eq!(
+        g.status,
+        "SAVED RUN COULD NOT BE RESTORED - SAVED MATCH COULD NOT BE RESTORED"
+    );
+}
+
+/// A run quit to the title and a match killed later the same session: both
+/// are offered at the next launch, and taking either leaves the other
+/// exactly where it was.
+#[test]
+fn a_suspended_run_and_a_suspended_match_live_side_by_side() {
+    let mut disk = FakeDisk::default();
+    let played = quit_mid_run(&mut disk);
+    let mut g = disk.launch();
+    tick(&mut g, &mut disk, idle());
+    press(&mut g, &mut disk, Key::Num2);
+    press(&mut g, &mut disk, Key::Enter);
+    for _ in 0..3 {
+        match_turn(&mut g, &mut disk);
+    }
+    let live = match_state(&g);
+    let run_file = disk.run.clone();
+
+    let mut g = disk.launch();
+    assert!(g.run_file.resumable.is_some(), "CONTINUE");
+    assert!(g.saved_match.is_some(), "RESUME MATCH");
+    press(&mut g, &mut disk, Key::Num2);
+    assert_eq!(match_state(&g), live);
+    assert_eq!(disk.run, run_file, "the match left the run alone");
+    assert!(g.run_file.resumable.is_some());
+    // Quit the match: the run is still there to continue.
+    press(&mut g, &mut disk, Key::Escape);
+    press(&mut g, &mut disk, Key::R);
+    assert_eq!(disk.match_main, None);
+    assert_eq!(disk.run, run_file);
+    press(&mut g, &mut disk, Key::Enter);
+    assert_eq!(g.mode, Mode::Playing);
+    assert_eq!(g.play.run.as_ref().unwrap().log, played.log);
+}
+
+#[test]
+fn a_resumed_match_keeps_its_width_on_a_wider_screen() {
+    let (mut disk, live) = play_and_kill(2, Kill::Plate);
+    let width = vs(&live).duel.width() as i32;
+    let wide = (2400, 1080);
+    let at = |i: Intents| Intents { window: wide, ..i };
+    let mut g = disk.launch();
+    g.fit_display(wide, (0, 0));
+    assert!(g.display.buffer_w > width);
+    let device = g.display.buffer_w;
+    tick(&mut g, &mut disk, at(keys(&[Key::Num2])));
+    for _ in 0..3 {
+        tick(&mut g, &mut disk, at(idle()));
+    }
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(
+        g.display.buffer_w, width,
+        "the match's own width, letterboxed"
+    );
+    assert_eq!(match_state(&g), match_state(&live));
+    // Quit: back to the device's width.
+    tick(&mut g, &mut disk, at(keys(&[Key::Escape])));
+    tick(&mut g, &mut disk, at(idle()));
+    tick(&mut g, &mut disk, at(keys(&[Key::R])));
+    tick(&mut g, &mut disk, at(idle()));
+    assert_eq!(g.mode, Mode::Title);
+    assert_eq!(g.display.buffer_w, device);
+}
+
+/// A suspended match through a whole idle demo cycle, a duel included: no
+/// file changes, no disk effect is asked for, the offer is untouched, and
+/// RESUME MATCH afterwards is the match as played.
+#[test]
+fn a_suspended_match_survives_a_demo_cycle_byte_for_byte() {
+    let (mut disk, live) = play_and_kill(4, Kill::MidFlight);
+    let want = match_state(&live);
+    let mut g = disk.launch();
+    let files = disk.files();
+    assert!(files[4].is_some(), "the match is on disk");
+    let offered = g.saved_match.clone();
+    assert!(offered.is_some());
+
+    let mut during = Vec::new();
+    for _ in 0..30_000 {
+        let fx = g.tick(1.0 / 30.0, &idle());
+        if g.in_demo() {
+            during.extend(fx.iter().cloned());
+        }
+        disk.apply(&mut g, fx);
+        if g.demo.as_ref().is_some_and(|d| d.leg_index == 2) {
+            break;
+        }
+    }
+    assert!(g.demo.as_ref().is_some_and(|d| d.leg_index == 2));
+    let disk_fx: Vec<_> = during.iter().filter(|e| e.touches_disk()).collect();
+    assert!(disk_fx.is_empty(), "the demo asked for {disk_fx:?}");
+    assert_eq!(disk.files(), files, "the demo changed a file");
+    assert_eq!(g.saved_match, offered);
+
+    tick(&mut g, &mut disk, keys(&[Key::Space]));
+    tick(&mut g, &mut disk, idle());
+    assert_eq!(g.mode, Mode::Title);
+    assert_eq!(disk.files(), files);
+    press(&mut g, &mut disk, Key::Num2);
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(match_state(&g), want);
+}
+
+/// The demo's own duels are never kept, even with no match suspended: no
+/// match file appears, and a demo that ends mid-duel clears nothing.
+#[test]
+fn the_demo_never_writes_or_clears_a_match_file() {
+    let mut disk = FakeDisk::default();
+    let mut g = disk.launch();
+    g.start_demo(DemoStarted::Menu);
+    for _ in 0..30_000 {
+        let fx = g.tick(1.0 / 30.0, &idle());
+        assert!(
+            !fx.iter().any(|e| matches!(e, Effect::MatchFile(_))),
+            "{fx:?}"
+        );
+        disk.apply(&mut g, fx);
+        if g.mode == Mode::Versus && g.versus.live.as_ref().is_some_and(|v| !v.log.is_empty()) {
+            break;
+        }
+    }
+    assert_eq!(g.mode, Mode::Versus, "into the duel leg");
+    assert!(!vs(&g).kept);
+    // A tap mid-duel ends it: nothing to clear, nothing written.
+    let fx = g.tick(1.0 / 30.0, &keys(&[Key::Space]));
+    assert!(!fx.iter().any(Effect::touches_disk), "{fx:?}");
+    assert_eq!(disk.files(), FakeDisk::default().files());
 }

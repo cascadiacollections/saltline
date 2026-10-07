@@ -264,7 +264,7 @@ miri:
 bench:
     cargo bench -p salt-line-sim --bench sim
 
-# Fuzz one target for a while (nightly + cargo-fuzz): save_parse, seed_parse or replay.
+# Fuzz one target for a while (nightly + cargo-fuzz): save_parse, seed_parse, replay or match_log.
 fuzz target="save_parse" seconds="60":
     cd fuzz && rustup run nightly cargo fuzz run {{ target }} -- -max_total_time={{ seconds }}
 

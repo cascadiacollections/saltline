@@ -215,9 +215,15 @@ impl Game {
                     }
                 } else if self.action_pressed(Action::Versus) {
                     // A match never touches the run kept for CONTINUE, so
-                    // there is nothing to confirm.
+                    // there is nothing to confirm. Over a suspended match
+                    // the versus row is RESUME MATCH; a new match is had by
+                    // quitting that one, as in play.
                     self.play(Sound::Ui);
-                    self.open_versus_setup();
+                    if self.saved_match.is_some() {
+                        self.resume_match();
+                    } else {
+                        self.open_versus_setup();
+                    }
                 } else if self.action_pressed(Action::Demo) {
                     // Like versus, the demo never touches the kept run.
                     self.start_demo(DemoStarted::Menu);

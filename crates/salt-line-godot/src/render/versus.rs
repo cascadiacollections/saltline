@@ -245,15 +245,19 @@ impl Painter<'_> {
 
         // A marker over each gun in its player's colour; a big one over the
         // gun whose turn it is. Drawn before aim help, whose preview of a
-        // steep shot climbs through the marker.
+        // steep shot climbs through the marker. After a roll the guns and
+        // their markers are drawn where the ease has them
+        // (`VersusPlay::shown_muzzle`), over the terrain as it now is.
         let turn = matches!(vs.stage, Stage::Handoff | Stage::Aiming);
         for gun in Side::BOTH {
-            let m = versus::muzzle_of(screen, gun);
+            let m = vs.shown_muzzle(gun);
             self.draw_gun_marker(view.sx(m.x), view.sy(m.y), gun, turn && gun == side);
         }
 
         let aiming = vs.stage == Stage::Aiming && !vs.paused;
-        if aiming && g.versus.help[side.index()] {
+        // Aim help belongs to the gun's new spot, so it appears once the
+        // gun has rolled there.
+        if aiming && g.versus.help[side.index()] && vs.ease.is_none() {
             self.draw_aim_help(vs, side, &view);
         }
 
@@ -263,7 +267,7 @@ impl Painter<'_> {
             } else {
                 vs.aims[gun.index()].0
             };
-            self.draw_gun(versus::muzzle_of(screen, gun), aim, gun, &view);
+            self.draw_gun(vs.shown_muzzle(gun), aim, gun, &view);
         }
 
         if let Some(anim) = vs.anim.as_ref() {

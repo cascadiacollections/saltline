@@ -762,3 +762,190 @@ fn back_from_the_rematch_choice_leaves_versus_as_title_does() {
         "{fx:?}"
     );
 }
+
+// --------------------------------------------------------- easing a roll
+
+/// Left hits and right answers short until the guns roll: the game on the
+/// handoff plate just after the roll.
+fn after_a_roll() -> Game {
+    let mut g = in_match();
+    for _ in 0..20 {
+        let shot = if vs(&g).side() == Side::Left {
+            hitting(&g)
+        } else {
+            Shot::new(1400, 330)
+        };
+        take_turn(&mut g, shot);
+        if vs(&g).rolled.is_some() {
+            assert_eq!(vs(&g).stage, Stage::Handoff);
+            return g;
+        }
+    }
+    panic!("the guns never rolled");
+}
+
+/// Where each gun stood before the roll and stands after it.
+fn spots(g: &Game) -> ([Vec2; 2], [Vec2; 2]) {
+    let v = vs(g);
+    let moved = v.ease.expect("a roll to ease").moved;
+    let new = Side::BOTH.map(|s| rules::muzzle_of(&v.duel.screen, s));
+    let old = Side::BOTH.map(|s| {
+        let (n, d) = (new[s.index()], moved[s.index()]);
+        Vec2::new(n.x - d.x, n.y - d.y)
+    });
+    (old, new)
+}
+
+#[test]
+fn the_ease_runs_smoothly_from_all_to_nothing_in_its_time() {
+    use crate::app::versus::{RollEase, ROLL_EASE};
+    let ease = |t| RollEase {
+        moved: [Vec2::new(16.0, 1.0), Vec2::new(-16.0, 1.0)],
+        t,
+    };
+    assert_eq!(ease(None).remaining(), 1.0, "held until the field is shown");
+    assert_eq!(ease(Some(0.0)).remaining(), 1.0);
+    assert_eq!(ease(Some(ROLL_EASE / 2.0)).remaining(), 0.5);
+    assert_eq!(ease(Some(ROLL_EASE)).remaining(), 0.0);
+    assert_eq!(ease(Some(10.0)).remaining(), 0.0);
+    let mut last = 1.0;
+    for i in 1..=45 {
+        let r = ease(Some(ROLL_EASE * i as f64 / 45.0)).remaining();
+        assert!(r < last, "always moving on");
+        last = r;
+    }
+    assert!((0.4..=0.5).contains(&ROLL_EASE));
+}
+
+/// The guns stay where they stood while the plate covers the field, roll
+/// to their new spots over `ROLL_EASE` once the player is ready, and end
+/// exactly where the rules put them; the rules' state never moves.
+#[test]
+fn rolled_guns_ease_to_their_new_spots_once_the_field_is_shown() {
+    use crate::app::versus::ROLL_EASE;
+    let mut g = after_a_roll();
+    let (old, new) = spots(&g);
+    assert!(old != new, "the guns moved");
+    let rules_state = format!("{:?}", vs(&g).duel);
+    for _ in 0..90 {
+        g.tick(FRAME, &idle());
+        for s in Side::BOTH {
+            assert_eq!(vs(&g).shown_muzzle(s), old[s.index()], "held on the plate");
+        }
+    }
+    assert!(!vs(&g).easing());
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).stage, Stage::Aiming);
+    let mut frames = 2;
+    let mut gap = f64::INFINITY;
+    while vs(&g).ease.is_some() {
+        assert!(vs(&g).easing() && g.busy(), "every frame is drawn");
+        let shown = vs(&g).shown_muzzle(Side::Left);
+        let to_go = (new[0].x - shown.x).abs();
+        assert!(to_go < gap, "rolling on, never back");
+        gap = to_go;
+        let between = |a: f64, b: f64, x: f64| x >= a.min(b) && x <= a.max(b);
+        for s in Side::BOTH {
+            let (o, n, m) = (old[s.index()], new[s.index()], vs(&g).shown_muzzle(s));
+            assert!(between(o.x, n.x, m.x) && between(o.y, n.y, m.y));
+        }
+        let fx = g.tick(FRAME, &idle());
+        frames += 1;
+        if vs(&g).ease.is_none() {
+            assert!(fx.contains(&Effect::Redraw), "the last step is drawn");
+        }
+        assert_eq!(format!("{:?}", vs(&g).duel), rules_state);
+    }
+    // Timing: the ease takes ROLL_EASE of play, give or take a frame.
+    let took = frames as f64 * FRAME;
+    assert!(
+        (ROLL_EASE - FRAME..=ROLL_EASE + FRAME).contains(&took),
+        "took {took} s"
+    );
+    // The final position is exact, and nothing is left to draw.
+    for s in Side::BOTH {
+        assert_eq!(vs(&g).shown_muzzle(s), new[s.index()]);
+        assert_eq!(vs(&g).gun_offset(s), Vec2::new(0.0, 0.0));
+    }
+    assert!(!g.busy());
+    assert_eq!(format!("{:?}", vs(&g).duel), rules_state);
+}
+
+#[test]
+fn the_versus_pause_holds_the_ease() {
+    let mut g = after_a_roll();
+    press(&mut g, Key::Enter);
+    let t = vs(&g).ease.unwrap().t;
+    press(&mut g, Key::Escape);
+    assert!(vs(&g).paused);
+    for _ in 0..60 {
+        g.tick(FRAME, &idle());
+    }
+    assert_eq!(vs(&g).ease.unwrap().t, t);
+    press(&mut g, Key::Escape);
+    until(&mut g, |g| vs(g).ease.is_none());
+}
+
+/// A shot fired before the guns have rolled home is the same shot as one
+/// fired after: the ease is drawing only.
+#[test]
+fn a_shot_fired_mid_ease_flies_from_the_gun_where_it_stands() {
+    let mut g = after_a_roll();
+    press(&mut g, Key::Enter);
+    assert!(vs(&g).easing());
+    let shot = hitting(&g);
+    let mut twin = vs(&g).duel.clone();
+    let want = twin.fire(shot, true).unwrap();
+    (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
+    press(&mut g, Key::Space);
+    assert_eq!(vs(&g).stage, Stage::Flight);
+    let anim = vs(&g).anim.as_ref().unwrap();
+    assert_eq!(
+        format!("{:?}", anim.traces[0].path),
+        format!("{:?}", want.traces[0].path)
+    );
+    assert_eq!(format!("{:?}", vs(&g).duel), format!("{twin:?}"));
+    for s in Side::BOTH {
+        assert_eq!(
+            vs(&g).gun_offset(s),
+            Vec2::new(0.0, 0.0),
+            "no ease in flight"
+        );
+    }
+}
+
+fn draw(g: &Game) -> crate::raster::Canvas {
+    let mut canvas = crate::raster::Canvas::new(g.display.buffer_w, g.display.buffer_h);
+    crate::render::frame(
+        g,
+        &crate::render::Art::default(),
+        &mut canvas,
+        &mut Vec::new(),
+        &mut crate::render::Cache::default(),
+    );
+    canvas
+}
+
+/// Drawn: the gun tags start at the old spots and end at the new, the
+/// last frame is the frame of a match with no roll to ease, and aim help
+/// appears only once the guns are home.
+#[test]
+fn the_ease_is_drawn_and_aim_help_waits_for_it() {
+    let mut g = after_a_roll();
+    g.versus.help = [true, true];
+    press(&mut g, Key::Enter);
+    let mid = draw(&g);
+    // The same frame without the roll to ease: the guns at the new spots.
+    let ease = g.versus.live.as_mut().unwrap().ease.take();
+    let home = draw(&g);
+    g.versus.live.as_mut().unwrap().ease = ease;
+    assert_ne!(mid.bytes(), home.bytes(), "mid-ease is not home");
+    // Aim help is not drawn mid-ease.
+    g.versus.help = [false, false];
+    assert_eq!(draw(&g).bytes(), mid.bytes(), "no aim help while rolling");
+    g.versus.help = [true, true];
+    until(&mut g, |g| vs(g).ease.is_none());
+    assert_eq!(draw(&g).bytes(), home.bytes(), "home, exactly");
+    g.versus.help = [false, false];
+    assert_ne!(draw(&g).bytes(), home.bytes(), "aim help, once home");
+}

@@ -76,11 +76,12 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, RunFile, Sound};
+use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, MatchFile, RunFile, Sound};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::frame::{self, DisplayPoll, Redraw};
 use crate::input::{self, Event, Intents, Typed};
+use crate::match_log::{self, MATCH_FILES, MATCH_LOADING_PATH, MATCH_PATH};
 use crate::pads::Pads;
 use crate::palette::Palette;
 #[cfg(feature = "profiling")]
@@ -235,6 +236,7 @@ impl INode2D for SaltLine {
         self.g.set_versus_entropy(micros);
         self.find_last_crash();
         self.find_saved_run();
+        self.find_saved_match();
         self.setup_audio();
         self.project_fps = Engine::singleton().get_max_fps();
         self.fps_cap = self.project_fps;
@@ -619,6 +621,25 @@ impl SaltLine {
                         Self::discard_run_file();
                     }
                 },
+                Effect::MatchFile(MatchFile::Write(text)) => {
+                    resume::replace_at(&mut UserFiles, MATCH_FILES, &text);
+                }
+                Effect::MatchFile(MatchFile::Restore) => {
+                    save::rename(MATCH_LOADING_PATH, MATCH_PATH);
+                }
+                Effect::MatchFile(MatchFile::Discard) => Self::discard_match_file(),
+                Effect::MatchFile(MatchFile::Abandon(why)) => match why {
+                    Abandoned::Interrupted => {
+                        godot_warn!(
+                            "salt-line: discarding {MATCH_LOADING_PATH}: a rebuild did not finish"
+                        );
+                        save::remove(MATCH_LOADING_PATH);
+                    }
+                    Abandoned::Unreadable(why) => {
+                        godot_warn!("salt-line: discarding {MATCH_PATH}: {why:?}");
+                        Self::discard_match_file();
+                    }
+                },
                 // Android: the window's FLAG_KEEP_SCREEN_ON, which counts only
                 // while the window is visible. iOS: the idle timer. Desktop:
                 // holds off the screensaver and display sleep (an inhibitor on
@@ -670,6 +691,13 @@ impl SaltLine {
             godot_warn!("salt-line: could not delete or blank {RUN_PATH}");
         }
     }
+
+    /// Leave no versus match to resume.
+    fn discard_match_file() {
+        if !resume::replace_at(&mut UserFiles, MATCH_FILES, "") {
+            godot_warn!("salt-line: could not delete or blank {MATCH_PATH}");
+        }
+    }
 }
 
 impl SaltLine {
@@ -703,6 +731,17 @@ impl SaltLine {
             return;
         };
         let fx = self.g.saved_run(found);
+        self.apply(fx);
+    }
+
+    /// Hand the core whatever suspended versus match there is, moved aside
+    /// first exactly as the run is (`resume::take_aside` at
+    /// `match_log::MATCH_FILES`).
+    fn find_saved_match(&mut self) {
+        let Some(found) = resume::take_aside(&mut UserFiles, MATCH_FILES, match_log::sound) else {
+            return;
+        };
+        let fx = self.g.saved_match(found);
         self.apply(fx);
     }
 

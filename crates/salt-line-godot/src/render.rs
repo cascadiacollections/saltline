@@ -316,9 +316,27 @@ impl Painter<'_> {
                 );
                 // Local versus is offered as a row on a touchscreen, the
                 // device it is for. With keys it is the versus binding (2)
-                // alone, so the keyed title stays as it was.
+                // alone, so the keyed title stays as it was, unless a match
+                // is waiting to be resumed. A suspended match takes the
+                // versus row's place rather than adding one (DESIGN §11.6):
+                // the phone title has no row to spare.
+                let resume_match = self.g.saved_match.is_some();
                 if self.plated() {
-                    y = self.menu_row(y, Action::Versus, "", "LOCAL VERSUS", fg);
+                    let (text, c) = if resume_match {
+                        ("RESUME MATCH", alert)
+                    } else {
+                        ("LOCAL VERSUS", fg)
+                    };
+                    y = self.menu_row(y, Action::Versus, "", text, c);
+                } else if resume_match {
+                    let key = self.g.input_label(Action::Versus);
+                    y = self.menu_row(
+                        y,
+                        Action::Versus,
+                        &format!("{key}      RESUME MATCH"),
+                        "RESUME MATCH",
+                        alert,
+                    );
                 }
                 let controls = self.g.input_label(Action::Controls);
                 y = self.menu_row(
@@ -1746,6 +1764,75 @@ mod tests {
                 Action::Copy
             ]
         );
+    }
+
+    /// A suspended versus match (DESIGN §11.6).
+    fn saved_match() -> crate::match_log::SavedMatch {
+        let duel = crate::versus::Match::new(7, 320);
+        crate::match_log::SavedMatch::of(&duel, [false; 2], &[])
+    }
+
+    /// On a touchscreen a suspended match takes the versus row's place: the
+    /// same buttons in the same spots, so the phone title grows no row.
+    /// With keys it adds its own row, which the keyed title otherwise does
+    /// not have.
+    #[test]
+    fn a_suspended_match_takes_the_versus_row() {
+        let mut g = game();
+        g.input.touch_active = true;
+        let (plain, before) = draw(&g);
+        g.saved_match = Some(saved_match());
+        let (offered, after) = draw(&g);
+        assert_ne!(plain.bytes(), offered.bytes(), "the row says RESUME MATCH");
+        let rects = |b: &[Button]| b.iter().map(|b| (b.action, b.rect)).collect::<Vec<_>>();
+        assert_eq!(rects(&after), rects(&before));
+
+        let mut g = game();
+        let (keyed, buttons) = draw(&g);
+        g.saved_match = Some(saved_match());
+        let (keyed_offer, more) = draw(&g);
+        assert!(buttons.is_empty() && more.is_empty());
+        assert_ne!(keyed.bytes(), keyed_offer.bytes(), "2  RESUME MATCH");
+    }
+
+    /// Everything the phone title can offer at once: a saved run, a saved
+    /// match, a crash report and a launch note. Every row is still a whole
+    /// button on the screen.
+    #[test]
+    fn the_phone_title_fits_a_run_a_match_and_a_crash_report() {
+        let mut g = game();
+        g.input.touch_active = true;
+        g.display.corner_pad = (10, 6);
+        g.crash.last_crash = Some("report".into());
+        g.run_file.resumable = Some(crate::resume::Saved::of(
+            &salt_line_sim::run::RunState::new(1, 320),
+            false,
+        ));
+        g.saved_match = Some(saved_match());
+        g.status = "SAVED RUN COULD NOT BE RESTORED".into();
+        g.status_time = 6.0;
+        let (_, buttons) = draw(&g);
+        assert_eq!(
+            actions(&buttons),
+            [
+                Action::TitleMusic,
+                Action::Demo,
+                Action::Confirm,
+                Action::NewRun,
+                Action::Seed,
+                Action::Versus,
+                Action::Controls,
+                Action::Back,
+                Action::Copy
+            ]
+        );
+        for b in &buttons {
+            assert!(
+                b.rect.y >= 0 && b.rect.y + b.rect.h <= g.display.buffer_h,
+                "{:?} off the screen",
+                b.action
+            );
+        }
     }
 
     #[test]

@@ -267,8 +267,9 @@ Choices the owner's brief left open, made the simple way:
 - **The score and wind wait for the landing.** The rules score a shot when it
   is fired; the HUD shows the score and the wind as they were until the
   shell comes down, like SCREEN CLEAR in a run.
-- **Nothing is saved.** No resume, no board, no onboarding lessons learned
-  from versus input.
+- **Nothing reaches the board.** No score, and no onboarding lessons learned
+  from versus input. (The match itself is kept for resume since October
+  2026: see "Resume and the eased roll" below.)
 - **Match seed** mixes the wall clock at launch (read by the adapter; the core
   reads no clock), the daily seed and a per-session match count, so no two
   launches deal the same first match.
@@ -420,6 +421,58 @@ that a tie carried beyond three.
   in the sides' colours, so the plate stays clear of the pause button and
   inside the 200-pixel handoff and result plates.
 
+### Resume and the eased roll (October 2026)
+
+DESIGN §11.6. Two §11.5 follow-ups, decided here:
+
+- **A match is logged the way a run is**, in its own file
+  (`user://match.txt`, `match_log`), by the run file's own rules
+  (`resume::take_aside`/`replace_at`, generalised over a `Paths` triple), so
+  every crash case the run file survives, the match file survives too
+  (`app/disk_tests.rs` kills a match flow after every disk operation). A
+  separate file rather than a line in `run.txt`: the run file's line order
+  carries the unscored-score protocol, and a match has nothing to score.
+- **The log is shots and round marks.** `A:P` per shot as dialled, `/` when
+  the players move on from a round's result. The first cut left rounds
+  implicit (dealt before the next shot), and the byte-for-byte test caught
+  it: a match killed after NEXT ROUND came back on the old round's result
+  plate. Marking the round makes either side of it resume exactly.
+- **Its own epoch.** The duel rules live in this crate, outside
+  `SIM_EPOCH`'s digest, so `match_log::MATCH_EPOCH` is held by a golden
+  match (bot-played, rolling guns, two rounds, 18 shots) whose final state
+  hash is pinned. The line also carries `FORMAT` and `SIM_EPOCH`; any of the
+  three differing discards the file with a note.
+- **A shot count and the newline.** A torn line could otherwise end in a
+  shorter but valid shot (`900:6` for `900:640`) and replay as a different
+  match; with both, every truncation is damaged (a test cuts at every byte).
+- **Finished and quit matches clear at once.** The winning shot clears the
+  file the frame it is fired (a kill mid-flight then resumes nothing, which
+  costs only the result plate); quitting from the pause or result plate
+  clears it as it leaves.
+- **The title.** On a touchscreen a suspended match turns the LOCAL VERSUS
+  row into RESUME MATCH (amber, as CONTINUE is), in the same slot: the phone
+  title's worst case (saved run, crash report, a launch note) already fills
+  the screen, so no new row. With keys a `2  RESUME MATCH` row appears only
+  while there is one, so the default keyed title snapshot is unchanged. A
+  new match while one is suspended is had by resuming and quitting it: no
+  second-press confirm as for a new run, because the touch title has no row
+  for NEW MATCH and a match is short.
+- **A run and a match side by side.** Each offer sits in its own mode's
+  slot: CONTINUE on confirm (the run is the main game), RESUME MATCH on the
+  versus row. They are independent files and independent state; taking one
+  leaves the other's file byte for byte as it was (tested).
+- **Width.** A resumed match keeps the width it was dealt at, letterboxed,
+  as a resumed run does (`poll_display` treats a live match like a run).
+- **The ease waits for READY.** "When the field is shown": the handoff plate
+  dims and covers the field, so the guns are drawn at their old spots behind
+  it and roll over `ROLL_EASE` (0.45 s, smoothstep) once the next player is
+  ready, in full view. Only the drawn pivot moves (`VersusPlay::shown_muzzle`,
+  gun and tag); the terrain, crater fills included, is already the new one,
+  and the ground-detail mask stays at the new spots. Aim help appears once
+  the guns are home rather than following them, which keeps the landing mark
+  on the ground it fell on. A pause holds the ease; a shot fired mid-ease
+  fires from the real spot, as the rules always did.
+
 ## 8. Attract demo (DESIGN §12)
 
 The owner settled two things: the idle demo is on by default with an opt-out,
@@ -434,7 +487,9 @@ and the loop alternates a run and a duel. Everything else was decided here.
   reads it.
 - **Guards at the source, a backstop at the end.** `persist_run`,
   `finish_run`, `learn`, `write_settings`/`tick_settings` and
-  `retire_last_crash` each return early in the demo. `persist_run` is the one
+  `retire_last_crash` each return early in the demo, as do the match file's
+  `persist_match` and `drop_live_match` (DESIGN §11.6; the demo's duels are
+  never marked kept either). `persist_run` is the one
   that matters most: after a quit to the title `run_persist` is still set for
   the suspended run, so without the guard the demo's run would have been
   written over `run.txt` on its first shot. (Removing that guard fails four of

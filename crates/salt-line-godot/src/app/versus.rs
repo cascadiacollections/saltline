@@ -24,8 +24,41 @@
 //! is only played back ([`Anim`]); the renderer shows the screen from
 //! before the shot until the shell lands.
 //!
-//! Nothing here is saved: no run file, no board, no onboarding lessons. A
-//! single-player run set aside for CONTINUE is left exactly as it was.
+//! Nothing here reaches the board, the run file or the onboarding lessons,
+//! and a single-player run set aside for CONTINUE is left exactly as it
+//! was. The match itself is kept on disk, as its seed, options and shots
+//! (`match_log`, DESIGN §11.6), so a match the operating system killed can
+//! be resumed from the title.
+//!
+//! # The match file
+//!
+//! ```text
+//!  start_versus ─► kept; persist_match writes the line on every shot
+//!                    │
+//!   app killed ──────┤ kept; launch offers RESUME MATCH ─► resume_match
+//!   match won ───────┤ cleared the frame the winning shot is fired
+//!   quit (pause or ──┘ cleared (leave_versus); a rematch starts a new one
+//!    result: TITLE)
+//! ```
+//!
+//! A live turn and a rebuild take the same steps ([`VersusPlay::fire_turn`],
+//! [`VersusPlay::next_round`]), so a resumed match is the match as played:
+//! the rules' state, each side's kept aim and last arc, and the roll the
+//! handoff plate announces. The demo's matches are never kept
+//! ([`VersusPlay::kept`] is only set by [`Game::start_versus`] and
+//! [`Game::resume_match`]), and `persist_match` and `drop_live_match` check
+//! for the demo as well (DESIGN §12.3).
+//!
+//! # Easing a roll
+//!
+//! The guns' roll is resolved with the shot (the rules move them at once,
+//! and the next shot fires from the new spots). What the players see eases
+//! it: the guns are drawn at their old spots while the handoff plate covers
+//! the field, then roll to the new ones over [`ROLL_EASE`] once the player
+//! taking the phone is ready ([`RollEase`]). Only the drawn pivot moves;
+//! the terrain under it, the crater-filled footprints included, is already
+//! the new one, and aim help (the landing mark, the last arc, the preview)
+//! appears once the guns have arrived.
 //!
 //! # One touch, one screen
 //!
@@ -41,11 +74,40 @@
 //! are taken per press already and are not held back.
 
 use super::*;
+use crate::match_log::{self, Entry, SavedMatch};
 use crate::versus::{self, Match, Side};
 
 /// Seconds the HIT or MISS is held on the landed shot before the phone is
 /// passed on.
 pub const VERSUS_HOLD: f64 = 1.1;
+
+/// Seconds the guns take to roll to their new spots on screen, once the
+/// field is shown after a roll. Presentation only: see "Easing a roll".
+pub const ROLL_EASE: f64 = 0.45;
+
+/// A roll of the guns being eased on screen. See "Easing a roll".
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RollEase {
+    /// How far each gun's pivot moved, by [`Side::index`]
+    /// ([`versus::Roll::moved`]).
+    pub moved: [Vec2; 2],
+    /// Seconds into the ease. `None` while the handoff plate still covers
+    /// the field, the guns held where they were.
+    pub t: Option<f64>,
+}
+
+impl RollEase {
+    /// The share of the move still to go: 1 until the ease starts, then
+    /// down to 0 at [`ROLL_EASE`], slow at both ends (smoothstep), as a
+    /// heavy gun starts and stops.
+    pub fn remaining(&self) -> f64 {
+        let Some(t) = self.t else {
+            return 1.0;
+        };
+        let u = (t / ROLL_EASE).clamp(0.0, 1.0);
+        1.0 - u * u * (3.0 - 2.0 * u)
+    }
+}
 
 /// Seconds after the shell lands that the hit's ding plays: just after the
 /// impact and collapse, so it is heard on its own rather than under them.
@@ -140,9 +202,139 @@ pub(crate) struct VersusPlay {
     /// Which way the guns rolled after the last shot, if they did: the
     /// handoff plate says so. Cleared by the next shot.
     pub(crate) rolled: Option<versus::RollWay>,
+    /// The last roll, while it is still to be eased on screen.
+    pub(crate) ease: Option<RollEase>,
+    /// Every shot fired and round dealt this match, in order: the match's
+    /// log (`match_log`).
+    pub(crate) log: Vec<Entry>,
+    /// A player's match, kept on disk for RESUME MATCH. Never the demo's.
+    pub(crate) kept: bool,
+    /// Entries in the line last written; `None` before the first write.
+    pub(crate) saved_len: Option<usize>,
 }
 
 impl VersusPlay {
+    /// `duel` on screen from its start: the first player's handoff plate,
+    /// both aims in the middle of the dial, nothing kept on disk yet.
+    pub(crate) fn new(duel: Match) -> VersusPlay {
+        VersusPlay {
+            duel,
+            stage: Stage::Handoff,
+            anim: None,
+            aims: [(900, 600); 2],
+            arcs: [Vec::new(), Vec::new()],
+            hit: None,
+            self_hit: false,
+            shooter: Side::Left,
+            dinged: false,
+            score_before: None,
+            paused: false,
+            landed: None,
+            rolled: None,
+            ease: None,
+            log: Vec::new(),
+            kept: false,
+            saved_len: None,
+        }
+    }
+
+    /// Fire the side to move's `aim` and keep what the screens show of it:
+    /// the aim for that side's next turn, its arc (moved with its gun if
+    /// the guns rolled), the roll to announce and ease, and the shot in the
+    /// log. A live shot and a rebuild both come through here. `None` if the
+    /// rules take no shot now.
+    pub(crate) fn fire_turn(&mut self, aim: (i32, i32)) -> Option<versus::TurnReport> {
+        let report = self.duel.fire(Shot::new(aim.0, aim.1), true)?;
+        self.log.push(Entry::Shot(aim.0, aim.1));
+        let i = report.shooter.index();
+        self.aims[i] = aim;
+        self.arcs[i] = report
+            .traces
+            .first()
+            .map(|t| t.path.clone())
+            .unwrap_or_default();
+        self.shooter = report.shooter;
+        // Each side's last arc moves with its gun, as the rules move its
+        // landing mark, so aim help stays attached to the gun that fired.
+        if let Some(roll) = &report.rolled {
+            for (arc, d) in self.arcs.iter_mut().zip(roll.moved) {
+                for p in arc.iter_mut() {
+                    *p = Vec2::new(p.x + d.x, p.y + d.y);
+                }
+            }
+        }
+        self.rolled = report.rolled.as_ref().map(versus::Roll::way);
+        self.ease = report.rolled.as_ref().map(|roll| RollEase {
+            moved: roll.moved,
+            t: None,
+        });
+        Some(report)
+    }
+
+    /// Deal the next round after a round won, clear the last round's arcs,
+    /// and log it. False unless a round has just ended.
+    pub(crate) fn next_round(&mut self) -> bool {
+        if !self.duel.next_round() {
+            return false;
+        }
+        self.arcs = [Vec::new(), Vec::new()];
+        self.log.push(Entry::NextRound);
+        true
+    }
+
+    /// The match `saved` logged, rebuilt by taking its entries again
+    /// through [`VersusPlay::fire_turn`] and [`VersusPlay::next_round`]. It
+    /// lands on the pass-the-phone plate for whoever is next, or on the
+    /// result plate if the last shot won a round. `None` for a log that
+    /// does not replay, or one whose last shot won the match: nothing is
+    /// left to resume.
+    pub(crate) fn rebuild(saved: &SavedMatch) -> Option<VersusPlay> {
+        let duel = Match::with_rules(saved.seed, saved.width, saved.rules());
+        let mut vs = VersusPlay::new(duel);
+        for entry in &saved.log {
+            let taken = match *entry {
+                Entry::Shot(angle, power) => vs.fire_turn((angle, power)).is_some(),
+                Entry::NextRound => vs.next_round(),
+            };
+            if !taken {
+                return None;
+            }
+        }
+        vs.stage = match vs.duel.phase {
+            versus::Phase::Aiming => Stage::Handoff,
+            versus::Phase::RoundOver(_) => Stage::Result,
+            versus::Phase::MatchOver(_) => return None,
+        };
+        Some(vs)
+    }
+
+    /// How far `gun` is drawn from where it stands: back along its last
+    /// roll, by the share of it still to be eased. Zero while a shot is
+    /// being shown, which draws the screen from before the roll.
+    pub(crate) fn gun_offset(&self, gun: Side) -> Vec2 {
+        match (&self.anim, &self.ease) {
+            (None, Some(ease)) => {
+                let d = ease.moved[gun.index()];
+                let k = ease.remaining();
+                Vec2::new(d.x * k, d.y * k)
+            }
+            _ => Vec2::new(0.0, 0.0),
+        }
+    }
+
+    /// Where `gun`'s pivot is drawn: where it stands on the screen shown,
+    /// less what is left of its roll ([`VersusPlay::gun_offset`]).
+    pub(crate) fn shown_muzzle(&self, gun: Side) -> Vec2 {
+        let m = versus::muzzle_of(self.shown_screen(), gun);
+        let d = self.gun_offset(gun);
+        Vec2::new(m.x - d.x, m.y - d.y)
+    }
+
+    /// The guns are rolling on screen (an ease begun and not finished).
+    pub(crate) fn easing(&self) -> bool {
+        self.anim.is_none() && self.ease.is_some_and(|e| e.t.is_some())
+    }
+
     /// Whose gun the readouts, the controls and the aim belong to.
     pub(crate) fn side(&self) -> Side {
         self.duel.to_move
@@ -193,14 +385,7 @@ impl VersusState {
     /// The rules a match started now plays by: the game's, with the guns'
     /// roll off if the pre-match screen says so.
     pub(crate) fn rules(&self) -> versus::Rules {
-        versus::Rules {
-            gun_shift: if self.rolling_off {
-                0.0
-            } else {
-                versus::GUN_SHIFT
-            },
-            ..versus::Rules::DEFAULT
-        }
+        match_log::rules_for(!self.rolling_off)
     }
 }
 
@@ -213,12 +398,13 @@ impl Game {
 
     /// Open the pre-match screen.
     pub(crate) fn open_versus_setup(&mut self) {
-        self.versus.live = None;
+        self.drop_live_match();
         self.mode = Mode::VersusSetup;
     }
 
     /// Start a match at the buffer's width, the left player to ready up
-    /// first.
+    /// first. It is kept on disk from its first frame (`persist_match`),
+    /// replacing any match suspended before it.
     pub(crate) fn start_versus(&mut self) {
         self.versus.started += 1;
         // A seed of its own for each match: the launch's entropy, the date
@@ -228,27 +414,18 @@ impl Game {
                 ^ salt_line_sim::rng::mix64(daily_seed(self.today) ^ self.versus.started),
         );
         self.start_versus_on(seed, self.versus.rules());
+        if let Some(vs) = self.versus.live.as_mut() {
+            vs.kept = true;
+        }
+        self.saved_match = None;
     }
 
     /// Start a match on `seed` by `rules` at the buffer's width: a player's
-    /// match, or the demo's (`app/demo.rs`).
+    /// match, or the demo's (`app/demo.rs`). Not kept on disk: a player's
+    /// match is marked kept by [`Game::start_versus`].
     pub(super) fn start_versus_on(&mut self, seed: u64, rules: versus::Rules) {
         let width = self.display.buffer_w as usize;
-        self.versus.live = Some(VersusPlay {
-            duel: Match::with_rules(seed, width, rules),
-            stage: Stage::Handoff,
-            anim: None,
-            aims: [(900, 600); 2],
-            arcs: [Vec::new(), Vec::new()],
-            hit: None,
-            self_hit: false,
-            shooter: Side::Left,
-            dinged: false,
-            score_before: None,
-            paused: false,
-            landed: None,
-            rolled: None,
-        });
+        self.versus.live = Some(VersusPlay::new(Match::with_rules(seed, width, rules)));
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
         self.mode = Mode::Versus;
@@ -256,11 +433,82 @@ impl Game {
         self.apply_buffer_size();
     }
 
-    /// Leave versus for the title. The match is dropped.
+    /// Leave versus for the title. The match is dropped, and with it its
+    /// line on disk: the players quit it.
     pub(crate) fn leave_versus(&mut self) {
-        self.versus.live = None;
+        self.drop_live_match();
         self.input.touch.cancel_drag();
         self.mode = Mode::Title;
+        self.apply_buffer_size();
+    }
+
+    /// Drop the match on screen, and clear its line if it was kept. A
+    /// match the demo set aside is not on screen, and the demo's own are
+    /// never kept, but the demo is checked too (DESIGN §12.3).
+    fn drop_live_match(&mut self) {
+        let Some(vs) = self.versus.live.take() else {
+            return;
+        };
+        if vs.kept && !self.in_demo() {
+            self.fx.push(Effect::MatchFile(MatchFile::Discard));
+        }
+    }
+
+    /// Write the match's line whenever a shot has been fired, and once at
+    /// its start; clear it the frame the match is won. Checked every frame,
+    /// written only on a change, never during the demo.
+    pub(super) fn persist_match(&mut self) {
+        if self.in_demo() {
+            return;
+        }
+        let help = self.versus.help;
+        let Some(vs) = self.versus.live.as_mut() else {
+            return;
+        };
+        if !vs.kept {
+            return;
+        }
+        if matches!(vs.duel.phase, versus::Phase::MatchOver(_)) {
+            // A finished match leaves nothing to resume.
+            vs.kept = false;
+            self.fx.push(Effect::MatchFile(MatchFile::Discard));
+            return;
+        }
+        let len = vs.log.len();
+        if vs.saved_len == Some(len) {
+            return;
+        }
+        // Tried once per entry: a failed write is logged by `save::write`,
+        // and the next shot tries again.
+        vs.saved_len = Some(len);
+        let line = SavedMatch::of(&vs.duel, help, &vs.log).to_line();
+        self.fx.push(Effect::MatchFile(MatchFile::Write(line)));
+    }
+
+    /// RESUME MATCH: rebuild the suspended match and put it on the
+    /// pass-the-phone plate for whoever is next, with its aim help and
+    /// rolling guns as they were chosen for it. A match generated at
+    /// another width keeps it, letterboxed, as a resumed run does. A log
+    /// that no longer rebuilds is cleared with a note.
+    pub(crate) fn resume_match(&mut self) {
+        let Some(saved) = self.saved_match.take() else {
+            return;
+        };
+        let Some(mut vs) = VersusPlay::rebuild(&saved) else {
+            self.fx.push(Effect::MatchFile(MatchFile::Discard));
+            self.note(match_log::note(resume::Stale::Diverged).into());
+            return;
+        };
+        vs.kept = true;
+        // What is on disk is this match, as rebuilt.
+        vs.saved_len = Some(vs.log.len());
+        self.versus.help = saved.help;
+        self.versus.rolling_off = !saved.rolling;
+        self.versus.live = Some(vs);
+        self.input.touch.cancel_drag();
+        self.input.drag_from = None;
+        self.set_run_width(Some(saved.width));
+        self.mode = Mode::Versus;
         self.apply_buffer_size();
     }
 
@@ -394,38 +642,19 @@ impl Game {
 
     /// Fire the aim of the side whose turn it is and start its playback.
     pub(super) fn versus_fire(&mut self) {
-        let shot = Shot::new(self.play.angle_ticks, self.play.power_ticks);
         let aim = (self.play.angle_ticks, self.play.power_ticks);
         let Some(vs) = self.versus.live.as_mut() else {
             return;
         };
         let before = vs.duel.screen.clone();
         let score = (vs.duel.hits, vs.duel.rounds);
-        let Some(report) = vs.duel.fire(shot, true) else {
+        let Some(report) = vs.fire_turn(aim) else {
             return;
         };
-        let i = report.shooter.index();
-        vs.aims[i] = aim;
-        vs.arcs[i] = report
-            .traces
-            .first()
-            .map(|t| t.path.clone())
-            .unwrap_or_default();
         vs.hit = report.hit.then(|| report.shooter.other());
-        vs.shooter = report.shooter;
         vs.self_hit = report.self_hit;
         vs.dinged = false;
         vs.score_before = Some(score);
-        // Each side's last arc moves with its gun, as the rules move its
-        // landing mark, so aim help stays attached to the gun that fired.
-        if let Some(roll) = &report.rolled {
-            for (arc, d) in vs.arcs.iter_mut().zip(roll.moved) {
-                for p in arc.iter_mut() {
-                    *p = Vec2::new(p.x + d.x, p.y + d.y);
-                }
-            }
-        }
-        vs.rolled = report.rolled.as_ref().map(versus::Roll::way);
         vs.landed = report.rolled.map(|roll| roll.landed);
         let longest = report
             .traces
@@ -460,6 +689,19 @@ impl Game {
         };
         if vs.paused {
             return;
+        }
+        // The guns roll on screen once the player taking the phone has the
+        // field in front of them: from READY, not behind the plate.
+        if vs.stage == Stage::Aiming {
+            if let Some(ease) = vs.ease.as_mut() {
+                let t = ease.t.get_or_insert(0.0);
+                *t += delta;
+                if *t >= ROLL_EASE {
+                    vs.ease = None;
+                    // Busy no longer asks for frames: draw the guns home.
+                    self.fx.push(Effect::Redraw);
+                }
+            }
         }
         let Some(anim) = vs.anim.as_mut() else {
             return;
@@ -521,8 +763,7 @@ impl Game {
         };
         match vs.duel.phase {
             versus::Phase::RoundOver(_) => {
-                vs.duel.next_round();
-                vs.arcs = [Vec::new(), Vec::new()];
+                vs.next_round();
                 vs.stage = Stage::Handoff;
             }
             versus::Phase::MatchOver(_) => self.open_versus_setup(),
