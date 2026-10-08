@@ -813,3 +813,54 @@ fills the sky and redraws the ground each frame.
   equivalent.
 - `--salt-flat` draws the old single canvas: the tests' reference and a
   developer fallback, not a player setting.
+||||||| parent of 63549b2 (Docs: run history and WATCH, stage 1 of DESIGN §9)
+
+## 12. Run history and WATCH (DESIGN §9), stage 1
+
+The owner asked for history and WATCH on the device, runs and matches
+alike, with share codes and GIFs left for later. Where the spec left a gap
+or proposed something else:
+
+- **Twenty, in one list, not 500 per kind.** §9.1 proposed 500 runs plus
+  the board's. With no PLAY AGAIN or sharing yet, an entry's only use is to
+  be watched, and a child scrolls a list of twenty, not five hundred. One
+  list for both kinds (the question the brief left open) because it is read
+  as "what did we play lately"; the cost, an afternoon of matches pushing
+  the last run out, is written down in §9.1.
+- **Written whole, not appended.** §9.1 proposed append and compact. Twenty
+  lines is a few kilobytes; one atomic replace each time (the slot file's
+  way) means a crash leaves the old file or the new one, never a torn line
+  to skip, and no compaction to get wrong.
+- **What is recorded.** A run where its run file is cleared for the score,
+  after the score; a match where its match file is cleared, only if won. A
+  quit match is not recorded, nor a finished run a launch finds and scores:
+  both are rare or unwanted, and the second would need its line judged
+  twice. Each rule has a test; the demo's runs and duels are kept out by
+  the same guard as every other write, and its backstop.
+- **Sound on.** The demo is muted because it plays to an empty room; a
+  watch is chosen by the person holding the phone. A skip is silent, or
+  NEXT ROUND would play a round's worth of sounds in one frame.
+- **Pacing.** A watch reuses the demo's aim (0.8 s, the swing 0.55 s) and
+  draft (1.6 s) holds and the AI's cued plate (2 s); a plain handoff is 1 s
+  and a round's result 2 s, slower than the demo's 0.8 and 1.8 s so a child
+  can say who won. At 4x a run of about 60 shots plays in well under a
+  minute.
+- **Skips land on real frames.** NEXT SHOT and NEXT ROUND step the game in
+  tenths of a second, fast and silent, until the next shot is fired or the
+  next round's plate (a run's next screen) is up, rather than jumping state
+  directly: what is shown after a skip is a frame the game really showed.
+  A paused watch stays paused, so NEXT SHOT steps a game shot by shot.
+- **The phone title.** It has no row to spare (§11.6), so REPLAYS is a
+  corner plate under DEMO, both being things to watch. The won match's
+  plate grew a row (WATCH, under REMATCH) and so grew 20 rows; centred at
+  180 rows it would cover the corner of the score plate, so its top is now
+  held below that (`result_plate_rect`); no other plate moved (their pinned
+  frames are unchanged).
+- **Checked twice.** Before a watch, the line is rebuilt off screen and its
+  result compared with the one it records; while it plays, every shot the
+  game fires is compared with its log entry and the end with the record.
+  Neither has ever fired in the tests; they are there so a determinism bug
+  shows as a note rather than as a different game.
+- **No epoch bump.** Nothing in the sim or the duel rules changed.
+- **Fuzzing.** The new `history_file` target ran 3.9 million inputs in 90 s
+  locally with no finding.

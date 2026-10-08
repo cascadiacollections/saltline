@@ -719,54 +719,98 @@ The levers, in order: chance per screen, tier shares, payouts, depths.
 
 ## 9. Run history and replay versioning
 
-**Status: proposed.** Nothing here is built yet.
+**Status: stage 1 built** (October 2026): finished runs and matches kept
+on the device, listed, and watched again (§9.1–§9.5). Sharing them
+(stage 2) and turning them into GIFs (stage 3) are proposed (§9.7).
 
-Every finished run is kept on the device as its seed, rules and shot log.
-From that the game can offer **play this seed again**, **watch that run**,
-and **share a run**. A run is a few kilobytes of text, so there is no
-database: the storage model is the same as the save file's, plain text the
-player owns (README, "Nothing for sale").
+**Owner decision (October 2026):** history and WATCH on the device, for
+both single-player runs and versus matches (between two players and
+against the AI, on generated screens and on maps), mainly for the owner
+and his young son to watch again. No share codes or GIFs yet, but the
+stored line is one a later `SR…` share code can carry.
 
-### 9.1 Storage
+Every finished run is kept on the device as its seed and shot log, and
+every won match as its match line (§11.6). A run is a few kilobytes of
+text, so there is no database: the storage model is the same as the save
+file's, plain text the player owns (README, "Nothing for sale").
 
-- **File:** `user://runs.txt`, next to `salt_line.txt`. One line per finished
-  run, appended when the run ends. Runs abandoned mid-way are not recorded; see
-  §9.6 for resuming.
-- **Durability:** append and flush. A torn last line, from a crash mid-write, is
-  skipped by the parser, the same rule the save file uses. Compaction rewrites
-  the file through a temp file and a rename, as `save::store` already does.
-- **Retention:** keep the most recent 500 runs, plus every run on the board.
-  Compact once the file passes the cap by 10%.
+### 9.1 Storage (built)
+
+`crates/salt-line-godot/src/history.rs`, written by `app/watch.rs`.
+
+- **File:** `user://history.txt`, next to `salt_line.txt`: a header,
+  `history 1`, then one line per run or match, oldest first.
+- **What is recorded, and when.** A run when it ends, in `finish_run`, where
+  its run file is cleared for the score (after the score, so a crash in
+  between costs the replay, never the score). A match when its won plate is
+  left (REMATCH, TITLE, or MAKE MAP OF THIS ROUND), in `drop_live_match`,
+  where its match file is cleared: a match killed on its won plate resumes
+  there (§11.6) and is recorded when it is left. Not recorded: a match quit
+  before it was won (no result to show, and quitting is how a family says
+  "not that one"), a `--salt-screen` jump (its log cannot rebuild it), the
+  demo's runs and duels, and a finished run a launch finds and scores (the
+  app died on its last shot; rare, and its line would be judged twice).
+- **Retention:** the newest 20 (`history::MAX_RECORDS`), runs and matches
+  in one list. It is a family's "what did we play lately", read top down by
+  a child; two lists would ask for a choice before every look. The cost: an
+  afternoon of matches pushes the last run off the end. The proposed 500
+  plus every run on the board waits for PLAY AGAIN and sharing (§9.7), when
+  old runs are worth more than a look.
+- **Durability:** the file is rewritten whole, through `durable::write_atomic`
+  (`save::write`), each time a run or match is added: a crash leaves the old
+  file or the new one, and launch picks between the file and its temporary
+  copy as for the slot file. Reading is total: a line this build cannot
+  read (torn, hand-edited, NULs) is dropped and counted, the list says
+  `1 REPLAY COULD NOT BE READ`, and the next write leaves it out. A file
+  whose header is from a newer build is read for what this build
+  understands and never written, as the save and the slot file are not;
+  what finishes meanwhile is kept for the session.
 - **Why not SQLite:** it's a C dependency on every target (Android, iOS,
   Windows arm64 cross-builds), it isn't hand-editable, and nothing here needs a
-  query engine. The largest realistic history is a few megabytes.
+  query engine. The largest realistic history is a few hundred kilobytes.
 
-### 9.2 Line format
+### 9.2 Line format (built)
 
 ```
-run <epoch> <seed> <rules> <width> <day> <screens> <shells> <shots> <daily> <log>
+run 1 <day> <sim epoch> <seed> <width> <daily> <screens> <shells> <shots> <log>
+duel 1 <day> <opponent> <ground> <winner> <rounds L> <rounds R> <match line>
 ```
 
 | Field | Meaning |
 |---|---|
-| `epoch` | `SIM_EPOCH` of the build that recorded the run (§9.3) |
-| `seed`, `rules` | the run's identity (§8.1) |
-| `width` | buffer width the run was generated at. A replay must use it, whatever the current device |
-| `day` | days since the Unix epoch, for sorting and display |
-| `screens`, `shells`, `shots`, `daily` | the result, as the board records it |
-| `log` | the shot log |
+| kind, `1` | `run` or `duel`, and the line's own format (`history::LINE_FORMAT`), so a line read on its own, from a share code, says how to read it |
+| `day` | days since the Unix epoch when it finished, for the list's date (`OCT 8`); `0` if the clock was not known |
+| `sim epoch` | a run's `SIM_EPOCH` (§9.3) |
+| `seed`, `width`, `daily` | the run's identity, as the run file has them. A replay uses `width`, whatever the current device |
+| `screens`, `shells`, `shots` | the result, as the board records it |
+| `log` | the shot log, `replay::encode_log`'s text, to the end of the line |
+| `opponent` | `2p`, or the AI's level: `easy`, `medium`, `hard` |
+| `ground` | `-` for generated screens, `=` for a map with no name, else the map's name |
+| `winner`, `rounds L`, `rounds R` | `L` or `R`, and the rounds each side won |
+| `match line` | the match file's line (§11.6), formats 1 to 3, with both of its epochs, to the end of the line |
 
-The **log** is space-separated tokens:
+The **log** is space-separated tokens (`replay::encode_log`, format `v2`):
 
+- `v2` first, the log's format.
 - `@N` sets the screen index.
 - `A:P` is a shot at angle ticks `A` and power ticks `P`.
 - `DN` is a pick of draft offer `N`.
+- `FT` and `EO` set the Airburst fuse and the Enfilade offset for the shots
+  after them.
 
-For example: `@0 900:600 860:640 @1 700:520 @2 … @4 D1 …`. This keeps the
-line readable, keeps each entry's screen for replay validation, and costs
-about 8 bytes a shot.
+For example: `v2 @0 F1095 960:388 @1 1060:350 @3 100:939 D0 @4 …`. This
+keeps the line readable, keeps each entry's screen for replay validation,
+and costs about 8 bytes a shot.
 
-### 9.3 Replay versioning: `SIM_EPOCH`
+What a list row shows (date, kind, result, seed, opponent, map) is read
+the same way whatever build wrote the line; the log and the match line
+are taken apart only by a build of the same epochs, and another build's
+are kept verbatim and written back. A newer build that changes a line
+bumps the file's header too, so an older build leaves the file alone. The
+proposed `rules` field (§8.1) waits for rulesets; it will be a new line
+format.
+
+### 9.3 Replay versioning: `SIM_EPOCH` (built)
 
 A shot log only reproduces its run on a sim that resolves shots
 identically. Any change that alters generation or ballistics, which the
@@ -775,36 +819,89 @@ old logs replay to a different run. An old log silently diverging would be
 worse than no replay at all.
 
 - `salt-line-sim` exports `SIM_EPOCH: u32`, bumped on any change that alters a
-  replay's outcome.
+  replay's outcome; a match line also carries `match_log::MATCH_EPOCH`, for
+  the duel rules outside the sim (§11.6).
 - **Enforced, not remembered.** A test combines the pinned screen digests and a
   small golden-run corpus (§9.5) into one hash, and asserts it equals
   `EPOCH_DIGEST`, which is recorded next to `SIM_EPOCH`. If the sim's outcomes
   change, the test fails with "bump SIM_EPOCH and update EPOCH_DIGEST". The
   bump goes in NOTES.md with the reason.
 - **On load:**
-  - Epoch matches: the run can be watched and replays exactly.
-  - Epoch differs: the run keeps its seed, rules and result, so *play again*
-    still works, but *watch* is unavailable and the entry is marked as from an
-    earlier version. It is never replayed and never shown diverging.
+  - Epochs match: the entry can be watched.
+  - An epoch differs: the entry keeps its date, seed and result in the list,
+    dimmed and marked OLD (or NEWER), but WATCH says MADE BY AN OLDER
+    VERSION - CANNOT WATCH. It is never replayed and never shown diverging.
+- **Checked before it is shown.** Before a watch starts, the entry is rebuilt
+  off screen (`history::Record::check`) and its result compared with the one
+  it records: a run must end, on its score; a match must be won, by the side
+  and the rounds recorded, against the same opponent. One that does not is
+  refused (THIS REPLAY DOES NOT MATCH - NOT SHOWN), whatever its epochs say.
+  While it plays, each shot the game takes is compared with its log entry and
+  the result with the record at the end; a difference stops the watch with
+  the same note.
 
-### 9.4 Presentation
+### 9.4 Presentation (built)
 
-This follows the no-words direction (§5.6) and the touch menus.
+This follows the touch menus and §11.4's "reading it at a glance".
 
-- **PAST RUNS** from the title screen: a list of seed, screens and day, newest
-  first. Rows from an older epoch are dimmed.
-- **Row actions:**
-  - PLAY AGAIN starts a new run on the same seed, rules and width.
-  - WATCH plays the run back using the in-game shot animation, with a speed
-    toggle. It's only offered when the epoch matches.
-  - COPY copies the run line.
-- **Sharing a run:** pasting a copied run line into seed entry imports it. The
-  parser validates it. If the epoch differs, it imports as a seed only.
+- **REPLAYS** from the title: `W` (pad d-pad up) and a keyed row; on a
+  touchscreen a plate under DEMO in the top-left corner, since the phone
+  title has no row to spare (§11.6). A list, newest first, one line each:
+  `OCT 8  AI EASY  YOU WON 2-1  MESA`, `OCT 7  RUN  9 SCREENS  SEED 1234`,
+  `OCT 7  2 PLAYERS  LEFT WON 2-0`. Rows from another epoch are dimmed and
+  marked. On a touchscreen a row is a plate, six to a page, with `<` `>`
+  and BACK; with keys Up/Down choose, Left/Right turn a page, Enter
+  watches, Esc goes back.
+- **WATCH** on the end-of-run screen (OUT OF SHELLS), for a run kept on disk,
+  and on a won match's plate, under REMATCH. The watch comes back to the
+  screen it started from, which is just as it was.
+- **Watching.** The game plays the logged shots through its own run and
+  versus code, the way the attract demo plays the solver's (§12): the aim
+  swings to each shot, the shell flies, lands and topples, drafts are taken,
+  the plates and the fanfare come as they came. The bar along the bottom
+  centre, where the demo's banner sits: EXIT, PAUSE (PLAY, AGAIN at the end),
+  the speed (1X, 2X, 4X, in turn), NEXT SHOT and NEXT ROUND (NEXT SCREEN in a
+  run), each as tall as the aim buttons; with keys or a controller a plate
+  naming Enter/A, Up, Right, Down and Esc/B. The speed multiplies the time of
+  everything the watch moves. NEXT SHOT and NEXT ROUND run the same steps
+  fast and silent within one frame until the next shot is fired or the next
+  round's first plate is up; paused, NEXT SHOT steps shot by shot. A run's
+  end shows OUT OF SHELLS and the screens cleared; a match's is its won
+  plate, without buttons.
+- **Nothing kept changes.** The demo's two rules (§12.3): the player's run,
+  versus state and buffer are set aside whole and put back, and every disk
+  write checks `Game::spectating` (the demo or a watch). A backstop in the
+  frame drops any disk effect a watch frame asks for, and debug builds and
+  the tests fail if it finds one. No save, score, lesson, setting, run or
+  match file, history or crash report is written while a watch runs.
+- **Sound on.** Unlike the demo, which plays to an empty room, a watch is
+  chosen by someone holding the phone, often a child, and the hit's ding and
+  the fanfare are half of seeing it again; it plays at the player's volume,
+  mute included. A skip is silent.
+- **Screen.** Held on while a watch plays, as for a demo started from the
+  menu (`DEMO_AWAKE_LIMIT` without input), let go while it is paused, as a
+  paused run is. Focus lost pauses the watch. Full frame rate: a 4× flight
+  at 30 fps stutters.
+- **Not built:** PLAY AGAIN (a new run on the same seed and width) and COPY
+  (the run line), which go with stage 2.
 
-### 9.5 Testing
+### 9.5 Testing (built)
 
-- The runs parser gets the save parser's treatment: a property round trip,
-  a format snapshot, and a fuzz target (`fuzz/`).
+- **The file** (`history/tests.rs`): the format pinned by a snapshot, every
+  kind of line round-tripped, a property round trip for run lines from any
+  epoch, any text read and read again unchanged, damaged lines dropped and
+  counted, the cap, a newer build's file, another epoch listed but refused,
+  and a record whose result or log was tampered with refused. A fuzz target
+  (`fuzz/fuzz_targets/history_file.rs`) runs in the weekly workflow.
+- **Watching** (`app/watch_tests.rs`): where runs and matches are recorded
+  and where they are not; a watched run ends on the same `state_hash` as the
+  run played, and a watched match on the same `match_log::state_hash`; no
+  disk effect while watching, and everything kept the same afterwards; the
+  speeds; pause; NEXT SHOT and NEXT ROUND; AGAIN; a mismatched record
+  refused; the list on keys and touch.
+- **Render snapshots** (`render/watch.rs`): the list with keys and on a
+  phone, the watch bar on both, the phone title's REPLAYS plate and the won
+  plate's WATCH row.
 - **Golden runs:** `crates/salt-line-sim/tests/golden_runs.txt` holds a few
   recorded runs across bands and loadouts, each with its final `state_hash`.
   CI asserts they still reproduce. It's the regression corpus for §9.3, and it
@@ -833,11 +930,25 @@ This follows the no-words direction (§5.6) and the touch menus.
   replaces it, after a second press. The resumed run keeps its recorded
   width, letterboxed if the device's differs. A local versus match is kept
   and resumed the same way, in a file of its own (§11.6).
+
+### 9.7 Later stages (proposed)
+
+- **Stage 2: share codes.** A history line carried as a code, `SR` plus the
+  line in base32 with a check, the way a layout travels as `SL…` (§13.7):
+  COPY on a row, paste in seed entry to import it, PLAY AGAIN on its seed.
+  The line already says what it is and how to read it (its kind and line
+  format first, its epochs inside), so the code adds only the encoding. An
+  imported line from another epoch imports as a seed, or a match's result,
+  only. Open: how long a long run's code gets (a 60-shot run's line is about
+  500 characters), and whether a match's code should drop its aim help.
+- **Stage 3: GIFs.** A short GIF of a shot or a round, rendered off screen
+  from a replay by the same `render::frame` the game draws with (the buffer
+  is already the native pixels, in sixteen colours), for sharing outside
+  the game. Open: where it is saved on each platform, and what it costs on a
+  phone.
 - **Replays across epochs.** Old sims could be kept around to replay old runs
   (a versioned sim, or a pinned build). That's likely not worth it: the seed
   survives, and the seed is what players share.
-- **Export.** A share format for whole runs (`saltline-run:` plus the line) is
-  simple, but it waits until there is somewhere to share them.
 
 ---
 
@@ -1224,7 +1335,9 @@ match 3 6 1 1234567 360 1 1 0 easy - 4 900:600 870:640 / 850:610
 - **Cleared** when the players leave a won match's result plate (REMATCH or
   TITLE), and when they quit it (the pause plate, or TITLE on a round's
   result). A match killed as it was won comes back on the plate that says
-  who won. A rematch is a new match.
+  who won. A rematch is a new match. A won match's line goes to the
+  history as it is cleared, to watch again (§9.1); WATCH on its plate plays
+  it before then (§9.4).
 - **The title.** On a touchscreen the LOCAL VERSUS row reads RESUME MATCH
   (amber, like CONTINUE) while a match is suspended: the same row, not an
   extra one, since the phone title's worst case (a saved run, a crash report,
