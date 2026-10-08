@@ -210,10 +210,12 @@ this screen with the last choices still set.
 
 Choose RIGHT OPPONENT: AI on the pre-match screen (R / controller Y, or tap
 the row) to play the left gun against the computer. HUMAN remains the default.
-With the AI on, the right gun's aim-help row picks its level instead: AI: EASY
-(the default), MEDIUM or HARD (Right, or tap the row). The AI knows the wind and
-the range and hits about 2, 4 or 6 times in 10, one step less while it is ahead.
-Your handoff plate readies itself after a moment (READY skips it); the AI's
+With the AI on, the left row reads YOUR AIM HELP and the right gun's aim-help
+row picks the AI's level instead: AI LEVEL: EASY (the default), MEDIUM or HARD
+(Right, or tap the row). The AI knows the wind and the range and hits about 2, 4
+or 6 times in 10, one step less while it leads on hits in the round.
+Your handoff plate readies itself after a moment, longer when it calls a
+LAST SHOT or a roll (READY skips it); the AI's
 plate and aim play themselves. The screens say YOU and AI instead of LEFT GUN
 and RIGHT GUN. Pause still stops play. Between rounds TITLE is not offered
 against the AI, so a mashed button cannot throw the match away: pause and
