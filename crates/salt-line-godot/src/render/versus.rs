@@ -37,6 +37,9 @@
 //! - **Big words.** HIT and MISS, whose turn it is and who won are drawn in
 //!   the small face at two to four times size ([`Canvas::text_small_scaled`]),
 //!   always on a plate.
+//! - **YOU and AI.** Against the AI the sides are YOU and AI, not LEFT GUN
+//!   and RIGHT GUN, on every plate and callout ([`say`]), and nothing says
+//!   to pass the phone.
 
 use super::*;
 use crate::app::{VersusCall as Call, VersusStage as Stage};
@@ -111,15 +114,94 @@ pub(super) fn score_w(hits: [u32; 2]) -> i32 {
 /// Height of the hit pips over the round pips.
 const SCORE_H: i32 = 7 + 3 + 5;
 
+/// What a plate or callout says about a side ([`say`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Says {
+    /// Who it is: LEFT GUN, or YOU.
+    Name,
+    /// It scored: LEFT GUN SCORES, YOU SCORE.
+    Scores,
+    /// It must answer a hit: RIGHT GUN TO ANSWER, YOUR TURN TO ANSWER.
+    ToAnswer,
+    /// It took the round or the match: LEFT GUN WINS, YOU WIN.
+    Wins,
+}
+
+/// Every name the versus screens give a side, in one place. Between two
+/// players the sides are LEFT GUN and RIGHT GUN. Against the AI (`ai`) the
+/// player is YOU and the computer AI, so a child playing alone reads who is
+/// who in a word, and the grammar follows (YOU WIN, AI WINS).
+pub(super) fn say(ai: bool, side: Side, what: Says) -> String {
+    let you = ai && side == Side::Left;
+    let name = match (ai, side) {
+        (false, side) => format!("{} GUN", side.name()),
+        (true, Side::Left) => "YOU".to_string(),
+        (true, Side::Right) => "AI".to_string(),
+    };
+    match what {
+        Says::Name => name,
+        Says::Scores if you => "YOU SCORE".to_string(),
+        Says::Scores => format!("{name} SCORES"),
+        Says::ToAnswer if you => "YOUR TURN TO ANSWER".to_string(),
+        Says::ToAnswer => format!("{name} TO ANSWER"),
+        Says::Wins if you => "YOU WIN".to_string(),
+        Says::Wins => format!("{name} WINS"),
+    }
+}
+
 /// The line under a HIT callout once `shooter`'s shot has been scored:
 /// who scored, or, when the round is still open past the mark, that the
 /// other side answers or that it is tied. The opener's third hit is not the
 /// win while an answer is due, so it must not read like one.
-pub(super) fn hit_line(duel: &versus::Match, shooter: Side) -> String {
-    match duel.stakes() {
-        Some(Stakes::LastShot) => format!("{} GUN TO ANSWER", shooter.other().name()),
+pub(super) fn hit_line(vs: &crate::app::VersusPlay, shooter: Side) -> String {
+    let ai = vs.ai.is_some();
+    match vs.duel.stakes() {
+        Some(Stakes::LastShot) => say(ai, shooter.other(), Says::ToAnswer),
         Some(Stakes::Tied) => "TIED - KEEP GOING".to_string(),
-        Some(Stakes::HitToWin) | None => format!("{} GUN SCORES", shooter.name()),
+        Some(Stakes::HitToWin) | None => say(ai, shooter, Says::Scores),
+    }
+}
+
+/// The handoff plate's line under the name and cues: pass the phone
+/// between two players; against the AI, whose turn it is. `None` in the
+/// demo, which neither passes a phone nor waits for anyone.
+pub(super) fn handoff_prompt(vs: &crate::app::VersusPlay, demo: bool) -> Option<&'static str> {
+    if demo {
+        None
+    } else if vs.ai_turn() {
+        Some("AI IS AIMING")
+    } else if vs.ai.is_some() {
+        Some("YOUR TURN")
+    } else {
+        Some("TAKE THE PHONE - NO PEEKING")
+    }
+}
+
+/// The pre-match screen's heading.
+pub(super) fn setup_heading(ai: bool) -> &'static str {
+    if ai {
+        "LOCAL VERSUS - PLAY THE AI"
+    } else {
+        "LOCAL VERSUS - PASS THE PHONE"
+    }
+}
+
+/// The pre-match screen's two aim rows, left then right. Against the AI
+/// the left row is the player's (YOUR AIM HELP) and the right row is the
+/// AI's level: it needs no aim help, and the right player's choice keeps
+/// for a human match.
+pub(super) fn aim_rows(ai: bool, level: crate::opponent::Level, help: [bool; 2]) -> [String; 2] {
+    let on = |b: bool| if b { "ON" } else { "OFF" };
+    if ai {
+        [
+            format!("YOUR AIM HELP: {}", on(help[0])),
+            format!("AI LEVEL: {}", level.name()),
+        ]
+    } else {
+        [
+            format!("LEFT AIM HELP: {}", on(help[0])),
+            format!("RIGHT AIM HELP: {}", on(help[1])),
+        ]
     }
 }
 
@@ -179,7 +261,7 @@ impl Painter<'_> {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
         let colour = |side| pal.get(side_slot(side));
-        self.centred(y, "LOCAL VERSUS - PASS THE PHONE", fg);
+        self.centred(y, setup_heading(self.g.versus.ai), fg);
         y += 9;
         self.centred(
             y,
@@ -202,17 +284,18 @@ impl Painter<'_> {
             Some(g) => (format!("GROUND: {} - FAILS", g.label()), dim),
         };
         let make_map = Action::Edit(crate::input::Ed::MakeMap);
+        let [left_row, right_row] = aim_rows(self.g.versus.ai, self.g.versus.level, help);
         let mut rows = vec![
             (
-                Action::Left,
-                format!("LEFT AIM HELP: {}", on(help[0])),
-                colour(Side::Left),
-            ),
-            (
-                Action::Right,
-                format!("RIGHT AIM HELP: {}", on(help[1])),
+                Action::Replay,
+                format!(
+                    "RIGHT OPPONENT: {}",
+                    if self.g.versus.ai { "AI" } else { "HUMAN" }
+                ),
                 colour(Side::Right),
             ),
+            (Action::Left, left_row, colour(Side::Left)),
+            (Action::Right, right_row, colour(Side::Right)),
             (
                 Action::Up,
                 format!("ROLLING GUNS: {}", on(rolling)),
@@ -271,7 +354,12 @@ impl Painter<'_> {
             let w = self.canvas.w;
             self.draw_touch_button(w - 62 - ex, 3 + ey, 62, 13, "MAKE MAP", make_map);
         }
-        y += 4;
+        // Plated rows already leave a gap under the last plate, and with
+        // the RIGHT OPPONENT row a phone's 180 rows have none to spare: the
+        // footer goes straight under BACK there (`setup_fits_a_phone`).
+        if !self.plated() {
+            y += 4;
+        }
         if self.g.status_time > 0.0 {
             let text = self.g.status.clone();
             self.centred(y, &text, pal.get(slot::ALERT));
@@ -331,7 +419,9 @@ impl Painter<'_> {
         let aiming = vs.stage == Stage::Aiming && !vs.paused;
         // Aim help belongs to the gun's new spot, so it appears once the
         // gun has rolled there.
-        if aiming && g.versus.help[side.index()] && vs.ease.is_none() {
+        // The AI has no aim help, whatever the right player's row said: its
+        // preview would show the shot it has solved.
+        if aiming && g.versus.help[side.index()] && !vs.ai_turn() && vs.ease.is_none() {
             self.draw_aim_help(vs, side, &view);
         }
 
@@ -520,7 +610,7 @@ impl Painter<'_> {
             let shot = Shot::new(self.g.play.angle_ticks, self.g.play.power_ticks)
                 .quantized(&duel.loadout);
             let y = self.canvas.h - 8 - ey;
-            let name = format!("{} GUN", vs.side().name());
+            let name = say(vs.ai.is_some(), vs.side(), Says::Name);
             self.canvas
                 .text_small(3 + ex, y, &format!("PWR {}", shot.power_ticks), fg);
             self.canvas.text_small(
@@ -547,7 +637,7 @@ impl Painter<'_> {
             // A hit that leaves the round open past the mark says so, so
             // the opener's third hit does not read as the win.
             let (word, under) = match call {
-                Call::Hit => ("HIT!", Some(hit_line(duel, shooter))),
+                Call::Hit => ("HIT!", Some(hit_line(vs, shooter))),
                 Call::Miss => ("MISS", None),
                 Call::Oops => ("OOPS", Some("YOUR OWN GUN".to_string())),
             };
@@ -586,9 +676,9 @@ impl Painter<'_> {
         }
 
         if self.g.input.touch_active && !vs.paused && !self.g.in_demo() {
-            if aiming {
+            if aiming && !vs.ai_turn() {
                 self.draw_play_controls(&duel.loadout);
-            } else if vs.stage == Stage::Flight {
+            } else if vs.stage == Stage::Flight || (aiming && vs.ai_turn()) {
                 self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
             }
         }
@@ -702,8 +792,9 @@ impl Painter<'_> {
     /// Between turns: the field dimmed and a plate in the colour of the
     /// player whose turn it is, saying so in big letters, until they say
     /// they are ready. Under the name, what has changed: a last shot to
-    /// tie or a tie that plays on ([`versus::Match::overtime`]), and which
-    /// way the guns rolled after the last shot.
+    /// tie or a tie that plays on ([`versus::Match::stakes`]), and which
+    /// way the guns rolled after the last shot. The AI's plate has no READY
+    /// and is only as tall as its one line.
     fn render_handoff(&mut self, vs: &crate::app::VersusPlay) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
@@ -720,13 +811,15 @@ impl Painter<'_> {
         let opening = duel.turn == 0;
         let heading_h = if opening { 5 } else { SCORE_H };
         let cues = handoff_cues(vs);
-        let body = 7 + heading_h + 6 + 10 + 6 + 8 * cues.len() as i32 + 5 + 13;
+        let prompt = handoff_prompt(vs, demo);
+        let lines = 7 + heading_h + 6 + 10 + 6 + 8 * cues.len() as i32;
         // The demo has neither the pass-the-phone line nor READY: the plate
-        // ends under the name, or under its cues.
-        let ph = if demo {
-            7 + heading_h + 6 + 10 + 7 + 8 * cues.len() as i32
-        } else {
-            body + if plated { 20 } else { 12 }
+        // ends under the name, or under its cues. The AI's ends under its
+        // line; a player's has READY under that.
+        let ph = match prompt {
+            None => lines + 1,
+            Some(_) if vs.ai_turn() => lines + 5 + 7,
+            Some(_) => lines + 5 + 13 + if plated { 20 } else { 12 },
         };
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
@@ -742,7 +835,7 @@ impl Painter<'_> {
         self.shout(
             w / 2,
             y,
-            &format!("{} GUN", side.name()),
+            &say(vs.ai.is_some(), side, Says::Name),
             side_slot(side),
             2,
         );
@@ -752,18 +845,22 @@ impl Painter<'_> {
             self.centred(y, text, c);
             y += 8;
         }
-        if demo {
-            // The demo readies itself: no phone to pass, nothing to press.
+        // The demo readies itself: no phone to pass, nothing to press.
+        let Some(prompt) = prompt else {
             return;
-        }
-        self.centred(y, "TAKE THE PHONE - NO PEEKING", fg);
+        };
+        self.centred(y, prompt, fg);
         y += 13;
+        // The AI readies itself: no READY on its plate.
+        let ready = !vs.ai_turn();
         if plated {
-            self.menu_row(y + 4, Action::Confirm, "", "READY", fg);
+            if ready {
+                self.menu_row(y + 4, Action::Confirm, "", "READY", fg);
+            }
             // The pause button, so a touchscreen can leave between turns.
             let ey = self.g.display.corner_pad.1;
             self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
-        } else {
+        } else if ready {
             let ready = self.g.input_label(Action::Confirm);
             self.centred(y, &format!("{ready}  READY"), fg);
         }
@@ -785,18 +882,27 @@ impl Painter<'_> {
             versus::Phase::Aiming => return,
         };
         let plated = self.plated();
+        // TITLE is left off between rounds against the AI (`app/versus.rs`,
+        // `handle_versus_input`): one row fewer.
+        let title_row = !(vs.ai.is_some() && !over);
         let body = 7 + 10 + 5 + 5 + 7 + SCORE_H + 8;
+        let rows_h = match (plated, title_row) {
+            (true, true) => 56,
+            (true, false) => 40,
+            (false, true) => 28,
+            (false, false) => 20,
+        };
         let ph = if self.g.in_demo() {
             body
         } else {
-            body + if plated { 56 } else { 28 }
+            body + rows_h
         };
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
         self.side_border(px, top, 200, ph, winner);
         self.side_pointer(px, top, 200, ph, winner, 7);
         let mut y = top + 7;
-        let title = format!("{} GUN WINS", winner.name());
+        let title = say(vs.ai.is_some(), winner, Says::Wins);
         self.shout(w / 2, y, &title, side_slot(winner), 2);
         y += 10 + 5;
         let what = if over {
@@ -809,14 +915,17 @@ impl Painter<'_> {
         self.draw_score((w - score_w(duel.hits)) / 2, y, duel.hits, duel.rounds);
         y += SCORE_H + 8;
         let next = if over { "REMATCH" } else { "NEXT ROUND" };
-        let rows = [
+        let rows: Vec<(Action, &str)> = [
             (Action::Confirm, next),
             (Action::Replay, "TITLE"),
             (
                 Action::Edit(crate::input::Ed::ForkRound),
                 "MAKE MAP OF THIS ROUND",
             ),
-        ];
+        ]
+        .into_iter()
+        .filter(|&(action, _)| title_row || action != Action::Replay)
+        .collect();
         let labels: Vec<(String, &str)> = rows
             .iter()
             .map(|&(action, text)| match action {

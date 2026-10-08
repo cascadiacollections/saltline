@@ -679,7 +679,13 @@ pub struct FrameState {
     devices: (bool, bool),
     run: Option<(u32, Phase, i32, u32, u64, u64)>,
     seed: (usize, Focus),
-    versus: (Option<versus::Fingerprint>, [bool; 2], bool),
+    versus: (
+        Option<versus::Fingerprint>,
+        [bool; 2],
+        bool,
+        bool,
+        crate::opponent::Level,
+    ),
     settings: (
         u8,
         bool,
@@ -1183,11 +1189,18 @@ impl Game {
         let input = self.any_input(intents);
         self.watch_title_idle(delta, input);
         self.step(delta);
+        let ai_before = self.versus_screen();
+        let ai_moved = self.step_versus_ai(delta);
+        let ai_after = self.versus_screen();
         self.step_versus(delta);
         self.step_editor(delta);
         // The demo's own plates change nobody's screen: any tap on them is
-        // a request to stop (`demo_interrupted`), never to be spent.
-        if (self.versus_screen() != versus_before || self.editor_screen() != editor_before)
+        // a request to stop (`demo_interrupted`), never to be spent. Nor
+        // does the AI moving its own turn on, when that is the only change
+        // this frame: a tap on II just then is a pause, not a leftover.
+        let versus_now = self.versus_screen();
+        let only_ai = ai_moved && versus_before == ai_before && ai_after == versus_now;
+        if ((versus_now != versus_before && !only_ai) || self.editor_screen() != editor_before)
             && !self.in_demo()
         {
             self.settle_touch();
@@ -1277,11 +1290,12 @@ impl Game {
     /// the other half of the dirty-flag redraw.
     pub fn busy(&self) -> bool {
         self.play.anim.is_some()
-            || self
-                .versus
-                .live
-                .as_ref()
-                .is_some_and(|v| (v.anim.is_some() || v.easing()) && !v.paused)
+            || self.versus.live.as_ref().is_some_and(|v| {
+                // The AI's barrel swings to its aim; its plate and the
+                // player's are still, and redraw when they move on.
+                (v.anim.is_some() || v.easing() || (v.ai_turn() && v.stage == VersusStage::Aiming))
+                    && !v.paused
+            })
             || self.editor.testing_in_flight()
             || self.play.clear_hold > 0.0
             || self.status_time > 0.0
@@ -1889,6 +1903,8 @@ impl Game {
                 self.versus_fingerprint(),
                 self.versus.help,
                 self.versus.rolling_off,
+                self.versus.ai,
+                self.versus.level,
             ),
             settings: (
                 self.save.volume,

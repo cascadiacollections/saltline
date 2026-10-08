@@ -984,7 +984,8 @@ would get less efficient. Revisit it after haze and drift have been played.
 
 ## 11. Local versus (prototype)
 
-**Status: prototype.** Built for hot-seat play on one phone. Not part of the
+**Status: prototype.** Built for hot-seat play on one phone, or one player
+against a local AI (§11.7). Not part of the
 roguelike: nothing here touches a run, the economy, the board or the shot log.
 A match in play is kept in a file of its own, to resume after the app is
 killed (§11.6).
@@ -998,7 +999,10 @@ terrain only, no figures or skyline, its own art.
 
 - Two guns on one duel screen, the left at `EMPLACEMENT_X`, the right at its
   mirror. Players alternate shots, and a pass-the-phone plate covers the field
-  between turns so neither sees the other aim.
+  between turns so neither sees the other aim. Against the AI (§11.7) the
+  plate stays, as the turn's marker, but the player's readies itself, and
+  the AI's aim is shown swinging to its shot: there is nothing to hide from
+  a computer that already knows the answer.
 - **Hit:** any detonation whose blast reaches the other gun's box. This is the
   same overlap a blast needs to damage a structure (§2.7): any overlap at all.
   A direct hit on the gun counts. A shot that lands on its own gun scores
@@ -1040,7 +1044,8 @@ terrain only, no figures or skyline, its own art.
 - **Unlimited shells**, the base loadout for both guns, no drafts, no refunds.
 - **Aim help**, per player, off by default, set on the pre-match screen: that
   player's last landing mark and arc this round, and a Short arc (the drag
-  preview's) of the current aim in calm air.
+  preview's) of the current aim in calm air. The AI has none: its row picks
+  its level instead, and its preview would draw the shot it solved.
 
 ### 11.2 One sim, two directions
 
@@ -1160,6 +1165,9 @@ file's own rules.
 ```
 match <format> <sim epoch> <match epoch> <seed> <width> <rolling> <help L> <help R> <n> <log>
 match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
+
+match <format> <sim epoch> <match epoch> <seed> <width> <rolling> <help L> <help R> <level> <ground or -> <n> <log>
+match 3 6 1 1234567 360 1 1 0 easy - 4 900:600 870:640 / 850:610
 ```
 
 - **The log** is `A:P` per shot (the aim as dialled) and `/` when the
@@ -1208,9 +1216,103 @@ match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
 - **A match on a layout** (the GROUND row, §13.9) is kept like any other,
   its line in format 2 carrying the layout's code (§13.4), and resumes on
   it. One started by `--salt-layout` is not kept.
+- **A match against the AI** (§11.7) is format 3: format 2's fields with
+  the AI's level (`easy`, `medium`, `hard`) after the aim help and `-` for
+  the ground on generated screens. It resumes against the AI at that level,
+  and its shots replay like anyone's, since the AI's are logged as fired. A
+  match between two players is still written as format 1 or 2, so a build
+  from before the AI resumes it as before; that build drops a format 3 line
+  as a newer version, with the usual note.
 - **Forking the round** (MAKE MAP OF THIS ROUND, §13.11) takes an
   unfinished match off the screen without ending it: its line stays and
   RESUME MATCH offers it, as after a kill.
+
+### 11.7 Local AI opponent
+
+**Built** (`crates/salt-line-godot/src/opponent.rs`, paced in
+`app/versus.rs`). **Owner decisions (October 2026):** RIGHT OPPONENT: AI on
+the pre-match screen puts the computer on the right gun; three levels,
+EASY by default; it eases off while it leads.
+
+**Who it is for.** A child who wants a duel when nobody is free to take the
+phone. So it is pitched to lose more than it wins at EASY, it says YOU and
+AI rather than LEFT GUN and RIGHT GUN, and nothing in an AI match asks
+anyone to pass the phone or to read much.
+
+- **It knows the wind and the range exactly.** Each turn it asks the solver
+  for a shot that hits, flown by the integrator in this turn's wind
+  (`versus::shots_at`), the way the demo's duel does (§12.2). What makes it
+  beatable is that it misses on purpose.
+- **Levels.** RIGHT AIM HELP becomes `AI LEVEL: EASY / MEDIUM / HARD`
+  (Right, or tap the row), and LEFT AIM HELP reads YOUR AIM HELP; the right
+  player's own aim-help choice is kept for a human match. The odds of firing the hitting shot on a turn are:
+
+  | Level | Hit | Ahead |
+  |---|---|---|
+  | EASY | 2 in 10 | 1 in 10 |
+  | MEDIUM | 4 in 10 | 2 in 10 |
+  | HARD | 6 in 10 (the demo's 3 in 5) | 4 in 10 |
+
+- **Easing off.** While the AI leads on hits in the round being played, it
+  plays one level down, and EASY drops to 1 in 10 (`opponent::ahead`).
+  Rounds won do not count. A lead it opens is slow to grow, and a child who
+  falls behind is not shut out. It never eases when level or behind on hits,
+  even a round up, so a last shot to tie, or a tied pair, is taken at full
+  odds.
+- **Deterministic.** Which turns hit is a hash of the match seed, the round,
+  the turn and the level (`opponent::turn_hash`): no random stream and no
+  frame timing, so a match plays the same way whatever the device.
+- **A miss is a near miss**, as in the demo: the hitting aim moved in power,
+  then angle, tried on a copy of the match until one leaves both guns
+  unhit. If none will do, or the solver finds nothing, a few high short
+  lobs (`opponent::FALLBACKS`) are tried on a copy too, in order of
+  preference: the first that misses both guns; failing that, the first
+  that hits only the player's gun (a point given away rather than its own
+  gun shelled); failing every one, the plain lob. So the AI avoids shelling
+  itself wherever any fallback allows. The demo does not take this path:
+  it falls back to the plain lob, untried, as it always has
+  (`opponent::Fallback::Lob`), so its duels are the same as before by
+  construction.
+- **Pacing.** The AI's plate holds 1.2 s (`AI_HANDOFF`), 2 s when it has a
+  cue to read out (LAST SHOT, HIT TO WIN, TIED, GUNS ROLLED;
+  `AI_HANDOFF_CUED`); its barrel swings to the shot over 0.7 s and fires at
+  1 s. The player's plate stays, so the turns read as turns and the guns
+  still roll once it lifts, but readies itself after 1.5 s (`AUTO_READY`),
+  or 2 s with one of the same cues (`AUTO_READY_CUED`, the AI's cued hold),
+  so a LAST SHOT is read out before the aim appears; READY skips the
+  wait. Everything that moves by itself stops under the
+  pause plate and while the window is out of focus, and in an AI match
+  the handoff plates pause on focus loss as aiming does. The AI's own
+  stage changes do not settle touches (§11.4's "one touch, one screen"),
+  so a tap on II just as it moves on is taken; the player's auto-ready
+  does, so no finger held over the plate fires a shot.
+- **Words.** One helper names a side everywhere (`render::versus::say`):
+  YOU and AI on the handoff plate, the aiming tag, the HIT callout (YOU
+  SCORE, AI TO ANSWER) and the result plate (YOU WIN, AI WINS). The AI's
+  plate reads AI IS AIMING, the player's YOUR TURN.
+- **Between rounds** the result plate leaves TITLE off in an AI match: a
+  child playing alone mashes, and Y (or R), which turns the AI on and off on
+  the pre-match screen, was TITLE there. NEXT ROUND and MAKE MAP OF THIS
+  ROUND stay; leaving mid-match is the pause plate's TITLE, as between turns.
+  A won match's plate keeps TITLE, with nothing left to lose.
+- **Kept** like any match (§11.6), in format 3, and for a rematch.
+- **How it plays against the harness's bots** (`just duel 400 kid --right
+  ai-easy`, 400 matches each, the bot on the left opening):
+
+  | | EASY | MEDIUM | HARD |
+  |---|---|---|---|
+  | kid wins | 99% | 74% | 21% |
+  | steady wins | 99% | 84% | 33% |
+  | AI's hit rate (v kid) | 19% | 35% | 55% |
+
+  The bots are guesses (`examples/duel.rs`): read the columns against each
+  other. EASY is meant to be beaten. HARD is the demo's odds and beats the
+  steady adult bot about two matches in three, so it is a stiff opponent
+  for a grown-up rather than an even one. The kid bot plays near-adult: with
+  aim help it hits about 42-47% of its shots against the steady bot's
+  50-55%, so how EASY and MEDIUM feel to a real child is not settled by
+  these numbers. Their calibration is provisional until the owner's
+  playtests with the child they are for.
 
 ---
 
@@ -1318,7 +1420,11 @@ misses two times in five. A miss is a *near* miss: the solver's aim moved in
 power, then in angle, until a trial on a copy of the run or match leaves the
 target standing (or the other gun unhit), so craters, chalk and landing marks
 land close to the target and rolling guns get their turn. A high short lob is
-kept for when no near miss is found.
+kept for when no near miss is found, fired as it is, untried
+(`opponent::Fallback::Lob`). The local AI (§11.7) aims the same way, but
+falls back to a few short shots tried on a copy instead, so it avoids
+shelling its own gun; the demo keeps the plain lob, so its duels are the
+ones it has always played.
 
 Pacing keeps it moving: each leg's mode card stays 1.8 s; each new aim
 takes 0.8 s, the barrel and readouts easing to it over the first 0.55 s and

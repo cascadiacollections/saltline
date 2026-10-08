@@ -1231,7 +1231,7 @@ fn quitting_a_match_survives_a_crash_anywhere() {
     &format!("match 1 {} 1 7 320 1 0 0 0\n", salt_line_sim::SIM_EPOCH + 1),
     "SAVED MATCH FROM A NEWER VERSION"
 )]
-#[case::newer_format("match 3 x\n", "SAVED MATCH FROM A NEWER VERSION")]
+#[case::newer_format("match 4 x\n", "SAVED MATCH FROM A NEWER VERSION")]
 fn a_match_file_that_will_not_do_is_cleared_with_a_note(#[case] text: &str, #[case] note: &str) {
     let mut disk = FakeDisk {
         match_main: Some(text.into()),

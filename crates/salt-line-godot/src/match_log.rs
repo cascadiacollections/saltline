@@ -21,6 +21,9 @@
 //!
 //! match <format> <sim epoch> <match epoch> <seed> <width> <rolling> <help L> <help R> <ground> <n> <log>
 //! match 2 6 1 1234567 320 0 0 1 SL0J8… 4 900:600 870:640 / 850:610
+//!
+//! match <format> <sim epoch> <match epoch> <seed> <width> <rolling> <help L> <help R> <level> <ground or -> <n> <log>
+//! match 3 6 1 1234567 360 1 1 0 easy - 4 900:600 870:640 / 850:610
 //! ```
 //!
 //! Format 1 is a match on generated screens, and is what such a match is
@@ -28,7 +31,11 @@
 //! ([`GROUND_FORMAT`]) is a match on a layout (DESIGN §13.9): the same
 //! fields with the layout's share code after the aim help. A build reads
 //! both; one from before layouts reads format 2 as a newer version and
-//! drops it with a note, as it should.
+//! drops it with a note, as it should. Format 3 ([`AI_FORMAT`]) is a match
+//! against the AI (DESIGN §11.7), on either ground: the AI's level after
+//! the aim help, then the layout's code or `-` for generated screens. A
+//! match between two players is still written as format 1 or 2, so a build
+//! from before the AI resumes it as before.
 //!
 //! | Field | Meaning |
 //! |---|---|
@@ -39,7 +46,8 @@
 //! | `width` | buffer width the match was generated at; a resumed match keeps it, letterboxed if the device's differs |
 //! | `rolling` | `1` if the guns roll after a hit (ROLLING GUNS on the pre-match screen), `0` if not |
 //! | `help L`, `help R` | each side's aim help, `1` on |
-//! | `ground` | format 2 only: the share code of the layout the match is played on (DESIGN §13.7) |
+//! | `level` | format 3 only: the AI's level, `easy`, `medium` or `hard`; the AI plays the right gun |
+//! | `ground` | format 2: the share code of the layout the match is played on (DESIGN §13.7); format 3: the same, or `-` for generated screens |
 //! | `n` | how many log entries follow, so a line missing some is never read as a shorter match |
 //! | `log` | in order: `A:P` for a shot, the aim as dialled (angle ticks, power ticks) before `Match::fire` puts it on the instruments' grid; `/` for the next round dealt, when the players moved on from a round's result |
 //!
@@ -108,6 +116,10 @@ pub const FORMAT: u32 = 1;
 /// The line's layout for a match on a layout's ground (DESIGN §13.9): as
 /// [`FORMAT`], with the layout's share code after the aim help.
 pub const GROUND_FORMAT: u32 = 2;
+/// The line's layout for a match against the AI (DESIGN §11.7): as
+/// [`GROUND_FORMAT`], with the AI's level before the ground, and `-` for
+/// the ground of a match on generated screens.
+pub const AI_FORMAT: u32 = 3;
 
 /// The duel rules' own epoch: bumped on any change to this crate that
 /// changes what a logged match replays to (`crate::versus`'s screens, hit
@@ -145,6 +157,9 @@ pub struct SavedMatch {
     pub rolling: bool,
     /// Aim help, by [`Side::index`].
     pub help: [bool; 2],
+    /// The right gun is the AI's, at this level (format 3); `None` between
+    /// two players.
+    pub ai: Option<crate::opponent::Level>,
     /// Every shot and new round, in order.
     pub log: Vec<Entry>,
     /// The share code of the layout every round is played on, for a match
@@ -173,6 +188,7 @@ impl SavedMatch {
             width: duel.width(),
             rolling: duel.rules.gun_shift > 0.0,
             help,
+            ai: None,
             log: log.to_vec(),
             ground: None,
         }
@@ -234,7 +250,9 @@ impl SavedMatch {
     /// The module docs' line, newline-terminated.
     pub fn to_line(&self) -> String {
         let flag = |b: bool| u8::from(b);
-        let format = if self.ground.is_some() {
+        let format = if self.ai.is_some() {
+            AI_FORMAT
+        } else if self.ground.is_some() {
             GROUND_FORMAT
         } else {
             FORMAT
@@ -249,9 +267,17 @@ impl SavedMatch {
             flag(self.help[0]),
             flag(self.help[1]),
         );
-        if let Some(code) = &self.ground {
+        if let Some(level) = self.ai {
             line.push(' ');
-            line.push_str(code);
+            line.push_str(level.token());
+        }
+        match &self.ground {
+            Some(code) => {
+                line.push(' ');
+                line.push_str(code);
+            }
+            None if self.ai.is_some() => line.push_str(" -"),
+            None => {}
         }
         line.push_str(&format!(" {}", self.log.len()));
         for entry in &self.log {
@@ -262,6 +288,27 @@ impl SavedMatch {
         }
         line.push('\n');
         line
+    }
+
+    /// The ground field of a format 2 or 3 line: a layout's share code, or
+    /// `-` for a match against the AI on generated screens.
+    fn ground(format: u32, field: Option<&str>) -> Result<Option<String>, Stale> {
+        match field {
+            Some("-") if format == AI_FORMAT => Ok(None),
+            // A share code is base32 after its prefix; anything else in its
+            // place is a damaged line, whatever it decodes to (checked when
+            // the match is rebuilt, `SavedMatch::layout`).
+            Some(code)
+                if code.len() <= MAX_CODE_CHARS
+                    && code.starts_with(CODE_PREFIX)
+                    && code[CODE_PREFIX.len()..]
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase()) =>
+            {
+                Ok(Some(code.to_string()))
+            }
+            _ => Err(Stale::Damaged),
+        }
     }
 
     /// Parse [`SavedMatch::to_line`]'s format. The format and both epochs
@@ -282,8 +329,8 @@ impl SavedMatch {
             return Err(Stale::Damaged);
         }
         let format: u32 = number(fields.next())?;
-        if format != FORMAT {
-            version(format, GROUND_FORMAT)?;
+        if format != FORMAT && format != GROUND_FORMAT {
+            version(format, AI_FORMAT)?;
         }
         let epoch: u32 = number(fields.next())?;
         version(epoch, SIM_EPOCH)?;
@@ -296,22 +343,15 @@ impl SavedMatch {
         }
         let rolling = flag(fields.next())?;
         let help = [flag(fields.next())?, flag(fields.next())?];
-        let ground = if format == GROUND_FORMAT {
-            // A share code is base32 after its prefix; anything else in its
-            // place is a damaged line, whatever it decodes to (checked when
-            // the match is rebuilt, `SavedMatch::layout`).
-            let code = fields.next().ok_or(Stale::Damaged)?;
-            let ok = code.len() <= MAX_CODE_CHARS
-                && code.starts_with(CODE_PREFIX)
-                && code[CODE_PREFIX.len()..]
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase());
-            if !ok {
-                return Err(Stale::Damaged);
-            }
-            Some(code.to_string())
+        let ai = if format == AI_FORMAT {
+            let token = fields.next().ok_or(Stale::Damaged)?;
+            Some(crate::opponent::Level::from_token(token).ok_or(Stale::Damaged)?)
         } else {
             None
+        };
+        let ground = match format {
+            FORMAT => None,
+            _ => Self::ground(format, fields.next())?,
         };
         let n: usize = number(fields.next())?;
         if n > MAX_ENTRIES {
@@ -333,6 +373,7 @@ impl SavedMatch {
             width,
             rolling,
             help,
+            ai,
             log,
             ground,
         })
