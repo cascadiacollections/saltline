@@ -226,7 +226,9 @@ TITLE leave it. Every result plate can be paused (Esc / B, or `II` on a
 touchscreen), and RESUME comes back to the same plate. On the pause plate,
 and on a round's result plate between two players, TITLE asks twice while
 the match is still to be won (TAP AGAIN TO QUIT); a second press within 3
-seconds quits, and anything else, or waiting, cancels it. The opponent and level survive RESUME MATCH and are kept for a rematch. Both generated ground and custom maps support the AI.
+seconds quits; RESUME, NEXT ROUND, pausing or waiting cancels it. The
+opponent and level survive RESUME MATCH and are kept for a rematch. Both
+generated ground and custom maps support the AI.
 
 The left gun fires right and the right gun fires left; turns alternate. Each
 side has a colour, amber for left and blue for right, used for its gun's tag,

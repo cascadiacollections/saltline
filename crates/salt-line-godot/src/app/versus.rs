@@ -1245,8 +1245,8 @@ impl Game {
     /// auto-ready); between two players it waits for READY already, and the
     /// result plate always waits for a press.
     ///
-    /// A TITLE armed on the pause plate is disarmed: whoever comes back
-    /// asks again.
+    /// A TITLE armed on the pause plate or a round's result plate is
+    /// disarmed: whoever comes back asks again.
     pub(super) fn auto_pause_versus(&mut self) {
         self.set_quit_armed(None);
         let Some(vs) = self.versus.live.as_mut() else {

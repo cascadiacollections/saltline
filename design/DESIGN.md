@@ -1325,11 +1325,11 @@ anyone to pass the phone or to read much.
   the pre-match screen, was TITLE there. NEXT ROUND and MAKE MAP OF THIS
   ROUND stay; leaving mid-match is the pause plate's TITLE, pressed twice
   (§11.4), as between turns. Between two players the round's plate keeps
-  its TITLE, which asks twice as well. On a touchscreen the plate's own II reaches
-  it, so quitting never means starting the next round first. The pause key
-  (Esc, a controller's B) works on the plate too, but the plate does not
-  list it, so a controller player may not find it. A won match's plate
-  keeps TITLE, with nothing left to lose.
+  its TITLE, which asks twice as well. On a touchscreen the plate's own II
+  reaches it, so quitting never means starting the next round first. The
+  pause key (Esc, a controller's B) works on the plate too, but the plate
+  does not list it, so a controller player may not find it. A won match's
+  plate keeps TITLE, with nothing left to lose.
 - **Aim help on by default** for the player against the AI (§11.1): the
   child this is for gets the landing mark and the preview without finding
   the row first. Turned off, it stays off against the AI for the session,
