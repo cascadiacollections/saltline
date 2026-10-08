@@ -1782,8 +1782,12 @@ job).
   it (as a finger lifts, or at once if the app loses focus mid-drag), set
   aside while a launch reads it. It is cleared only once saved (the
   revision that was saved) or discarded and the editor left. A draft from a
-  newer build is put back unread and never written over or cleared; the
-  start page says so, and a map made meanwhile is kept by saving it.
+  newer build (a later line format, a later code format, or a layout this
+  editor cannot hold: one gun, another width) is put back unread and never
+  written over or cleared; a note at launch and on opening the editor and
+  the start page say so, and a map made meanwhile is kept by saving it. A
+  draft the last launch died reading is dropped with a note. A code format
+  before this build's is an older build's, not a newer one's.
 - **A line's origin it cannot read** (a newer build's kind, a hand edit)
   never costs the layout: in the slot file it is kept verbatim after the
   code, in the draft it is dropped and the draft kept. A slot named by any
@@ -1828,7 +1832,11 @@ leaves the title up with a note (and the console says why).
   layout picked, ROLLING GUNS reads OFF, greyed, and does not toggle. A
   layout that no longer passes is shown dimmed and does not start.
 - A rematch keeps the ground; so does RESUME MATCH, which picks it again
-  on the GROUND row.
+  on the GROUND row. A match suspended to fork it picks its slot again by
+  where it came from, so if the map was saved over that slot meanwhile the
+  match goes on on the map it began on and the rematch plays the map as
+  saved (a note says so). A map neither bundled nor saved is checked
+  against the gate before a rematch may start on it.
 - Four bundled duel layouts, RIDGE, MESAS, CANYON and SPIRES (fixed wind),
   each made with the editor's own tools from a blank draft
   (`custom::bundled::recipe`). A CI test decodes every code, holds it to its

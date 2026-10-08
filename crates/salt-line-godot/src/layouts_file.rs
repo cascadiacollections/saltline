@@ -355,18 +355,29 @@ impl SavedDraft {
         if f.next().is_some() || !code_like(code) {
             return Err(Stale::Damaged);
         }
-        let layout = Layout::from_code(code).map_err(|e| match e {
-            CodeError::Format(_) => Stale::NewerVersion,
-            _ => Stale::Damaged,
-        })?;
-        // Only a layout the editor can hold: the layout width, two guns.
+        let layout = Layout::from_code(code).map_err(code_stale)?;
+        // A layout this editor cannot hold (another width, one gun) is a
+        // later build's draft (challenges, say): kept for it, as a slot's
+        // would be, never deleted.
         if layout.width() != salt_line_sim::layout::LAYOUT_WIDTH || !layout.is_duel() {
-            return Err(Stale::Damaged);
+            return Err(Stale::NewerVersion);
         }
         Ok(SavedDraft {
             draft: Draft { layout, from, slot },
             mirror,
         })
+    }
+}
+
+/// Why a share code in a file this build wrote cannot be read: a format
+/// past this build's is a newer build's, one before it an older one's
+/// (no build wrote one, but it is not this build's to read), anything else
+/// damage.
+pub fn code_stale(e: CodeError) -> Stale {
+    match e {
+        CodeError::Format(v) if v > salt_line_sim::layout::LAYOUT_FORMAT => Stale::NewerVersion,
+        CodeError::Format(_) => Stale::OlderVersion,
+        _ => Stale::Damaged,
     }
 }
 

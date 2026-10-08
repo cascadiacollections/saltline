@@ -2037,6 +2037,13 @@ mod versus;
 pub(crate) use demo::Demo;
 pub use demo::{Card as DemoCard, Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};
 pub(crate) use editor::{draft_label as editor_label, EditorState, GroundPick, LayoutsState};
+
+/// What the title and the editor say while a newer build's draft holds the
+/// draft file.
+#[cfg(test)]
+pub(crate) fn editor_newer_draft_note() -> &'static str {
+    editor::NEWER_DRAFT_NOTE
+}
 pub use editor::{
     Page as EditorPage, Purpose as EditorPurpose, TestFire, Toast, VISIBLE_ROWS as EDITOR_ROWS,
 };

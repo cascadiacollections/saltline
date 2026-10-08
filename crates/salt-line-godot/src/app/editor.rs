@@ -68,6 +68,10 @@ use crate::versus;
 use crate::versus::Side;
 use salt_line_sim::layout::{wind_units, Layout, LAYOUT_WIDTH};
 
+/// What the title and the editor say while a newer build's draft holds
+/// the draft file: nothing made here is kept as a draft until saved.
+pub const NEWER_DRAFT_NOTE: &str = "NEWER VERSION'S MAP DRAFT KEPT - SAVE YOUR MAPS";
+
 /// Slot rows the slot list shows at once, each as tall as the aim
 /// buttons, above the list's own buttons.
 pub const VISIBLE_ROWS: usize = 5;
@@ -391,6 +395,7 @@ impl Game {
                 self.fx.push(Effect::DraftFile(DraftFile::Abandon(
                     Abandoned::Interrupted,
                 )));
+                self.note_at_launch("MAP DRAFT COULD NOT BE RESTORED");
                 return self.take_effects();
             }
             SavedRun::Found(text) => text,
@@ -409,6 +414,7 @@ impl Game {
             Err(resume::Stale::NewerVersion) => {
                 self.editor.newer_draft = true;
                 self.fx.push(Effect::DraftFile(DraftFile::Restore));
+                self.note_at_launch(NEWER_DRAFT_NOTE);
             }
             Err(why) => {
                 self.fx.push(Effect::DraftFile(DraftFile::Abandon(
@@ -549,6 +555,18 @@ impl Game {
         if self.mode != Mode::Editor || self.in_demo() {
             return self.take_effects();
         }
+        let page = self.editor.page;
+        self.paste(text);
+        // Outside the frame, so the frame's own check cannot see the page
+        // change: settle here, so a second tap meant for the menu does not
+        // land on the editing screen's UNDO.
+        if self.editor.page != page {
+            self.settle_touch();
+        }
+        self.take_effects()
+    }
+
+    fn paste(&mut self, text: &str) {
         match Layout::from_code(text) {
             Err(_) => self.note("NOT A MAP CODE".into()),
             Ok(l) if !l.is_duel() => self.note("ONE-GUN MAPS COME LATER".into()),
@@ -567,7 +585,6 @@ impl Game {
                 });
             }
         }
-        self.take_effects()
     }
 }
 
@@ -577,6 +594,9 @@ impl Game {
     /// Open the editor: on the kept draft if there is one, else its start
     /// page. Drawn at the layout width, letterboxed on a wider phone.
     pub(crate) fn open_editor(&mut self) {
+        if self.editor.newer_draft {
+            self.note(NEWER_DRAFT_NOTE.into());
+        }
         self.mode = Mode::Editor;
         self.editor.page = if self.editor.ed.is_some() {
             Page::Edit
@@ -1784,8 +1804,8 @@ impl Game {
             .find(|g| &g.layout == layout)
             .unwrap_or_else(|| GroundPick {
                 source: GroundSource::Other,
+                playable: crate::custom::validate(layout).is_ok(),
                 layout: layout.clone(),
-                playable: true,
             })
     }
 }

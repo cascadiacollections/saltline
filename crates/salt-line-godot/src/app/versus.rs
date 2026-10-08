@@ -163,6 +163,10 @@ pub(crate) struct VersusState {
     /// §13.9), or `None` for GENERATED. Kept for a rematch, and set again
     /// by RESUME MATCH on a layout.
     pub(crate) ground: Option<super::GroundPick>,
+    /// Where the GROUND row's pick for a match suspended this session came
+    /// from (MAKE MAP OF THIS ROUND): RESUME MATCH picks it again by that,
+    /// so a rematch plays a slot as it now is, not as the match began.
+    pub(crate) suspended_source: Option<super::editor::GroundSource>,
     /// Matches started this session, so each gets its own seed.
     pub(crate) started: u64,
     /// Different at every launch (the adapter reads the clock), so the
@@ -219,6 +223,8 @@ pub(crate) struct VersusPlay {
     /// The layout every round is played on, for a match on one (DESIGN
     /// §13.9): its code goes in the match's line (`match_log` format 2).
     pub(crate) layout: Option<salt_line_sim::layout::Layout>,
+    /// Where the GROUND row's pick this match was started on came from.
+    pub(crate) source: Option<super::editor::GroundSource>,
 }
 
 impl VersusPlay {
@@ -244,6 +250,7 @@ impl VersusPlay {
             kept: false,
             saved_len: None,
             layout: None,
+            source: None,
         }
     }
 
@@ -424,8 +431,10 @@ impl Game {
             self.start_layout_match(&pick.layout);
             if let Some(vs) = self.versus.live.as_mut() {
                 vs.kept = true;
+                vs.source = Some(pick.source);
             }
             self.saved_match = None;
+            self.versus.suspended_source = None;
             return;
         }
         self.versus.started += 1;
@@ -500,6 +509,7 @@ impl Game {
             None => Some(SavedMatch::of(&vs.duel, help, &vs.log)),
         };
         self.saved_match = saved;
+        self.versus.suspended_source = vs.source;
     }
 
     /// Drop the match on screen, and clear its line if it was kept. A
@@ -567,8 +577,25 @@ impl Game {
         self.versus.help = saved.help;
         // A match on a layout never rolls, whatever was chosen: the
         // choice for the next generated match stays as it was.
+        let source = self.versus.suspended_source.take();
         match vs.layout.clone() {
-            Some(l) => self.versus.ground = Some(self.ground_for(&l)),
+            Some(l) => {
+                // The match goes on on its own ground; the GROUND row (and
+                // so a rematch) is the pick it came from, as that slot now
+                // is, saying so if the map was saved over meanwhile.
+                let again =
+                    source.and_then(|src| self.grounds().into_iter().find(|g| g.source == src));
+                match again {
+                    Some(pick) => {
+                        if pick.layout != l {
+                            self.note("A REMATCH PLAYS THE MAP AS SAVED".into());
+                        }
+                        vs.source = Some(pick.source);
+                        self.versus.ground = Some(pick);
+                    }
+                    None => self.versus.ground = Some(self.ground_for(&l)),
+                }
+            }
             None => {
                 self.versus.rolling_off = !saved.rolling;
                 self.versus.ground = None;

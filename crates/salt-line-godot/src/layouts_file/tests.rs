@@ -149,19 +149,40 @@ fn a_draft_survives_its_line() {
 #[case::not_a_code("draft 1 1 - - banana\n")]
 #[case::bad_checksum("draft 1 1 - - SL0000000\n")]
 #[case::two_lines("draft 1 1 - - SLX\ndraft 1 1 - - SLX\n")]
-#[case::one_gun("ONE_GUN")]
 #[case::nul("draft 1\0\n")]
 fn a_damaged_draft_is_never_read(#[case] text: &str) {
-    let text = if text == "ONE_GUN" {
-        let code = salt_line_sim::layout::Layout::from_run_screen(1, 0)
-            .to_code()
-            .unwrap();
-        format!("draft 1 1 - - {code}\n")
-    } else {
-        text.to_string()
-    };
-    assert_eq!(SavedDraft::parse(&text), Err(Stale::Damaged), "{text:?}");
-    assert!(!draft_sound(&text));
+    assert_eq!(SavedDraft::parse(text), Err(Stale::Damaged), "{text:?}");
+    assert!(!draft_sound(text));
+}
+
+/// A draft holding a layout this editor cannot hold (one gun, another
+/// width) is a later build's, kept for it like a slot, never deleted.
+#[test]
+fn a_draft_this_editor_cannot_hold_is_a_newer_builds() {
+    let one_gun = salt_line_sim::layout::Layout::from_run_screen(1, 0);
+    let mut wide = crate::custom::fork_duel(1, 0);
+    wide.heights.push(wide.heights[0]);
+    for l in [one_gun, wide] {
+        let text = format!("draft 1 1 - - {}\n", l.to_code().unwrap());
+        assert_eq!(SavedDraft::parse(&text), Err(Stale::NewerVersion));
+        assert!(draft_sound(&text), "a whole copy, kept");
+    }
+}
+
+/// Only a code format past this build's is a newer build's; one before it
+/// is an older build's, and anything else damage.
+#[test]
+fn a_code_format_is_newer_only_if_it_is_past_this_builds() {
+    use salt_line_sim::layout::LAYOUT_FORMAT;
+    assert_eq!(
+        code_stale(CodeError::Format(LAYOUT_FORMAT + 1)),
+        Stale::NewerVersion
+    );
+    assert_eq!(
+        code_stale(CodeError::Format(LAYOUT_FORMAT - 1)),
+        Stale::OlderVersion
+    );
+    assert_eq!(code_stale(CodeError::Checksum), Stale::Damaged);
 }
 
 #[test]

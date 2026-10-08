@@ -208,11 +208,9 @@ impl SavedMatch {
         let Some(code) = self.ground.as_deref() else {
             return Ok(None);
         };
-        let layout = Layout::from_code(code).map_err(|e| match e {
-            // A code a newer build wrote: its line is that build's too.
-            layout::CodeError::Format(_) => Stale::NewerVersion,
-            _ => Stale::Damaged,
-        })?;
+        // A code in a newer format makes its line a newer build's; an older
+        // format, an older build's (`layouts_file::code_stale`).
+        let layout = Layout::from_code(code).map_err(crate::layouts_file::code_stale)?;
         let fits = layout.is_duel()
             && layout.width() == self.width
             && layout::check_placement(&layout).is_empty();

@@ -770,6 +770,120 @@ fn undo_during_a_drag_takes_the_stroke_back_once() {
 
 // ------------------------------------------------------------ the clipboard
 
+/// PASTE from the menu changes the page outside a frame: the touches are
+/// settled there too, so a quick second tap where the menu was cannot
+/// land on the editing screen's UNDO and take the paste back.
+#[test]
+fn a_quick_tap_after_paste_cannot_undo_it() {
+    let (mut g, mut node) = blank();
+    let mut other = layout(&g).clone();
+    other.heights[100] += 160;
+    node.clipboard = other.to_code().unwrap();
+    node.ed(&mut g, Ed::Menu);
+    node.row(&mut g, RowAct::Paste);
+    assert_eq!(g.editor.page, Page::Edit);
+    assert_eq!(layout(&g), &other);
+    // Straight away, a tap on UNDO as the editing screen draws it.
+    let buttons = node.draw(&mut g);
+    let undo = buttons
+        .iter()
+        .find(|b| b.action == Action::Edit(Ed::Undo))
+        .unwrap()
+        .rect;
+    let tap = Intents {
+        events: vec![
+            Event::FingerDown {
+                index: 3,
+                x: undo.x as f32 + 4.0,
+                y: undo.y as f32 + 4.0,
+            },
+            Event::FingerUp { index: 3 },
+        ],
+        ..node.idle()
+    };
+    node.tick(&mut g, tap);
+    node.frames(&mut g, 2);
+    assert_eq!(layout(&g), &other, "the paste stands");
+}
+
+/// A match resumed on a map that is no longer bundled or saved is checked
+/// before it is offered for a rematch, not taken on trust.
+#[test]
+fn a_ground_neither_bundled_nor_saved_is_checked() {
+    let (g, _) = setup(WINDOW);
+    let mut pit = crate::custom::fork_duel(4, 0);
+    for c in 288 - 19..288 + 20 {
+        let floor = (276..303).contains(&c);
+        pit.heights[c] = height_steps(if floor { 40.0 } else { 108.0 });
+    }
+    let pick = g.ground_for(&pit);
+    assert_eq!(pick.source, super::editor::GroundSource::Other);
+    assert!(!pick.playable, "checked, and found wanting");
+    assert!(g.ground_for(&crate::custom::fork_duel(4, 0)).playable);
+}
+
+/// A match on a saved map, forked, the map changed and saved over its slot,
+/// then BACK TO MATCH: the match goes on on the map it began on, and the
+/// GROUND row (so the next match) is the slot as now saved, which the
+/// player is told.
+#[test]
+fn a_map_saved_over_its_slot_mid_match_is_the_ground_for_a_rematch() {
+    let (mut g, mut node) = setup(WINDOW);
+    let before = crate::custom::fork_duel(4, 0);
+    g.set_layouts(Some(&format!(
+        "layouts 1\nlayout 2 {}\n",
+        before.to_code().unwrap()
+    )));
+    let n = crate::custom::bundled::BUNDLED.len();
+    for _ in 0..=n {
+        node.ed(&mut g, Ed::GroundNext);
+    }
+    assert_eq!(g.versus.ground.as_ref().unwrap().layout, before);
+    node.tap(&mut g, Action::Confirm);
+    assert_eq!(g.mode, Mode::Versus);
+    node.frames(&mut g, 20);
+    g.input.touch_active = false;
+    node.key(&mut g, Key::Escape);
+    node.key(&mut g, Key::E);
+    assert_eq!(g.editor.ed.as_ref().unwrap().draft.slot, Some(2));
+    node.key(&mut g, Key::Up);
+    let after = layout(&g).clone();
+    assert_ne!(after, before);
+    // SAVE, onto its own slot (chosen), then BACK TO MATCH.
+    node.key(&mut g, Key::Escape);
+    node.key(&mut g, Key::Down);
+    node.key(&mut g, Key::Enter);
+    node.key(&mut g, Key::Enter);
+    assert_eq!(g.layouts.slots.get(2).unwrap().layout(), Ok(after.clone()));
+    node.key(&mut g, Key::Escape);
+    let leave = g
+        .editor_rows()
+        .iter()
+        .position(|r| r.0 == RowAct::Leave)
+        .unwrap();
+    for _ in 0..leave {
+        node.key(&mut g, Key::Down);
+    }
+    node.key(&mut g, Key::Enter);
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(
+        g.versus.live.as_ref().unwrap().layout.as_ref(),
+        Some(&before)
+    );
+    assert_eq!(g.versus.ground.as_ref().unwrap().layout, after);
+    assert_eq!(g.status, "A REMATCH PLAYS THE MAP AS SAVED");
+    // Quit, and the next match is on the map as saved.
+    node.key(&mut g, Key::Escape);
+    node.key(&mut g, Key::R);
+    node.key(&mut g, Key::Num2);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    node.key(&mut g, Key::Enter);
+    assert_eq!(
+        g.versus.live.as_ref().unwrap().layout.as_ref(),
+        Some(&after)
+    );
+}
+
 #[test]
 fn copy_and_paste_a_code() {
     let (mut g, mut node) = blank();

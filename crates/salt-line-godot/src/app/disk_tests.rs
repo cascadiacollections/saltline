@@ -1746,8 +1746,85 @@ fn a_draft_that_will_not_do(#[case] text: &str, #[case] kept: bool) {
     if kept {
         assert_eq!(disk.draft_main.as_deref(), Some(text));
         assert!(g.editor.newer_draft);
+        assert_eq!(g.status, crate::app::editor_newer_draft_note());
     } else {
         assert_eq!(disk.draft_main, None);
         assert_eq!(g.status, "MAP DRAFT COULD NOT BE RESTORED");
     }
+}
+
+/// A draft the last launch died reading is dropped, with the same note.
+#[test]
+fn an_interrupted_draft_is_dropped_with_a_note() {
+    let mut disk = FakeDisk {
+        draft_aside: Some("draft 1 1 - - SL00\n".into()),
+        ..FakeDisk::default()
+    };
+    let g = disk.launch();
+    assert!(g.editor.ed.is_none());
+    assert_eq!(disk.draft_aside, None);
+    assert_eq!(g.status, "MAP DRAFT COULD NOT BE RESTORED");
+}
+
+/// A match suspended by MAKE MAP OF THIS ROUND, then a map made in the
+/// editor, killed there after every disk operation in turn: a launch offers
+/// at most the match as played, and at most a draft the editing passed
+/// through; with the whole flow on disk it offers both, RESUME MATCH and
+/// the editor reopening on the draft.
+#[test]
+fn a_suspended_match_and_a_draft_survive_a_crash_anywhere() {
+    fn flow(disk: &mut FakeDisk) -> (Vec<match_log::Entry>, Vec<salt_line_sim::layout::Layout>) {
+        let mut g = start_match(disk);
+        for _ in 0..3 {
+            match_turn(&mut g, disk);
+        }
+        let log = vs(&g).log.clone();
+        press(&mut g, disk, Key::Escape);
+        press(&mut g, disk, Key::E);
+        assert_eq!(g.mode, Mode::Editor);
+        assert!(g.saved_match.is_some());
+        let mut seen = vec![draft(&g).unwrap().clone()];
+        for step in [Key::Up, Key::Up, Key::Right, Key::Down] {
+            press(&mut g, disk, step);
+            let now = draft(&g).unwrap();
+            if seen.last() != Some(now) {
+                seen.push(now.clone());
+            }
+        }
+        (log, seen)
+    }
+    let mut whole = FakeDisk::default();
+    let (log, seen) = flow(&mut whole);
+    let ops = whole.done;
+    for k in 0..=ops {
+        let mut disk = FakeDisk {
+            budget: Some(k),
+            ..FakeDisk::default()
+        };
+        flow(&mut disk);
+        disk.budget = None;
+        let mut g = disk.launch();
+        if let Some(saved) = &g.saved_match {
+            assert!(log.starts_with(&saved.log), "crash after {k}");
+        }
+        if let Some(l) = draft(&g) {
+            assert!(seen.contains(l), "crash after {k}: a draft never made");
+        }
+        if k == ops {
+            assert_eq!(
+                g.saved_match.as_ref().map(|s| s.log.clone()),
+                Some(log.clone())
+            );
+            assert_eq!(draft(&g), seen.last());
+            press(&mut g, &mut disk, Key::Num2);
+            assert_eq!(g.mode, Mode::Versus, "RESUME MATCH");
+            assert_eq!(vs(&g).log, log);
+        }
+    }
+    // And the editor reopens on the draft, the match still offered.
+    let mut g = whole.launch();
+    assert!(g.saved_match.is_some());
+    g.open_editor();
+    assert_eq!(g.editor.page, crate::app::EditorPage::Edit);
+    assert_eq!(draft(&g), seen.last());
 }
