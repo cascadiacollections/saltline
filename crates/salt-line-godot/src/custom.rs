@@ -105,6 +105,13 @@ pub fn duel_winds(wind: &WindSpec) -> Vec<i32> {
 /// the gate's cap. The editor's fairness reading: a side with fewer shots
 /// in some wind has the harder ground. Empty for a layout without two guns.
 pub fn duel_counts(layout: &Layout) -> Vec<(i32, [usize; 2])> {
+    duel_counts_capped(layout, GATE_CAP)
+}
+
+/// [`duel_counts`], counting up to `cap` rather than the gate's cap: the
+/// editor counts further, so its fairness sign can tell two sides apart
+/// that both pass the gate with room to spare.
+pub fn duel_counts_capped(layout: &Layout, cap: usize) -> Vec<(i32, [usize; 2])> {
     if !layout.is_duel() {
         return Vec::new();
     }
@@ -119,7 +126,7 @@ pub fn duel_counts(layout: &Layout) -> Vec<(i32, [usize; 2])> {
             let counts = Side::BOTH.map(|side| {
                 let frame = frame_for(&shared, side);
                 let target = target_in_frame(&shared, side);
-                shots_at(&frame, target, &lo, reach, GATE_CAP).len()
+                shots_at(&frame, target, &lo, reach, cap).len()
             });
             (wind, counts)
         })

@@ -59,6 +59,7 @@ pub mod cli;
 pub mod crash;
 pub mod custom;
 pub mod durable;
+pub mod editor;
 pub mod font;
 pub mod frame;
 pub mod game;

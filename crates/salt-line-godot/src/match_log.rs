@@ -181,7 +181,12 @@ impl SavedMatch {
     /// [`SavedMatch::of`] for a match on `layout`'s ground. `None` for a
     /// layout the share code cannot hold, which no layout that passed its
     /// checks is.
-    pub fn on_ground(duel: &Match, layout: &Layout, help: [bool; 2], log: &[Entry]) -> Option<Self> {
+    pub fn on_ground(
+        duel: &Match,
+        layout: &Layout,
+        help: [bool; 2],
+        log: &[Entry],
+    ) -> Option<Self> {
         Some(Self {
             ground: Some(layout.to_code().ok()?),
             ..Self::of(duel, help, log)
