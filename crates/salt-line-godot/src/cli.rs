@@ -77,9 +77,9 @@ pub struct DevArgs {
     /// the corner pad, [`PHONE_WINDOW`]), for captures on a desktop.
     pub phone: bool,
     /// `--salt-flat`: draw every frame as one canvas, sky and ground
-    /// included, instead of in layers (`backdrop`). The fallback, should a
-    /// GPU ever composite the layers wrong, and the reference they are
-    /// compared with.
+    /// included, instead of in layers (`backdrop`). The reference the layers
+    /// are compared with, and a developer fallback for telling a layering
+    /// bug from any other; not a player setting.
     pub flat: bool,
     /// `--salt-fork-run <seed>:<screen>`: print the share code of that run
     /// screen forked into a layout, and quit (`custom::fork_report`).

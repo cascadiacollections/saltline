@@ -235,34 +235,42 @@ impl Capture {
     }
 }
 
-/// How many drawn frames the GPU check compares after the capture.
-const GPU_CHECK_FRAMES: u64 = 600;
-
 /// After the timing capture, check the GPU's side of the layered frame
 /// (`backdrop`) on the device itself: each drawn frame is read back from
 /// the viewport and compared, pixel for pixel, with the same frame drawn
 /// flat on the CPU. Readback stalls the GPU, which is why it runs only
 /// once the timings are taken.
 ///
-/// The viewport read in a frame's `process` may still hold an older frame
-/// than the last one drawn (the renderer can be a frame or two behind), so
-/// each read is compared with the last few flat frames: a read that is
-/// exactly one of them is right, and one that matches none is wrong.
+/// The read happens in the next frame's `process`, before anything new is
+/// drawn, so the viewport must hold exactly the frame last drawn: only a
+/// read equal to the newest flat frame passes. A read that equals an older
+/// one (a stale layer, say a ground window a shake behind) is counted apart
+/// and fails the check; the older frames are kept only to tell the two
+/// failures apart.
+///
+/// It runs over several scenes in turn (see `game.rs`), each its own
+/// report line.
 #[derive(Default)]
 pub struct GpuCheck {
+    /// The scene being checked.
+    scene: &'static str,
     /// Drawn frames still to compare; 0 when not running.
     left: u64,
     /// The flat frames lately drawn, newest first, each with its size and
-    /// whether it was drawn in layers.
-    recent: std::collections::VecDeque<(Vec<u8>, i32, i32, bool)>,
+    /// what the layered frame had under its overlay.
+    recent: std::collections::VecDeque<(Vec<u8>, i32, i32, Option<crate::backdrop::Shown>)>,
     /// A frame was drawn since the last comparison.
     pending: bool,
     frames: u64,
     layered: u64,
-    /// Reads that matched the newest frame, an older one, or none.
+    shaken: u64,
+    outlined: u64,
+    /// Reads that matched the newest frame, only an older one, or none.
     newest: u64,
     older: u64,
     none: u64,
+    /// The ground layer's version at the scene's start and now.
+    ground_versions: Option<(u64, u64)>,
     /// The first few wrong pixels: x, y, read back, newest flat frame.
     samples: Vec<(i32, i32, [u8; 3], [u8; 3])>,
     sizes: Option<(i32, i32, i32, i32)>,
@@ -272,8 +280,13 @@ pub struct GpuCheck {
 const GPU_CHECK_LAG: usize = 3;
 
 impl GpuCheck {
-    pub fn start(&mut self) {
-        self.left = GPU_CHECK_FRAMES;
+    /// Check `frames` drawn frames of the scene called `scene`.
+    pub fn start(&mut self, scene: &'static str, frames: u64) {
+        *self = GpuCheck {
+            scene,
+            left: frames,
+            ..GpuCheck::default()
+        };
     }
 
     /// Whether this frame's flat reference is wanted.
@@ -281,12 +294,23 @@ impl GpuCheck {
         self.left > 0
     }
 
-    /// The frame just drawn should look like `flat`, `w` by `h`.
-    pub fn expect(&mut self, flat: &[u8], w: i32, h: i32, layered: bool) {
+    /// The frame just drawn should look like `flat`, `w` by `h`; layered,
+    /// it had `shown` under its overlay, and the ground layer was at
+    /// version `ground`.
+    pub fn expect(
+        &mut self,
+        flat: &[u8],
+        w: i32,
+        h: i32,
+        shown: Option<crate::backdrop::Shown>,
+        ground: u64,
+    ) {
         if self.running() {
-            self.recent.push_front((flat.to_vec(), w, h, layered));
+            self.recent.push_front((flat.to_vec(), w, h, shown));
             self.recent.truncate(GPU_CHECK_LAG);
             self.pending = true;
+            let first = self.ground_versions.map_or(ground, |v| v.0);
+            self.ground_versions = Some((first, ground));
         }
     }
 
@@ -296,8 +320,8 @@ impl GpuCheck {
     }
 
     /// Compare `image`, the viewport read back, whose buffer starts `left`
-    /// pixels in (the letterbox), with the recent flat frames. Returns the
-    /// report when the last frame has been compared.
+    /// pixels in (the letterbox), with the frame last drawn. Returns the
+    /// scene's report when its last frame has been compared.
     pub fn compare(&mut self, image: Gd<godot::classes::Image>, left: i32) -> Option<String> {
         self.pending = false;
         let mut image = image;
@@ -335,23 +359,31 @@ impl GpuCheck {
                 first_wrong = bad;
             }
         }
+        let shown = self.recent.front().and_then(|f| f.3);
         self.frames += 1;
-        self.layered += u64::from(self.recent.front().is_some_and(|f| f.3));
+        self.layered += u64::from(shown.is_some());
+        self.shaken += u64::from(shown.is_some_and(|s| s.cam_x != 0));
+        self.outlined += u64::from(shown.is_some_and(|s| s.outline));
         match matched {
             Some(0) => self.newest += 1,
             Some(_) => self.older += 1,
-            None => {
-                self.none += 1;
-                let room = 12usize.saturating_sub(self.samples.len());
-                self.samples
-                    .extend(first_wrong.into_iter().take(room.min(4)));
-            }
+            None => self.none += 1,
+        }
+        if matched != Some(0) {
+            let room = 12usize.saturating_sub(self.samples.len());
+            self.samples
+                .extend(first_wrong.into_iter().take(room.min(4)));
         }
         self.left -= 1;
         (self.left == 0).then(|| {
+            let pass = self.newest == self.frames;
+            let grounds = self.ground_versions.map_or(0, |(a, b)| b - a);
             format!(
-                "salt-profile: gpu check frames={} layered={} exact_newest={} exact_older={} matching_none={} buffer_and_viewport={:?} samples(x,y,got,want)={:?}",
-                self.frames, self.layered, self.newest, self.older, self.none, self.sizes, self.samples
+                "salt-profile: gpu check scene={} {} frames={} layered={} shaken_or_panned={} outlined={} ground_uploads={} exact_newest={} exact_older_only={} matching_none={} buffer_and_viewport={:?} samples(x,y,got,want)={:?}",
+                self.scene,
+                if pass { "PASS" } else { "FAIL" },
+                self.frames, self.layered, self.shaken, self.outlined, grounds,
+                self.newest, self.older, self.none, self.sizes, self.samples
             )
         })
     }

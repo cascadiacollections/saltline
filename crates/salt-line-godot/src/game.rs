@@ -209,6 +209,9 @@ pub struct SaltLine {
     gpu_check: crate::profiling::GpuCheck,
     #[cfg(feature = "profiling")]
     check_frame: (Canvas, Cache, Vec<Button>),
+    /// Which of `start_check_scene`'s scenes is being checked.
+    #[cfg(feature = "profiling")]
+    check_scene: usize,
 }
 
 #[godot_api]
@@ -255,6 +258,8 @@ impl INode2D for SaltLine {
             gpu_check: Default::default(),
             #[cfg(feature = "profiling")]
             check_frame: (Canvas::new(1, 1), Cache::default(), Vec::new()),
+            #[cfg(feature = "profiling")]
+            check_scene: 0,
         }
     }
 
@@ -348,6 +353,8 @@ impl INode2D for SaltLine {
                 .and_then(|t| t.get_image());
             if let Some(report) = image.and_then(|i| self.gpu_check.compare(i, left)) {
                 godot_print!("{report}");
+                self.check_scene += 1;
+                self.start_check_scene();
             }
         }
         #[cfg(feature = "profiling")]
@@ -406,7 +413,7 @@ impl INode2D for SaltLine {
                 for line in lines {
                     godot_print!("{line}");
                 }
-                self.gpu_check.start();
+                self.start_check_scene();
             }
         }
     }
@@ -420,6 +427,11 @@ impl INode2D for SaltLine {
         // game, with nearest filtering set project-wide. A texture updated in
         // place needs no new draw; this runs again only when which strips are
         // shown, or where the ground is, changes.
+        //
+        // The order here, sky, ground, outline, then the frame, is the order
+        // `Backdrop::composite` puts the layers together in on the CPU, which
+        // is what the tests hold equal to the flat frame. Change one, change
+        // both.
         if let Some(shown) = self.cache.backdrop.shown() {
             if let Some(sky) = &self.sky {
                 let tex = sky.texture.clone();
@@ -428,7 +440,7 @@ impl INode2D for SaltLine {
             if let Some(ground) = &self.ground {
                 let tex = ground.texture.clone();
                 let h = ground.h as f32;
-                if let Some(win) = backdrop::window(shown.ground_x(), self.canvas.w, ground.w) {
+                if let Some(win) = backdrop::window(shown.ground_x(), shown.w, ground.w) {
                     let (dst_x, src_x, w) = (win.dst_x as f32, win.src_x as f32, win.w as f32);
                     self.base_mut().draw_texture_rect_region(
                         &tex,
@@ -1194,10 +1206,49 @@ impl SaltLine {
             let (canvas, cache, buttons) = &mut self.check_frame;
             canvas.resize(self.canvas.w, self.canvas.h);
             render::frame(&self.g, &self.art, canvas, buttons, cache);
-            let layered = self.cache.backdrop.shown().is_some();
+            let backdrop = &self.cache.backdrop;
+            let (shown, ground) = (backdrop.shown(), backdrop.ground().1);
             self.gpu_check
-                .expect(canvas.bytes(), canvas.w, canvas.h, layered);
+                .expect(canvas.bytes(), canvas.w, canvas.h, shown, ground);
         }
+    }
+
+    /// The profiling build's GPU check, scene `check_scene`: the run the
+    /// capture timed, then an autopiloted versus match (hits, the shake to
+    /// the left of the world, guns rolling), then a night screen under Long
+    /// Lens (stars, the taller buffer) with Sapper's Eye. Past the last,
+    /// nothing.
+    #[cfg(feature = "profiling")]
+    fn start_check_scene(&mut self) {
+        use salt_line_sim::modifiers::Modifier;
+        let mut args = DevArgs::parse(&[]);
+        args.auto = true;
+        let (scene, frames) = match self.check_scene {
+            0 => ("run", 600),
+            1 => {
+                args.versus = true;
+                ("versus", 2400)
+            }
+            2 => {
+                args.seed = Some(42);
+                args.screen = Some(6);
+                args.miss = true;
+                ("night-long-lens", 900)
+            }
+            _ => return,
+        };
+        if self.check_scene > 0 {
+            let fx = self.g.start_dev(&args, Self::today());
+            self.apply(fx);
+            if let Some(run) = self.g.play.run.as_mut().filter(|_| args.seed.is_some()) {
+                run.loadout.take(Modifier::LongLens);
+                run.loadout.take(Modifier::SappersEye);
+                let fx = self.g.fit_display(self.window_size(), self.cutout);
+                self.apply(fx);
+            }
+        }
+        godot_print!("salt-profile: gpu check scene={scene} starting");
+        self.gpu_check.start(scene, frames);
     }
 
     /// Hand the changed parts of the buffer to the GPU without allocating.
@@ -1220,6 +1271,16 @@ impl SaltLine {
         let backdrop_time = backdrop_started.elapsed();
         let (w, h) = (self.canvas.w, self.canvas.h);
         let bytes = self.canvas.bytes();
+        // Layered, the frame goes over the backdrop, and blending is exact
+        // only for pixels fully transparent or fully opaque (`backdrop`).
+        debug_assert!(
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[3] == 0 || p[3] == 255),
+            "a frame pixel is neither transparent nor opaque"
+        );
         if !self.shadow.fits(w, h) || self.whole.is_none() || self.strips.len() != STRIPS {
             self.whole = Layer::new(bytes, w, 0, h);
             self.strips = (0..STRIPS)
@@ -1283,27 +1344,39 @@ impl SaltLine {
         let mut redraw = shown != self.backdrop_drawn;
         self.backdrop_drawn = shown;
         let mut uploads = 0;
-        if shown.is_some() {
-            let (sky, v) = b.sky();
-            if v != self.backdrop_versions.0 || self.sky.is_none() {
-                self.backdrop_versions.0 = v;
-                redraw |= Layer::keep(&mut self.sky, sky);
+        let mut failed = false;
+        let mut keep =
+            |layer: &mut Option<Layer>, uploaded: &mut u64, (canvas, v): (&Canvas, u64)| {
+                if v == *uploaded && layer.is_some() {
+                    return;
+                }
+                *uploaded = v;
                 uploads += 1;
-            }
-            let (ground, v) = b.ground();
-            if v != self.backdrop_versions.1 || self.ground.is_none() {
-                self.backdrop_versions.1 = v;
-                redraw |= Layer::keep(&mut self.ground, ground);
-                uploads += 1;
+                match Layer::keep(layer, canvas) {
+                    Kept::Updated => {}
+                    Kept::Made => redraw = true,
+                    Kept::Failed => failed = true,
+                }
+            };
+        if let Some(shown) = shown {
+            keep(&mut self.sky, &mut self.backdrop_versions.0, b.sky());
+            keep(&mut self.ground, &mut self.backdrop_versions.1, b.ground());
+            if shown.outline {
+                keep(
+                    &mut self.outline,
+                    &mut self.backdrop_versions.2,
+                    b.outline_layer(),
+                );
             }
         }
-        if shown.is_some_and(|s| s.outline) {
-            let (outline, v) = b.outline_layer();
-            if v != self.backdrop_versions.2 || self.outline.is_none() {
-                self.backdrop_versions.2 = v;
-                redraw |= Layer::keep(&mut self.outline, outline);
-                uploads += 1;
-            }
+        if failed {
+            // Without a layer the frame would show a hole. Draw flat from the
+            // next frame on, which needs no textures beyond the frame's own,
+            // and say so once.
+            godot_warn!("salt: could not create a backdrop texture; drawing frames flat");
+            self.cache.backdrop.layered = false;
+            self.redraw.mark();
+            redraw = true;
         }
         if redraw {
             self.base_mut().queue_redraw();
@@ -1440,6 +1513,14 @@ fn core_pad(button: JoyButton) -> Option<input::Pad> {
     PADS.iter().find(|(_, b)| *b == button).map(|(c, _)| *c)
 }
 
+/// What [`Layer::keep`] did.
+enum Kept {
+    Updated,
+    Made,
+    /// The engine would not make the texture.
+    Failed,
+}
+
 /// Rows `y..y + h` of the frame on the GPU, as an image and the texture
 /// made from it: the whole frame, or one strip of it. See `strips`.
 struct Layer {
@@ -1474,18 +1555,22 @@ impl Layer {
     }
 
     /// Make `layer` hold all of `canvas`: updated in place if it is the
-    /// same size, else made anew. True when made anew, as `draw` must then
-    /// draw the new texture.
-    fn keep(layer: &mut Option<Layer>, canvas: &Canvas) -> bool {
+    /// same size, else made anew (and `draw` must then draw the new
+    /// texture).
+    fn keep(layer: &mut Option<Layer>, canvas: &Canvas) -> Kept {
         let (w, h) = (canvas.w, canvas.h);
         match layer {
             Some(l) if l.w == w && l.h == h => {
                 l.update(canvas.bytes(), w);
-                false
+                Kept::Updated
             }
             _ => {
                 *layer = Layer::new(canvas.bytes(), w, 0, h);
-                true
+                if layer.is_some() {
+                    Kept::Made
+                } else {
+                    Kept::Failed
+                }
             }
         }
     }

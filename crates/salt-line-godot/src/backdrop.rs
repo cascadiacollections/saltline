@@ -89,8 +89,41 @@
 //! The profiling build checks the GPU's side on the device itself: it reads
 //! the viewport back and compares it with the flat frame (`profiling`).
 //!
-//! `layered` off draws the flat frame, as before, for a fallback and for
-//! the tests' reference.
+//! `layered` off draws the flat frame, as before: the reference the layers
+//! are tested against, and a developer fallback (`--salt-flat`) for
+//! telling a layering bug from any other. It is not a player setting.
+//!
+//! Every caller of [`Backdrop::draw`] (a run, versus, the editor and its
+//! test fire, and the demo through them) needs a scene in `backdrop/tests.rs`
+//! that draws it both ways; a new caller without one is untested here.
+//!
+//! # Measured
+//!
+//! Pixel 10, the profiling build's fixed-seed autopilot run, four runs of
+//! each build interleaved (2026-10): process time per frame, mean 1.51 ms
+//! to 1.00 ms, p95 3.48 to 2.00 ms, p50 1.00 to 0.53 ms. The CPU raster went
+//! from 0.60 to 0.20 ms, the upload pass (comparing and every texture
+//! update) from 0.60 to 0.49 ms, and whole-frame uploads from 221 to 34 in
+//! ~960 frames (plus 25 sky or ground uploads, about one per landing). The
+//! worst frame of a run was 22 to 44 ms on main and 24 to 51 ms here: rare
+//! one-off frames this does not touch, as noisy in both builds.
+//!
+//! Power was not measured. `strips::WHOLE_ABOVE` records a power-rail
+//! capture in which upload choices made no difference the rails could
+//! show, so claim frame time, not battery or heat. This was measured on one
+//! phone and GPU, the Pixel 10's; re-measure on a Mali GPU (a Galaxy A16)
+//! before a release leans on it.
+//!
+//! # Why not a shader
+//!
+//! The first idea was to upload a heightfield and draw the sand, strata and
+//! dither in a canvas shader. It would save the same uploads, but it would
+//! be a second renderer of the ground, in GLSL at mobile float precision,
+//! that had to agree with this one bit for bit: the dither thresholds
+//! compare fractions of an `f64` crater depth, and the sky's star hash is
+//! 64-bit integer arithmetic that GLSL ES 3.0 does not have. Keeping the CPU
+//! the only renderer and the GPU a copier keeps exactness a matter of
+//! compositing, which the tests below can check exhaustively.
 
 use salt_line_sim::run::Screen;
 
@@ -164,43 +197,69 @@ struct SkyKey {
 }
 
 /// What the ground layer was drawn from: everything `raster::draw_terrain`
-/// and `raster::draw_ground_detail_around` read.
-#[derive(PartialEq)]
+/// and `raster::draw_ground_detail_around` read. The guns go in as which of
+/// the columns that would grow a tuft (`raster::tuft_columns`) they keep
+/// clear, not as their positions: a versus gun rolling along eases by
+/// fractions of a column every frame, but the ground only looks different
+/// when a tuft appears or goes. The test is `raster::near_gun`, the one the
+/// drawing uses, so the strict `<` falls the same way.
+///
+/// Compared every frame and refreshed in place when it differs, so a
+/// change costs no allocation once the vectors have grown.
+#[derive(Default)]
 struct GroundKey {
     base: Vec<f64>,
     scar: Vec<f64>,
     seed: u64,
     structures: Vec<f64>,
-    guns: Vec<f64>,
     h: i32,
     pal: [Rgba; 16],
+    /// The columns that grow a tuft when no gun is near, for the field
+    /// above, and whether a gun keeps each clear.
+    tufts: Vec<i32>,
+    cleared: Vec<bool>,
+}
+
+/// Whether a gun in `guns` keeps world column `x` clear of grass.
+fn cleared(x: i32, guns: &[f64]) -> bool {
+    guns.iter().any(|&g| raster::near_gun(x, g))
 }
 
 impl GroundKey {
     fn matches(&self, screen: &Screen, guns: &[f64], h: i32, pal: &Palette) -> bool {
+        // The field first: `tufts` is only right for the field it was
+        // found on.
         self.seed == screen.seed
             && self.h == h
             && self.pal == pal.colours
             && self.base == screen.field.base
             && self.scar == screen.field.scar
-            && self.guns == guns
             && self
                 .structures
                 .iter()
                 .copied()
                 .eq(screen.structures.iter().map(|s| s.centre_x()))
+            && self
+                .cleared
+                .iter()
+                .copied()
+                .eq(self.tufts.iter().map(|&x| cleared(x, guns)))
     }
 
-    fn of(screen: &Screen, guns: &[f64], h: i32, pal: &Palette) -> Self {
-        GroundKey {
-            base: screen.field.base.clone(),
-            scar: screen.field.scar.clone(),
-            seed: screen.seed,
-            structures: screen.structures.iter().map(|s| s.centre_x()).collect(),
-            guns: guns.to_vec(),
-            h,
-            pal: pal.colours,
-        }
+    fn refresh(&mut self, screen: &Screen, guns: &[f64], h: i32, pal: &Palette) {
+        self.base.clone_from(&screen.field.base);
+        self.scar.clone_from(&screen.field.scar);
+        self.seed = screen.seed;
+        self.structures.clear();
+        self.structures
+            .extend(screen.structures.iter().map(|s| s.centre_x()));
+        self.h = h;
+        self.pal = pal.colours;
+        self.tufts.clear();
+        self.tufts.extend(raster::tuft_columns(screen, h));
+        self.cleared.clear();
+        self.cleared
+            .extend(self.tufts.iter().map(|&x| cleared(x, guns)));
     }
 }
 
@@ -222,6 +281,8 @@ pub struct Shown {
     pub cam_x: i32,
     /// The collapse outline is on. See [`Backdrop::outline`].
     pub outline: bool,
+    /// The buffer's width this frame: how many ground columns show.
+    pub w: i32,
 }
 
 impl Shown {
@@ -335,6 +396,7 @@ impl Backdrop {
         self.shown = Some(Shown {
             cam_x: view.cam_x,
             outline: false,
+            w: view.w,
         });
         self.edge_patches(view, screen, guns, pal);
         for p in &self.patches {
@@ -370,6 +432,8 @@ impl Backdrop {
                 return;
             }
         }
+        // Drawn with `guns` as given: the key says the grass comes out the
+        // same for any gun positions that clear the same tufts.
         let world = View {
             cam_x: -GROUND_PAD,
             w: screen.field.len() as i32 + 2 * GROUND_PAD,
@@ -380,7 +444,10 @@ impl Backdrop {
         canvas.clear();
         raster::draw_terrain(canvas, &world, &screen.field, pal);
         raster::draw_ground_detail_around(canvas, &world, screen, guns, pal);
-        self.ground.key = Some(GroundKey::of(screen, guns, h, pal));
+        self.ground
+            .key
+            .get_or_insert_with(GroundKey::default)
+            .refresh(screen, guns, h, pal);
         self.ground.version += 1;
     }
 
@@ -460,7 +527,8 @@ impl Backdrop {
         let mut out = self.sky.canvas.bytes().to_vec();
         let ground = &self.ground.canvas;
         let stride = w as usize * 4;
-        if let Some(win) = window(shown.ground_x(), w, ground.w) {
+        debug_assert_eq!(shown.w, w, "the overlay is the buffer's size");
+        if let Some(win) = window(shown.ground_x(), shown.w, ground.w) {
             for y in 0..h.min(ground.h) {
                 for i in 0..win.w {
                     let c = ground.get(win.src_x + i, y);

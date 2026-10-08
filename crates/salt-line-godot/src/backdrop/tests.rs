@@ -213,13 +213,115 @@ fn the_editor_is_the_same_layered() {
     }
 }
 
-/// Menus have no backdrop: the overlay is the whole frame.
+/// Every mode, from a game with a run under way: the menus have no backdrop
+/// (the overlay is the whole frame), and every mode is the same layered.
 #[test]
-fn a_menu_is_drawn_whole() {
-    let mut both = Both::new();
-    let g = game(DESKTOP, false);
-    both.check(&g, "title");
-    assert_eq!(both.layered.1.backdrop.shown(), None);
+fn every_mode_is_the_same_layered_and_menus_are_drawn_whole() {
+    let modes = [
+        Mode::Title,
+        Mode::Controls,
+        Mode::SeedEntry,
+        Mode::Playing,
+        Mode::Paused,
+        Mode::GameOver,
+        Mode::VersusSetup,
+        Mode::Versus,
+        Mode::Editor,
+    ];
+    for mode in modes {
+        let mut both = Both::new();
+        let mut g = game(DESKTOP, false);
+        let mut args = DevArgs::parse(&[]);
+        args.seed = Some(3);
+        g.start_dev(&args, 20_000);
+        g.mode = mode;
+        both.check(&g, &format!("{mode:?}"));
+        let shown = both.layered.1.backdrop.shown();
+        match mode {
+            Mode::Playing | Mode::Paused => assert!(shown.is_some(), "{mode:?}"),
+            // No match or draft to show: these draw nothing of a playfield.
+            Mode::Versus | Mode::Editor => {}
+            _ => assert_eq!(shown, None, "{mode:?} is a menu"),
+        }
+    }
+}
+
+/// A versus gun rolling along eases by a fraction of a column a frame. The
+/// ground only changes when a tuft enters or leaves the gun's clearing, so
+/// it is drawn again (and uploaded) only then, and the frame is the same as
+/// the flat one every step of the way.
+#[test]
+fn a_rolling_gun_redraws_the_ground_only_when_a_tuft_changes() {
+    let pal = Palette::default();
+    let mut redraws = 0;
+    let mut clearing_changes = 0;
+    let mut steps = 0;
+    for (name, run) in Game::gallery(320) {
+        let Some(run) = run else { continue };
+        let screen = &run.screen;
+        let tufts: Vec<i32> = raster::tuft_columns(screen, 180).collect();
+        let other = screen.field.len() as f64 - 40.0;
+        let mut b = Backdrop {
+            layered: true,
+            ..Backdrop::default()
+        };
+        let view = View {
+            cam_x: 0,
+            w: 320,
+            h: 180,
+        };
+        let mut last: Option<(Vec<bool>, u64)> = None;
+        // An eased roll of 80 columns, in uneven steps.
+        let (from, to) = (30.0, 110.0);
+        for i in 0..=60 {
+            let t = i as f64 / 60.0;
+            let eased = t * t * (3.0 - 2.0 * t);
+            let gun = from + (to - from) * eased;
+            let guns = [gun, other];
+            let mut flat = Canvas::new(320, 180);
+            Backdrop::default().draw(
+                &mut flat,
+                &view,
+                &pal,
+                sky::Phase::Day,
+                1,
+                0.0,
+                screen,
+                &guns,
+            );
+            let mut overlay = Canvas::new(320, 180);
+            b.begin_frame();
+            b.draw(
+                &mut overlay,
+                &view,
+                &pal,
+                sky::Phase::Day,
+                1,
+                0.0,
+                screen,
+                &guns,
+            );
+            assert!(b.composite(&overlay) == flat.bytes(), "{name} step {i}");
+            let now = (
+                tufts.iter().map(|&x| cleared(x, &guns)).collect::<Vec<_>>(),
+                b.ground().1,
+            );
+            if let Some((was, version)) = last {
+                let changed = now.0 != was;
+                assert_eq!(
+                    now.1 != version,
+                    changed,
+                    "{name} step {i}: redraw iff a tuft changed"
+                );
+                redraws += usize::from(now.1 != version);
+                clearing_changes += usize::from(changed);
+            }
+            last = Some(now);
+            steps += 1;
+        }
+    }
+    assert!(clearing_changes > 0, "the roll uncovered or covered a tuft");
+    assert!(redraws < steps / 4, "{redraws} redraws in {steps} steps");
 }
 
 /// Every ground of the gallery (each shape template, clean and damaged),
@@ -249,7 +351,7 @@ fn every_camera_over_every_ground_is_the_same_layered() {
                 let phase = sky::Phase::for_screen(cam_x.unsigned_abs() % 12);
                 let mut flat = Canvas::new(w, 180);
                 Backdrop::default().draw(&mut flat, &view, &pal, phase, 5, 1.0, screen, &guns);
-                raster::draw_last_arc(&mut flat, &view, &arc, &pal);
+                raster::draw_last_arc_on(&mut flat, &view, &arc, &pal, |_, _| [0; 4]);
 
                 let mut overlay = Canvas::new(w, 180);
                 backdrop.begin_frame();
