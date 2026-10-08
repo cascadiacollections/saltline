@@ -210,10 +210,15 @@ this screen with the last choices still set.
 
 Choose RIGHT OPPONENT: AI on the pre-match screen (R / controller Y, or tap
 the row) to play the left gun against the computer. HUMAN remains the default.
-The AI readies, aims and fires its own turns using the demo’s solver and
-deterministic near misses. Pause still stops play; round results wait for you.
-The opponent choice survives RESUME MATCH and is kept for a rematch.
-Both generated ground and custom maps support the AI.
+With the AI on, the right gun's aim-help row picks its level instead: AI: EASY
+(the default), MEDIUM or HARD (Right, or tap the row). The AI knows the wind and
+the range and hits about 2, 4 or 6 times in 10, one step less while it is ahead.
+Your handoff plate readies itself after a moment (READY skips it); the AI's
+plate and aim play themselves. The screens say YOU and AI instead of LEFT GUN
+and RIGHT GUN. Pause still stops play. Between rounds TITLE is not offered
+against the AI, so a mashed button cannot throw the match away: pause and
+TITLE leave it. The opponent and level survive RESUME MATCH and are kept for a
+rematch. Both generated ground and custom maps support the AI.
 
 The left gun fires right and the right gun fires left; turns alternate. Each
 side has a colour, amber for left and blue for right, used for its gun's tag,
