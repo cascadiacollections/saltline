@@ -25,6 +25,8 @@ use salt_line_sim::MIN_SOLUTIONS;
 
 use crate::versus::{self, frame_for, shots_at, target_in_frame, Ground, Match, Rules, Side};
 
+pub mod bundled;
+
 /// Fork round `round` of the match seeded `match_seed`: generate its duel
 /// screen at the layout width for the base loadout, under the game's
 /// rules, and write it down (§13.6). The guns are versus's, at
