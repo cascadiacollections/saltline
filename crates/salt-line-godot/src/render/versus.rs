@@ -867,7 +867,10 @@ impl Painter<'_> {
     }
 
     /// A round or the match is won: who, in big letters in their colour,
-    /// the score as it ended, and what next.
+    /// the score as it ended, and what next. On a touchscreen the pause
+    /// button sits top centre, as over the handoff plate, so a match can
+    /// be left between rounds without playing on: against the AI that is
+    /// the only way, since TITLE is not on a round's plate there.
     fn render_result(&mut self, vs: &crate::app::VersusPlay) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
@@ -942,6 +945,10 @@ impl Painter<'_> {
         for (&(action, text), keyed) in rows.iter().zip(keyed_rows(&labels)) {
             let c = if action == Action::Confirm { fg } else { dim };
             y = self.menu_row(if plated { y + 4 } else { y }, action, &keyed, text, c);
+        }
+        if plated && !self.g.in_demo() {
+            let ey = self.g.display.corner_pad.1;
+            self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
         }
     }
 }

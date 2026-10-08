@@ -91,6 +91,10 @@
 //! cue, as long as the AI's own cued plate; READY skips it). Every one of
 //! these waits stops under the pause plate, and the handoff plates pause
 //! when focus goes, since in an AI match they no longer wait for a tap.
+//!
+//! The player's aim help follows the opponent until they set it
+//! ([`VersusState::set_opponent`]): ON against the AI, OFF between two
+//! players.
 
 use super::*;
 use crate::match_log::{self, Entry, SavedMatch};
@@ -190,8 +194,14 @@ pub(crate) type Fingerprint = (Stage, u32, u32, [u32; 2], bool);
 pub(crate) struct VersusState {
     /// Aim help for each side, as the pre-match screen has it: the last
     /// landing mark, the last arc and a short preview of the current aim.
-    /// Off for both by default.
+    /// Off for both by default; the left player's follows the opponent
+    /// until they set it ([`VersusState::set_opponent`]).
     pub(crate) help: [bool; 2],
+    /// The left player has set their own aim help (`help[0]`) this
+    /// session, on the pre-match screen or by resuming a match that
+    /// carried it. Until then it follows RIGHT OPPONENT: ON against the
+    /// AI, OFF against a human (DESIGN §11.1).
+    pub(crate) help_chosen: bool,
     /// RIGHT OPPONENT: AI on the pre-match screen: the right gun is the
     /// computer's (DESIGN §11.7). Off by default; kept for a rematch.
     pub(crate) ai: bool,
@@ -480,6 +490,18 @@ impl VersusState {
     pub(crate) fn rules(&self) -> versus::Rules {
         match_log::rules_for(!self.rolling_off)
     }
+
+    /// RIGHT OPPONENT set to the AI (`ai`) or a human. The left player's
+    /// aim help goes with it, ON against the AI and OFF against a human,
+    /// unless they have set it themselves ([`VersusState::help_chosen`]):
+    /// a child playing the computer alone starts with the help, and a
+    /// choice once made stays made. The right player's is untouched.
+    pub(crate) fn set_opponent(&mut self, ai: bool) {
+        self.ai = ai;
+        if !self.help_chosen {
+            self.help[0] = ai;
+        }
+    }
 }
 
 impl Game {
@@ -645,7 +667,11 @@ impl Game {
         vs.kept = true;
         // What is on disk is this match, as rebuilt.
         vs.saved_len = Some(vs.log.len());
+        // The match's own aim help comes back as it was played, and counts
+        // as the player's choice: switching the opponent for a rematch
+        // leaves it where it was.
         self.versus.help = saved.help;
+        self.versus.help_chosen = true;
         self.versus.ai = saved.ai.is_some();
         if let Some(level) = saved.ai {
             self.versus.level = level;
@@ -690,7 +716,7 @@ impl Game {
     /// on a layout's ground (DESIGN §13.9).
     pub(super) fn handle_versus_setup_input(&mut self) {
         if self.action_pressed(Action::Replay) {
-            self.versus.ai = !self.versus.ai;
+            self.versus.set_opponent(!self.versus.ai);
             self.play(Sound::Ui);
         }
         let on_map = self.versus.ground.is_some();
@@ -722,6 +748,7 @@ impl Game {
                 self.versus.level = self.versus.level.next();
             } else {
                 self.versus.help[i] = !self.versus.help[i];
+                self.versus.help_chosen |= side == Side::Left;
             }
             self.play(Sound::Ui);
         }
@@ -758,7 +785,9 @@ impl Game {
         // Between rounds of a match against the AI, TITLE is not offered:
         // a child playing alone mashing the plate (or Y, which toggles the
         // AI on the pre-match screen) would throw the match away. Leaving
-        // mid-match is the pause plate's TITLE, as it is between turns.
+        // mid-match is the pause plate's TITLE, as it is between turns:
+        // the pause key (and II on a touchscreen) works on every result
+        // plate, and RESUME comes back to the same plate, nothing dealt.
         let round_title =
             !(vs.ai.is_some() && matches!(vs.duel.phase, versus::Phase::RoundOver(_)));
         let fork = crate::input::Ed::ForkRound;

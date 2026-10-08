@@ -2032,9 +2032,46 @@ mod tests {
             [
                 Action::Confirm,
                 Action::Replay,
-                Action::Edit(crate::input::Ed::ForkRound)
+                Action::Edit(crate::input::Ed::ForkRound),
+                Action::Back
             ]
         );
+        // The pause button sits above the plate, clear of its rows, at the
+        // phone's 180 rows, with a cutout's pad and without, for every
+        // result plate (a round's against the AI has no TITLE row).
+        for pad in [0, 6] {
+            for (ai, over) in [(false, false), (false, true), (true, false), (true, true)] {
+                g.display.corner_pad.1 = pad;
+                let vs = g.versus.live.as_mut().unwrap();
+                vs.ai = ai.then_some(crate::opponent::Level::Easy);
+                vs.duel.phase = if over {
+                    crate::versus::Phase::MatchOver(crate::versus::Side::Right)
+                } else {
+                    crate::versus::Phase::RoundOver(crate::versus::Side::Right)
+                };
+                let (_, buttons) = draw(&g);
+                assert_eq!(g.display.buffer_h, 180);
+                let pause = buttons.iter().find(|b| b.action == Action::Back).unwrap();
+                let first_row = buttons
+                    .iter()
+                    .filter(|b| b.action != Action::Back)
+                    .map(|b| b.rect.y)
+                    .min()
+                    .unwrap();
+                // The plate's top, 56 rows over its first row's target
+                // (the winner, the round, the score, then the row).
+                let plate_top = first_row - 56;
+                assert!(
+                    pause.rect.y + pause.rect.h < plate_top,
+                    "pad {pad} ai {ai} over {over}: II at {:?}, rows from {first_row}",
+                    pause.rect
+                );
+            }
+        }
+        g.display.corner_pad.1 = 0;
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.ai = None;
+        vs.duel.phase = crate::versus::Phase::RoundOver(crate::versus::Side::Right);
 
         for (i, c) in screens.iter().enumerate() {
             assert!(
