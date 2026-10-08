@@ -211,8 +211,12 @@ the repository can fetch and verify them. (Made public, the repository would
 sign with the public instance instead, on any plan.) If the organization ever
 leaves Enterprise Cloud while the repository is private or internal, the
 attestation steps fail and neither a tag nor a push to `main` publishes
-anything until they are removed, which is deliberate: a release should not
-quietly go out unattested.
+anything, which is deliberate: a release should not quietly go out
+unattested. Turning them off is one visible act instead of a workflow edit:
+set the repository variable `ATTEST` to `off` (Settings → Secrets and
+variables → Actions → Variables, or `gh variable set ATTEST --body off`), and
+the four attest steps are skipped while everything else publishes as before.
+Delete the variable to turn them back on.
 
 ### Version rule
 

@@ -1161,10 +1161,11 @@ jobs:
   # release spans six. Dev-dependencies are left out and build-only crates
   # (proc macros, codegen) are kept but marked `excluded`. CycloneDX JSON,
   # uploaded as dist-sbom so the release jobs attach and attest it like any
-  # other download. Pushes only (main and tags): pull requests never publish.
+  # other download. It runs on pull requests too, though they never publish:
+  # it is cheap and holds no secrets, and a broken SBOM should surface in the
+  # pull request, not on the push to main or a tag.
   sbom:
     name: sbom
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1176,7 +1177,9 @@ jobs:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
-          tool: cargo-cyclonedx
+          # Pinned: the tool writes its own version into the SBOM, so a new
+          # release would change the bytes a commit's SBOM is meant to keep.
+          tool: cargo-cyclonedx@0.5.9
       # SOURCE_DATE_EPOCH (the commit time) makes the timestamp the commit's,
       # so the same commit always produces the same SBOM, byte for byte.
       - name: generate the SBOM
@@ -1224,10 +1227,12 @@ jobs:
           sha256sum -- * > SHA256SUMS
           ls -l
       - name: attest build provenance
+        if: vars.ATTEST != 'off'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*
       - name: attest the SBOM
+        if: vars.ATTEST != 'off'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           sbom-path: dist/SaltLine-sbom.cdx.json
@@ -1293,10 +1298,12 @@ jobs:
           sha256sum -- * > SHA256SUMS
           ls -l
       - name: attest build provenance
+        if: vars.ATTEST != 'off'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*
       - name: attest the SBOM
+        if: vars.ATTEST != 'off'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           sbom-path: dist/SaltLine-sbom.cdx.json
