@@ -144,6 +144,7 @@ request.
 | E | X (pre-match, a match's pause or result) | MAKE MAP (pre-match, top-right corner) | Open the map editor (see below); on a match's pause or result, make a map of the round |
 | W | D-pad up (on the title) | REPLAYS (top-left, under DEMO) | The list of finished runs and matches, to watch again (see below) |
 | W | D-pad up (run over, match won) | WATCH | Watch the run or match just finished |
+| S | Y (REPLAYS list, a replay's end) | the star beside a row; STAR at a replay's end | Star a replay to keep it for good, or take its star off (see below) |
 | D | D-pad down (on Controls) | IDLE DEMO | Start the demo by itself after 30 s on the title (on by default) |
 | C | X | COPY SEED | Copy the seed (on the run-over screen) |
 | R | Y | SAME SEED AGAIN | Replay the same seed |
@@ -199,7 +200,7 @@ using `bind ACTION KEY PAD`, for example `bind fire F X`. Supported actions are
 `left`, `right`, `up`, `down`, `fire`, `fuse_down`, `fuse_up`,
 `reposition_left`, `reposition_right`, `draft_1`, `draft_2`, `draft_3`,
 `confirm`, `back`, `copy`, `replay`, `controls`, `mute`, `last_arc`, `seed`,
-`new_run`, `versus`, `demo` and `watch`. The displayed
+`new_run`, `versus`, `demo`, `watch` and `star`. The displayed
 default token names are accepted; unknown or malformed lines are ignored.
 
 ### Local versus
@@ -345,8 +346,21 @@ keys or a controller, Enter or A pauses, Up changes speed, Right and Down
 skip, and Esc or B goes back. NEXT SHOT while paused steps through the shots
 one at a time. At the end, AGAIN plays it from the start.
 
+A few favourites can be starred so they are never pushed off the list: up
+to five, of runs and matches together. On a touchscreen tap the star to the
+right of a row (the row itself still watches it); with keys or a controller
+choose the row and press `S` or Y. The end of a replay offers STAR too
+("keep this one"). Starred replays are listed first, and do not count
+toward the 20 runs and 20 matches; with five starred, starring another says
+`5 STARS - UNSTAR ONE FIRST`. Taking a star off keeps the replay for now; it
+goes when newer games push it out, as any other. The star is yours, not
+part of the replay: it is kept on a line of its own before the replay's
+line. While anything is starred the file says `history 2`, which a build
+from before stars reads but never writes, so it cannot lose them.
+
 Watching never changes anything you keep: no score, setting, saved run or
-saved match, and not the list itself. A match quit before it was won is not
+saved match, and not the list itself, except a star you set at its end,
+which is saved once you leave the replay (or as the app is put away). A match quit before it was won is not
 kept. A replay recorded by a build whose simulation has since changed stays
 in the list, dimmed and marked OLD, but cannot be watched, since it would no
 longer play out the same way; one that does not rebuild to the result it

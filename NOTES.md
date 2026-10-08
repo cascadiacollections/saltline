@@ -880,3 +880,59 @@ or proposed something else:
 - **No epoch bump.** Nothing in the sim or the duel rules changed.
 - **Fuzzing.** The new `history_file` target ran 3.9 million inputs in 90 s
   locally with no finding.
+
+## 13. Starred replays (DESIGN §9)
+
+The owner asked for a way for him and his son to keep a few favourites so
+they are never pushed off the list. Where the request left a choice:
+
+- **Five stars, of both kinds together.** Few enough to stay favourites (a
+  child counts them on one hand), a bound on the file (20 + 20 + 5
+  records), and one fewer than a phone's page of six rows: with the starred
+  listed first, the game just played is still on the first page. Five per
+  kind would make ten, and push the newest game to page two.
+- **Starred first, then newest first.** A child looking for "the good one"
+  finds it at the top without paging; the rows the list showed before
+  stars keep their order below. The chosen row follows a starred record to
+  the top, so the marker never lands on a different game.
+- **A line of its own, before the record's.** A prefix on the record's line
+  would make the line a share code carries differ starred or not; a field
+  inside it would change `LINE_FORMAT`. `star` on its own line leaves every
+  record line byte for byte as before.
+- **Older builds: header 2 while starred, 1 otherwise.** A build from
+  before stars reads `star` as damage and its next write would apply the
+  caps to the starred, losing them silently. With `history 2` in the
+  header it reads the file as a newer build's: it lists every record
+  (unstarred) and never writes the file. The price, paid only while
+  something is starred and only on a downgrade: what that build finishes is
+  kept for its session. Writing header 1 whenever nothing is starred keeps
+  a family that never stars anything fully compatible both ways.
+- **Unstarring drops nothing on the spot.** Applying the cap at once would
+  make a stray tap on an old favourite delete it before it could be starred
+  again. It stays listed, takes its turn among the unstarred, and goes with
+  the next game of its kind (or at the next launch, if it is past the cap
+  then).
+- **Trim order.** When a write is over 512 KiB, every unstarred record goes
+  first, oldest first; only then the oldest starred. Five real starred
+  lines never come near it.
+- **Touch: a star button per row, apart.** A star on the focused row would
+  need a focus, which a touch list does not have (a tap on a row watches
+  it). Each row's star sits in its own column 12 pixels right of the
+  widest row on the page, 22 by 15, the size of the page buttons; a test
+  pins the gap.
+- **Keys: `S`, pad Y, a new `star` binding.** The list reads Up, Down,
+  Left, Right, Enter/A and Esc/B, and a watch also Up, Right, Down, Space
+  and M; S (seed entry) and Y (REPLAY, seed entry, reposition) are read on
+  neither screen.
+- **STAR at a replay's end.** Not before the end: the bar is full, and
+  "keep this one" is a thing said once it has been seen. A watch writes
+  nothing while it plays, so the star is set in memory and the file
+  written as the watch ends, or as the app is paused or closed, the way a
+  mute made while watching is. A won match watched from its own plate is
+  not yet recorded (that happens when the plate is left), so starring it
+  records it there and then. A status note is not drawn during a watch, so
+  `5 STARS - UNSTAR ONE FIRST` is a plate over the bar.
+- **Fuzzing.** The `history_file` target now also checks the star bound,
+  that a record's own line reads back unstarred, and that the header says
+  1 exactly when nothing is starred; about 740,000 inputs in 90 s (a dev
+  build) locally, no finding.
