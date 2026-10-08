@@ -163,6 +163,7 @@ fn a_match_leaves_a_saved_run_and_the_disk_alone() {
     }
     press(&mut g, Key::Escape);
     fx.extend(press(&mut g, Key::R));
+    fx.extend(press(&mut g, Key::R));
     assert_eq!(g.mode, Mode::Title);
     assert!(g.versus.live.is_none());
     assert!(g.run_file.resumable.is_some(), "CONTINUE is still offered");
@@ -989,12 +990,375 @@ fn the_right_row_steps_the_ai_level_and_keeps_the_right_aim_help() {
         press(&mut g, Key::Right);
         assert_eq!(g.versus.level, want);
     }
-    assert_eq!(g.versus.help, [false, true], "the human's choice keeps");
+    assert_eq!(g.versus.help, [true, true], "the human's choice keeps");
     press(&mut g, Key::Left);
-    assert_eq!(g.versus.help, [true, true], "the player's own aim help");
+    assert_eq!(g.versus.help, [false, true], "the player's own aim help");
     press(&mut g, Key::R);
     press(&mut g, Key::Right);
-    assert_eq!(g.versus.help, [true, false], "a human again");
+    assert_eq!(g.versus.help, [false, false], "a human again");
+}
+
+#[test]
+fn the_players_aim_help_is_remembered_for_each_opponent() {
+    use crate::app::versus::PlayerHelp;
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    assert_eq!(g.versus.help, [false, false], "off against a human");
+    press(&mut g, Key::R);
+    assert_eq!(g.versus.help, [true, false], "on against the AI");
+    press(&mut g, Key::R);
+    assert_eq!(g.versus.help, [false, false], "off again for a human");
+    // The right player's choice is theirs alone, whatever the opponent.
+    press(&mut g, Key::Right);
+    press(&mut g, Key::R);
+    assert_eq!(g.versus.help, [true, true]);
+    press(&mut g, Key::R);
+    assert_eq!(g.versus.help, [false, true]);
+    assert_eq!(g.versus.player_help, PlayerHelp::default());
+
+    // The row sets the help for the opponent chosen only; switching shows
+    // the other opponent's, and switching back finds each as it was set.
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    press(&mut g, Key::R);
+    press(&mut g, Key::Left);
+    assert_eq!(g.versus.help[0], false, "set OFF against the AI");
+    press(&mut g, Key::R);
+    assert_eq!(g.versus.help[0], false, "a human's default");
+    press(&mut g, Key::Left);
+    assert_eq!(g.versus.help[0], true, "set ON against a human");
+    for (ai, want) in [(true, false), (false, true), (true, false)] {
+        press(&mut g, Key::R);
+        assert_eq!(g.versus.ai, ai);
+        assert_eq!(g.versus.help[0], want, "ai {ai}");
+    }
+    assert_eq!(
+        g.versus.player_help,
+        PlayerHelp {
+            human: true,
+            ai: false
+        }
+    );
+    // Kept for the session, through a match and back to the pre-match
+    // screen from the title.
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).ai, Some(Level::Easy));
+    assert_eq!(g.versus.help, [false, false]);
+    press(&mut g, Key::Escape);
+    press(&mut g, Key::R);
+    press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    press(&mut g, Key::Num2);
+    assert_eq!(g.versus.help, [false, false]);
+    press(&mut g, Key::R);
+    assert_eq!(g.versus.help, [true, false]);
+}
+
+#[test]
+fn an_ai_match_starts_with_aim_help_and_keeps_it_on_disk() {
+    let mut g = ai_match(Level::Easy);
+    assert_eq!(g.versus.help, [true, false]);
+    press(&mut g, Key::Enter);
+    let mut fx = Vec::new();
+    (g.play.angle_ticks, g.play.power_ticks) = (MISS.angle_ticks, MISS.power_ticks);
+    fx.extend(press(&mut g, Key::Space));
+    fx.extend(until(&mut g, |g| vs(g).stage != Stage::Flight));
+    let line = fx
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Effect::MatchFile(MatchFile::Write(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap();
+    // Format 3 as before: the help is the field it always was.
+    assert!(line.starts_with("match 3 "), "{line}");
+    let saved = crate::match_log::SavedMatch::parse(&line).unwrap();
+    assert_eq!(saved.help, [true, false]);
+
+    // Resumed with the help it was saved with, which is then the
+    // player's help against the AI: a switch to a human shows theirs, and
+    // back to the AI finds the match's again.
+    let mut resumed = game();
+    let mut off = saved.clone();
+    off.help = [false, false];
+    resumed.saved_match = Some(off);
+    resumed.resume_match();
+    assert_eq!(resumed.versus.help, [false, false]);
+    assert!(!resumed.versus.player_help.ai);
+    resumed.open_versus_setup();
+    press(&mut resumed, Key::R);
+    assert!(!resumed.versus.ai);
+    press(&mut resumed, Key::Left);
+    assert_eq!(resumed.versus.help, [true, false], "a human's, set ON");
+    press(&mut resumed, Key::R);
+    assert!(resumed.versus.ai);
+    assert_eq!(resumed.versus.help, [false, false], "the match's");
+
+    // A human match resumed with the player's help on stores it as theirs
+    // against a human, and leaves the AI's default alone.
+    let mut resumed = game();
+    let mut human = saved.clone();
+    human.ai = None;
+    human.help = [true, false];
+    resumed.saved_match = Some(human);
+    resumed.resume_match();
+    assert!(!resumed.versus.ai);
+    assert_eq!(resumed.versus.help, [true, false]);
+    assert_eq!(
+        resumed.versus.player_help,
+        crate::app::versus::PlayerHelp {
+            human: true,
+            ai: true
+        }
+    );
+}
+
+#[test]
+fn the_demo_leaves_the_players_aim_help_alone() {
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    // Set ON against a human, then the AI chosen.
+    press(&mut g, Key::Left);
+    press(&mut g, Key::R);
+    let player_help = g.versus.player_help;
+    press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Title);
+    assert_eq!(g.versus.help, [true, false]);
+    g.start_demo(crate::app::demo::Started::Menu);
+    g.begin_demo_leg(1);
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(vs(&g).ai, None, "the demo's duel is two guns of its own");
+    assert_eq!(
+        g.versus.help,
+        [true, true],
+        "the demo shows both sides' help"
+    );
+    wait(&mut g, 2.0);
+    g.stop_demo();
+    assert_eq!(g.versus.help, [true, false]);
+    assert!(g.versus.ai);
+    assert_eq!(
+        g.versus.player_help, player_help,
+        "the demo set nothing for the player"
+    );
+    press(&mut g, Key::Num2);
+    press(&mut g, Key::R);
+    assert_eq!(g.versus.help, [true, false], "the human's, as set");
+}
+
+// ------------------------------------------------- pause on a result plate
+
+/// A touch game in a match (against the AI if `ai`) put on the result
+/// plate of `phase`, settled.
+fn touch_result(ai: bool, phase: rules::Phase) -> Game {
+    let mut g = touch_game(false);
+    tap(&mut g, Action::Versus, FRAME);
+    if ai {
+        tap(&mut g, Action::Replay, FRAME);
+    }
+    tap(&mut g, Action::Confirm, FRAME);
+    assert_eq!(vs(&g).ai.is_some(), ai);
+    let live = g.versus.live.as_mut().unwrap();
+    live.kept = true;
+    live.duel.phase = phase;
+    live.stage = Stage::Result;
+    for _ in 0..30 {
+        touch_frame(&mut g, Vec::new(), FRAME);
+    }
+    g.take_effects();
+    g
+}
+
+#[test]
+fn pause_on_a_result_plate_resumes_to_it_and_moves_nothing_on() {
+    for phase in [
+        rules::Phase::RoundOver(Side::Left),
+        rules::Phase::MatchOver(Side::Right),
+    ] {
+        for ai in [false, true] {
+            for noisy in [false, true] {
+                let at = format!("{phase:?} ai {ai} noisy {noisy}");
+                let tap = |g: &mut Game, action| {
+                    if noisy {
+                        noisy_tap(g, action, FRAME)
+                    } else {
+                        tap(g, action, FRAME)
+                    }
+                };
+                let mut g = touch_result(ai, phase);
+                let (round, log) = (vs(&g).duel.round, vs(&g).log.len());
+                tap(&mut g, Action::Back);
+                assert!(vs(&g).paused, "{at}: II pauses");
+                // RESUME sits where NEXT ROUND or REMATCH does: one tap,
+                // back on the plate, nothing advanced.
+                tap(&mut g, Action::Confirm);
+                assert_eq!(g.mode, Mode::Versus, "{at}");
+                assert!(!vs(&g).paused, "{at}");
+                assert_eq!(vs(&g).stage, Stage::Result, "{at}");
+                assert_eq!(vs(&g).duel.phase, phase, "{at}");
+                assert_eq!(vs(&g).duel.round, round, "{at}");
+                assert_eq!(vs(&g).log.len(), log, "{at}: no round dealt");
+                // The plate still works as it did.
+                tap(&mut g, Action::Confirm);
+                match phase {
+                    rules::Phase::RoundOver(_) => {
+                        assert_eq!(vs(&g).stage, Stage::Handoff, "{at}");
+                        assert_eq!(vs(&g).duel.round, round + 1, "{at}");
+                    }
+                    _ => assert_eq!(g.mode, Mode::VersusSetup, "{at}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pause_on_a_result_plate_leaves_by_title() {
+    for ai in [false, true] {
+        let mut g = touch_result(ai, rules::Phase::RoundOver(Side::Left));
+        assert_eq!(
+            g.input.buttons.iter().any(|b| b.action == Action::Replay),
+            !ai,
+            "TITLE on a round's plate only between two players"
+        );
+        tap(&mut g, Action::Back, FRAME);
+        assert!(vs(&g).paused);
+        // The match is still to be won: TITLE asks twice.
+        tap(&mut g, Action::Replay, FRAME);
+        assert!(vs(&g).quit_armed.is_some(), "ai {ai}");
+        tap(&mut g, Action::Replay, FRAME);
+        assert_eq!(g.mode, Mode::Title, "ai {ai}");
+        assert!(g.versus.live.is_none());
+    }
+    // A won match's plate, paused, quits on the first TITLE.
+    let mut g = touch_result(true, rules::Phase::MatchOver(Side::Left));
+    tap(&mut g, Action::Back, FRAME);
+    tap(&mut g, Action::Replay, FRAME);
+    assert_eq!(g.mode, Mode::Title);
+    // With keys, the pause key on the plate does the same.
+    let mut g = ai_match(Level::Easy);
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::RoundOver(Side::Left);
+    live.stage = Stage::Result;
+    press(&mut g, Key::Escape);
+    assert!(vs(&g).paused);
+    press(&mut g, Key::Escape);
+    assert!(!vs(&g).paused);
+    assert_eq!(vs(&g).stage, Stage::Result);
+    assert_eq!(vs(&g).duel.round, 0);
+    let fx = press(&mut g, Key::Escape);
+    assert!(!fx.contains(&Effect::MatchFile(MatchFile::Discard)));
+    let fx = press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Versus, "one press only arms TITLE");
+    assert!(!fx.contains(&Effect::MatchFile(MatchFile::Discard)));
+    let fx = press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    assert!(
+        fx.contains(&Effect::MatchFile(MatchFile::Discard)),
+        "quit, so the match is cleared"
+    );
+}
+
+#[test]
+fn title_on_the_pause_plate_asks_again_before_quitting_a_match() {
+    use crate::app::versus::QUIT_CONFIRM;
+    let armed = |g: &Game| vs(g).quit_armed.is_some();
+    for ai in [false, true] {
+        // One tap, clean or noisy (repeated downs, a stray move), can only
+        // arm TITLE: it is spent once the plate changes.
+        for noisy in [false, true] {
+            let mut g = touch_result(ai, rules::Phase::RoundOver(Side::Left));
+            tap(&mut g, Action::Back, FRAME);
+            if noisy {
+                noisy_tap(&mut g, Action::Replay, FRAME);
+            } else {
+                tap(&mut g, Action::Replay, FRAME);
+            }
+            assert_eq!(g.mode, Mode::Versus, "ai {ai} noisy {noisy}");
+            assert!(armed(&g), "ai {ai} noisy {noisy}");
+        }
+        // A finger held on TITLE, or pressed again as the plate changes,
+        // is spent: the second press has to be a new tap.
+        let mut g = touch_result(ai, rules::Phase::RoundOver(Side::Left));
+        tap(&mut g, Action::Back, FRAME);
+        let (x, y) = button_centre(&g, Action::Replay);
+        touch_frame(&mut g, vec![Event::FingerDown { index: 0, x, y }], FRAME);
+        assert!(armed(&g));
+        for _ in 0..10 {
+            touch_frame(&mut g, vec![Event::FingerDown { index: 0, x, y }], FRAME);
+        }
+        touch_frame(&mut g, vec![Event::FingerUp { index: 0 }], FRAME);
+        touch_frame(&mut g, vec![Event::FingerDown { index: 1, x, y }], FRAME);
+        touch_frame(&mut g, vec![Event::FingerUp { index: 1 }], FRAME);
+        assert_eq!(g.mode, Mode::Versus, "ai {ai}: a bounce quit");
+        assert!(armed(&g));
+        for _ in 0..30 {
+            touch_frame(&mut g, Vec::new(), FRAME);
+        }
+        tap(&mut g, Action::Replay, FRAME);
+        assert_eq!(g.mode, Mode::Title, "ai {ai}: the second tap quits");
+
+        // RESUME disarms: pausing again asks twice again.
+        let mut g = touch_result(ai, rules::Phase::RoundOver(Side::Left));
+        tap(&mut g, Action::Back, FRAME);
+        tap(&mut g, Action::Replay, FRAME);
+        tap(&mut g, Action::Confirm, FRAME);
+        assert!(!vs(&g).paused);
+        assert!(!armed(&g));
+        tap(&mut g, Action::Back, FRAME);
+        tap(&mut g, Action::Replay, FRAME);
+        assert_eq!(g.mode, Mode::Versus, "ai {ai}: re-armed, not quit");
+        assert!(armed(&g));
+
+        // Waiting disarms.
+        let mut g = touch_result(ai, rules::Phase::RoundOver(Side::Left));
+        tap(&mut g, Action::Back, FRAME);
+        tap(&mut g, Action::Replay, FRAME);
+        let mut waited = 0.0;
+        while waited < QUIT_CONFIRM + 0.2 {
+            touch_frame(&mut g, Vec::new(), FRAME);
+            waited += FRAME;
+        }
+        assert!(vs(&g).paused);
+        assert!(!armed(&g), "ai {ai}: the timeout disarms");
+        tap(&mut g, Action::Replay, FRAME);
+        assert_eq!(g.mode, Mode::Versus, "ai {ai}: asks again");
+
+        // Focus going disarms.
+        let mut g = touch_result(ai, rules::Phase::RoundOver(Side::Left));
+        tap(&mut g, Action::Back, FRAME);
+        tap(&mut g, Action::Replay, FRAME);
+        g.focus_lost(&[]);
+        g.focus_gained();
+        assert!(vs(&g).paused);
+        assert!(!armed(&g), "ai {ai}: focus loss disarms");
+        for _ in 0..30 {
+            touch_frame(&mut g, Vec::new(), FRAME);
+        }
+        tap(&mut g, Action::Replay, FRAME);
+        assert_eq!(g.mode, Mode::Versus, "ai {ai}: asks again");
+    }
+
+    // The armed row says what the next press does, and the keyed plate
+    // too; the pause key disarms with keys as RESUME does.
+    let mut g = in_match();
+    press(&mut g, Key::Escape);
+    press(&mut g, Key::R);
+    assert!(armed(&g));
+    let armed_plate = draw(&g).bytes().to_vec();
+    press(&mut g, Key::Escape);
+    assert!(!vs(&g).paused);
+    assert!(!armed(&g));
+    press(&mut g, Key::Escape);
+    assert!(
+        draw(&g).bytes() != armed_plate.as_slice(),
+        "the armed row is drawn differently"
+    );
+    press(&mut g, Key::R);
+    let fx = press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    assert!(fx.contains(&Effect::MatchFile(MatchFile::Discard)));
 }
 
 #[test]

@@ -875,6 +875,7 @@ fn a_map_saved_over_its_slot_mid_match_is_the_ground_for_a_rematch() {
     // Quit, and the next match is on the map as saved.
     node.key(&mut g, Key::Escape);
     node.key(&mut g, Key::R);
+    node.key(&mut g, Key::R);
     node.key(&mut g, Key::Num2);
     assert_eq!(g.mode, Mode::VersusSetup);
     node.key(&mut g, Key::Enter);

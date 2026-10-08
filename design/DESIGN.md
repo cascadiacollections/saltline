@@ -1042,10 +1042,19 @@ terrain only, no figures or skyline, its own art.
   in a hole the other dug. Craters anywhere else stay. Every round is new
   ground.
 - **Unlimited shells**, the base loadout for both guns, no drafts, no refunds.
-- **Aim help**, per player, off by default, set on the pre-match screen: that
-  player's last landing mark and arc this round, and a Short arc (the drag
-  preview's) of the current aim in calm air. The AI has none: its row picks
-  its level instead, and its preview would draw the shot it solved.
+- **Aim help**, per player, set on the pre-match screen: that player's last
+  landing mark and arc this round, and a Short arc (the drag preview's) of
+  the current aim in calm air. Off by default between two players. The
+  player's own (the left gun's, YOUR AIM HELP against the AI) is
+  remembered for the session per opponent: ON against the AI and OFF
+  against a human until set. The row sets the one for the opponent chosen,
+  and switching RIGHT OPPONENT shows the other's, as last set. Resuming a
+  match brings back the aim help it was played with, and that becomes the
+  player's help against that match's opponent, with nothing held hidden.
+  The right player's is theirs alone and never follows the opponent. The
+  AI has none: its row picks its level instead, and its preview would draw
+  the shot it solved. The attract demo shows both sides' help, as it
+  always has, and leaves the player's, for both opponents, as it found it.
 
 ### 11.2 One sim, two directions
 
@@ -1142,6 +1151,23 @@ and how it is going should read without reading words.
   lost under the impact), and a short rising fanfare when a round or the
   match is won, procedural like every other effect.
 - **Rematch** returns to the pre-match aim-help choice, still set as it was.
+- **Pause on the result plate.** The pause key works there as between
+  turns, and on a touchscreen the plate has the II button top centre, above
+  the plate at 180 rows. RESUME comes back to the same plate, with nothing
+  dealt: NEXT ROUND still has to be pressed, and the tap that resumed is
+  spent ("One touch, one screen", NOTES.md §7). Every result plate has it,
+  a round's or the match's, between two players or against the AI, so
+  pause is in the same place on every screen of a match.
+- **Quitting asks twice.** TITLE on the pause plate quits the match, and
+  while the match is still to be won it needs a second press: the first
+  turns the row into TAP AGAIN TO QUIT (with keys, PRESS AGAIN TO QUIT
+  after the key's name), and only another press within 3 s quits. RESUME,
+  the pause key, MAKE MAP OF THIS ROUND, focus going and the 3 s all
+  disarm it. Arming changes the screen, so the tap that armed it is spent
+  and the second has to be a new one. Paused over a round's result plate,
+  TITLE sits where NEXT ROUND's target was, under a tap meant for NEXT
+  ROUND after an accidental II; now that tap only arms it. A won match's
+  plate, paused, quits on the first press: nothing is left to lose.
 
 ### 11.5 Open questions
 
@@ -1293,8 +1319,17 @@ anyone to pass the phone or to read much.
 - **Between rounds** the result plate leaves TITLE off in an AI match: a
   child playing alone mashes, and Y (or R), which turns the AI on and off on
   the pre-match screen, was TITLE there. NEXT ROUND and MAKE MAP OF THIS
-  ROUND stay; leaving mid-match is the pause plate's TITLE, as between turns.
-  A won match's plate keeps TITLE, with nothing left to lose.
+  ROUND stay; leaving mid-match is the pause plate's TITLE, pressed twice
+  (§11.4), as between turns. On a touchscreen the plate's own II reaches
+  it, so quitting never means starting the next round first. The pause key
+  (Esc, a controller's B) works on the plate too, but the plate does not
+  list it, so a controller player may not find it. A won match's plate
+  keeps TITLE, with nothing left to lose.
+- **Aim help on by default** for the player against the AI (§11.1): the
+  child this is for gets the landing mark and the preview without finding
+  the row first. Turned off, it stays off against the AI for the session,
+  and the human matches' choice is kept apart. It is what the harness's
+  kid bot below has always assumed.
 - **Kept** like any match (§11.6), in format 3, and for a rematch.
 - **How it plays against the harness's bots** (`just duel 400 kid --right
   ai-easy`, 400 matches each, the bot on the left opening):
@@ -1308,11 +1343,11 @@ anyone to pass the phone or to read much.
   The bots are guesses (`examples/duel.rs`): read the columns against each
   other. EASY is meant to be beaten. HARD is the demo's odds and beats the
   steady adult bot about two matches in three, so it is a stiff opponent
-  for a grown-up rather than an even one. The kid bot plays near-adult: with
-  aim help it hits about 42-47% of its shots against the steady bot's
-  50-55%, so how EASY and MEDIUM feel to a real child is not settled by
-  these numbers. Their calibration is provisional until the owner's
-  playtests with the child they are for.
+  for a grown-up rather than an even one. The kid bot plays near-adult:
+  with aim help (the default against the AI, §11.1) it hits about 42-47%
+  of its shots against the steady bot's 50-55%, so how EASY and MEDIUM
+  feel to a real child is not settled by these numbers. Their calibration
+  is provisional until the owner's playtests with the child they are for.
 
 ---
 

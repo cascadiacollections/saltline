@@ -91,6 +91,25 @@
 //! cue, as long as the AI's own cued plate; READY skips it). Every one of
 //! these waits stops under the pause plate, and the handoff plates pause
 //! when focus goes, since in an AI match they no longer wait for a tap.
+//!
+//! The player's aim help is remembered per opponent for the session
+//! ([`PlayerHelp`]): ON against the AI and OFF between two players until
+//! they set it, and RIGHT OPPONENT brings back the one for its choice.
+//!
+//! # Quitting from the pause plate
+//!
+//! TITLE on the pause plate drops the match on screen and its line on
+//! disk, so while that match is still to be won it asks twice: the first
+//! press arms it (the row reads TAP AGAIN TO QUIT, or the key's PRESS
+//! AGAIN TO QUIT) and only a second press within [`QUIT_CONFIRM`] quits.
+//! RESUME, the pause key, MAKE MAP, focus going and the timeout all disarm
+//! it. A won match's plate, paused, quits on the first press: nothing is
+//! left to lose. Arming changes the versus screen (`Game::versus_screen`),
+//! so the touch that armed it is spent and the second press has to be a
+//! new tap after [`TOUCH_SETTLE`] (see "One touch, one screen"). Paused
+//! over a round's result plate, TITLE sits where NEXT ROUND's target was
+//! (DESIGN §11.4): after an accidental II, a tap meant for NEXT ROUND
+//! lands on TITLE, and only arms it.
 
 use super::*;
 use crate::match_log::{self, Entry, SavedMatch};
@@ -168,6 +187,53 @@ pub const AUTO_READY_CUED: f64 = AI_HANDOFF_CUED;
 /// the tap that changed the screen is spent rather than taken again.
 pub const TOUCH_SETTLE: f64 = 0.3;
 
+/// Seconds an armed TITLE on the pause plate waits for its second press
+/// before it disarms (see "Quitting from the pause plate").
+pub const QUIT_CONFIRM: f64 = 3.0;
+
+/// The player's aim help (the left gun's, YOUR AIM HELP against the AI),
+/// remembered for the session for each kind of opponent: ON against the
+/// AI and OFF against a human until set (DESIGN §11.1). The pre-match
+/// row sets the one for the opponent chosen; RIGHT OPPONENT brings back
+/// the other's; resuming a match stores the match's own help as its
+/// opponent's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct PlayerHelp {
+    /// Against a human.
+    pub(crate) human: bool,
+    /// Against the AI.
+    pub(crate) ai: bool,
+}
+
+impl Default for PlayerHelp {
+    fn default() -> PlayerHelp {
+        PlayerHelp {
+            human: false,
+            ai: true,
+        }
+    }
+}
+
+impl PlayerHelp {
+    /// The player's help against the AI (`ai`) or a human.
+    pub(crate) fn get(self, ai: bool) -> bool {
+        if ai {
+            self.ai
+        } else {
+            self.human
+        }
+    }
+
+    /// Remember `on` as the player's help against the AI (`ai`) or a human.
+    pub(crate) fn set(&mut self, ai: bool, on: bool) {
+        if ai {
+            self.ai = on;
+        } else {
+            self.human = on;
+        }
+    }
+}
+
 /// Where a versus turn is. See the module docs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
@@ -190,8 +256,13 @@ pub(crate) type Fingerprint = (Stage, u32, u32, [u32; 2], bool);
 pub(crate) struct VersusState {
     /// Aim help for each side, as the pre-match screen has it: the last
     /// landing mark, the last arc and a short preview of the current aim.
-    /// Off for both by default.
+    /// Off for both by default. The left player's is [`Self::player_help`]
+    /// for the opponent chosen ([`VersusState::set_opponent`]); the right
+    /// player's is theirs alone.
     pub(crate) help: [bool; 2],
+    /// The left player's aim help for each kind of opponent, kept for the
+    /// session: `help[0]` is the one for [`Self::ai`] (DESIGN §11.1).
+    pub(crate) player_help: PlayerHelp,
     /// RIGHT OPPONENT: AI on the pre-match screen: the right gun is the
     /// computer's (DESIGN §11.7). Off by default; kept for a rematch.
     pub(crate) ai: bool,
@@ -253,6 +324,10 @@ pub(crate) struct VersusPlay {
     pub(crate) score_before: Option<([u32; 2], [u32; 2])>,
     /// Under the pause plate.
     pub(crate) paused: bool,
+    /// The pause plate's TITLE has been pressed once and waits for the
+    /// second press that quits: seconds since it was armed, up to
+    /// [`QUIT_CONFIRM`]. See "Quitting from the pause plate".
+    pub(crate) quit_armed: Option<f64>,
     /// When the last shot rolled the guns ([`versus::Match::roll_guns`]):
     /// the screen as the shot left it ([`versus::Roll::landed`]), craters
     /// dug and guns still where they were, shown while the HIT or MISS is
@@ -297,6 +372,7 @@ impl VersusPlay {
             dinged: false,
             score_before: None,
             paused: false,
+            quit_armed: None,
             landed: None,
             rolled: None,
             ease: None,
@@ -480,6 +556,22 @@ impl VersusState {
     pub(crate) fn rules(&self) -> versus::Rules {
         match_log::rules_for(!self.rolling_off)
     }
+
+    /// RIGHT OPPONENT set to the AI (`ai`) or a human. The left player's
+    /// aim help becomes the one remembered for that opponent
+    /// ([`PlayerHelp`]): a child playing the computer alone starts with
+    /// the help, two players start without, and each keeps what was set
+    /// for it. The right player's is untouched.
+    pub(crate) fn set_opponent(&mut self, ai: bool) {
+        self.ai = ai;
+        self.help[0] = self.player_help.get(ai);
+    }
+
+    /// The left player's aim help set to `on` for the opponent chosen.
+    fn set_player_help(&mut self, on: bool) {
+        self.help[0] = on;
+        self.player_help.set(self.ai, on);
+    }
 }
 
 impl Game {
@@ -645,8 +737,12 @@ impl Game {
         vs.kept = true;
         // What is on disk is this match, as rebuilt.
         vs.saved_len = Some(vs.log.len());
+        // The match's own aim help comes back as it was played, and is
+        // what the player has against that opponent from now on: a
+        // rematch, or a switch away and back, finds it as it was.
         self.versus.help = saved.help;
         self.versus.ai = saved.ai.is_some();
+        self.versus.player_help.set(self.versus.ai, saved.help[0]);
         if let Some(level) = saved.ai {
             self.versus.level = level;
         }
@@ -690,7 +786,7 @@ impl Game {
     /// on a layout's ground (DESIGN §13.9).
     pub(super) fn handle_versus_setup_input(&mut self) {
         if self.action_pressed(Action::Replay) {
-            self.versus.ai = !self.versus.ai;
+            self.versus.set_opponent(!self.versus.ai);
             self.play(Sound::Ui);
         }
         let on_map = self.versus.ground.is_some();
@@ -720,6 +816,8 @@ impl Game {
             // and the right player's choice waits for a human match.
             if side == Side::Right && self.versus.ai {
                 self.versus.level = self.versus.level.next();
+            } else if side == Side::Left {
+                self.versus.set_player_help(!self.versus.help[i]);
             } else {
                 self.versus.help[i] = !self.versus.help[i];
             }
@@ -755,10 +853,16 @@ impl Game {
             return;
         };
         let (stage, paused, ai_turn) = (vs.stage, vs.paused, vs.ai_turn());
+        // A won match's plate has nothing left to lose: its TITLE, paused,
+        // quits at once. Anything else asks twice.
+        let won = stage == Stage::Result && matches!(vs.duel.phase, versus::Phase::MatchOver(_));
+        let quit_armed = vs.quit_armed;
         // Between rounds of a match against the AI, TITLE is not offered:
         // a child playing alone mashing the plate (or Y, which toggles the
         // AI on the pre-match screen) would throw the match away. Leaving
-        // mid-match is the pause plate's TITLE, as it is between turns.
+        // mid-match is the pause plate's TITLE, as it is between turns:
+        // the pause key (and II on a touchscreen) works on every result
+        // plate, and RESUME comes back to the same plate, nothing dealt.
         let round_title =
             !(vs.ai.is_some() && matches!(vs.duel.phase, versus::Phase::RoundOver(_)));
         let fork = crate::input::Ed::ForkRound;
@@ -768,10 +872,17 @@ impl Game {
                 self.set_versus_paused(false);
             } else if self.action_pressed(Action::Replay) {
                 self.play(Sound::Ui);
-                self.leave_versus();
+                if won || quit_armed.is_some() {
+                    self.leave_versus();
+                } else {
+                    self.set_quit_armed(Some(0.0));
+                }
             } else if self.make_map_pressed(fork) {
                 self.play(Sound::Ui);
                 self.fork_this_round();
+            } else if let Some(t) = quit_armed {
+                let t = t + delta;
+                self.set_quit_armed((t < QUIT_CONFIRM).then_some(t));
             }
             return;
         }
@@ -814,9 +925,22 @@ impl Game {
         }
     }
 
+    /// Arm the pause plate's TITLE (`Some(0.0)`), count it on, or disarm
+    /// it (`None`): see "Quitting from the pause plate". Redrawn when it
+    /// arms or disarms.
+    fn set_quit_armed(&mut self, armed: Option<f64>) {
+        if let Some(vs) = self.versus.live.as_mut() {
+            if vs.quit_armed.is_some() != armed.is_some() {
+                self.fx.push(Effect::Redraw);
+            }
+            vs.quit_armed = armed;
+        }
+    }
+
     fn set_versus_paused(&mut self, paused: bool) {
         if let Some(vs) = self.versus.live.as_mut() {
             vs.paused = paused;
+            vs.quit_armed = None;
             // A plate that moves on by itself starts its wait afresh, so
             // whoever comes back to it has time to read it.
             if vs.stage == Stage::Handoff {
@@ -1093,7 +1217,11 @@ impl Game {
     /// the AI, which moves on by itself (the AI's turn, and the player's
     /// auto-ready); between two players it waits for READY already, and the
     /// result plate always waits for a press.
+    ///
+    /// A TITLE armed on the pause plate is disarmed: whoever comes back
+    /// asks again.
     pub(super) fn auto_pause_versus(&mut self) {
+        self.set_quit_armed(None);
         let Some(vs) = self.versus.live.as_mut() else {
             return;
         };
@@ -1153,15 +1281,18 @@ impl Game {
         self.dev.auto_cooldown = 0.5;
     }
 
-    /// Which versus screen is up, if any: the mode, the stage and the pause
-    /// plate. A change spends the touches in progress (`settle_touch`).
-    pub(super) fn versus_screen(&self) -> Option<(Mode, Option<Stage>, bool)> {
+    /// Which versus screen is up, if any: the mode, the stage, the pause
+    /// plate and whether its TITLE is armed. A change spends the touches
+    /// in progress (`settle_touch`), so the tap that arms TITLE cannot
+    /// also confirm it.
+    pub(super) fn versus_screen(&self) -> Option<(Mode, Option<Stage>, bool, bool)> {
         matches!(self.mode, Mode::VersusSetup | Mode::Versus).then(|| {
             let live = self.versus.live.as_ref();
             (
                 self.mode,
                 live.map(|vs| vs.stage),
                 live.is_some_and(|vs| vs.paused),
+                live.is_some_and(|vs| vs.quit_armed.is_some()),
             )
         })
     }

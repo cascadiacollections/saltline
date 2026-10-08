@@ -114,6 +114,36 @@ pub(super) fn score_w(hits: [u32; 2]) -> i32 {
 /// Height of the hit pips over the round pips.
 const SCORE_H: i32 = 7 + 3 + 5;
 
+/// Where the result plate sits: `(x, y, w, h)` in a buffer `buffer_w` by
+/// `buffer_h`, centred. As tall as its heading (the winner, the round,
+/// the score) and, outside the demo, its rows: plated ones (`plated`) are
+/// 16 apart, keyed ones 8, with TITLE left off a round's plate against
+/// the AI (`app/versus.rs`, `handle_versus_input`). `None` while no round
+/// or match is won.
+pub(super) fn result_plate_rect(
+    g: &Game,
+    vs: &crate::app::VersusPlay,
+    plated: bool,
+    buffer_w: i32,
+    buffer_h: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    let over = match vs.duel.phase {
+        versus::Phase::RoundOver(_) => false,
+        versus::Phase::MatchOver(_) => true,
+        versus::Phase::Aiming => return None,
+    };
+    let title_row = !(vs.ai.is_some() && !over);
+    let body = 7 + 10 + 5 + 5 + 7 + SCORE_H + 8;
+    let rows_h = match (plated, title_row) {
+        (true, true) => 56,
+        (true, false) => 40,
+        (false, true) => 28,
+        (false, false) => 20,
+    };
+    let ph = if g.in_demo() { body } else { body + rows_h };
+    Some(((buffer_w - 200) / 2, (buffer_h - ph) / 2, 200, ph))
+}
+
 /// What a plate or callout says about a side ([`say`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Says {
@@ -867,7 +897,10 @@ impl Painter<'_> {
     }
 
     /// A round or the match is won: who, in big letters in their colour,
-    /// the score as it ended, and what next.
+    /// the score as it ended, and what next. On a touchscreen the pause
+    /// button sits top centre, as over the handoff plate, so a match can
+    /// be left between rounds without playing on: against the AI that is
+    /// the only way, since TITLE is not on a round's plate there.
     fn render_result(&mut self, vs: &crate::app::VersusPlay) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
@@ -885,19 +918,9 @@ impl Painter<'_> {
         // TITLE is left off between rounds against the AI (`app/versus.rs`,
         // `handle_versus_input`): one row fewer.
         let title_row = !(vs.ai.is_some() && !over);
-        let body = 7 + 10 + 5 + 5 + 7 + SCORE_H + 8;
-        let rows_h = match (plated, title_row) {
-            (true, true) => 56,
-            (true, false) => 40,
-            (false, true) => 28,
-            (false, false) => 20,
+        let Some((px, top, _, ph)) = result_plate_rect(self.g, vs, plated, w, h) else {
+            return;
         };
-        let ph = if self.g.in_demo() {
-            body
-        } else {
-            body + rows_h
-        };
-        let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
         self.side_border(px, top, 200, ph, winner);
         self.side_pointer(px, top, 200, ph, winner, 7);
@@ -942,6 +965,10 @@ impl Painter<'_> {
         for (&(action, text), keyed) in rows.iter().zip(keyed_rows(&labels)) {
             let c = if action == Action::Confirm { fg } else { dim };
             y = self.menu_row(if plated { y + 4 } else { y }, action, &keyed, text, c);
+        }
+        if plated && !self.g.in_demo() {
+            let ey = self.g.display.corner_pad.1;
+            self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
         }
     }
 }
