@@ -522,8 +522,8 @@ fn a_touchscreen_watches_by_tapping_a_row_and_drives_the_bar() {
     assert_eq!(g.mode, Mode::Replays);
 }
 
-fn touch_frame(g: &mut Game, events: Vec<Event>) {
-    g.tick(FRAME, &Intents { events, ..idle() });
+fn touch_frame(g: &mut Game, events: Vec<Event>) -> Vec<Effect> {
+    let fx = g.tick(FRAME, &Intents { events, ..idle() });
     let mut canvas = crate::raster::Canvas::new(g.display.buffer_w, g.display.buffer_h);
     let mut buttons = Vec::new();
     crate::render::frame(
@@ -534,10 +534,12 @@ fn touch_frame(g: &mut Game, events: Vec<Event>) {
         &mut crate::render::Cache::default(),
     );
     g.set_buttons(&buttons);
+    fx
 }
 
-/// A finger tapping `action`'s button, held as a phone's tap is.
-fn tap(g: &mut Game, action: Action) {
+/// A finger tapping `action`'s button, held as a phone's tap is. Every
+/// effect.
+fn tap(g: &mut Game, action: Action) -> Vec<Effect> {
     let b = g
         .input
         .buttons
@@ -548,14 +550,15 @@ fn tap(g: &mut Game, action: Action) {
         b.rect.x as f32 + b.rect.w as f32 / 2.0,
         b.rect.y as f32 + b.rect.h as f32 / 2.0,
     );
-    touch_frame(g, vec![Event::FingerDown { index: 0, x, y }]);
+    let mut fx = touch_frame(g, vec![Event::FingerDown { index: 0, x, y }]);
     for _ in 0..7 {
-        touch_frame(g, Vec::new());
+        fx.extend(touch_frame(g, Vec::new()));
     }
-    touch_frame(g, vec![Event::FingerUp { index: 0 }]);
+    fx.extend(touch_frame(g, vec![Event::FingerUp { index: 0 }]));
     for _ in 0..20 {
-        touch_frame(g, Vec::new());
+        fx.extend(touch_frame(g, Vec::new()));
     }
+    fx
 }
 
 #[test]
@@ -659,4 +662,328 @@ fn a_mute_during_a_watch_survives_the_app_being_paused() {
         "the mute was written as the app paused: {fx:?}"
     );
     assert!(!g.settings.dirty());
+}
+
+// ------------------------------------------------------------------ stars
+
+/// A game on the REPLAYS list with runs of seeds 9, 11 and 13 recorded
+/// (13 the newest), with keys.
+fn listed_three() -> Game {
+    let (mut g, _, _) = finished(9);
+    for (seed, day) in [(11, TODAY + 1), (13, TODAY + 2)] {
+        let (mut other, _, _) = finished(seed);
+        let r = other.history.last_run.take().unwrap();
+        g.history.file.push(Record { day, ..r });
+    }
+    press(&mut g, Key::Enter);
+    press(&mut g, Key::W);
+    assert_eq!(g.mode, Mode::Replays);
+    g.take_effects();
+    g
+}
+
+fn listed_seeds(g: &Game) -> Vec<u64> {
+    g.history
+        .file
+        .listed()
+        .map(|r| match &r.kind {
+            Kind::Run(r) => r.seed,
+            Kind::Duel(_) => 0,
+        })
+        .collect()
+}
+
+#[test]
+fn the_star_key_stars_the_chosen_row_and_writes_the_file() {
+    let mut g = listed_three();
+    assert_eq!(listed_seeds(&g), [13, 11, 9]);
+    press(&mut g, Key::Down);
+    press(&mut g, Key::Down);
+    let fx = press(&mut g, Key::S);
+    // Starred, written at once, and listed first with the focus on it.
+    let writes = history_writes(&fx);
+    assert_eq!(writes.len(), 1);
+    let read = crate::history::History::parse(&writes[0]);
+    assert_eq!(read.stars(), 1);
+    assert_eq!(listed_seeds(&g), [9, 13, 11]);
+    assert_eq!(g.history.focus, 0, "the chosen row followed it");
+    assert_eq!(g.status, "STARRED - THIS ONE STAYS");
+    // Enter watches the starred one.
+    press(&mut g, Key::Enter);
+    assert_eq!(g.play.run.as_ref().unwrap().run_seed, 9);
+    press(&mut g, Key::Escape);
+    // S again takes the star off: it counts as just added, so it stays at
+    // the top, the first of the rest, and the chosen row with it.
+    let fx = press(&mut g, Key::S);
+    assert_eq!(history_writes(&fx).len(), 1);
+    assert_eq!(g.history.file.stars(), 0);
+    assert_eq!(listed_seeds(&g), [9, 13, 11]);
+    assert_eq!(g.history.focus, 0);
+    assert_eq!(g.status, "STAR TAKEN OFF");
+}
+
+#[test]
+fn a_sixth_star_is_refused_plainly() {
+    let mut g = listed_three();
+    for seed in 20..20 + crate::history::MAX_STARS as u64 {
+        let (mut other, _, _) = finished(seed);
+        let r = other.history.last_run.take().unwrap();
+        g.history.file.push(r.clone());
+        g.history.file.set_star(&r, true).unwrap();
+    }
+    g.history.focus = g.history.file.records.len() - 1;
+    let fx = press(&mut g, Key::S);
+    assert!(history_writes(&fx).is_empty());
+    assert_eq!(g.status, "5 STARS - TAKE ONE OFF FIRST");
+    assert_eq!(g.history.file.stars(), crate::history::MAX_STARS);
+}
+
+#[test]
+fn a_touchscreen_stars_by_the_rows_own_star_and_watches_by_the_row() {
+    let mut g = Game::new(true, Save::default());
+    g.fit_display(WINDOW, (0, 0));
+    for (seed, day) in [(9, TODAY), (11, TODAY + 1)] {
+        let (mut other, _, _) = finished(seed);
+        let r = other.history.last_run.take().unwrap();
+        g.history.file.push(Record { day, ..r });
+    }
+    touch_frame(&mut g, Vec::new());
+    tap(&mut g, Action::Watch);
+    assert_eq!(g.mode, Mode::Replays);
+    // The second row's star: starred and written, not watched.
+    let fx = tap(&mut g, Action::Wb(Wb::RowStar(1)));
+    assert!(!g.watching());
+    assert_eq!(history_writes(&fx).len(), 1);
+    assert!(g.history.file.listed().next().unwrap().starred);
+    // The star button stands apart from its row.
+    let rect = |a: Wb| {
+        g.input
+            .buttons
+            .iter()
+            .find(|b| b.action == Action::Wb(a))
+            .unwrap()
+            .rect
+    };
+    let (row, star) = (rect(Wb::Row(0)), rect(Wb::RowStar(0)));
+    assert!(star.x - (row.x + row.w) >= 12, "{row:?} {star:?}");
+    assert!(star.w >= 22 && star.h >= 13);
+    // A tap on the row still watches it: the starred one, now on top.
+    tap(&mut g, Action::Wb(Wb::Row(0)));
+    assert!(g.watching());
+    assert_eq!(g.play.run.as_ref().unwrap().run_seed, 9);
+}
+
+/// `g`, watching, played on to its end.
+fn to_the_end(g: &mut Game) {
+    for _ in 0..400 {
+        press(g, Key::Right);
+        if ended(g) {
+            break;
+        }
+    }
+    until(g, 60.0, ended);
+}
+
+#[test]
+fn star_at_a_replays_end_is_written_once_the_watch_is_over() {
+    let (mut g, _, _) = finished(9);
+    press(&mut g, Key::W);
+    // Not before its end: S does nothing mid-replay.
+    press(&mut g, Key::S);
+    assert_eq!(g.history.file.stars(), 0);
+    to_the_end(&mut g);
+    let mut fx = press(&mut g, Key::S);
+    let starred = g.history.last_run.clone().unwrap();
+    assert!(g.history.file.is_starred(&starred), "set in memory");
+    for _ in 0..60 {
+        fx.extend(g.tick(FRAME, &idle()));
+    }
+    assert!(g.watching());
+    assert!(!fx.iter().any(Effect::touches_disk), "{fx:?}");
+    assert!(g.history.unsaved);
+    // EXIT: written now.
+    let fx = press(&mut g, Key::Escape);
+    let writes = history_writes(&fx);
+    assert_eq!(writes.len(), 1, "{fx:?}");
+    assert!(crate::history::History::parse(&writes[0]).is_starred(&starred));
+    assert!(!g.history.unsaved);
+    assert_eq!(g.mode, Mode::GameOver);
+}
+
+#[test]
+fn star_at_a_replays_end_survives_the_app_being_paused() {
+    let (mut g, _, _) = finished(9);
+    press(&mut g, Key::W);
+    to_the_end(&mut g);
+    press(&mut g, Key::S);
+    // Starred, then unstarred and starred again: one write, of the last.
+    press(&mut g, Key::S);
+    press(&mut g, Key::S);
+    let fx = g.app_paused(&[]);
+    let writes = history_writes(&fx);
+    assert_eq!(writes.len(), 1, "{fx:?}");
+    let read = crate::history::History::parse(&writes[0]);
+    assert_eq!(read.stars(), 1);
+    assert!(!g.history.unsaved);
+    // Still watching; leaving writes nothing more.
+    assert!(g.watching());
+    g.focus_gained();
+    let fx = press(&mut g, Key::Escape);
+    assert!(history_writes(&fx).is_empty());
+    // And on a close the same.
+    let (mut g, _, _) = finished(9);
+    press(&mut g, Key::W);
+    to_the_end(&mut g);
+    press(&mut g, Key::S);
+    let fx = g.closing(&[]);
+    assert_eq!(history_writes(&fx).len(), 1);
+}
+
+#[test]
+fn star_at_the_end_of_a_won_match_replay_keeps_it() {
+    let (mut g, saved, duel) = on_won_plate();
+    assert!(g.history.file.records.is_empty(), "not recorded until left");
+    press(&mut g, Key::W);
+    for _ in 0..8 {
+        press(&mut g, Key::Down);
+    }
+    until(&mut g, 60.0, ended);
+    press(&mut g, Key::S);
+    let fx = press(&mut g, Key::Escape);
+    assert_eq!(history_writes(&fx).len(), 1);
+    let want = Record::duel(TODAY, &saved, &duel, Ground::Generated).unwrap();
+    assert!(g.history.file.is_starred(&want));
+    // Leaving the plate records it as ever: already there, still starred.
+    let fx = press(&mut g, Key::Enter);
+    assert!(history_writes(&fx).is_empty());
+    assert_eq!(g.history.file.records.len(), 1);
+    assert!(g.history.file.is_starred(&want));
+}
+
+#[test]
+fn a_starred_run_outlasts_more_than_twenty_newer_ones() {
+    let (mut g, _, _) = finished(9);
+    let first = g.history.last_run.clone().unwrap();
+    press(&mut g, Key::Enter);
+    press(&mut g, Key::W);
+    press(&mut g, Key::S);
+    let mut text = String::new();
+    // Twenty-five newer runs finished in the game.
+    for seed in 100..125 {
+        g.start_run(seed, false);
+        g.tick(FRAME, &idle());
+        g.play.run = Some(finished_run(seed, g.display.buffer_w as usize, 1));
+        g.finish_run();
+        text = history_writes(&g.take_effects()).pop().expect("recorded");
+    }
+    let read = crate::history::History::parse(&text);
+    assert!(read.is_starred(&first));
+    assert_eq!(read.records.len(), crate::history::MAX_RUNS + 1);
+    assert_eq!(read.listed().next().unwrap().same_game(&first), true);
+}
+
+#[test]
+fn the_list_opens_on_the_game_just_played_not_a_favourite() {
+    let mut g = listed_three();
+    // Seed 9, the oldest, starred: listed first.
+    let nine = g.history.file.listed().nth(2).unwrap().clone();
+    g.history.file.set_star(&nine, true).unwrap();
+    press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Title);
+    press(&mut g, Key::W);
+    assert_eq!(listed_seeds(&g), [9, 13, 11]);
+    assert_eq!(g.history.focus, 1, "the newest not starred: 13");
+    press(&mut g, Key::Enter);
+    assert_eq!(g.play.run.as_ref().unwrap().run_seed, 13);
+    // All starred: the top row.
+    press(&mut g, Key::Escape);
+    press(&mut g, Key::Escape);
+    for r in g.history.file.records.clone() {
+        g.history.file.set_star(&r, true).unwrap();
+    }
+    press(&mut g, Key::W);
+    assert_eq!(g.history.focus, 0);
+}
+
+#[test]
+fn a_tap_on_a_rows_star_keeps_the_page() {
+    let mut g = Game::new(true, Save::default());
+    g.fit_display(WINDOW, (0, 0));
+    // Eight runs: two pages of six on a phone.
+    let (_, run, _) = finished(9);
+    for day in 1..=8 {
+        let mut r = Record::run(day, &run, false);
+        if let Kind::Run(k) = &mut r.kind {
+            k.seed = day;
+        }
+        g.history.file.push(r);
+    }
+    touch_frame(&mut g, Vec::new());
+    tap(&mut g, Action::Watch);
+    tap(&mut g, Action::Wb(Wb::PageNext));
+    let rows = g.replay_rows();
+    assert_eq!(g.history.focus / rows, 1, "on the second page");
+    // Star the second page's first row: it moves to page one, the page
+    // under the finger does not.
+    let fx = tap(&mut g, Action::Wb(Wb::RowStar(0)));
+    assert_eq!(history_writes(&fx).len(), 1);
+    assert_eq!(g.history.file.stars(), 1);
+    assert_eq!(g.history.focus / rows, 1, "still the second page");
+    assert!(g.history.file.listed().next().unwrap().starred);
+}
+
+#[test]
+fn a_star_in_a_newer_builds_file_says_it_lasts_this_session() {
+    let mut g = game();
+    let line = run_line(9);
+    g.set_history(Some(&format!("history 9\n{line}")));
+    assert!(g.history.file.from_the_future);
+    press(&mut g, Key::W);
+    let fx = press(&mut g, Key::S);
+    assert!(history_writes(&fx).is_empty());
+    assert_eq!(g.history.file.stars(), 1);
+    assert_eq!(g.status, "STARRED UNTIL THE GAME CLOSES");
+}
+
+/// The line of a run on `seed`, finished and recorded.
+fn run_line(seed: u64) -> String {
+    let (g, _, _) = finished(seed);
+    g.history.last_run.unwrap().to_line()
+}
+
+#[test]
+fn star_at_the_end_says_why_a_run_too_long_to_keep_cannot_be_starred() {
+    let (mut g, _, _) = finished(9);
+    press(&mut g, Key::W);
+    to_the_end(&mut g);
+    // As if its line were too long to keep: never listed.
+    g.history.file.records.clear();
+    if let Some(w) = g.watch.as_mut() {
+        if let Kind::Run(r) = &mut w.record.kind {
+            while r.log.len() <= crate::history::MAX_LINE_CHARS {
+                r.log.push_str(" 1:100:100");
+            }
+        }
+    }
+    press(&mut g, Key::S);
+    assert_eq!(
+        g.watch.as_ref().unwrap().star_refused,
+        Some(crate::history::StarError::NotKept)
+    );
+    assert!(!g.history.unsaved);
+    let fx = press(&mut g, Key::Escape);
+    assert!(history_writes(&fx).is_empty());
+}
+
+#[test]
+fn a_match_not_kept_on_disk_offers_no_watch_and_so_no_star() {
+    // A dev `--layout` match: on screen, never kept, never recorded.
+    let (mut g, saved, _) = on_won_plate();
+    g.versus.live.as_mut().unwrap().kept = false;
+    let _ = saved;
+    press(&mut g, Key::W);
+    assert!(!g.watching());
+    g.watch_live_match();
+    assert!(!g.watching());
+    assert!(g.history.file.records.is_empty());
 }

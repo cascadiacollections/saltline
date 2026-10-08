@@ -141,8 +141,10 @@ pub(super) fn result_plate_rect(
         (false, false) => 20,
     };
     // A won match's plate adds WATCH (DESIGN §9.4): a plated row is 20
-    // rows with the gap above it, a keyed one 8.
-    let watch_h = match (over, plated) {
+    // rows with the gap above it, a keyed one 8. Only for a player's match
+    // kept on disk: a dev `--layout` match is never recorded, so it is not
+    // offered to watch (nor, at a watch's end, to star).
+    let watch_h = match (over && vs.kept, plated) {
         (false, _) => 0,
         (true, true) => 20,
         (true, false) => 8,
@@ -975,7 +977,7 @@ impl Painter<'_> {
         ]
         .into_iter()
         .filter(|&(action, _)| title_row || action != Action::Replay)
-        .filter(|&(action, _)| over || action != Action::Watch)
+        .filter(|&(action, _)| (over && vs.kept) || action != Action::Watch)
         .collect();
         let labels: Vec<(String, &str)> = rows
             .iter()

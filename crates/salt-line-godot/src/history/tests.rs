@@ -203,7 +203,7 @@ fn each_kind_keeps_its_newest_twenty_and_pushes_out_only_its_own() {
     assert!(!h.records.iter().any(|r| r.day <= 1005 && !r.is_run()));
     // One list, newest first.
     assert_eq!(
-        h.newest_first().next().unwrap().day,
+        h.listed().next().unwrap().day,
         1000 + MAX_MATCHES as u64 + 5
     );
     // A hand-made file over the caps keeps the newest of each kind too.
@@ -213,7 +213,7 @@ fn each_kind_keeps_its_newest_twenty_and_pushes_out_only_its_own() {
         text.push_str(&old_duel(100 + seed).to_line());
     }
     let read = History::parse(&text);
-    assert_eq!(read.records.len(), MAX_RECORDS);
+    assert_eq!(read.records.len(), MAX_RUNS + MAX_MATCHES);
     assert_eq!(read.records[0].day, 11);
     assert_eq!(read.damaged, 0, "lines past the cap are not damage");
 }
@@ -241,7 +241,7 @@ fn a_written_file_fits_its_limit_by_losing_its_oldest() {
     }
     assert!(text.len() <= MAX_FILE_CHARS, "{}", text.len());
     assert!(h.records.len() < MAX_RUNS);
-    assert_eq!(h.newest_first().next().unwrap().day, MAX_RUNS as u64);
+    assert_eq!(h.listed().next().unwrap().day, MAX_RUNS as u64);
     assert_eq!(History::parse(&text), h);
 }
 
@@ -533,4 +533,298 @@ fn a_record_too_long_to_read_back_is_never_written() {
     let back = History::parse(&text);
     assert_eq!(back.records, h.records);
     assert_eq!(back.damaged, 0);
+}
+
+// ------------------------------------------------------------------ stars
+
+/// `h` with the record of day `day` starred, its new text.
+fn star_day(h: &mut History, day: u64) -> Result<Option<String>, StarError> {
+    let r = h.records.iter().find(|r| r.day == day).unwrap().clone();
+    h.set_star(&r, true)
+}
+
+#[test]
+fn a_starred_record_is_never_pushed_off_by_its_kind() {
+    let mut h = History::default();
+    h.push(old_run(1, 3));
+    h.push(old_duel(2));
+    star_day(&mut h, 1).unwrap().unwrap();
+    star_day(&mut h, 2).unwrap().unwrap();
+    // Far more than the caps of each kind, newer than the starred.
+    for seed in 10..10 + MAX_RUNS as u64 + 5 {
+        h.push(old_run(seed, 3)).unwrap();
+    }
+    for seed in 100..100 + MAX_MATCHES as u64 + 5 {
+        h.push(old_duel(seed)).unwrap();
+    }
+    let text = h.push(old_run(1000, 3)).unwrap();
+    assert!(h.records.iter().any(|r| r.day == 1 && r.starred));
+    assert!(h.records.iter().any(|r| r.day == 2 && r.starred));
+    // The caps count the unstarred only.
+    let unstarred = |h: &History, run: bool| {
+        h.records
+            .iter()
+            .filter(|r| !r.starred && r.is_run() == run)
+            .count()
+    };
+    assert_eq!(unstarred(&h, true), MAX_RUNS);
+    assert_eq!(unstarred(&h, false), MAX_MATCHES);
+    // And so on the next launch.
+    let read = History::parse(&text);
+    assert_eq!(read, h);
+    assert_eq!(read.stars(), 2);
+}
+
+#[test]
+fn the_starred_are_listed_first_then_the_rest_newest_first() {
+    let mut h = History::default();
+    for day in 1..=6 {
+        h.push(old_run(day, 3));
+    }
+    star_day(&mut h, 2).unwrap();
+    star_day(&mut h, 4).unwrap();
+    let days: Vec<u64> = h.listed().map(|r| r.day).collect();
+    assert_eq!(days, [4, 2, 6, 5, 3, 1]);
+    // The file keeps its own order, oldest first, with a mark before each
+    // starred line.
+    assert_eq!(
+        h.records.iter().map(|r| r.day).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6]
+    );
+}
+
+#[test]
+fn only_a_few_can_be_starred() {
+    let mut h = History::default();
+    for day in 1..=MAX_STARS as u64 + 2 {
+        h.push(old_run(day, 3));
+    }
+    for day in 1..=MAX_STARS as u64 {
+        assert!(star_day(&mut h, day).unwrap().is_some());
+    }
+    let before = h.clone();
+    assert_eq!(star_day(&mut h, MAX_STARS as u64 + 1), Err(StarError::Full));
+    assert_eq!(h, before, "a refused star changes nothing");
+    assert_eq!(StarError::Full.note(), "5 STARS - TAKE ONE OFF FIRST");
+    // Starring one already starred is no change, and no write.
+    assert_eq!(star_day(&mut h, 1), Ok(None));
+    // Unstar one, and another can be starred.
+    let first = h.records[0].clone();
+    assert!(h.set_star(&first, false).unwrap().is_some());
+    assert!(star_day(&mut h, MAX_STARS as u64 + 1).unwrap().is_some());
+    assert_eq!(h.stars(), MAX_STARS);
+    // A hand-made file with more keeps its newest stars.
+    let mut text = format!("{HEADER} {FORMAT}\n");
+    for day in 1..=MAX_STARS as u64 + 3 {
+        text.push_str("star\n");
+        text.push_str(&old_run(day, 3).to_line());
+    }
+    let read = History::parse(&text);
+    assert_eq!(read.stars(), MAX_STARS);
+    assert!(read.records.iter().rev().take(MAX_STARS).all(|r| r.starred));
+    assert_eq!(read.damaged, 0);
+}
+
+#[test]
+fn a_star_taken_off_counts_as_added_again() {
+    let mut h = History::default();
+    h.push(old_run(1, 3));
+    star_day(&mut h, 1).unwrap();
+    for seed in 10..10 + MAX_RUNS as u64 {
+        h.push(old_run(seed, 3));
+    }
+    assert_eq!(h.records.len(), MAX_RUNS + 1);
+    let one = h.records[0].clone();
+    let line = one.to_line();
+    // Its star taken off: the newest run, so the oldest other run goes.
+    let text = h.set_star(&one, false).unwrap().unwrap();
+    assert_eq!(h.records.len(), MAX_RUNS);
+    assert_eq!(
+        h.records.last().unwrap().day,
+        1,
+        "moved to the newest place"
+    );
+    assert!(!h.records.iter().any(|r| r.day == 10), "the oldest went");
+    // Its line is untouched, date and all, and it is listed first of all,
+    // where it was, now that nothing is starred.
+    assert_eq!(h.records.last().unwrap().to_line(), line);
+    assert!(text.lines().last().map(|l| format!("{l}\n")) == Some(line));
+    assert_eq!(h.listed().next().unwrap().day, 1);
+    // It survives the next twenty runs but one, across a launch too: the
+    // file's order is kept.
+    let mut h = History::parse(&text);
+    assert_eq!(h, History::parse(&h.serialize()));
+    for seed in 100..100 + MAX_RUNS as u64 - 1 {
+        let text = h.push(old_run(seed, 3)).unwrap();
+        h = History::parse(&text);
+    }
+    assert!(h.records.iter().any(|r| r.day == 1), "kept for 19 more");
+    let text = h.push(old_run(500, 3)).unwrap();
+    assert!(!History::parse(&text).records.iter().any(|r| r.day == 1));
+    // Below the starred in the list, the first of the rest.
+    let mut h = History::default();
+    for day in 1..=4 {
+        h.push(old_run(day, 3));
+    }
+    star_day(&mut h, 1).unwrap();
+    star_day(&mut h, 2).unwrap();
+    let two = h.records[1].clone();
+    h.set_star(&two, false).unwrap();
+    let days: Vec<u64> = h.listed().map(|r| r.day).collect();
+    assert_eq!(days, [1, 2, 4, 3]);
+}
+
+#[test]
+fn a_star_line_with_no_record_after_it_is_damage() {
+    let good = run_record(7).to_line();
+    let text = format!("{HEADER} {FORMAT}\nstar\nstar\n{good}star\n");
+    let h = History::parse(&text);
+    assert_eq!(h.records.len(), 1);
+    assert!(h.records[0].starred);
+    assert_eq!(h.damaged, 2, "the doubled star and the trailing one");
+    // In a newer build's file nothing is counted: it is never written.
+    let h = History::parse(&text.replacen("history 2", "history 9", 1));
+    assert_eq!(h.damaged, 0);
+}
+
+#[test]
+fn a_full_file_loses_its_unstarred_first() {
+    let mut h = History::default();
+    // Lines of about 30,000 characters: the limit holds about 17.
+    h.push(old_run(1, 3_700));
+    h.push(old_run(2, 3_700));
+    star_day(&mut h, 1).unwrap();
+    star_day(&mut h, 2).unwrap();
+    let mut text = String::new();
+    for seed in 10..10 + MAX_RUNS as u64 {
+        text = h.push(old_run(seed, 3_700)).unwrap();
+    }
+    assert!(text.len() <= MAX_FILE_CHARS, "{}", text.len());
+    // The oldest two, starred, are kept; the oldest unstarred went.
+    assert_eq!(h.records[0].day, 1);
+    assert_eq!(h.records[1].day, 2);
+    assert!(!h.records.iter().any(|r| r.day == 10));
+    assert_eq!(History::parse(&text), h);
+    // Only once nothing unstarred is left does a starred one go, oldest
+    // first: a file of starred lines too long to fit together (by hand:
+    // five stars of real lines never come near it).
+    let mut h = History {
+        records: (1..=20)
+            .map(|day| Record {
+                starred: true,
+                ..old_run(day, 3_700)
+            })
+            .collect(),
+        ..History::default()
+    };
+    let text = h.written().unwrap();
+    assert!(text.len() <= MAX_FILE_CHARS);
+    assert!(h.records.len() < 20);
+    assert_eq!(h.records.last().unwrap().day, 20);
+    assert_eq!(h.records[0].day, 20 - h.records.len() as u64 + 1);
+}
+
+#[test]
+fn a_star_is_its_own_line_and_round_trips() {
+    let mut h = History::default();
+    h.push(run_record(7));
+    h.push(duel_record(11, Some(Level::Easy), Ground::Generated));
+    h.push(map_record(12, None, "MESA"));
+    let plain = h.serialize();
+    assert!(
+        plain.starts_with("history 1\n"),
+        "no star: format 1, as before"
+    );
+    let duel = h.records[1].clone();
+    let text = h.set_star(&duel, true).unwrap().unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "history 2");
+    assert_eq!(lines[2], "star");
+    // The record's own line is the same starred or not: a star is not part
+    // of the game a share code carries (DESIGN §9.7).
+    assert_eq!(lines[3], duel.to_line().trim_end());
+    assert_eq!(
+        text.replace("star\n", "").replace("history 2", "history 1"),
+        plain
+    );
+    let read = History::parse(&text);
+    assert_eq!(read, h);
+    assert!(read.records[1].starred && read.is_starred(&duel));
+    assert!(read.records[1].check().is_ok());
+    // A record's line on its own never carries the star.
+    assert_eq!(
+        Record::parse(&read.records[1].to_line()).unwrap().starred,
+        false
+    );
+    // Its star taken off, the file is format 1 again, the match moved to
+    // the newest place, its line the same.
+    let mut back = read;
+    let text = back.set_star(&duel, false).unwrap().unwrap();
+    assert!(text.starts_with("history 1\n"));
+    assert_eq!(text.lines().last().unwrap(), duel.to_line().trim_end());
+    let mut lines: Vec<&str> = text.lines().collect();
+    let mut want: Vec<&str> = plain.lines().collect();
+    lines.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn an_older_build_reads_a_starred_file_but_never_writes_it() {
+    // What a format-1 build does with a file: a header past 1 is a newer
+    // build's, read but never written (`a_newer_builds_file_is_read_but_
+    // never_written`), and a `star` line is not a record line.
+    let mut h = History::default();
+    h.push(run_record(7));
+    h.push(run_record(8));
+    let first = h.records[0].clone();
+    let text = h.set_star(&first, true).unwrap().unwrap();
+    let header: u32 = text.lines().next().unwrap()[HEADER.len() + 1..]
+        .parse()
+        .unwrap();
+    assert!(header > FORMAT_PLAIN, "an older build leaves it alone");
+    assert_eq!(Record::parse(STAR), Err(LineError::Damaged));
+    // Every record line is one a format-1 build reads. It still caps what
+    // it read in memory, so its list shows the newest 20 of each kind,
+    // without stars: an older starred record can be missing from that
+    // build's list, but the file, never written there, still holds it.
+    for line in text.lines().skip(1).filter(|l| *l != STAR) {
+        assert!(Record::parse(line).is_ok(), "{line}");
+    }
+    // And this build reads a newer build's starred file the same way.
+    let newer = text.replacen("history 2", "history 3", 1);
+    let mut read = History::parse(&newer);
+    assert!(read.from_the_future);
+    assert_eq!(read.records.len(), 2);
+    assert_eq!(
+        read.set_star(&read.records[1].clone(), true),
+        Ok(None),
+        "never written"
+    );
+}
+
+#[test]
+fn starring_a_game_not_yet_listed_adds_it() {
+    // A won match whose plate is still up is recorded once its plate is
+    // left; STAR at the end of its replay adds it now, starred.
+    let mut h = History::default();
+    let duel = duel_record(11, None, Ground::Generated);
+    let text = h.set_star(&duel, true).unwrap().unwrap();
+    assert_eq!(h.records.len(), 1);
+    assert!(h.records[0].starred);
+    assert!(History::parse(&text).records[0].starred);
+    // Recorded again as its plate is left: already listed, still starred.
+    assert_eq!(h.push(duel.clone()), None);
+    assert!(h.is_starred(&duel));
+    // Unstarring one that is not listed is no change.
+    assert_eq!(h.set_star(&run_record(7), false), Ok(None));
+    assert_eq!(h.records.len(), 1);
+    // One too long to keep cannot be starred.
+    let mut long = run_record(8);
+    if let Kind::Run(r) = &mut long.kind {
+        while r.log.len() <= MAX_LINE_CHARS {
+            r.log.push_str(" 1:100:100");
+        }
+    }
+    assert_eq!(h.set_star(&long, true), Err(StarError::NotKept));
 }

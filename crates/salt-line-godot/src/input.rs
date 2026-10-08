@@ -248,6 +248,9 @@ pub enum Action {
     /// WATCH on a run's result and a won match's plate, and the title's
     /// REPLAYS list (DESIGN §9.4).
     Watch,
+    /// Star or unstar a replay: the REPLAYS list's chosen row, and the one
+    /// at the end of a replay (DESIGN §9.4).
+    Star,
     AimMode,
     ArcHint,
     /// A seed keypad key: types its character.
@@ -279,6 +282,10 @@ pub enum Wb {
     Speed,
     NextShot,
     NextRound,
+    /// The star beside a row of the list, by its place on the page.
+    RowStar(u8),
+    /// STAR at the end of a replay.
+    Star,
 }
 
 /// The map editor's buttons, and the pre-match screen's GROUND row and
@@ -335,7 +342,7 @@ pub enum Ed {
 impl Action {
     /// Every action a `bind` line can name, in the order the save file and
     /// the Controls screen know them.
-    pub const BINDABLE: [Action; 24] = [
+    pub const BINDABLE: [Action; 25] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -360,6 +367,7 @@ impl Action {
         Self::Versus,
         Self::Demo,
         Self::Watch,
+        Self::Star,
     ];
 
     /// The action's name in a `bind` line (`bind fire SPACE A`). `None` for a
@@ -390,6 +398,7 @@ impl Action {
             Self::Versus => "versus",
             Self::Demo => "demo",
             Self::Watch => "watch",
+            Self::Star => "star",
             Self::TitleMusic
             | Self::AimMode
             | Self::ArcHint
@@ -451,6 +460,10 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         // W for watch. D-pad up is read by none of the screens that ask for
         // this: the title, a run's result and a won match's plate.
         Action::Watch => ("W", "DPAD_UP"),
+        // S for star. Read only on the REPLAYS list and a replay's end,
+        // where neither S (seed entry) nor pad Y (REPLAY, seed entry,
+        // reposition) means anything else.
+        Action::Star => ("S", "Y"),
         _ => ("", ""),
     }
 }
@@ -737,6 +750,7 @@ mod tests {
                 "versus",
                 "demo",
                 "watch",
+                "star",
             ]
         );
     }

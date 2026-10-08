@@ -133,7 +133,7 @@
 //! | `MatchFile(Discard)` | a kept match left: its result plate left after the win (REMATCH or TITLE), or quit; a saved match that no longer rebuilds | `resume::replace_at` with `""`: delete every match file, or blank `match.txt` | no | yes |
 //! | `MatchFile(Abandon)` | [`Game::saved_match`], for a match this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes `match-loading.txt` and `match.txt.new`, never `match.txt` (`resume::drop_set_aside_at`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
-//! | `History(text)` | a kept run finished (`finish_run`), a kept match left once won (`drop_live_match`); never while the demo or a watch runs (`app/watch.rs`) | `save::write` of `user://history.txt` by way of `history.txt.new` | no | yes |
+//! | `History(text)` | a kept run finished (`finish_run`), a kept match left once won (`drop_live_match`), a star set on the REPLAYS list; a star set at a replay's end once the watch is over, or as the app is paused or closed (`app/watch.rs`); never otherwise while the demo or a watch runs | `save::write` of `user://history.txt` by way of `history.txt.new` | no | yes |
 //! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play or a versus match not paused, a menu-started demo, each until its quiet limit | `DisplayServer::screen_set_keep_on` | no | no |
 //!
 //! # Scoring at most once
@@ -310,7 +310,8 @@ pub enum Mode {
     /// the editing screen, its menus, the slot list and test fire.
     Editor,
     /// The REPLAYS list (DESIGN §9.4, `app/watch.rs`): finished runs and
-    /// matches, newest first, to watch again. A watch itself is `Playing`
+    /// matches, the starred first, then newest first, to watch again. A
+    /// watch itself is `Playing`
     /// or `Versus` with [`Game::watching`] set.
     Replays,
 }
@@ -551,7 +552,8 @@ pub enum Effect {
     /// [`Game::screen_awake_wanted`] changes; see [`Game::take_effects`].
     ScreenAwake(bool),
     /// Make the history file (`user://history.txt`, DESIGN §9) this text:
-    /// written whole and atomically (`save::write`), a run or match added.
+    /// written whole and atomically (`save::write`), a run or match added
+    /// or a star set or taken off.
     History(String),
 }
 
@@ -710,7 +712,7 @@ pub struct FrameState {
     demo: (bool, Option<bool>),
     /// A watch (paused, speed, ended, entry), the REPLAYS list's chosen
     /// row, and how many records it lists.
-    watch: (Option<watch::Fingerprint>, usize, usize),
+    watch: (Option<watch::Fingerprint>, usize, (usize, usize)),
     /// What the map editor shows (`editor_fingerprint`), and the ground
     /// the pre-match screen has picked.
     editor: (Option<editor::Fingerprint>, Option<String>),
@@ -1491,6 +1493,7 @@ impl Game {
         self.demo_unwatched();
         self.auto_pause();
         self.flush_settings_final();
+        self.flush_history_final();
         self.flush_draft();
         self.take_effects()
     }
@@ -1506,6 +1509,7 @@ impl Game {
     pub fn closing(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
         self.flush_settings_final();
+        self.flush_history_final();
         self.flush_draft();
         self.take_effects()
     }
@@ -1972,7 +1976,7 @@ impl Game {
             watch: (
                 self.watch_fingerprint(),
                 self.history.focus,
-                self.history.file.records.len(),
+                (self.history.file.records.len(), self.history.file.stars()),
             ),
             editor: (
                 self.editor_fingerprint(),

@@ -21,13 +21,18 @@
 //! run 1 20369 6 1234567 360 0 9 0 41 v2 @0 F0 900:600 870:640 …
 //! duel 1 <day> <opponent> <ground> <winner> <rounds L> <rounds R> <match line>
 //! duel 1 20369 easy - L 2 1 match 3 6 1 99 360 1 1 0 easy - 31 900:600 …
+//! star
+//! run 1 20370 6 7654321 360 0 4 0 30 v2 @0 F0 880:610 …
 //! ```
 //!
-//! A header naming the file's [`FORMAT`], then one line per finished run or
+//! A header naming the file's format ([`FORMAT_PLAIN`], or [`FORMAT`] once
+//! anything is starred: see "Stars"), then one line per finished run or
 //! match, oldest first: at most [`MAX_RUNS`] runs and [`MAX_MATCHES`]
-//! matches (see "One list, two caps"). Each line starts with its kind and
-//! its own [`LINE_FORMAT`], so a line read on its own (a share code, later:
-//! DESIGN §9.7) still says how to read it. Then:
+//! matches that are not starred, and [`MAX_STARS`] starred ones (see "One
+//! list, two caps"). A starred record has a line saying `star` just before
+//! its own. Each record's line starts with its kind and its own
+//! [`LINE_FORMAT`], so a line read on its own (a share code, later: DESIGN
+//! §9.7) still says how to read it. Then:
 //!
 //! | Field | Meaning |
 //! |---|---|
@@ -76,12 +81,48 @@
 //!
 //! # One list, two caps
 //!
-//! Runs and matches are shown as one list, newest first: a family's "what
-//! did we play lately", read top down by a child, with no choice to make
-//! before every look. But each kind has its own cap (owner decision,
+//! Runs and matches are shown as one list, the starred first (see
+//! "Stars"), then the rest newest first: a family's "what did we play
+//! lately", read top down by a child, with no choice to make before every
+//! look. "Newest" is the file's order, which is the order records were
+//! added: a record whose star is taken off counts as added again. But each kind has its own cap (owner decision,
 //! October 2026), and a new record pushes out the oldest of its own kind,
 //! so an afternoon of matches never costs the last run, nor a long run
 //! session the last match.
+//!
+//! # Stars
+//!
+//! A family can star a few favourites so they are never pushed off (owner
+//! decision, October 2026). A starred record is exempt from the caps (they
+//! count unstarred records only) and is the last to go when a write trims
+//! the file to [`MAX_FILE_CHARS`]: every unstarred record goes first,
+//! oldest first. At most [`MAX_STARS`] are starred, so the file stays
+//! bounded (at most [`MAX_RECORDS`] records); starring one more is refused
+//! with [`StarError::Full`], and the list says to take one off first.
+//!
+//! **Taking a star off counts as adding the record again** (owner decision,
+//! October 2026): it moves to the end of the file, the newest place of its
+//! kind, so it survives 20 more games of its kind, across launches too,
+//! since the file's order is what is kept. Its line is untouched: the date
+//! it shows is still the day it was played. In the list it moves from the
+//! starred, at the top, to just below them: the first of the rest, where
+//! the eye already is, so a tap by mistake is easy to undo. Like any record
+//! added, it may push the oldest unstarred one of its kind past the cap.
+//!
+//! The star is the player's own, not part of the game: it is kept on a line
+//! of its own before the record's (`star`), never inside it, so the record
+//! line a share code will carry (DESIGN §9.7) is the same starred or not.
+//!
+//! **Older builds.** A build of [`FORMAT_PLAIN`] reads a `star` line as
+//! damage and drops it, and would drop the starred records past the caps on
+//! its next write. So a file holding a star says [`FORMAT`] in its header:
+//! an older build reads it as from a newer build and never writes it, as
+//! for any newer build's file. It does still cap what it read in memory, so
+//! its list shows only the newest 20 of each kind, unstarred: an old
+//! starred record can be missing from that build's list, but it is still in
+//! the file, and this build shows it again. The cost: while a star is kept, an older build installed over this
+//! one keeps what it finishes for the session only. A file with no star
+//! says [`FORMAT_PLAIN`], and an older build reads and writes it as ever.
 
 use salt_line_sim::layout::{LayoutName, NAME_MAX};
 use salt_line_sim::replay::{decode_log, encode_log, Replay};
@@ -99,8 +140,12 @@ pub const HISTORY_TEMP_PATH: &str = "user://history.txt.new";
 
 /// The file's format, its header's number. A build that changes any line
 /// bumps this too, so an older build reads the file as from the future and
-/// leaves it alone.
-pub const FORMAT: u32 = 1;
+/// leaves it alone. 2 added `star` lines; a file with none is written as
+/// [`FORMAT_PLAIN`], which is all a format-1 build needs to read it.
+pub const FORMAT: u32 = 2;
+/// The header of a file holding no star: format 1's, unchanged, so a build
+/// from before stars still reads and writes it (see "Stars").
+pub const FORMAT_PLAIN: u32 = 1;
 /// Each line's own format, after its kind.
 pub const LINE_FORMAT: u32 = 1;
 
@@ -108,8 +153,14 @@ pub const LINE_FORMAT: u32 = 1;
 pub const MAX_RUNS: usize = 20;
 /// Finished matches kept; a new one pushes out the oldest match.
 pub const MAX_MATCHES: usize = 20;
-/// Both together: the most the list ever shows.
-pub const MAX_RECORDS: usize = MAX_RUNS + MAX_MATCHES;
+/// Starred records, of both kinds together. Exempt from the caps, so the
+/// file's bound grows by this many. Five: a number a child can count on one
+/// hand, a few favourites rather than a second list; and fewer than the
+/// rows of a touchscreen's page (`app::watch::LIST_ROWS_TOUCH`), so with the
+/// starred listed first the newest game is still on the first page.
+pub const MAX_STARS: usize = 5;
+/// All together: the most the list ever shows once read.
+pub const MAX_RECORDS: usize = MAX_RUNS + MAX_MATCHES + MAX_STARS;
 
 /// The longest line read. The longest a line can honestly be is a match on
 /// a map: its layout's code (at most `layout::MAX_CODE_CHARS`, 4,096) and
@@ -128,6 +179,7 @@ pub const MAX_LINE_CHARS: usize = 32 * 1024;
 pub const MAX_FILE_CHARS: usize = 512 * 1024;
 
 const HEADER: &str = "history";
+pub(crate) const STAR: &str = "star";
 const RUN: &str = "run";
 const DUEL: &str = "duel";
 
@@ -189,6 +241,29 @@ pub struct Record {
     /// made: a match's needs its line parsed, and the list asks every frame
     /// it draws.
     pub(crate) verdict: Result<(), Refused>,
+    /// Starred by the player: kept past the caps (see "Stars"). Not part
+    /// of the record's line ([`Record::to_line`]), which is the game's.
+    pub starred: bool,
+}
+
+/// Why a star cannot be set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StarError {
+    /// [`MAX_STARS`] are starred already.
+    Full,
+    /// The record is not in the history and cannot be: its line is too
+    /// long to read back ([`MAX_LINE_CHARS`]).
+    NotKept,
+}
+
+impl StarError {
+    /// What the list or the replay's end says. Words a child can read out.
+    pub fn note(self) -> String {
+        match self {
+            StarError::Full => format!("{MAX_STARS} STARS - TAKE ONE OFF FIRST"),
+            StarError::NotKept => "TOO LONG TO KEEP - CANNOT STAR".to_string(),
+        }
+    }
 }
 
 /// Why a line is not read as a record.
@@ -248,7 +323,12 @@ impl Record {
     /// A record of `kind` on `day`, its verdict worked out.
     pub fn new(day: u64, kind: Kind) -> Record {
         let verdict = verdict_of(&kind);
-        Record { day, kind, verdict }
+        Record {
+            day,
+            kind,
+            verdict,
+            starred: false,
+        }
     }
 
     /// The same run or match as `other`, whatever day each was recorded:
@@ -345,7 +425,8 @@ impl Record {
         }
     }
 
-    /// The record's line, newline-terminated: the module docs' format.
+    /// The record's line, newline-terminated: the module docs' format. The
+    /// game's alone: a star is not in it.
     pub fn to_line(&self) -> String {
         match &self.kind {
             Kind::Run(r) => format!(
@@ -474,7 +555,7 @@ impl Record {
         }
     }
 
-    /// One row of the list, newest first: the date, what it was, how it
+    /// One row of the list: the date, what it was, how it
     /// ended. Words a child can read out (DESIGN §11.4).
     pub fn summary(&self) -> String {
         let date = date(self.day).map(|d| format!("{d}  ")).unwrap_or_default();
@@ -608,9 +689,20 @@ impl History {
                 lines.next();
             }
         }
+        // A `star` line marks the record on the line after it. One with no
+        // line after it, or another `star`, marks nothing: damage.
+        let mut star = false;
         for line in lines {
+            if line == STAR {
+                if star && !out.from_the_future {
+                    out.damaged += 1;
+                }
+                star = true;
+                continue;
+            }
+            let starred = std::mem::take(&mut star);
             match Record::parse(line) {
-                Ok(r) => out.records.push(r),
+                Ok(r) => out.records.push(Record { starred, ..r }),
                 // A newer build's file is never written, so its lines are
                 // not lost: they are only not this build's to read.
                 Err(_) if out.from_the_future => {}
@@ -618,13 +710,23 @@ impl History {
                 Err(LineError::Damaged) => out.damaged += 1,
             }
         }
-        // A hand-made file may hold more than the caps: the newest of each
-        // kind are kept.
+        if star && !out.from_the_future {
+            out.damaged += 1;
+        }
+        // A hand-made file may hold more than the caps or the stars: the
+        // newest stars and the newest of each kind are kept.
+        let mut stars = 0;
+        for r in out.records.iter_mut().rev() {
+            if r.starred {
+                stars += 1;
+                r.starred = stars <= MAX_STARS;
+            }
+        }
         out.cap();
         out
     }
 
-    /// Drop the oldest of each kind past its cap.
+    /// Drop the oldest unstarred records of each kind past its cap.
     fn cap(&mut self) {
         let (mut runs, mut matches) = (0, 0);
         let mut keep: Vec<bool> = self
@@ -632,6 +734,9 @@ impl History {
             .iter()
             .rev()
             .map(|r| {
+                if r.starred {
+                    return true;
+                }
                 let n = if r.is_run() { &mut runs } else { &mut matches };
                 *n += 1;
                 *n <= if r.is_run() { MAX_RUNS } else { MAX_MATCHES }
@@ -642,13 +747,49 @@ impl History {
         self.records.retain(|_| kept.next().unwrap_or(false));
     }
 
-    /// The file's text: the header, then a line per record, oldest first.
+    /// The file's text: the header, then a line per record, oldest first,
+    /// each starred one after a `star` line. The header says [`FORMAT`] only
+    /// if something is starred (see "Stars").
     pub fn serialize(&self) -> String {
-        let mut s = format!("{HEADER} {FORMAT}\n");
+        let format = if self.stars() > 0 {
+            FORMAT
+        } else {
+            FORMAT_PLAIN
+        };
+        let mut s = format!("{HEADER} {format}\n");
         for r in &self.records {
+            if r.starred {
+                s.push_str(STAR);
+                s.push('\n');
+            }
             s.push_str(&r.to_line());
         }
         s
+    }
+
+    /// How many records are starred.
+    pub fn stars(&self) -> usize {
+        self.records.iter().filter(|r| r.starred).count()
+    }
+
+    /// The file's text to write now, trimmed to [`MAX_FILE_CHARS`] by
+    /// dropping the oldest unstarred records, then (only if those are all
+    /// gone) the oldest starred; `None` for a newer build's file, which is
+    /// never written.
+    pub fn written(&mut self) -> Option<String> {
+        if self.from_the_future {
+            return None;
+        }
+        let mut text = self.serialize();
+        while text.len() > MAX_FILE_CHARS && self.records.len() > 1 {
+            let oldest = self.records.iter().position(|r| !r.starred).unwrap_or(0);
+            self.records.remove(oldest);
+            text = self.serialize();
+        }
+        // Written now, the dropped lines are gone from disk too.
+        self.damaged = 0;
+        self.newer = 0;
+        Some(text)
     }
 
     /// Add a finished run or match as the newest, dropping the oldest of
@@ -669,23 +810,64 @@ impl History {
         }
         self.records.push(record);
         self.cap();
-        if self.from_the_future {
-            return None;
-        }
-        let mut text = self.serialize();
-        while text.len() > MAX_FILE_CHARS && self.records.len() > 1 {
-            self.records.remove(0);
-            text = self.serialize();
-        }
-        // Written now, the dropped lines are gone from disk too.
-        self.damaged = 0;
-        self.newer = 0;
-        Some(text)
+        self.written()
     }
 
-    /// The records newest first, as the list shows them.
-    pub fn newest_first(&self) -> impl Iterator<Item = &Record> {
-        self.records.iter().rev()
+    /// Star `record` (`on`) or unstar it, found by [`Record::same_game`].
+    /// One not yet in the history (a won match whose plate is still up) is
+    /// added, starred, as [`History::push`] adds one. Returns the file's
+    /// new text, or `None` when there is nothing to write: no change, or a
+    /// newer build's file (the star is kept in memory, for this session).
+    /// Taking a star off moves the record to the newest place of its kind,
+    /// as if added again (see "Stars").
+    pub fn set_star(&mut self, record: &Record, on: bool) -> Result<Option<String>, StarError> {
+        let full = self.stars() >= MAX_STARS;
+        match self.records.iter_mut().find(|r| r.same_game(record)) {
+            Some(r) if r.starred == on => Ok(None),
+            Some(_) | None if on && full => Err(StarError::Full),
+            Some(r) => {
+                r.starred = on;
+                if !on {
+                    // Added again: the newest of its kind, then the caps.
+                    let at = self.records.iter().position(|r| r.same_game(record));
+                    if let Some(at) = at {
+                        let r = self.records.remove(at);
+                        self.records.push(r);
+                    }
+                    self.cap();
+                }
+                Ok(self.written())
+            }
+            None if !on => Ok(None),
+            None => {
+                let starred = Record {
+                    starred: true,
+                    ..record.clone()
+                };
+                let text = self.push(starred);
+                if self.records.iter().any(|r| r.same_game(record)) {
+                    Ok(text)
+                } else {
+                    Err(StarError::NotKept)
+                }
+            }
+        }
+    }
+
+    /// Whether `record` is in the history, starred.
+    pub fn is_starred(&self, record: &Record) -> bool {
+        self.records
+            .iter()
+            .any(|r| r.starred && r.same_game(record))
+    }
+
+    /// The records as the list shows them: the starred first, then the
+    /// rest, each newest first. A child's favourites are always at the top,
+    /// and with at most [`MAX_STARS`] of them the newest game is still on
+    /// the first page.
+    pub fn listed(&self) -> impl Iterator<Item = &Record> {
+        let starred = self.records.iter().rev().filter(|r| r.starred);
+        starred.chain(self.records.iter().rev().filter(|r| !r.starred))
     }
 }
 
