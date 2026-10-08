@@ -1185,7 +1185,8 @@ impl Editor {
             (_, _) => (l.guns[0] as i32 + gap, n - 1 - margin),
         };
         let want = want.clamp(lo, hi.max(lo));
-        let mut at = l.guns[i] as i32;
+        let from = l.guns[i] as i32;
+        let mut at = from;
         let step = (want - at).signum();
         while at != want {
             let next = at + step;
@@ -1194,7 +1195,11 @@ impl Editor {
             }
             at = next;
         }
-        self.place_gun(i, at);
+        // A gun that could not move stays as it is, and so does the other:
+        // an undo can bring back guns MIRROR did not place.
+        if at != from {
+            self.place_gun(i, at);
+        }
     }
 
     /// The guns as they would be with gun `i` at column `at`.
