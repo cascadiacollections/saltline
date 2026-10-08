@@ -140,6 +140,8 @@ request.
 | S | — | SEED ENTRY | Seed entry (touch has an on-screen keypad) |
 | 2 | LB (on the title) | LOCAL VERSUS | Local versus, two players on one device (see below) |
 | D | D-pad down (on the title) | DEMO (top-left corner) | Watch the attract demo (see below) |
+| Down | D-pad down (on the pre-match screen) | GROUND row, `<` | Pick the ground for a local versus match: generated, or a map |
+| E | X (pre-match, a match's pause or result) | MAKE MAP (pre-match, top-right corner) | Open the map editor (see below); on a match's pause or result, make a map of the round |
 | D | D-pad down (on Controls) | IDLE DEMO | Start the demo by itself after 30 s on the title (on by default) |
 | C | X | COPY SEED | Copy the seed (on the run-over screen) |
 | R | Y | SAME SEED AGAIN | Replay the same seed |
@@ -219,8 +221,47 @@ two guns roll a little (together, so it stays fair) and the range has to be
 found again; turn ROLLING GUNS off to keep them still. Wind changes every turn,
 craters last for the round, and every round is new ground. Aim help shows that
 player's last landing mark and arc and a short preview of the current aim.
-Esc / B / `II` pauses; TITLE leaves the match. Nothing about a match is saved,
-and a run kept for CONTINUE is left alone.
+Esc / B / `II` pauses; TITLE leaves the match. A match in play is kept if the
+app is killed (RESUME MATCH on the title), and a run kept for CONTINUE is
+left alone.
+
+The pre-match screen's GROUND row picks what the match is played on:
+GENERATED (new ground every round, as above), or a map, every round on the
+same ground: the four that ship (RIDGE, MESAS, CANYON, SPIRES), then any you
+have made, each with a four-character fingerprint so two phones can check
+they hold the same map. Tap the row (or Down) for the next, `<` for the one
+before. On a map the guns do not roll (ROLLING GUNS reads OFF), and a map's
+fixed wind blows the other way every pair of turns, so both players shoot
+with it and against it as often. A rematch keeps the ground.
+
+### Map editor
+
+Make your own duel maps (DESIGN §13.11). MAKE MAP is in the top-right
+corner of the local versus pre-match screen (`E` with keys); MAKE MAP OF
+THIS ROUND on a match's pause or result plate starts one from the round on
+screen, keeping both guns, and the menu's BACK TO MATCH goes back into the
+match where it was. A new map
+starts BLANK (level ground), from FORK A SEED (type any seed and pick a
+round: a draft labelled FROM SEED DUNE R2), from a map you open, or from a
+code you paste.
+
+| Touch | Keyboard | Controller | Does |
+|---|---|---|---|
+| a tool, then drag on the ground | `[` `]` tool, arrows move and nudge | LB / RB, d-pad | SCULPT: drag up to raise, down to lower; SMOOTH; STAMP a ridge, chasm, mesa, spires or basin; GUNS: drag a gun |
+| S M L, the stamp, the wind's buttons | `,` `.` | X / Y | the tool's option: brush size, stamp, CALM / RANGE / FIXED |
+| `-` `+` | Left / Right (on WIND) | d-pad | the wind, a tenth at a time |
+| MIRROR | I | menu | edit both sides at once (on for a blank map) |
+| UNDO / REDO | Z / Y | menu | 64 steps back; a whole drag is one |
+| TEST | T | menu | fire either gun, calm and in the map's winds, with the number of ways through; the craters go when you are done |
+| MENU | Esc | B | SAVE, NAME, COPY CODE, PASTE CODE (P), NEW MAP, DISCARD MAP, EXIT |
+
+The bar at the top says what is wrong in a few words (a stop sign: it cannot
+be saved or played yet), or READY and whether one side has it harder (LEFT
+HARDER, FAIR, RIGHT HARDER). Your map is kept as you go, even if the app is
+killed, until you save it (32 slots) or discard it; overwriting or deleting a
+saved map, or discarding one, shows an UNDO until you leave the editor. Maps
+live in `user://layouts.txt`, one share code a line, and COPY CODE puts a
+map's code on the clipboard for another phone to paste.
 
 The barrel sprite shows the angle rounded to 5°; the numeric field shows the
 true value. That gap is intentional — it is why `Vernier` feels like an
@@ -312,7 +353,8 @@ godot --headless --path . -- --salt-seed 20260907 --salt-screen 96 \
     --salt-shot /tmp/screen96.png
 
 # Layouts (DESIGN §13): fork a generated screen into a share code, then play
-# a custom duel on it. `just layouts` reports code lengths and fork fidelity.
+# a custom duel on it. `just layouts` reports code lengths and fork fidelity;
+# `just layouts editor` times what the map editor checks after every edit.
 godot --headless --path . -- --salt-fork-duel 42:0
 godot --path . -- --salt-layout <the code it printed>
 ```

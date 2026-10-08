@@ -66,6 +66,16 @@ pub enum Key {
     M,
     L,
     D,
+    /// The map editor's keys (DESIGN §13.11): E opens it from the
+    /// pre-match screen and forks the round from a match's plates; T test
+    /// fire, Z undo, Y redo, I mirror, X delete a slot, P paste a code.
+    E,
+    T,
+    Z,
+    Y,
+    I,
+    X,
+    P,
     /// The debug overlay. Not bindable.
     F1,
     /// Held for coarse aim steps. Not bindable.
@@ -73,7 +83,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 26] = [
+    pub const ALL: [Key; 33] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -98,6 +108,13 @@ impl Key {
         Self::M,
         Self::L,
         Self::D,
+        Self::E,
+        Self::T,
+        Self::Z,
+        Self::Y,
+        Self::I,
+        Self::X,
+        Self::P,
         Self::F1,
         Self::Shift,
     ];
@@ -129,6 +146,9 @@ impl Key {
             "M" => Self::M,
             "L" => Self::L,
             "D" => Self::D,
+            // The map editor's keys (E T Z Y I X P) are read as keys, not
+            // through bindings, so no `bind` line may put an action on
+            // them, where the editor would take its presses first.
             _ => return None,
         })
     }
@@ -227,6 +247,61 @@ pub enum Action {
     Type(char),
     /// The seed keypad's DEL.
     Delete,
+    /// A map editor or GROUND row button (DESIGN §13.11). Touch only, like
+    /// the keypad: keys and a controller reach the same things through
+    /// the editor's own keys and a focus.
+    Edit(Ed),
+}
+
+/// The map editor's buttons, and the pre-match screen's GROUND row and
+/// MAKE MAP. Each names what it does; the editor (`app/editor.rs`) reads
+/// them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Ed {
+    /// MAKE MAP on the pre-match screen.
+    MakeMap,
+    /// The GROUND row: the previous and next ground.
+    GroundPrev,
+    GroundNext,
+    /// MAKE MAP OF THIS ROUND, on a match's pause and result plates.
+    ForkRound,
+    /// A row of a list page (start, menu, slots), by its place on screen.
+    Row(u8),
+    /// The slot list's paging.
+    PageUp,
+    PageDown,
+    /// The slot list's actions on the chosen row.
+    Open,
+    Delete,
+    Copy,
+    /// FORK SEED's round.
+    RoundDown,
+    RoundUp,
+    /// FORK SEED's and NAME's OK.
+    Ok,
+    /// The editing screen's top row.
+    Menu,
+    Undo,
+    Redo,
+    /// The toolbar.
+    Tool(crate::editor::Tool),
+    Mirror,
+    Test,
+    /// The options row under the toolbar.
+    Brush(crate::editor::Brush),
+    Stamp(crate::editor::Stamp),
+    WindMode(crate::editor::WindMode),
+    WindField(crate::editor::WindField),
+    WindDown,
+    WindUp,
+    /// TEST FIRE's controls.
+    TestSide,
+    TestWind,
+    /// The UNDO on a toast after a slot was overwritten or deleted, or the
+    /// draft discarded.
+    ToastUndo,
+    /// Leave a page for the one before it.
+    Back,
 }
 
 impl Action {
@@ -285,7 +360,12 @@ impl Action {
             Self::NewRun => "new_run",
             Self::Versus => "versus",
             Self::Demo => "demo",
-            Self::TitleMusic | Self::AimMode | Self::ArcHint | Self::Type(_) | Self::Delete => {
+            Self::TitleMusic
+            | Self::AimMode
+            | Self::ArcHint
+            | Self::Type(_)
+            | Self::Delete
+            | Self::Edit(_) => {
                 return None;
             }
         })

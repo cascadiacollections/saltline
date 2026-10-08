@@ -56,6 +56,41 @@ pub const SOCK_LIMP: Icon = [
     "3........",
 ];
 
+/// The map editor's verdict (DESIGN §13.11): a problem shows as a symbol
+/// and a few words, never a sentence. A stop sign for a problem that
+/// blocks saving and playing ...
+pub const STOP: Icon = [
+    ".11111.", //
+    "1122211", //
+    "1212121", //
+    "1221221", //
+    "1212121", //
+    "1122211", //
+    ".11111.", //
+];
+
+/// ... a warning triangle for one that only warns ...
+pub const WARN: Icon = [
+    "...1...", //
+    "..121..", //
+    "..121..", //
+    ".11211.", //
+    ".11111.", //
+    "1112111", //
+    "1111111", //
+];
+
+/// ... and a flag for a layout that can be played and saved.
+pub const FLAG: Icon = [
+    "3111...", //
+    "31111..", //
+    "311111.", //
+    "3111...", //
+    "3......", //
+    "3......", //
+    "3......", //
+];
+
 /// Width of `icon` in buffer pixels, taken from its first row; every row is
 /// the same length (a unit test checks this).
 pub fn width(icon: &Icon) -> i32 {
@@ -68,7 +103,7 @@ mod tests {
 
     #[test]
     fn icons_are_rectangular_and_use_only_colour_digits() {
-        for icon in [&SHELL, &SOCK, &SOCK_LIMP] {
+        for icon in [&SHELL, &SOCK, &SOCK_LIMP, &STOP, &WARN, &FLAG] {
             for row in icon.iter() {
                 assert_eq!(row.len(), icon[0].len());
                 assert!(row.bytes().all(|b| b == b'.' || (b'1'..=b'3').contains(&b)));

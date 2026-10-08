@@ -159,6 +159,14 @@ pub(crate) struct VersusState {
     /// are all match ([`versus::GUN_SHIFT`] off). On by default, and kept
     /// for a rematch, so the rule can be tried both ways.
     pub(crate) rolling_off: bool,
+    /// The GROUND row: the layout a match started now plays on (DESIGN
+    /// §13.9), or `None` for GENERATED. Kept for a rematch, and set again
+    /// by RESUME MATCH on a layout.
+    pub(crate) ground: Option<super::GroundPick>,
+    /// Where the GROUND row's pick for a match suspended this session came
+    /// from (MAKE MAP OF THIS ROUND): RESUME MATCH picks it again by that,
+    /// so a rematch plays a slot as it now is, not as the match began.
+    pub(crate) suspended_source: Option<super::editor::GroundSource>,
     /// Matches started this session, so each gets its own seed.
     pub(crate) started: u64,
     /// Different at every launch (the adapter reads the clock), so the
@@ -212,6 +220,11 @@ pub(crate) struct VersusPlay {
     pub(crate) kept: bool,
     /// Entries in the line last written; `None` before the first write.
     pub(crate) saved_len: Option<usize>,
+    /// The layout every round is played on, for a match on one (DESIGN
+    /// §13.9): its code goes in the match's line (`match_log` format 2).
+    pub(crate) layout: Option<salt_line_sim::layout::Layout>,
+    /// Where the GROUND row's pick this match was started on came from.
+    pub(crate) source: Option<super::editor::GroundSource>,
 }
 
 impl VersusPlay {
@@ -236,6 +249,8 @@ impl VersusPlay {
             log: Vec::new(),
             kept: false,
             saved_len: None,
+            layout: None,
+            source: None,
         }
     }
 
@@ -290,8 +305,8 @@ impl VersusPlay {
     /// killed as it was won still says who won). `None` for a log that
     /// does not replay.
     pub(crate) fn rebuild(saved: &SavedMatch) -> Option<VersusPlay> {
-        let duel = Match::with_rules(saved.seed, saved.width, saved.rules());
-        let mut vs = VersusPlay::new(duel);
+        let mut vs = VersusPlay::new(saved.start()?);
+        vs.layout = saved.layout().ok().flatten();
         for entry in &saved.log {
             let taken = match *entry {
                 Entry::Shot(angle, power) => vs.fire_turn((angle, power)).is_some(),
@@ -403,9 +418,25 @@ impl Game {
     }
 
     /// Start a match at the buffer's width, the left player to ready up
-    /// first. It is kept on disk from its first frame (`persist_match`),
-    /// replacing any match suspended before it.
+    /// first, or on the GROUND row's layout at the layout's width. It is
+    /// kept on disk from its first frame (`persist_match`), replacing any
+    /// match suspended before it. A layout that does not pass the duel gate
+    /// (one saved before a sim change, say) starts nothing.
     pub(crate) fn start_versus(&mut self) {
+        if let Some(pick) = self.versus.ground.clone() {
+            if !pick.playable {
+                self.note("THIS MAP DOES NOT PASS - PICK ANOTHER".into());
+                return;
+            }
+            self.start_layout_match(&pick.layout);
+            if let Some(vs) = self.versus.live.as_mut() {
+                vs.kept = true;
+                vs.source = Some(pick.source);
+            }
+            self.saved_match = None;
+            self.versus.suspended_source = None;
+            return;
+        }
         self.versus.started += 1;
         // A seed of its own for each match: the launch's entropy, the date
         // and a count. Everything after it is deterministic from the seed.
@@ -440,10 +471,9 @@ impl Game {
 
     /// Start a match on a two-gun layout (DESIGN §13.9) at the layout's
     /// width, letterboxed on a wider phone, under the pre-match screen's
-    /// rules with the layout's wind. For `--salt-layout`; the pre-match
-    /// screen's layout picker comes later (§13.9). Not kept on disk: a
-    /// match log holds a seed and shots, not a layout, so a match on one
-    /// cannot be resumed yet.
+    /// rules with the layout's wind. Not kept on disk by itself:
+    /// [`Game::start_versus`] marks a player's match kept, and its line
+    /// carries the layout's code; `--salt-layout`'s is not.
     pub(crate) fn start_layout_match(&mut self, layout: &salt_line_sim::layout::Layout) {
         self.versus.started += 1;
         let seed = salt_line_sim::rng::mix64(
@@ -452,6 +482,9 @@ impl Game {
         let rules = self.versus.rules();
         self.set_run_width(Some(layout.width()));
         self.start_versus_with(crate::custom::layout_match(layout, seed, rules));
+        if let Some(vs) = self.versus.live.as_mut() {
+            vs.layout = Some(layout.clone());
+        }
     }
 
     /// Leave versus for the title. The match is dropped, and with it its
@@ -463,10 +496,26 @@ impl Game {
         self.apply_buffer_size();
     }
 
+    /// Take the match on screen off it without ending it: its line stays
+    /// on disk and RESUME MATCH offers it, as after the app was killed.
+    /// For MAKE MAP OF THIS ROUND mid-match.
+    pub(super) fn suspend_live_match(&mut self, vs: VersusPlay) {
+        if !vs.kept || self.in_demo() {
+            return;
+        }
+        let help = self.versus.help;
+        let saved = match &vs.layout {
+            Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log),
+            None => Some(SavedMatch::of(&vs.duel, help, &vs.log)),
+        };
+        self.saved_match = saved;
+        self.versus.suspended_source = vs.source;
+    }
+
     /// Drop the match on screen, and clear its line if it was kept. A
     /// match the demo set aside is not on screen, and the demo's own are
     /// never kept, but the demo is checked too (DESIGN §12.3).
-    fn drop_live_match(&mut self) {
+    pub(super) fn drop_live_match(&mut self) {
         let Some(vs) = self.versus.live.take() else {
             return;
         };
@@ -498,8 +547,14 @@ impl Game {
         // Tried once per entry: a failed write is logged by `save::write`,
         // and the next shot tries again.
         vs.saved_len = Some(len);
-        let line = SavedMatch::of(&vs.duel, help, &vs.log).to_line();
-        self.fx.push(Effect::MatchFile(MatchFile::Write(line)));
+        let saved = match &vs.layout {
+            Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log),
+            None => Some(SavedMatch::of(&vs.duel, help, &vs.log)),
+        };
+        if let Some(saved) = saved {
+            self.fx
+                .push(Effect::MatchFile(MatchFile::Write(saved.to_line())));
+        }
     }
 
     /// RESUME MATCH: rebuild the suspended match and put it on the
@@ -520,7 +575,32 @@ impl Game {
         // What is on disk is this match, as rebuilt.
         vs.saved_len = Some(vs.log.len());
         self.versus.help = saved.help;
-        self.versus.rolling_off = !saved.rolling;
+        // A match on a layout never rolls, whatever was chosen: the
+        // choice for the next generated match stays as it was.
+        let source = self.versus.suspended_source.take();
+        match vs.layout.clone() {
+            Some(l) => {
+                // The match goes on on its own ground; the GROUND row (and
+                // so a rematch) is the pick it came from, as that slot now
+                // is, saying so if the map was saved over meanwhile.
+                let again =
+                    source.and_then(|src| self.grounds().into_iter().find(|g| g.source == src));
+                match again {
+                    Some(pick) => {
+                        if pick.layout != l {
+                            self.note("A REMATCH PLAYS THE MAP AS SAVED".into());
+                        }
+                        vs.source = Some(pick.source);
+                        self.versus.ground = Some(pick);
+                    }
+                    None => self.versus.ground = Some(self.ground_for(&l)),
+                }
+            }
+            None => {
+                self.versus.rolling_off = !saved.rolling;
+                self.versus.ground = None;
+            }
+        }
         self.versus.live = Some(vs);
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -529,11 +609,26 @@ impl Game {
         self.apply_buffer_size();
     }
 
-    /// The pre-match screen: each side's aim help, rolling guns, start,
-    /// back.
+    /// The pre-match screen: each side's aim help, rolling guns, the
+    /// GROUND row, start, back, and MAKE MAP. Rolling guns is OFF, and
+    /// does not toggle, on a layout's ground (DESIGN §13.9).
     pub(super) fn handle_versus_setup_input(&mut self) {
-        if self.action_pressed(Action::Up) {
+        let on_map = self.versus.ground.is_some();
+        if self.action_pressed(Action::Up) && !on_map {
             self.versus.rolling_off = !self.versus.rolling_off;
+            self.play(Sound::Ui);
+        }
+        let step = (self.action_pressed(Action::Down)
+            || self
+                .input
+                .touch
+                .pressed(Action::Edit(crate::input::Ed::GroundNext))) as i32
+            - self
+                .input
+                .touch
+                .pressed(Action::Edit(crate::input::Ed::GroundPrev)) as i32;
+        if step != 0 {
+            self.step_ground(step);
             self.play(Sound::Ui);
         }
         for (action, side) in [(Action::Left, Side::Left), (Action::Right, Side::Right)] {
@@ -543,13 +638,26 @@ impl Game {
                 self.play(Sound::Ui);
             }
         }
+        // MAKE MAP's keys are asked last, so a binding of a key or button
+        // they share wins (presses are taken once).
         if self.action_pressed(Action::Confirm) || self.pressed(Key::KpEnter) {
             self.play(Sound::Ui);
             self.start_versus();
         } else if self.action_pressed(Action::Back) {
             self.play(Sound::Ui);
             self.leave_versus();
+        } else if self.make_map_pressed(crate::input::Ed::MakeMap) {
+            self.play(Sound::Ui);
+            self.open_editor();
         }
+    }
+
+    /// MAKE MAP (`ed` on a touchscreen, E, a controller's X). Asked only
+    /// where it is read, after the screen's own actions: the press is taken.
+    fn make_map_pressed(&mut self, ed: crate::input::Ed) -> bool {
+        self.input.touch.pressed(Action::Edit(ed))
+            || self.pressed(Key::E)
+            || self.pad_pressed(Pad::X)
     }
 
     /// A match in play. As in a run, nothing but pause is read while a shot
@@ -560,6 +668,7 @@ impl Game {
             return;
         };
         let (stage, paused) = (vs.stage, vs.paused);
+        let fork = crate::input::Ed::ForkRound;
         if paused {
             if self.action_pressed(Action::Confirm) || self.action_pressed(Action::Back) {
                 self.play(Sound::Ui);
@@ -567,6 +676,9 @@ impl Game {
             } else if self.action_pressed(Action::Replay) {
                 self.play(Sound::Ui);
                 self.leave_versus();
+            } else if self.make_map_pressed(fork) {
+                self.play(Sound::Ui);
+                self.fork_this_round();
             }
             return;
         }
@@ -597,6 +709,9 @@ impl Game {
                 } else if self.action_pressed(Action::Replay) {
                     self.play(Sound::Ui);
                     self.leave_versus();
+                } else if self.make_map_pressed(fork) {
+                    self.play(Sound::Ui);
+                    self.fork_this_round();
                 }
             }
         }

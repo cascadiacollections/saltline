@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a4c8a74c9e7ccba6c0e7d2169be24d98d7642a6644a2fd6b8f161e4908f277c6 # shrinks to ops = [Mirror, Stroke(Guns, 0.0, 0.0, 172.27197, 0.0), Nudge(0), Stroke(Sculpt, 0.0, 0.0, 0.0, 0.0), Mirror, Undo, Stroke(Guns, 0.0, 0.0, 0.0, 0.0)]

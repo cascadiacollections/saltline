@@ -215,10 +215,63 @@ fn a_match_on_a_layout_plays_every_round_on_it() {
         ..l
     };
     let mut m = layout_match(&fixed, 77, Rules::DEFAULT);
-    for _ in 0..4 {
-        assert_eq!(m.screen.wind, 1.5);
+    for want in [1.5, 1.5, -1.5, -1.5, 1.5] {
+        assert_eq!(m.screen.wind, want, "turned round every pair of turns");
         m.fire(salt_line_sim::run::shot(900, 100), false);
     }
+}
+
+/// A fixed wind blows the same way for both guns, so it helps one side: it
+/// turns round every pair of turns, each side shooting once a pair in the
+/// same wind, from the start of every round (owner decision), and the gate
+/// checks it both ways.
+#[test]
+fn a_fixed_wind_turns_round_every_pair_of_turns() {
+    let fixed = Layout {
+        wind: WindSpec::Fixed(1500),
+        ..fork_duel(3, 0)
+    };
+    assert_eq!(duel_winds(&fixed.wind), vec![-1500, 1500]);
+    assert_eq!(duel_winds(&WindSpec::Fixed(-700)), vec![-700, 700]);
+    assert_eq!(duel_winds(&WindSpec::Fixed(0)), vec![0]);
+    assert_eq!(
+        duel_counts(&fixed).iter().map(|c| c.0).collect::<Vec<_>>(),
+        vec![-1500, 1500]
+    );
+    let mut m = layout_match(&fixed, 77, Rules::DEFAULT);
+    let lo = m.loadout.clone();
+    let mut turns = 0;
+    for round in 0..3u32 {
+        assert_eq!(m.round, round);
+        assert_eq!(m.screen.wind, 1.5, "round {round} opens as set");
+        // The left gun hits each turn, the right misses: the left takes
+        // the round, each pair of turns in the other wind to the last.
+        while m.phase == Phase::Aiming {
+            let want = if (m.turn / 2) % 2 == 1 { -1.5 } else { 1.5 };
+            assert_eq!(m.screen.wind, want, "round {round}, turn {}", m.turn);
+            assert_eq!(m.wind_at(m.turn), want);
+            turns += 1;
+            let side = m.to_move;
+            let shot = match side {
+                Side::Left => shots_at(
+                    &frame_for(&m.screen, side),
+                    target_in_frame(&m.screen, side),
+                    &lo,
+                    m.rules.hit_reach,
+                    1,
+                )[0],
+                Side::Right => salt_line_sim::run::shot(900, 100),
+            };
+            m.fire(shot, false);
+        }
+        if !m.next_round() {
+            break;
+        }
+    }
+    assert!(turns >= 4, "past a pair, so the wind turned: {turns} turns");
+    // Each side shoots in each direction alike over two pairs.
+    let winds: Vec<f64> = (0..4).map(|t| m.wind_at(t)).collect();
+    assert_eq!(winds, vec![1.5, 1.5, -1.5, -1.5]);
 }
 
 #[test]

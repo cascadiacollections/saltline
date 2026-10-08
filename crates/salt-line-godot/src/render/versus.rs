@@ -42,6 +42,16 @@ use super::*;
 use crate::app::{VersusCall as Call, VersusStage as Stage};
 use crate::versus::{self, RollWay, Side, Stakes};
 
+/// What MAKE MAP and MAKE MAP OF THIS ROUND are on the device in use: `E`,
+/// or a controller's X.
+pub(super) fn map_key(g: &Game) -> String {
+    if g.input.controller_active {
+        "X".into()
+    } else {
+        "E".into()
+    }
+}
+
 /// Secondary text on versus screens. The game's usual dim, `SKY_LO`, is the
 /// right player's colour here.
 const DIM: usize = slot::ROCK;
@@ -162,7 +172,9 @@ pub(super) fn aim_preview(duel: &versus::Match, side: Side, aim: (i32, i32)) -> 
 impl Painter<'_> {
     /// The pre-match screen, under the title lettering `render_menu` drew:
     /// the rules in a line, each side's aim help in its colour, rolling
-    /// guns, start and back.
+    /// guns, the GROUND row (DESIGN §13.9), start and back, and MAKE MAP:
+    /// a corner plate on a touchscreen, as the title's DEMO and MUS are, so
+    /// the rows stay where they were; a keyed row otherwise.
     pub(super) fn render_versus_setup(&mut self, mut y: i32) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
@@ -180,9 +192,17 @@ impl Painter<'_> {
         );
         y += 13;
         let help = self.g.versus.help;
-        let rolling = !self.g.versus.rolling_off;
+        let ground = self.g.versus.ground.as_ref();
+        // Rolling guns are off on a map's ground, and say so, greyed.
+        let rolling = !self.g.versus.rolling_off && ground.is_none();
         let on = |b: bool| if b { "ON" } else { "OFF" };
-        let rows = [
+        let (ground_text, ground_c) = match ground {
+            None => ("GROUND: GENERATED".to_string(), fg),
+            Some(g) if g.playable => (format!("GROUND: {}", g.label()), fg),
+            Some(g) => (format!("GROUND: {} - FAILS", g.label()), dim),
+        };
+        let make_map = Action::Edit(crate::input::Ed::MakeMap);
+        let mut rows = vec![
             (
                 Action::Left,
                 format!("LEFT AIM HELP: {}", on(help[0])),
@@ -193,19 +213,71 @@ impl Painter<'_> {
                 format!("RIGHT AIM HELP: {}", on(help[1])),
                 colour(Side::Right),
             ),
-            (Action::Up, format!("ROLLING GUNS: {}", on(rolling)), fg),
+            (
+                Action::Up,
+                format!("ROLLING GUNS: {}", on(rolling)),
+                if ground.is_some() { dim } else { fg },
+            ),
+            (
+                Action::Edit(crate::input::Ed::GroundNext),
+                ground_text,
+                ground_c,
+            ),
             (Action::Confirm, "START".to_string(), fg),
             (Action::Back, "BACK".to_string(), dim),
         ];
+        if !self.plated() {
+            rows.push((make_map, "MAKE MAP".to_string(), fg));
+        }
         let labels: Vec<(String, &str)> = rows
             .iter()
-            .map(|(action, text, _)| (self.g.input_label(*action), text.as_str()))
+            .map(|(action, text, _)| {
+                let label = match action {
+                    Action::Edit(crate::input::Ed::GroundNext) => self.g.input_label(Action::Down),
+                    Action::Edit(_) => map_key(self.g),
+                    a => self.g.input_label(*a),
+                };
+                (label, text.as_str())
+            })
             .collect();
         for ((action, text, c), keyed) in rows.iter().zip(keyed_rows(&labels)) {
+            let at = y;
             y = self.menu_row(y, *action, &keyed, text, *c);
+            // On a touchscreen the GROUND row has `<` and `>` beside it;
+            // the row itself steps on too.
+            if self.plated() && *action == Action::Edit(crate::input::Ed::GroundNext) {
+                let tw = crate::font::small_width(text) as i32;
+                let x = (self.canvas.w - tw) / 2 - 10;
+                self.draw_touch_button(
+                    x - 26,
+                    at - 5,
+                    22,
+                    15,
+                    "<",
+                    Action::Edit(crate::input::Ed::GroundPrev),
+                );
+                self.draw_touch_button(
+                    x + tw + 24,
+                    at - 5,
+                    22,
+                    15,
+                    ">",
+                    Action::Edit(crate::input::Ed::GroundNext),
+                );
+            }
+        }
+        if self.plated() {
+            let (ex, ey) = self.g.display.corner_pad;
+            let w = self.canvas.w;
+            self.draw_touch_button(w - 62 - ex, 3 + ey, 62, 13, "MAKE MAP", make_map);
         }
         y += 4;
-        self.centred(y, "AIM HELP: YOUR LAST SHOT AND A SHORT ARC", dim);
+        if self.g.status_time > 0.0 {
+            let text = self.g.status.clone();
+            self.centred(y, &text, pal.get(slot::ALERT));
+        } else {
+            self.centred(y, "AIM HELP: YOUR LAST SHOT AND A SHORT ARC", dim);
+        }
     }
 
     /// A frame of a match, back to front: the world, aim help, both guns,
@@ -303,7 +375,7 @@ impl Painter<'_> {
 
     /// One gun: chassis and barrel at the pre-drawn 5° frame nearest
     /// `angle_ticks` (DESIGN §5.3), the right gun mirrored to face left.
-    fn draw_gun(&mut self, muzzle: Vec2, angle_ticks: i32, gun: Side, view: &View) {
+    pub(super) fn draw_gun(&mut self, muzzle: Vec2, angle_ticks: i32, gun: Side, view: &View) {
         let lo = Loadout::new();
         let frame = Shot::new(angle_ticks, 0).quantized(&lo).barrel_frame();
         let Some(s) = self.sprites else {
@@ -374,7 +446,7 @@ impl Painter<'_> {
     /// `side`'s colour on the plate colour, for the marks a shot leaves
     /// over open sky and ground. Both sides are backed alike, so a hit
     /// looks the same whoever scores it.
-    fn side_ink(&self, side: Side) -> raster::Ink {
+    pub(super) fn side_ink(&self, side: Side) -> raster::Ink {
         raster::Ink {
             colour: self.pal.get(side_slot(side)),
             backing: Some(self.pal.get(slot::UI_BG)),
@@ -568,7 +640,7 @@ impl Painter<'_> {
     /// `text` centred on `cx` at `y` in the small face at `scale` (one
     /// block per glyph pixel), in palette slot `c`. It is `5 * scale` tall.
     /// Always over a plate, where both players' colours read.
-    fn shout(&mut self, cx: i32, y: i32, text: &str, c: usize, scale: i32) {
+    pub(super) fn shout(&mut self, cx: i32, y: i32, text: &str, c: usize, scale: i32) {
         let x = cx - crate::font::small_width(text) as i32 * scale / 2;
         let c = self.pal.get(c);
         self.canvas.text_small_scaled(x, y, text, c, scale);
@@ -579,7 +651,7 @@ impl Painter<'_> {
     /// or a big one over the gun whose turn it is (`turn`). A tag rather
     /// than a bare arrow because it sits over sky, which the right player's
     /// blue would vanish into.
-    fn draw_gun_marker(&mut self, x: i32, y: i32, gun: Side, turn: bool) {
+    pub(super) fn draw_gun_marker(&mut self, x: i32, y: i32, gun: Side, turn: bool) {
         const BIG: [&str; 5] = [
             "111111111",
             "011111110",
@@ -717,7 +789,7 @@ impl Painter<'_> {
         let ph = if self.g.in_demo() {
             body
         } else {
-            body + if plated { 40 } else { 20 }
+            body + if plated { 56 } else { 28 }
         };
         let (px, top) = ((w - 200) / 2, (h - ph) / 2);
         self.canvas.plate(px, top, 200, ph, pal);
@@ -737,10 +809,20 @@ impl Painter<'_> {
         self.draw_score((w - score_w(duel.hits)) / 2, y, duel.hits, duel.rounds);
         y += SCORE_H + 8;
         let next = if over { "REMATCH" } else { "NEXT ROUND" };
-        let rows = [(Action::Confirm, next), (Action::Replay, "TITLE")];
+        let rows = [
+            (Action::Confirm, next),
+            (Action::Replay, "TITLE"),
+            (
+                Action::Edit(crate::input::Ed::ForkRound),
+                "MAKE MAP OF THIS ROUND",
+            ),
+        ];
         let labels: Vec<(String, &str)> = rows
             .iter()
-            .map(|&(action, text)| (self.g.input_label(action), text))
+            .map(|&(action, text)| match action {
+                Action::Edit(_) => (map_key(self.g), text),
+                _ => (self.g.input_label(action), text),
+            })
             .collect();
         // The demo moves on by itself: no buttons, and no prompts.
         let rows = if self.g.in_demo() {

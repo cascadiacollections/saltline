@@ -25,6 +25,8 @@ use salt_line_sim::MIN_SOLUTIONS;
 
 use crate::versus::{self, frame_for, shots_at, target_in_frame, Ground, Match, Rules, Side};
 
+pub mod bundled;
+
 /// Fork round `round` of the match seeded `match_seed`: generate its duel
 /// screen at the layout width for the base loadout, under the game's
 /// rules, and write it down (§13.6). The guns are versus's, at
@@ -42,8 +44,9 @@ pub fn fork_duel(match_seed: u64, round: u32) -> Layout {
     Layout::from_screen(&screen, vec![left, right], wind_spec(&rules))
 }
 
-/// The layout wind that is `rules`' per-turn wind.
-fn wind_spec(rules: &Rules) -> WindSpec {
+/// The layout wind that is `rules`' per-turn wind: what a fork of a
+/// generated duel round blows.
+pub fn wind_spec(rules: &Rules) -> WindSpec {
     let (min, max) = (
         layout::wind_milli(rules.wind_min),
         layout::wind_milli(rules.wind_max),
@@ -89,29 +92,52 @@ pub fn layout_match(layout: &Layout, seed: u64, base: Rules) -> Match {
     Match::on_ground(seed, ground, duel_rules(layout, base))
 }
 
-/// For each wind a duel layout's gate checks (in thousandths, the
-/// layout's frame), the distinct hitting shots each gun has at the other,
-/// left then right, counting up to the gate's cap. The editor's fairness
-/// reading: a side with fewer shots in some wind has the harder ground.
-/// Empty for a layout without two guns.
+/// The winds a duel layout's gate checks, in thousandths, in the layout's
+/// frame: [`WindSpec::extremes`], and for a fixed wind its reverse as well,
+/// since a match on a layout turns a fixed wind round every pair of turns
+/// (`versus::Match::wind_at`).
+pub fn duel_winds(wind: &WindSpec) -> Vec<i32> {
+    match *wind {
+        WindSpec::Fixed(w) if w != 0 => vec![-w.abs(), w.abs()],
+        _ => wind.extremes(),
+    }
+}
+
+/// For each wind a duel layout's gate checks ([`duel_winds`]), the distinct
+/// hitting shots each gun has at the other, left then right, counting up to
+/// the gate's cap. The editor's fairness reading: a side with fewer shots
+/// in some wind has the harder ground. Empty for a layout without two guns.
 pub fn duel_counts(layout: &Layout) -> Vec<(i32, [usize; 2])> {
+    duel_counts_capped(layout, GATE_CAP)
+}
+
+/// [`duel_counts`], counting up to `cap` rather than the gate's cap: the
+/// editor counts further, so its fairness sign can tell two sides apart
+/// that both pass the gate with room to spare.
+pub fn duel_counts_capped(layout: &Layout, cap: usize) -> Vec<(i32, [usize; 2])> {
+    duel_counts_in(layout, &duel_winds(&layout.wind), cap)
+}
+
+/// [`duel_counts`] in the winds given (thousandths, the layout's frame),
+/// counting up to `cap`: TEST FIRE shows the gate's count in calm air too,
+/// which a fixed wind's gate does not check.
+pub fn duel_counts_in(layout: &Layout, winds: &[i32], cap: usize) -> Vec<(i32, [usize; 2])> {
     if !layout.is_duel() {
         return Vec::new();
     }
     let lo = Loadout::new();
     let reach = Rules::DEFAULT.hit_reach;
     let ground = Screen::from_layout(layout, 0.0);
-    layout
-        .wind
-        .extremes()
-        .into_iter()
+    winds
+        .iter()
+        .copied()
         .map(|wind| {
             let mut shared = ground.clone();
             shared.wind = wind_units(wind);
             let counts = Side::BOTH.map(|side| {
                 let frame = frame_for(&shared, side);
                 let target = target_in_frame(&shared, side);
-                shots_at(&frame, target, &lo, reach, GATE_CAP).len()
+                shots_at(&frame, target, &lo, reach, cap).len()
             });
             (wind, counts)
         })

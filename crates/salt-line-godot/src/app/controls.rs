@@ -314,6 +314,7 @@ impl Game {
             Mode::Playing => self.handle_play_input(delta),
             Mode::VersusSetup => self.handle_versus_setup_input(),
             Mode::Versus => self.handle_versus_input(delta),
+            Mode::Editor => self.handle_editor_input(delta),
         }
     }
 

@@ -698,8 +698,90 @@ seeds: 4,000 run screens at 40 a seed, 300 duel rounds at 3 a seed).
   keeps the layout's width through `set_run_width`, which the display poll
   already leaves alone while a versus match is on (§11.6's resumed matches
   needed the same). It is never kept on disk: `start_versus` marks a match
-  kept, and the match log has no field for a layout yet.
+  kept, and the match log has no field for a layout yet (Phase 3 keeps a
+  match on a map, in match log format 2: §10).
 - **Fuzzing.** `layout_code` ran 11.8 million inputs in 150 s locally with no
   finding. It frames each input as a code with a valid checksum as well as
   trying it as text, since random text almost never passes a CRC and would
   leave the bit-level decoder unfuzzed.
+
+## 10. The map editor and custom duels (DESIGN §13, Phase 3)
+
+The owner's decisions are in DESIGN §13 (custom duels first; phone-first,
+with mouse, keys and a controller; wind only; 320 columns; fork this round
+as a crop keeping both guns, fork a seed as a labelled draft; floating
+structures warn; no rolling on a map; a fixed wind turns round every pair
+of turns, changed in place from every round before the PR merged; sculpt
+and MAKE MAP's place kept as built). What was decided here, and measured:
+
+- **Where it lives.** The phone title's worst case already fills the screen
+  (§11.6), so the editor is on the versus pre-match screen, a MAKE MAP
+  corner plate mirroring the title's DEMO and MUS plates, and on a match's
+  pause and result plates (MAKE MAP OF THIS ROUND). The pre-match screen
+  itself grew one row (GROUND) and still ends at row 165 on a phone, its
+  hint line included.
+- **Every editor control is above the world's ceiling.** `WORLD_CEIL` is
+  108, so the top 72 rows of the 180-row buffer are always sky; the three
+  rows of 18-row buttons end at row 63, or 69 with a phone's corner pad. No
+  button covers ground, and the whole rest of the screen takes strokes. A
+  render test holds it.
+- **Validation cost per edit** (`just layouts editor`, release build, one
+  core of a Ryzen AI 7 PRO 350, over the bundled maps, 40 duel forks and a
+  blank map, five times each):
+
+  | Check | Median | 95th | Worst |
+  |---|---|---|---|
+  | the full verdict: placement, the duel gate, fairness counted to 64 | 904 µs | 916 µs | 923 µs |
+  | the quick verdict: placement and the gate at its cap of 8 | 100 µs | 151 µs | 155 µs |
+  | a sculpt frame of a drag, quick verdict included | 116 µs | 157 µs | 195 µs |
+
+  The gate alone is the 0.1 ms the brief expected. Counting far enough for
+  the fairness sign costs nine times that, so a drag's frames run the quick
+  verdict (every problem, the sign held as it was) and the stroke's end the
+  full one; a key nudge, a stamp or a WIND press runs the full one, under a
+  millisecond on a desktop and a few on a phone.
+- **Why fairness counts past the gate's cap.** At the gate's cap of 8 both
+  guns reach the cap in every wind on nearly every playable duel (§11.3:
+  300 seeds, every gun saturated), so a sign read from those counts said
+  FAIR of every lopsided test map. Counted to 64, the bundled maps and duel
+  forks show 35 to 56 shots a gun a wind, and a lopsided stamp moves one
+  side by a few: a spires stamp at column 240 of a blank map gave 68 to 71
+  summed over the three winds. A sign that flipped on one shot would flicker
+  as a finger drags, so HARDER needs more than a tenth fewer and at least
+  two; the pit test map (the right gun walled in) reads RIGHT HARDER.
+- **Fork this round on a Pixel is always the splice.** At 400 columns with
+  the guns home (30 and 369) neither fits the centred window (40 to 359),
+  so each gun keeps its own 160 columns and the middle 80 are lost; guns
+  rolled forward a step (62 and 337) fit, and get the centred window. At
+  320 the crop is the screen itself, and a test holds that it equals
+  `custom::fork_duel` of the same seed and round.
+- **The draft is written as a stroke ends, not every frame.** A drag
+  changes the draft every frame, and a phone's flash does not want sixty
+  atomic replaces a second; the line goes out as the finger lifts (one
+  write per stroke, a test counts it), as a match's does per shot.
+- **Memory follows the slot file.** A save, overwrite or delete asks for
+  the whole file's new text (`Store::Layouts`); `Game::stored` takes it
+  into memory and only then clears the draft, so a full disk loses nothing
+  (a test). Killing the process after every disk operation of an edit and
+  a save (`editing_and_saving_survive_a_crash_anywhere`) never loses the
+  map once its draft reached disk: a launch finds it as the draft, in its
+  slot, or both.
+- **Match log format 2 only for maps.** A match on generated screens is
+  still written as format 1, so its pinned line and every file on a phone
+  are unchanged; only a match on a map carries a code. No `MATCH_EPOCH`
+  bump, and no `SIM_EPOCH` bump: the sim is untouched, and `versus::resolve`
+  is `Match::fire`'s shot moved out unchanged, which the golden match's
+  digest holds.
+- **Bundled maps are recipes.** RIDGE, MESAS, CANYON and SPIRES are each a
+  few editor operations on a blank draft (`custom::bundled::recipe`), so
+  the CI test holds each code to its recipe as well as to the gate and a
+  FAIR sign; an ignored test prints new codes when a recipe changes. A fork
+  of a generated round would move with the generator
+  (§13.4), and these must not.
+- **Headless captures.** `--salt-phone` lays the game out as a Pixel would
+  (touch, the corner pad, a 2424x1080 window, so a 400-column buffer) on a
+  desktop; with `--salt-editor`, `--salt-editor-page` and `--salt-setup` the
+  editor's pages and the GROUND row were captured at 320 and on the phone
+  layout, and looked at, for this change.
+- **Fuzzing.** The new `layouts_file` target ran 8.3 million inputs in 180 s locally after one early finding (a newer header does not survive a write; such a file is never written, and the target now says so), and `match_log`, with logs on map grounds, 123,000 in 120 s, neither with a finding.
+- **From the reviews.** MIRROR starts on for every duel draft, forks included (it started off for a fork, where dragging a gun made the map unplayable); a toast goes as soon as the draft changes; DISCARD keeps the file until the editor is left; a finger mid-drag when the app pauses is written at once; a second finger or key that ends a stroke spends its drag. DESIGN §13.11 has the rules.

@@ -99,8 +99,8 @@
 //! # Effect catalogue
 //!
 //! Every [`Effect`], who asks for it, and what `game.rs` does with it. Only
-//! a save write reports back; only effects that touch a file are dropped
-//! after a panic.
+//! a save write (`Store`) and `ReadClipboard` report back; only effects
+//! that touch a file are dropped after a panic.
 //!
 //! | Effect | Emitted by | Adapter action | Feedback via `stored()` | Dropped after panic |
 //! |---|---|---|---|---|
@@ -111,11 +111,17 @@
 //! | `RecheckDisplay` | [`Game::tick`], on entering Title or GameOver | `frame::DisplayPoll::invalidate` | no | no |
 //! | `Buffer { w, h, letterbox }` | launch, a run started or continued, a draft taken, a screen change, a versus match started or left, a change of window size or cutout | resize the canvas, set the window's content scale size, offset the node | no | no |
 //! | `Aspect` | a run started or continued, leaving a resumed run | set the window's content scale aspect | no | no |
-//! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT | `DisplayServer::clipboard_set` | no | no |
+//! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT, the editor's COPY CODE | `DisplayServer::clipboard_set` | no | no |
+//! | `ReadClipboard` | the editor's PASTE CODE (`app/editor.rs`) | `DisplayServer::clipboard_get`, handed to [`Game::pasted`], whose effects are applied at once | no (the text comes back through `pasted`) | no |
 //! | `Quit` | back on the title or the error screen | `SceneTree::quit` | no | no |
 //! | `Store(Learned)` | an onboarding step done for the first time | `save::store`, then [`Game::stored`] | yes, ignored | yes |
 //! | `Store(Settings)` | settings once they settle (`durable::Debounce`) or on leaving Controls; at once on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
 //! | `Store(Score)` | a run finished, or a finished run found at launch | `resume::replace` with its `clear` text, then, only if that is confirmed, `save::store` with the entry placed; then [`Game::stored`] | yes: placed in memory on success; on failure the run file is rewritten with the finished runs kept (`RunFile::Write`) | yes |
+//! | `Store(Layouts)` | the editor's SAVE, a slot deleted, a toast's UNDO (`app/editor.rs`) | `save::write` of the slot file (`layouts_file`), then [`Game::stored`] | yes: memory takes the new slots only on success, then a saved draft is cleared (`DraftFile(Discard)`); on failure a note, and the draft is kept | yes |
+//! | `DraftFile(Write)` | the editor's draft changed, once a stroke has ended (`persist_draft`) | `resume::replace_at` at `layouts_file::DRAFT_FILES` | no | yes |
+//! | `DraftFile(Restore)` | [`Game::saved_draft`], once the set-aside draft has been read (or is from a newer build) | rename `draft-loading.txt` back to `draft.txt` | no | yes |
+//! | `DraftFile(Discard)` | the draft saved (from `stored`), DISCARD MAP once the editor is left, or a blank draft file at launch ([`Game::saved_draft`]); never over a newer build's draft | `resume::replace_at` with `""` | no | yes |
+//! | `DraftFile(Abandon)` | [`Game::saved_draft`], for a draft this build cannot read | as `MatchFile(Abandon)`, at the draft's paths | no | yes |
 //! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft); [`Game::stored`], for a score that did not reach disk; launch or CONTINUE, dropping a line that will not replay | `resume::replace`: the run file becomes the text (`Game::run_file_text`: finished runs still to score, then the live run) | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
@@ -297,6 +303,9 @@ pub enum Mode {
     /// A local versus match on screen, hot-seat: turns, the pass-the-phone
     /// plate, results and its own pause (`app/versus.rs`).
     Versus,
+    /// The map editor (DESIGN §13.11, `app/editor.rs`): its start page,
+    /// the editing screen, its menus, the slot list and test fire.
+    Editor,
 }
 
 /// A shot being replayed to the player. The sim has already resolved it.
@@ -448,6 +457,29 @@ pub enum Store {
         clear: Option<String>,
         announce: bool,
     },
+    /// The player's saved layouts (DESIGN §13.8): the slot file becomes
+    /// `text` (`layouts_file::Slots::serialize`), not the save. Memory
+    /// takes it only in [`Game::stored`], once it is on disk, and only then
+    /// is a draft it saved cleared: a failed write loses nothing.
+    Layouts { text: String, why: SlotWrite },
+}
+
+/// Why the slot file is being written, which decides what follows it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SlotWrite {
+    /// The draft saved into `slot`; `before` is the file as it was, for
+    /// UNDO if a layout there was replaced.
+    Save {
+        slot: u8,
+        replaced: bool,
+        before: String,
+        /// The draft's revision saved: only that is cleared once confirmed.
+        rev: u64,
+    },
+    /// `slot` emptied; `before` is the file as it was, for UNDO.
+    Delete { slot: u8, before: String },
+    /// An UNDO putting the file back.
+    Undo,
 }
 
 impl Store {
@@ -456,7 +488,7 @@ impl Store {
     pub fn clear(&self) -> Option<&str> {
         match self {
             Store::Score { clear, .. } => clear.as_deref(),
-            Store::Learned | Store::Settings => None,
+            Store::Learned | Store::Settings | Store::Layouts { .. } => None,
         }
     }
 }
@@ -498,6 +530,11 @@ pub enum Effect {
     RunFile(RunFile),
     /// Something to do with the versus match kept on disk for RESUME MATCH.
     MatchFile(MatchFile),
+    /// Something to do with the map editor's draft kept on disk.
+    DraftFile(DraftFile),
+    /// Read the system clipboard and hand its text to [`Game::pasted`]
+    /// (PASTE CODE in the editor).
+    ReadClipboard,
     /// Something to do with last session's crash report.
     CrashReport(CrashReport),
     /// Hold the screen on (`true`), or let the operating system turn it
@@ -554,6 +591,21 @@ pub enum MatchFile {
     Abandon(Abandoned),
 }
 
+/// What to do with the map editor's draft (DESIGN §13.11). `game.rs` keeps
+/// it in `user://draft.txt` by `resume`'s rules at
+/// `layouts_file::DRAFT_FILES`, as the match file is kept.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DraftFile {
+    /// Make the draft this line (`resume::replace_at`).
+    Write(String),
+    /// The draft set aside at launch was read: put it back.
+    Restore,
+    /// Leave no draft: it was saved or discarded.
+    Discard,
+    /// Throw away a draft this build cannot read, saying why in the log.
+    Abandon(Abandoned),
+}
+
 /// Why a saved run or match was thrown away at launch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Abandoned {
@@ -586,7 +638,11 @@ impl Effect {
     pub fn touches_disk(&self) -> bool {
         matches!(
             self,
-            Effect::Store(_) | Effect::RunFile(_) | Effect::MatchFile(_) | Effect::CrashReport(_)
+            Effect::Store(_)
+                | Effect::RunFile(_)
+                | Effect::MatchFile(_)
+                | Effect::DraftFile(_)
+                | Effect::CrashReport(_)
         )
     }
 }
@@ -635,6 +691,9 @@ pub struct FrameState {
     ),
     /// The attract demo running, and the IDLE DEMO setting.
     demo: (bool, Option<bool>),
+    /// What the map editor shows (`editor_fingerprint`), and the ground
+    /// the pre-match screen has picked.
+    editor: (Option<editor::Fingerprint>, Option<String>),
     misc: (bool, bool, bool),
 }
 
@@ -678,6 +737,11 @@ pub struct Game {
     /// The attract demo, while it runs (`app/demo.rs`). It holds whatever
     /// of the player's it set aside, untouched, until it ends.
     pub(crate) demo: Option<Demo>,
+    /// The player's saved layouts, as last confirmed on disk (DESIGN
+    /// §13.8). The demo never reads or writes them.
+    pub(crate) layouts: LayoutsState,
+    /// The map editor: its draft, page and tools (`app/editor.rs`).
+    pub(crate) editor: EditorState,
     /// Seconds the title has gone without input, towards the idle demo
     /// (`demo::IDLE_DEMO_AFTER`). Zero anywhere but the title.
     pub(crate) title_idle: f64,
@@ -943,6 +1007,8 @@ impl Default for Game {
             versus: VersusState::default(),
             saved_match: None,
             demo: None,
+            layouts: LayoutsState::default(),
+            editor: EditorState::default(),
             title_idle: 0.0,
             demo_next_leg: 0,
             idle_demo_spent: false,
@@ -1044,7 +1110,8 @@ impl Game {
             | Mode::SeedEntry
             | Mode::Paused
             | Mode::GameOver
-            | Mode::VersusSetup => false,
+            | Mode::VersusSetup
+            | Mode::Editor => false,
         }
     }
 
@@ -1093,6 +1160,7 @@ impl Game {
         let demo_before = self.in_demo();
         self.begin_input_frame(delta, intents);
         let versus_before = self.versus_screen();
+        let editor_before = self.editor_screen();
         if demo_before {
             // The demo reads no action: any input ends it, and is spent.
             if self.demo_interrupted(intents) {
@@ -1116,13 +1184,17 @@ impl Game {
         self.watch_title_idle(delta, input);
         self.step(delta);
         self.step_versus(delta);
+        self.step_editor(delta);
         // The demo's own plates change nobody's screen: any tap on them is
         // a request to stop (`demo_interrupted`), never to be spent.
-        if self.versus_screen() != versus_before && !self.in_demo() {
+        if (self.versus_screen() != versus_before || self.editor_screen() != editor_before)
+            && !self.in_demo()
+        {
             self.settle_touch();
         }
         self.persist_run();
         self.persist_match();
+        self.persist_draft();
         self.tick_settings(delta);
         self.watch_input_quiet(delta, input);
         if demo_before && self.in_demo() {
@@ -1210,6 +1282,7 @@ impl Game {
                 .live
                 .as_ref()
                 .is_some_and(|v| (v.anim.is_some() || v.easing()) && !v.paused)
+            || self.editor.testing_in_flight()
             || self.play.clear_hold > 0.0
             || self.status_time > 0.0
             || self.dev.auto
@@ -1217,9 +1290,12 @@ impl Game {
             || self.input.touch.active()
     }
 
-    /// Menus, overlays and the error screen run at the idle frame rate.
+    /// Menus, overlays and the error screen run at the idle frame rate; so
+    /// does the editor, but for a test shot in flight.
     pub fn idle(&self) -> bool {
-        self.crash.broken || !matches!(self.mode, Mode::Playing | Mode::Versus)
+        self.crash.broken
+            || !(matches!(self.mode, Mode::Playing | Mode::Versus)
+                || (self.mode == Mode::Editor && self.editor.testing_in_flight()))
     }
 
     /// Every sound player's volume, in dB: the save's percentage as an
@@ -1271,6 +1347,11 @@ impl Game {
                     }
                     if let (Some(typed), Mode::SeedEntry) = (typed, self.mode) {
                         self.typed(typed);
+                        if let Some(key) = key {
+                            self.input.controls.swallow(key);
+                        }
+                    } else if let Some(typed) = typed.filter(|_| self.editor_typing()) {
+                        self.editor_typed(typed);
                         if let Some(key) = key {
                             self.input.controls.swallow(key);
                         }
@@ -1327,6 +1408,7 @@ impl Game {
         self.input.touch.release_all();
         self.auto_pause();
         self.flush_settings();
+        self.flush_draft();
         self.fx.push(Effect::Redraw);
         self.take_effects()
     }
@@ -1342,6 +1424,7 @@ impl Game {
         self.demo_unwatched();
         self.auto_pause();
         self.flush_settings();
+        self.flush_draft();
         self.take_effects()
     }
 
@@ -1356,6 +1439,7 @@ impl Game {
     pub fn closing(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
         self.flush_settings();
+        self.flush_draft();
         self.take_effects()
     }
 
@@ -1371,7 +1455,9 @@ impl Game {
                 }
                 std::borrow::Cow::Owned(save)
             }
-            Store::Learned | Store::Settings => std::borrow::Cow::Borrowed(&self.save),
+            Store::Learned | Store::Settings | Store::Layouts { .. } => {
+                std::borrow::Cow::Borrowed(&self.save)
+            }
         }
     }
 
@@ -1392,6 +1478,7 @@ impl Game {
                     self.note_not_saved("SETTINGS NOT SAVED");
                 }
             }
+            Store::Layouts { text, why } => self.layouts_stored(text, why, ok),
             Store::Score {
                 entries,
                 clear,
@@ -1457,6 +1544,10 @@ impl Game {
         self.dev.auto_seed = args.seed;
         if args.demo {
             self.start_demo(DemoStarted::Menu);
+        } else if args.editor {
+            self.open_editor_from_dev(args.layout.as_deref(), args.editor_page.as_deref());
+        } else if args.setup {
+            self.open_setup_from_dev(args.layout.as_deref());
         } else if let Some(code) = args.layout.as_deref() {
             match crate::custom::read(code) {
                 Ok(layout) if layout.is_duel() => self.start_layout_match(&layout),
@@ -1710,7 +1801,7 @@ impl Game {
     /// in versus, which has no loadout to draft: a run set aside for
     /// CONTINUE keeps its lens for when it comes back.
     pub(crate) fn long_lens(&self) -> bool {
-        if matches!(self.mode, Mode::VersusSetup | Mode::Versus) {
+        if matches!(self.mode, Mode::VersusSetup | Mode::Versus | Mode::Editor) {
             return false;
         }
         self.play
@@ -1809,6 +1900,10 @@ impl Game {
                 self.save.learned,
             ),
             demo: (self.demo.is_some(), self.save.idle_demo),
+            editor: (
+                self.editor_fingerprint(),
+                self.versus.ground.as_ref().map(|g| g.label()),
+            ),
             misc: (
                 self.debug,
                 self.crash.crash_copied,
@@ -1857,6 +1952,7 @@ impl Game {
             Mode::GameOver => "GameOver",
             Mode::VersusSetup => "VersusSetup",
             Mode::Versus => "Versus",
+            Mode::Editor => "Editor",
         }
     }
 
@@ -1933,12 +2029,24 @@ impl Game {
 
 mod controls;
 mod demo;
+mod editor;
 mod play;
 mod session;
 mod versus;
 
 pub(crate) use demo::Demo;
 pub use demo::{Card as DemoCard, Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};
+pub(crate) use editor::{draft_label as editor_label, EditorState, GroundPick, LayoutsState};
+
+/// What the title and the editor say while a newer build's draft holds the
+/// draft file.
+#[cfg(test)]
+pub(crate) fn editor_newer_draft_note() -> &'static str {
+    editor::NEWER_DRAFT_NOTE
+}
+pub use editor::{
+    Page as EditorPage, Purpose as EditorPurpose, TestFire, Toast, VISIBLE_ROWS as EDITOR_ROWS,
+};
 pub use versus::{Call as VersusCall, Stage as VersusStage, DING_DELAY, VERSUS_HOLD};
 pub(crate) use versus::{VersusPlay, VersusState};
 
@@ -1948,6 +2056,8 @@ mod awake_tests;
 mod demo_tests;
 #[cfg(test)]
 mod disk_tests;
+#[cfg(test)]
+mod editor_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

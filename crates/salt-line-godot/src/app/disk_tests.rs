@@ -36,6 +36,10 @@ use pretty_assertions::assert_eq;
 use salt_line_sim::run::Phase;
 
 use crate::input::{Event, Intents, Key};
+use crate::layouts_file::{
+    self, DRAFT_FILES, DRAFT_LOADING_PATH, DRAFT_PATH, DRAFT_TEMP_PATH, LAYOUTS_PATH,
+    LAYOUTS_TEMP_PATH,
+};
 use crate::match_log::{self, MATCH_FILES, MATCH_LOADING_PATH, MATCH_PATH, MATCH_TEMP_PATH};
 use crate::resume::{self, RunFiles, RUN_LOADING_PATH, RUN_PATH, RUN_TEMP_PATH};
 
@@ -76,6 +80,14 @@ struct FakeDisk {
     match_main: Option<String>,
     match_temp: Option<String>,
     match_aside: Option<String>,
+    /// The player's saved layouts and their temporary file (DESIGN §13.8),
+    /// and the map editor's draft, its temporary file and its set-aside
+    /// copy (`layouts_file::DRAFT_FILES`).
+    layouts: Option<String>,
+    layouts_temp: Option<String>,
+    draft_main: Option<String>,
+    draft_temp: Option<String>,
+    draft_aside: Option<String>,
     crash_report: Option<String>,
     old_crash_report: Option<String>,
     budget: Option<usize>,
@@ -112,6 +124,13 @@ impl FakeDisk {
                 return;
             }
             match e {
+                Effect::Store(Store::Layouts { text, why }) => {
+                    // The slot file, written whole by way of its temporary
+                    // file, as `save::write` does.
+                    let ok = !self.full && self.write(LAYOUTS_PATH, LAYOUTS_TEMP_PATH, &text);
+                    let more = g.stored(Store::Layouts { text, why }, ok);
+                    self.apply(g, more);
+                }
                 Effect::Store(why) => {
                     let cleared = why.clear().is_none_or(|text| resume::replace(self, text));
                     let fail = matches!(why, Store::Score { .. }) && self.fail_scores > 0;
@@ -156,6 +175,18 @@ impl FakeDisk {
                 Effect::MatchFile(MatchFile::Discard | MatchFile::Abandon(_)) => {
                     resume::replace_at(self, MATCH_FILES, "");
                 }
+                Effect::DraftFile(DraftFile::Write(text)) => {
+                    resume::replace_at(self, DRAFT_FILES, &text);
+                }
+                Effect::DraftFile(DraftFile::Restore) => {
+                    self.rename(DRAFT_LOADING_PATH, DRAFT_PATH);
+                }
+                Effect::DraftFile(DraftFile::Abandon(Abandoned::Interrupted)) => {
+                    resume::drop_set_aside_at(self, DRAFT_FILES);
+                }
+                Effect::DraftFile(DraftFile::Discard | DraftFile::Abandon(_)) => {
+                    resume::replace_at(self, DRAFT_FILES, "");
+                }
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let Some(text) = self.crash_report.take() {
                         self.old_crash_report = Some(text);
@@ -177,6 +208,22 @@ impl FakeDisk {
         }
         if let Some(found) = resume::take_aside(self, MATCH_FILES, match_log::sound) {
             let fx = g.saved_match(found);
+            self.apply(&mut g, fx);
+        }
+        // The slot file as the node picks it, then the draft set aside.
+        let pick = crate::durable::pick_by(
+            self.layouts.as_deref(),
+            self.layouts_temp.as_deref(),
+            layouts_file::sound,
+        );
+        let slots = match pick {
+            crate::durable::Pick::Main => self.layouts.clone(),
+            crate::durable::Pick::Temp => self.layouts_temp.clone(),
+            crate::durable::Pick::Empty => None,
+        };
+        g.set_layouts(slots.as_deref());
+        if let Some(found) = resume::take_aside(self, DRAFT_FILES, layouts_file::draft_sound) {
+            let fx = g.saved_draft(found);
             self.apply(&mut g, fx);
         }
         let fx = g.fit_display(WINDOW, (0, 0));
@@ -201,6 +248,11 @@ impl FakeDisk {
             MATCH_PATH => &mut self.match_main,
             MATCH_TEMP_PATH => &mut self.match_temp,
             MATCH_LOADING_PATH => &mut self.match_aside,
+            LAYOUTS_PATH => &mut self.layouts,
+            LAYOUTS_TEMP_PATH => &mut self.layouts_temp,
+            DRAFT_PATH => &mut self.draft_main,
+            DRAFT_TEMP_PATH => &mut self.draft_temp,
+            DRAFT_LOADING_PATH => &mut self.draft_aside,
             _ => unreachable!("{path}"),
         }
     }
@@ -217,6 +269,11 @@ impl resume::RunFiles for FakeDisk {
             MATCH_PATH => self.match_main.clone(),
             MATCH_TEMP_PATH => self.match_temp.clone(),
             MATCH_LOADING_PATH => self.match_aside.clone(),
+            LAYOUTS_PATH => self.layouts.clone(),
+            LAYOUTS_TEMP_PATH => self.layouts_temp.clone(),
+            DRAFT_PATH => self.draft_main.clone(),
+            DRAFT_TEMP_PATH => self.draft_temp.clone(),
+            DRAFT_LOADING_PATH => self.draft_aside.clone(),
             _ => unreachable!("{path}"),
         }
     }
@@ -743,7 +800,7 @@ fn the_node_drops_every_file_effect_after_a_panic() {
 
 impl FakeDisk {
     /// Every file, as text: what a demo must leave exactly as it found.
-    fn files(&self) -> [Option<String>; 9] {
+    fn files(&self) -> [Option<String>; 14] {
         [
             self.save.clone(),
             self.run.clone(),
@@ -754,6 +811,11 @@ impl FakeDisk {
             self.match_aside.clone(),
             self.crash_report.clone(),
             self.old_crash_report.clone(),
+            self.layouts.clone(),
+            self.layouts_temp.clone(),
+            self.draft_main.clone(),
+            self.draft_temp.clone(),
+            self.draft_aside.clone(),
         ]
     }
 }
@@ -1169,7 +1231,7 @@ fn quitting_a_match_survives_a_crash_anywhere() {
     &format!("match 1 {} 1 7 320 1 0 0 0\n", salt_line_sim::SIM_EPOCH + 1),
     "SAVED MATCH FROM A NEWER VERSION"
 )]
-#[case::newer_format("match 2 x\n", "SAVED MATCH FROM A NEWER VERSION")]
+#[case::newer_format("match 3 x\n", "SAVED MATCH FROM A NEWER VERSION")]
 fn a_match_file_that_will_not_do_is_cleared_with_a_note(#[case] text: &str, #[case] note: &str) {
     let mut disk = FakeDisk {
         match_main: Some(text.into()),
@@ -1398,4 +1460,409 @@ fn the_demo_never_writes_or_clears_a_match_file() {
     let fx = g.tick(1.0 / 30.0, &keys(&[Key::Space]));
     assert!(!fx.iter().any(Effect::touches_disk), "{fx:?}");
     assert_eq!(disk.files(), FakeDisk::default().files());
+}
+
+// ------------------------------------------------- the editor and its maps
+
+/// Launch, open the pre-match screen and the editor (`2`, then `E`).
+fn open_editor(disk: &mut FakeDisk) -> Game {
+    let mut g = disk.launch();
+    press(&mut g, disk, Key::Num2);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    press(&mut g, disk, Key::E);
+    assert_eq!(g.mode, Mode::Editor);
+    g
+}
+
+fn draft(g: &Game) -> Option<&salt_line_sim::layout::Layout> {
+    g.editor.ed.as_ref().map(|e| e.layout())
+}
+
+/// A blank map, then a few edits by keys: raise under the cursor, move
+/// along, lower. Returns every layout the draft passed through.
+fn blank_and_edit(g: &mut Game, disk: &mut FakeDisk) -> Vec<salt_line_sim::layout::Layout> {
+    assert_eq!(g.editor.page, crate::app::EditorPage::Start);
+    // The first row of a start page without a draft is NEW BLANK MAP.
+    press(g, disk, Key::Enter);
+    assert_eq!(g.editor.page, crate::app::EditorPage::Edit);
+    let mut seen = vec![draft(g).unwrap().clone()];
+    for step in [
+        Key::Up,
+        Key::Up,
+        Key::Right,
+        Key::Right,
+        Key::Right,
+        Key::Down,
+    ] {
+        press(g, disk, step);
+        let now = draft(g).unwrap();
+        if seen.last() != Some(now) {
+            seen.push(now.clone());
+        }
+    }
+    seen
+}
+
+/// Save the draft into the first slot offered: the menu (Esc), SAVE (one
+/// row down), the slot list's first row.
+fn save_first_slot(g: &mut Game, disk: &mut FakeDisk) {
+    press(g, disk, Key::Escape);
+    press(g, disk, Key::Down);
+    press(g, disk, Key::Enter);
+    assert!(matches!(
+        g.editor.page,
+        crate::app::EditorPage::Slots(crate::app::EditorPurpose::Save)
+    ));
+    press(g, disk, Key::Enter);
+}
+
+/// The draft kept on disk is the draft as it was edited, byte for byte, and
+/// a relaunch opens the editor straight onto it.
+#[test]
+fn a_draft_survives_a_kill_byte_for_byte() {
+    let mut disk = FakeDisk::default();
+    let mut g = open_editor(&mut disk);
+    let seen = blank_and_edit(&mut g, &mut disk);
+    let line = crate::layouts_file::SavedDraft {
+        draft: g.editor.ed.as_ref().unwrap().draft.clone(),
+        mirror: true,
+    }
+    .to_line()
+    .unwrap();
+    assert_eq!(disk.draft_main.as_deref(), Some(line.as_str()));
+    // Killed: the game is gone, the disk is what it left.
+    drop(g);
+    let files = disk.files();
+    let mut g = disk.launch();
+    assert_eq!(draft(&g), seen.last());
+    assert_eq!(
+        disk.files(),
+        files,
+        "the launch put the draft back as it was"
+    );
+    press(&mut g, &mut disk, Key::Num2);
+    press(&mut g, &mut disk, Key::E);
+    assert_eq!(
+        g.editor.page,
+        crate::app::EditorPage::Edit,
+        "straight onto it"
+    );
+    assert!(g.editor.ed.as_ref().unwrap().mirror);
+    // Nothing new written by opening it.
+    assert_eq!(disk.files(), files);
+}
+
+/// Editing and saving, killed after every disk operation in turn: whatever
+/// a launch finds is something the player made. Before the first edit
+/// reached disk there may be nothing; after it, a draft the editing passed
+/// through, or the saved map in its slot, or both.
+#[test]
+fn editing_and_saving_survive_a_crash_anywhere() {
+    fn flow(disk: &mut FakeDisk) -> (Vec<salt_line_sim::layout::Layout>, usize) {
+        let mut g = open_editor(disk);
+        let seen = blank_and_edit(&mut g, disk);
+        let first_write = disk.done;
+        save_first_slot(&mut g, disk);
+        (seen, first_write)
+    }
+    let mut whole = FakeDisk::default();
+    let (seen, edited) = flow(&mut whole);
+    assert!(whole.draft_main.is_none(), "saved: no draft left");
+    let saved = seen.last().unwrap().clone();
+    assert_eq!(
+        crate::layouts_file::Slots::parse(whole.layouts.as_deref().unwrap())
+            .get(1)
+            .unwrap()
+            .layout(),
+        Ok(saved.clone())
+    );
+    let ops = whole.done;
+    let mut found_draft = 0;
+    for k in 0..=ops {
+        let mut disk = FakeDisk {
+            budget: Some(k),
+            ..FakeDisk::default()
+        };
+        flow(&mut disk);
+        disk.budget = None;
+        for _ in 0..2 {
+            let g = disk.launch();
+            let slot = g.layouts.checked(1).and_then(|(l, _)| l.clone());
+            if let Some(l) = draft(&g) {
+                assert!(seen.contains(l), "crash after {k}: a draft never made");
+                found_draft += 1;
+            }
+            if let Some(l) = &slot {
+                assert_eq!(l, &saved, "crash after {k}: a slot never saved");
+            }
+            // Once the last edit had reached disk it is never lost again,
+            // whatever the save that followed got to: a launch finds it as
+            // the draft, in its slot, or both.
+            if k >= edited {
+                assert!(
+                    draft(&g) == Some(&saved) || slot.as_ref() == Some(&saved),
+                    "crash after {k}: the map was lost"
+                );
+            }
+            if k >= ops {
+                assert!(slot.is_some(), "the finished save is there");
+                assert!(draft(&g).is_none(), "and no draft beside it");
+            }
+        }
+    }
+    assert!(found_draft > 0, "no crash left a draft to find");
+}
+
+/// The GROUND row's choice holds through a rematch, and a match on a map
+/// killed mid-play comes back on that map, its line in format 2, with the
+/// GROUND row showing it.
+#[test]
+fn a_custom_duel_survives_rematch_and_resume() {
+    let mut disk = FakeDisk::default();
+    let mut g = disk.launch();
+    press(&mut g, &mut disk, Key::Num2);
+    press(&mut g, &mut disk, Key::Down);
+    let bundled = crate::custom::bundled::layouts()[0].clone();
+    assert_eq!(
+        g.versus.ground.as_ref().map(|p| p.layout.clone()),
+        Some(bundled.clone())
+    );
+    press(&mut g, &mut disk, Key::Enter);
+    assert_eq!(g.mode, Mode::Versus);
+    assert_eq!(vs(&g).layout.as_ref(), Some(&bundled));
+    for _ in 0..3 {
+        match_turn(&mut g, &mut disk);
+    }
+    let line = disk.match_main.clone().expect("kept");
+    assert!(line.starts_with("match 2 "), "{line}");
+    assert!(line.contains(&bundled.to_code().unwrap()));
+    let want = match_state(&g);
+    // Killed, relaunched, resumed: the same match on the same map.
+    drop(g);
+    let mut g = relaunch_and_resume(&mut disk);
+    assert_eq!(match_state(&g), want);
+    assert_eq!(vs(&g).layout.as_ref(), Some(&bundled));
+    assert_eq!(
+        g.versus.ground.as_ref().map(|p| p.layout.clone()),
+        Some(bundled.clone()),
+        "the GROUND row shows the map it resumed on"
+    );
+    assert_eq!(
+        g.display.buffer_w,
+        salt_line_sim::layout::LAYOUT_WIDTH as i32
+    );
+    // Played to its end, then REMATCH: back on the pre-match screen with
+    // the map still picked, and the rematch is on it.
+    for _ in 0..200 {
+        if matches!(vs(&g).duel.phase, crate::versus::Phase::MatchOver(_))
+            && stage(&g) == versus::Stage::Result
+        {
+            break;
+        }
+        match_turn(&mut g, &mut disk);
+    }
+    press(&mut g, &mut disk, Key::Enter);
+    assert_eq!(g.mode, Mode::VersusSetup);
+    assert_eq!(
+        g.versus.ground.as_ref().map(|p| p.layout.clone()),
+        Some(bundled.clone())
+    );
+    press(&mut g, &mut disk, Key::Enter);
+    assert_eq!(vs(&g).layout.as_ref(), Some(&bundled), "the rematch");
+    assert!(disk.match_main.as_deref().unwrap().starts_with("match 2 "));
+}
+
+/// A match on a fixed-wind map (bundled SPIRES) killed at every turn of a
+/// first round and into the second, and resumed: the same match, its wind
+/// the pair rule's for the turn it resumes on.
+#[test]
+fn a_fixed_wind_match_resumes_on_the_right_wind() {
+    let n = crate::custom::bundled::BUNDLED.len();
+    let spires = crate::custom::bundled::layouts()[n - 1].clone();
+    assert!(matches!(
+        spires.wind,
+        salt_line_sim::layout::WindSpec::Fixed(_)
+    ));
+    let mut rounds = 0;
+    for turns in [0, 1, 2, 3, 4, 5, 7, 10, 13, 16] {
+        let mut disk = FakeDisk::default();
+        let mut g = disk.launch();
+        press(&mut g, &mut disk, Key::Num2);
+        for _ in 0..n {
+            press(&mut g, &mut disk, Key::Down);
+        }
+        assert_eq!(g.versus.ground.as_ref().unwrap().layout, spires);
+        press(&mut g, &mut disk, Key::Enter);
+        for _ in 0..turns {
+            if matches!(vs(&g).duel.phase, crate::versus::Phase::MatchOver(_)) {
+                break;
+            }
+            match_turn(&mut g, &mut disk);
+        }
+        let want = match_state(&g);
+        rounds = rounds.max(vs(&g).duel.round);
+        drop(g);
+        let back = relaunch_and_resume(&mut disk);
+        assert_eq!(match_state(&back), want, "{turns} turns");
+        let duel = &vs(&back).duel;
+        assert_eq!(duel.screen.wind, duel.wind_at(duel.turn), "{turns} turns");
+    }
+    assert!(rounds >= 1, "the kills reached a second round");
+}
+
+/// The demo never reads or writes the slot file or the draft (DESIGN
+/// §12.3, §13.8): through a whole demo cycle every file is byte for byte as
+/// it was, no disk effect is asked for, and the editor afterwards opens on
+/// the same draft.
+#[test]
+fn the_demo_leaves_the_maps_and_the_draft_alone() {
+    let mut disk = FakeDisk::default();
+    let mut g = open_editor(&mut disk);
+    blank_and_edit(&mut g, &mut disk);
+    save_first_slot(&mut g, &mut disk);
+    press(&mut g, &mut disk, Key::Up);
+    assert!(disk.layouts.is_some() && disk.draft_main.is_some());
+    let made = draft(&g).unwrap().clone();
+    drop(g);
+    let mut g = disk.launch();
+    let files = disk.files();
+    let mut during = Vec::new();
+    for _ in 0..30_000 {
+        let fx = g.tick(1.0 / 30.0, &idle());
+        if g.in_demo() {
+            during.extend(fx.iter().cloned());
+        }
+        disk.apply(&mut g, fx);
+        if g.demo.as_ref().is_some_and(|d| d.leg_index == 2) {
+            break;
+        }
+    }
+    assert!(g.demo.is_some(), "the idle demo ran");
+    let disk_fx: Vec<_> = during.iter().filter(|e| e.touches_disk()).collect();
+    assert!(disk_fx.is_empty(), "the demo asked for {disk_fx:?}");
+    assert!(g.versus.ground.is_none(), "the demo's duels are generated");
+    assert_eq!(disk.files(), files, "the demo changed a file");
+    tick(&mut g, &mut disk, keys(&[Key::Space]));
+    tick(&mut g, &mut disk, idle());
+    assert_eq!(g.mode, Mode::Title);
+    press(&mut g, &mut disk, Key::Num2);
+    press(&mut g, &mut disk, Key::E);
+    assert_eq!(draft(&g), Some(&made));
+    assert_eq!(disk.files(), files);
+}
+
+/// A newer build's draft is never written over or cleared: a map made
+/// meanwhile is not kept as a draft, and saving it leaves that file alone.
+#[test]
+fn a_newer_builds_draft_survives_editing_and_saving() {
+    let newer = "draft 9 1 - - SL00\n";
+    let mut disk = FakeDisk {
+        draft_main: Some(newer.into()),
+        ..FakeDisk::default()
+    };
+    let mut g = open_editor(&mut disk);
+    assert!(g.editor.newer_draft);
+    blank_and_edit(&mut g, &mut disk);
+    assert_eq!(disk.draft_main.as_deref(), Some(newer));
+    save_first_slot(&mut g, &mut disk);
+    assert!(disk.layouts.is_some(), "the map was saved");
+    assert_eq!(disk.draft_main.as_deref(), Some(newer), "and the file kept");
+}
+
+/// A draft file this build cannot read is dropped with a note; one from a
+/// newer build is put back unread, for that build.
+#[rstest::rstest]
+#[case::damaged("draft 1 1 - - banana\n", false)]
+#[case::newer("draft 9 1 - - SL00\n", true)]
+fn a_draft_that_will_not_do(#[case] text: &str, #[case] kept: bool) {
+    let mut disk = FakeDisk {
+        draft_main: Some(text.into()),
+        ..FakeDisk::default()
+    };
+    let g = disk.launch();
+    assert!(g.editor.ed.is_none());
+    if kept {
+        assert_eq!(disk.draft_main.as_deref(), Some(text));
+        assert!(g.editor.newer_draft);
+        assert_eq!(g.status, crate::app::editor_newer_draft_note());
+    } else {
+        assert_eq!(disk.draft_main, None);
+        assert_eq!(g.status, "MAP DRAFT COULD NOT BE RESTORED");
+    }
+}
+
+/// A draft the last launch died reading is dropped, with the same note.
+#[test]
+fn an_interrupted_draft_is_dropped_with_a_note() {
+    let mut disk = FakeDisk {
+        draft_aside: Some("draft 1 1 - - SL00\n".into()),
+        ..FakeDisk::default()
+    };
+    let g = disk.launch();
+    assert!(g.editor.ed.is_none());
+    assert_eq!(disk.draft_aside, None);
+    assert_eq!(g.status, "MAP DRAFT COULD NOT BE RESTORED");
+}
+
+/// A match suspended by MAKE MAP OF THIS ROUND, then a map made in the
+/// editor, killed there after every disk operation in turn: a launch offers
+/// at most the match as played, and at most a draft the editing passed
+/// through; with the whole flow on disk it offers both, RESUME MATCH and
+/// the editor reopening on the draft.
+#[test]
+fn a_suspended_match_and_a_draft_survive_a_crash_anywhere() {
+    fn flow(disk: &mut FakeDisk) -> (Vec<match_log::Entry>, Vec<salt_line_sim::layout::Layout>) {
+        let mut g = start_match(disk);
+        for _ in 0..3 {
+            match_turn(&mut g, disk);
+        }
+        let log = vs(&g).log.clone();
+        press(&mut g, disk, Key::Escape);
+        press(&mut g, disk, Key::E);
+        assert_eq!(g.mode, Mode::Editor);
+        assert!(g.saved_match.is_some());
+        let mut seen = vec![draft(&g).unwrap().clone()];
+        for step in [Key::Up, Key::Up, Key::Right, Key::Down] {
+            press(&mut g, disk, step);
+            let now = draft(&g).unwrap();
+            if seen.last() != Some(now) {
+                seen.push(now.clone());
+            }
+        }
+        (log, seen)
+    }
+    let mut whole = FakeDisk::default();
+    let (log, seen) = flow(&mut whole);
+    let ops = whole.done;
+    for k in 0..=ops {
+        let mut disk = FakeDisk {
+            budget: Some(k),
+            ..FakeDisk::default()
+        };
+        flow(&mut disk);
+        disk.budget = None;
+        let mut g = disk.launch();
+        if let Some(saved) = &g.saved_match {
+            assert!(log.starts_with(&saved.log), "crash after {k}");
+        }
+        if let Some(l) = draft(&g) {
+            assert!(seen.contains(l), "crash after {k}: a draft never made");
+        }
+        if k == ops {
+            assert_eq!(
+                g.saved_match.as_ref().map(|s| s.log.clone()),
+                Some(log.clone())
+            );
+            assert_eq!(draft(&g), seen.last());
+            press(&mut g, &mut disk, Key::Num2);
+            assert_eq!(g.mode, Mode::Versus, "RESUME MATCH");
+            assert_eq!(vs(&g).log, log);
+        }
+    }
+    // And the editor reopens on the draft, the match still offered.
+    let mut g = whole.launch();
+    assert!(g.saved_match.is_some());
+    g.open_editor();
+    assert_eq!(g.editor.page, crate::app::EditorPage::Edit);
+    assert_eq!(draft(&g), seen.last());
 }

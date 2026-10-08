@@ -6,8 +6,9 @@
 //!   parses must survive being written back and read again unchanged.
 //! - **Any log**, built from arbitrary entries (shots anywhere on the dial
 //!   or off it, new rounds where no round was won, shots after the match is
-//!   over): the line round-trips, and a log that replays replays to the
-//!   same match twice.
+//!   over), on generated screens or on a layout's ground (format 2): the
+//!   line round-trips, and a log that replays replays to the same match
+//!   twice.
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -26,6 +27,8 @@ struct Input<'a> {
     help: [bool; 2],
     /// `None` is a new round; `Some` a shot, clamped onto the dial.
     log: Vec<Option<(u16, u16)>>,
+    /// Play on a forked duel round's ground (format 2), from this seed.
+    ground: Option<u8>,
 }
 
 fuzz_target!(|input: Input| {
@@ -52,6 +55,15 @@ fuzz_target!(|input: Input| {
                 Some((a, p)) => Entry::Shot((*a % 1801) as i32, (*p % 1001) as i32),
             })
             .collect(),
+        ground: input
+            .ground
+            .map(|g| salt_line_godot::custom::fork_duel(g as u64, 0).to_code().unwrap()),
+    };
+    // A match on a layout is played at the layout's width.
+    let saved = if saved.ground.is_some() {
+        SavedMatch { width: 320, ..saved }
+    } else {
+        saved
     };
     let line = saved.to_line();
     assert_eq!(SavedMatch::parse(&line).as_ref(), Ok(&saved));

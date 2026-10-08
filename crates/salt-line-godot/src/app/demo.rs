@@ -238,6 +238,7 @@ struct Stash {
     versus_live: Option<VersusPlay>,
     help: [bool; 2],
     rolling_off: bool,
+    ground: Option<GroundPick>,
     buffer_w: i32,
     kept_width: bool,
 }
@@ -402,6 +403,7 @@ impl Game {
             versus_live: self.versus.live.take(),
             help: self.versus.help,
             rolling_off: self.versus.rolling_off,
+            ground: self.versus.ground.take(),
             buffer_w: self.display.buffer_w,
             kept_width: self.display.kept_width,
         };
@@ -442,6 +444,7 @@ impl Game {
         self.versus.live = s.versus_live;
         self.versus.help = s.help;
         self.versus.rolling_off = s.rolling_off;
+        self.versus.ground = s.ground;
         self.display.buffer_w = s.buffer_w;
         self.display.kept_width = s.kept_width;
         self.mode = Mode::Title;
