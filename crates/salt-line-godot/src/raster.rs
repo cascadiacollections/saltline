@@ -13,9 +13,12 @@
 //! DESIGN §5.1 fixes the buffer at 180 buffer pixels tall and 320 to 400
 //! wide, by device aspect; Long Lens makes it 216 tall
 //! (`app::LONG_LENS_H`), adding sky rather than scaling. The whole frame,
-//! terrain, sprites, HUD and text alike, is drawn by the CPU into the one
-//! [`Canvas`] at that size, then uploaded (only the strips that changed; see
-//! `strips`) to textures that `game.rs` draws at 1:1. Godot's viewport stretch, with nearest filtering
+//! terrain, sprites, HUD and text alike, is drawn by the CPU at that size,
+//! then uploaded (only the strips that changed; see `strips`) to textures
+//! that `game.rs` draws at 1:1. In play the sky and the ground are drawn into
+//! canvases of their own, kept until they change, and everything else into
+//! a transparent [`Canvas`] over them (`backdrop`); every pixel is still
+//! drawn here, by the CPU. Godot's viewport stretch, with nearest filtering
 //! set project-wide, does the only scaling in the game, so every buffer
 //! pixel lands on the screen as the same whole block.
 //! UI in the same buffer at the same resolution is itself a §5.1 rule.
@@ -152,11 +155,27 @@ impl Canvas {
         self.px[i..i + 4].copy_from_slice(&c);
     }
 
-    /// Alpha-blended write, for the few translucent plates in the HUD.
+    /// Alpha-blended write, for the one translucent mark (the last arc).
     /// `alpha` is 0 (nothing) to 255 (opaque); the result is always opaque,
     /// and its colour is off the palette unless `alpha` is 255.
+    ///
+    /// A pixel this canvas has not painted (transparent) is blended with
+    /// `under(x, y)`: the colour a layer beneath shows there
+    /// (`backdrop::Backdrop::under`). The layered frame leaves the sky and
+    /// the ground out of this canvas, so a translucent mark over them needs
+    /// their colour to come out as in the flat frame, and to stay opaque:
+    /// the overlay's pixels must be fully transparent or fully opaque. This
+    /// is the only blending write, so there is no way to blend without
+    /// saying what is beneath.
     #[inline]
-    pub fn put_blend(&mut self, x: i32, y: i32, c: Rgba, alpha: u8) {
+    pub fn put_blend_on(
+        &mut self,
+        x: i32,
+        y: i32,
+        c: Rgba,
+        alpha: u8,
+        under: impl Fn(i32, i32) -> Rgba,
+    ) {
         if alpha == 255 {
             return self.put(x, y, c);
         }
@@ -164,12 +183,26 @@ impl Canvas {
             return;
         }
         let i = ((y * self.w + x) * 4) as usize;
+        if self.px[i + 3] == 0 {
+            let u = under(x, y);
+            self.px[i..i + 3].copy_from_slice(&u[..3]);
+        }
         let a = alpha as u32;
         for (dst, src) in self.px[i..i + 3].iter_mut().zip(c.iter()) {
             let under = *dst as u32;
             *dst = ((*src as u32 * a + under * (255 - a)) / 255) as u8;
         }
         self.px[i + 3] = 255;
+    }
+
+    /// The pixel at `(x, y)`, transparent if off the buffer or unpainted.
+    #[inline]
+    pub fn get(&self, x: i32, y: i32) -> Rgba {
+        if x < 0 || y < 0 || x >= self.w || y >= self.h {
+            return [0; 4];
+        }
+        let i = ((y * self.w + x) * 4) as usize;
+        [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
     }
 
     pub fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
@@ -509,19 +542,11 @@ pub fn draw_ground_detail_around(
         if top < 4 || top >= canvas.h - 8 {
             continue;
         }
-        let hash = mix64(screen.seed ^ (world_x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let hash = detail_hash(screen, world_x);
         if screen.field.scar[col] < 2.0 && hash.is_multiple_of(17) {
             canvas.put(sx, top + 4 + ((hash >> 8) % 3) as i32, pal.get(slot::ROCK));
         }
-        if screen.field.scar[col].abs() > 0.5 || !hash.is_multiple_of(37) {
-            continue;
-        }
-        if guns.iter().any(|g| (world_x as f64 - g).abs() < 22.0)
-            || screen
-                .structures
-                .iter()
-                .any(|s| (world_x as f64 - s.centre_x()).abs() < 10.0)
-        {
+        if !grass_grows(screen, world_x, hash) || guns.iter().any(|&g| near_gun(world_x, g)) {
             continue;
         }
         let grass = pal.get(slot::HULL_HI);
@@ -532,6 +557,43 @@ pub fn draw_ground_detail_around(
             canvas.put(sx + 1, top - 2, grass);
         }
     }
+}
+
+/// The hash that places a column's fleck and tuft, fixed to the world.
+fn detail_hash(screen: &Screen, world_x: i32) -> u64 {
+    mix64(screen.seed ^ (world_x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+/// Whether column `world_x` (on the field) grows a tuft, guns aside: its
+/// hash picks it, no crater has touched it, and no structure stands on it.
+fn grass_grows(screen: &Screen, world_x: i32, hash: u64) -> bool {
+    hash.is_multiple_of(37)
+        && screen.field.scar[world_x as usize].abs() <= 0.5
+        && !screen
+            .structures
+            .iter()
+            .any(|s| (world_x as f64 - s.centre_x()).abs() < 10.0)
+}
+
+/// The world columns [`draw_ground_detail_around`] would grow a tuft on in
+/// a buffer `h` tall, with no guns about: the only columns a gun's
+/// clearing can change. `backdrop` keys the ground layer on which of them a
+/// gun keeps clear, so a gun rolling over bare ground redraws nothing.
+pub fn tuft_columns(screen: &Screen, h: i32) -> impl Iterator<Item = i32> + '_ {
+    let view = View { cam_x: 0, w: 0, h };
+    (0..screen.field.len() as i32).filter(move |&x| {
+        let top = view.sy(screen.field.surface(x as usize));
+        (4..h - 8).contains(&top) && grass_grows(screen, x, detail_hash(screen, x))
+    })
+}
+
+/// Whether world column `world_x` is too near a gun at world x `gun` for
+/// grass: strictly within 22 columns. The one definition, so that
+/// `backdrop`'s key agrees with [`draw_ground_detail_around`] to the last
+/// rounding of the float subtraction.
+#[inline]
+pub fn near_gun(world_x: i32, gun: f64) -> bool {
+    (world_x as f64 - gun).abs() < 22.0
 }
 
 /// Material banding for Sapper's Eye: a single darker line at each layer
@@ -594,15 +656,23 @@ pub fn draw_trajectory_inked(
 }
 
 /// The last shot's arc, left behind as a faint dotted line until the next shot
-/// (or the next screen) replaces it.
-pub fn draw_last_arc(
+/// (or the next screen) replaces it, over layers whose colour at a pixel is
+/// `under(x, y)`: see [`Canvas::put_blend_on`].
+pub fn draw_last_arc_on(
     canvas: &mut Canvas,
     view: &View,
     path: &[salt_line_sim::Vec2],
     pal: &Palette,
+    under: impl Fn(i32, i32) -> Rgba,
 ) {
     for p in path.iter().step_by(4) {
-        canvas.put_blend(view.sx(p.x), view.sy(p.y), pal.get(slot::UI_FG), 110);
+        canvas.put_blend_on(
+            view.sx(p.x),
+            view.sy(p.y),
+            pal.get(slot::UI_FG),
+            110,
+            &under,
+        );
     }
 }
 

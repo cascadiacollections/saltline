@@ -785,3 +785,31 @@ and MAKE MAP's place kept as built). What was decided here, and measured:
   layout, and looked at, for this change.
 - **Fuzzing.** The new `layouts_file` target ran 8.3 million inputs in 180 s locally after one early finding (a newer header does not survive a write; such a file is never written, and the target now says so), and `match_log`, with logs on map grounds, 123,000 in 120 s, neither with a finding.
 - **From the reviews.** MIRROR starts on for every duel draft, forks included (it started off for a fork, where dragging a gun made the map unplayable); a toast goes as soon as the draft changes; DISCARD keeps the file until the editor is left; a finger mid-drag when the app pauses is written at once; a second finger or key that ends a stroke spends its drag. DESIGN §13.11 has the rules.
+
+## 11. The layered frame (October 2026)
+
+In play the sky and the ground are textures of their own, kept until they
+change, under a transparent overlay of everything else (`backdrop`). The
+landing shake and camera moves now cost no upload, and the CPU no longer
+fills the sky and redraws the ground each frame.
+
+- **Measured on a Pixel 10** (profiling build, four interleaved runs per
+  build): process time per frame, mean 1.51 → 1.00 ms, p95 3.48 → 2.00 ms;
+  raster 0.60 → 0.20 ms; whole-frame uploads 221 → 34 per ~960 frames. The
+  worst frame of a run (22–51 ms) is noise in both builds. Power was not
+  measured; the `strips::WHOLE_ABOVE` power capture suggests upload choices
+  do not show on the rails, so this is a frame-time result only.
+  Re-measure on a Mali GPU (Galaxy A16) before relying on it for a release.
+- **Exactness** is a compositing argument, not a second renderer: every
+  layer is drawn by the same Rust code, the GPU only copies. Tests composite
+  the layers on the CPU and compare with the flat frame every frame of runs,
+  matches, the demo and the editor; the profiling build reads the viewport
+  back on the device and compares it with the flat frame (run, versus, night
+  under Long Lens).
+- **Rejected: a terrain shader.** Uploading a heightfield and drawing the
+  strata and dither in GLSL would save the same uploads, but would be a
+  second ground renderer at mobile float precision that had to match an
+  `f64` one bit for bit, and the sky's 64-bit star hash has no GLSL ES 3.0
+  equivalent.
+- `--salt-flat` draws the old single canvas: the tests' reference and a
+  developer fallback, not a player setting.

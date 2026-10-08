@@ -85,6 +85,8 @@ pub struct Capture {
     /// Strips that changed, and whole-frame uploads, summed over frames.
     strips_changed: [u64; 2],
     wholes: [u64; 2],
+    /// Sky and ground layer uploads (`backdrop`), summed over frames.
+    backdrop_uploads: [u64; 2],
     process: [Samples; 2],
     tick: [Samples; 2],
     render: [Samples; 2],
@@ -111,6 +113,7 @@ impl Capture {
             texture_update_skips: [0; 2],
             strips_changed: [0; 2],
             wholes: [0; 2],
+            backdrop_uploads: [0; 2],
             process: pair(),
             tick: pair(),
             render: pair(),
@@ -166,13 +169,21 @@ impl Capture {
 
     /// The strip pass of one frame: comparing each strip with the screen,
     /// `changed` of them differing, and uploading them, or the whole frame
-    /// (`whole` is 1) when too many did.
-    pub fn record_texture_update(&mut self, duration: Duration, changed: u64, whole: u64) {
+    /// (`whole` is 1) when too many did; and `backdrop` sky or ground layer
+    /// uploads.
+    pub fn record_texture_update(
+        &mut self,
+        duration: Duration,
+        changed: u64,
+        whole: u64,
+        backdrop: u64,
+    ) {
         if let Some(mode) = self.frame_mode {
             let i = mode.index();
             self.texture_updates[i] += 1;
             self.strips_changed[i] += changed;
             self.wholes[i] += whole;
+            self.backdrop_uploads[i] += backdrop;
             self.texture_update[i].observe(duration);
         }
     }
@@ -211,7 +222,7 @@ impl Capture {
             format!("updated process: {}", self.process[0].summary()),
             format!("updated core_tick: {}", self.tick[0].summary()),
             format!("updated software_render: {}", self.render[0].summary()),
-            format!("updated strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} (compare + update of changed strips; CPU call time, GPU completion is deferred)", self.texture_update[0].summary(), self.strips_changed[0] as f64 / self.texture_updates[0].max(1) as f64, self.wholes[0]),
+            format!("updated strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} backdrop_uploads={} (compare + update of changed strips and layers; CPU call time, GPU completion is deferred)", self.texture_update[0].summary(), self.strips_changed[0] as f64 / self.texture_updates[0].max(1) as f64, self.wholes[0], self.backdrop_uploads[0]),
             format!(
                 "frozen: frames={} rendered={} texture_updates={} texture_update_skips={}",
                 self.frames[1], self.rendered[1], self.texture_updates[1], self.texture_update_skips[1]
@@ -221,5 +232,159 @@ impl Capture {
             format!("frozen software_render: {}", self.render[1].summary()),
             format!("frozen strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} (should be n=0)", self.texture_update[1].summary(), self.strips_changed[1] as f64 / self.texture_updates[1].max(1) as f64, self.wholes[1]),
         ])
+    }
+}
+
+/// After the timing capture, check the GPU's side of the layered frame
+/// (`backdrop`) on the device itself: each drawn frame is read back from
+/// the viewport and compared, pixel for pixel, with the same frame drawn
+/// flat on the CPU. Readback stalls the GPU, which is why it runs only
+/// once the timings are taken.
+///
+/// The read happens in the next frame's `process`, before anything new is
+/// drawn, so the viewport must hold exactly the frame last drawn: only a
+/// read equal to the newest flat frame passes. A read that equals an older
+/// one (a stale layer, say a ground window a shake behind) is counted apart
+/// and fails the check; the older frames are kept only to tell the two
+/// failures apart.
+///
+/// It runs over several scenes in turn (see `game.rs`), each its own
+/// report line.
+#[derive(Default)]
+pub struct GpuCheck {
+    /// The scene being checked.
+    scene: &'static str,
+    /// Drawn frames still to compare; 0 when not running.
+    left: u64,
+    /// The flat frames lately drawn, newest first, each with its size and
+    /// what the layered frame had under its overlay.
+    recent: std::collections::VecDeque<(Vec<u8>, i32, i32, Option<crate::backdrop::Shown>)>,
+    /// A frame was drawn since the last comparison.
+    pending: bool,
+    frames: u64,
+    layered: u64,
+    shaken: u64,
+    outlined: u64,
+    /// Reads that matched the newest frame, only an older one, or none.
+    newest: u64,
+    older: u64,
+    none: u64,
+    /// The ground layer's version at the scene's start and now.
+    ground_versions: Option<(u64, u64)>,
+    /// The first few wrong pixels: x, y, read back, newest flat frame.
+    samples: Vec<(i32, i32, [u8; 3], [u8; 3])>,
+    sizes: Option<(i32, i32, i32, i32)>,
+}
+
+/// How many recent flat frames a read is compared with.
+const GPU_CHECK_LAG: usize = 3;
+
+impl GpuCheck {
+    /// Check `frames` drawn frames of the scene called `scene`.
+    pub fn start(&mut self, scene: &'static str, frames: u64) {
+        *self = GpuCheck {
+            scene,
+            left: frames,
+            ..GpuCheck::default()
+        };
+    }
+
+    /// Whether this frame's flat reference is wanted.
+    pub fn running(&self) -> bool {
+        self.left > 0
+    }
+
+    /// The frame just drawn should look like `flat`, `w` by `h`; layered,
+    /// it had `shown` under its overlay, and the ground layer was at
+    /// version `ground`.
+    pub fn expect(
+        &mut self,
+        flat: &[u8],
+        w: i32,
+        h: i32,
+        shown: Option<crate::backdrop::Shown>,
+        ground: u64,
+    ) {
+        if self.running() {
+            self.recent.push_front((flat.to_vec(), w, h, shown));
+            self.recent.truncate(GPU_CHECK_LAG);
+            self.pending = true;
+            let first = self.ground_versions.map_or(ground, |v| v.0);
+            self.ground_versions = Some((first, ground));
+        }
+    }
+
+    /// Whether a frame is waiting to be compared with the viewport.
+    pub fn pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Compare `image`, the viewport read back, whose buffer starts `left`
+    /// pixels in (the letterbox), with the frame last drawn. Returns the
+    /// scene's report when its last frame has been compared.
+    pub fn compare(&mut self, image: Gd<godot::classes::Image>, left: i32) -> Option<String> {
+        self.pending = false;
+        let mut image = image;
+        image.convert(godot::classes::image::Format::RGBA8);
+        let (iw, ih) = (image.get_width(), image.get_height());
+        let got = image.get_data();
+        let got = got.as_slice();
+        let wrong = |want: &[u8], w: i32, h: i32| -> Vec<(i32, i32, [u8; 3], [u8; 3])> {
+            if ih != h || iw < left + w {
+                return vec![(-1, -1, [0; 3], [0; 3])];
+            }
+            let mut out = Vec::new();
+            for y in 0..h {
+                for x in 0..w {
+                    let a = ((y * iw + x + left) * 4) as usize;
+                    let b = ((y * w + x) * 4) as usize;
+                    if got[a..a + 3] != want[b..b + 3] {
+                        let rgb = |p: &[u8]| [p[0], p[1], p[2]];
+                        out.push((x, y, rgb(&got[a..a + 3]), rgb(&want[b..b + 3])));
+                    }
+                }
+            }
+            out
+        };
+        let mut matched = None;
+        let mut first_wrong = Vec::new();
+        for (lag, (want, w, h, _)) in self.recent.iter().enumerate() {
+            self.sizes = Some((*w, *h, iw, ih));
+            let bad = wrong(want, *w, *h);
+            if bad.is_empty() {
+                matched = Some(lag);
+                break;
+            }
+            if lag == 0 {
+                first_wrong = bad;
+            }
+        }
+        let shown = self.recent.front().and_then(|f| f.3);
+        self.frames += 1;
+        self.layered += u64::from(shown.is_some());
+        self.shaken += u64::from(shown.is_some_and(|s| s.cam_x != 0));
+        self.outlined += u64::from(shown.is_some_and(|s| s.outline));
+        match matched {
+            Some(0) => self.newest += 1,
+            Some(_) => self.older += 1,
+            None => self.none += 1,
+        }
+        if matched != Some(0) {
+            let room = 12usize.saturating_sub(self.samples.len());
+            self.samples
+                .extend(first_wrong.into_iter().take(room.min(4)));
+        }
+        self.left -= 1;
+        (self.left == 0).then(|| {
+            let pass = self.newest == self.frames;
+            let grounds = self.ground_versions.map_or(0, |(a, b)| b - a);
+            format!(
+                "salt-profile: gpu check scene={} {} frames={} layered={} shaken_or_panned={} outlined={} ground_uploads={} exact_newest={} exact_older_only={} matching_none={} buffer_and_viewport={:?} samples(x,y,got,want)={:?}",
+                self.scene,
+                if pass { "PASS" } else { "FAIL" },
+                self.frames, self.layered, self.shaken, self.outlined, grounds,
+                self.newest, self.older, self.none, self.sizes, self.samples
+            )
+        })
     }
 }

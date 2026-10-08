@@ -21,6 +21,9 @@
 //!   this crate into an RGBA byte array of `buffer_w` × `buffer_h`; the node
 //!   uploads it in strips, the ones that changed. There is no scene graph, no sprite
 //!   node, and no GPU scaling except the final nearest-neighbour stretch.
+//!   In play the sky and the ground go into layers of their own under it,
+//!   kept until they change (`backdrop`, through [`Cache`]); the canvas then
+//!   holds everything else over transparent pixels.
 //! * **Painter's order.** Each frame starts from a full fill (sky or plate)
 //!   and draws back to front: sky, terrain, overlays, last arc, structures,
 //!   the emplacement, the shot, effects, the drag preview, HUD, touch
@@ -48,6 +51,7 @@ use salt_line_sim::run::{format_seed, parse_seed, Phase, Screen, StructState};
 use salt_line_sim::{Vec2, DT};
 
 use crate::app::{Anim, Game, Mode, SHORT_ARC_SECONDS, TOPPLE_TIME};
+use crate::backdrop::Backdrop;
 use crate::frame::Memo;
 use crate::input::Action;
 use crate::keypad;
@@ -74,6 +78,9 @@ pub struct Art {
 pub struct Cache {
     /// The drag preview's trajectory, recomputed only when its inputs change.
     preview: Memo<PreviewKey, Preview>,
+    /// The sky and ground layers, when frames are drawn in layers; see
+    /// `backdrop`. Flat unless the node turns `layered` on.
+    pub backdrop: Backdrop,
 }
 
 /// Everything the drag preview's trajectory depends on. The terrain and the
@@ -107,6 +114,7 @@ pub fn frame(
     cache: &mut Cache,
 ) {
     buttons.clear();
+    cache.backdrop.begin_frame();
     let mut p = Painter::new(g, art, canvas, buttons, cache);
     match g.mode {
         Mode::Playing | Mode::Paused => p.render_play(),
@@ -136,6 +144,7 @@ pub fn play(
     buttons: &mut Vec<Button>,
     cache: &mut Cache,
 ) {
+    cache.backdrop.begin_frame();
     Painter::new(g, art, canvas, buttons, cache).render_play();
 }
 
@@ -147,6 +156,7 @@ pub fn broken(
     buttons: &mut Vec<Button>,
     cache: &mut Cache,
 ) {
+    cache.backdrop.begin_frame();
     Painter::new(g, art, canvas, buttons, cache).render_broken();
 }
 
@@ -749,16 +759,16 @@ impl Painter<'_> {
         let range = screen.range_to_nearest();
         let sappers = loadout.has_flag(flags::SAPPERS_EYE);
 
-        sky::draw(
+        self.cache.backdrop.draw(
             self.canvas,
             &view,
             pal,
             sky::Phase::for_screen(index),
             run.run_seed ^ index as u64,
             self.g.play.sky_time,
+            &screen,
+            &[screen.muzzle_x],
         );
-        raster::draw_terrain(self.canvas, &view, &screen.field, pal);
-        raster::draw_ground_detail(self.canvas, &view, &screen, pal);
         if sappers {
             raster::draw_material_boundaries(self.canvas, &view, &screen.field, pal);
         }
@@ -773,7 +783,8 @@ impl Painter<'_> {
 
         // Under the structures and emplacement, so it never hides either.
         if self.g.play.anim.is_none() && apex.is_some() && self.g.last_arc_on() {
-            raster::draw_last_arc(self.canvas, &view, &self.g.play.last_arc, pal);
+            let under = |x, y| self.cache.backdrop.under(x, y);
+            raster::draw_last_arc_on(self.canvas, &view, &self.g.play.last_arc, pal, under);
         }
 
         self.draw_structures(&screen, &view);
@@ -1051,8 +1062,7 @@ impl Painter<'_> {
             && anim.settled < presentation::COLLAPSE_TIME
             && (anim.settled * 30.0) as i32 % 2 == 0
         {
-            let (w, h) = (self.canvas.w, self.canvas.h);
-            self.canvas.rect_outline(1, 1, w - 2, h - 2, alert);
+            self.cache.backdrop.outline(self.canvas, alert);
         }
     }
 
