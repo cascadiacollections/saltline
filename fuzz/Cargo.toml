@@ -60,3 +60,10 @@ path = "fuzz_targets/layouts_file.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "history_file"
+path = "fuzz_targets/history_file.rs"
+test = false
+doc = false
+bench = false

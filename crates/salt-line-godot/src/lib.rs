@@ -64,6 +64,7 @@ pub mod editor;
 pub mod font;
 pub mod frame;
 pub mod game;
+pub mod history;
 pub mod icons;
 pub mod input;
 pub mod keypad;
