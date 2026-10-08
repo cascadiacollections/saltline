@@ -14,6 +14,7 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use salt_line_godot::match_log::{judge, state_hash, Entry, SavedMatch};
+use salt_line_godot::opponent::Level;
 use salt_line_sim::run::buffer_width;
 use salt_line_sim::{SCREEN_W_MAX, SIM_EPOCH};
 
@@ -47,9 +48,7 @@ fuzz_target!(|input: Input| {
         width: buffer_width((input.width as usize).min(SCREEN_W_MAX * 2)),
         rolling: input.rolling,
         help: input.help,
-        ai: input
-            .ai
-            .map(|l| salt_line_godot::opponent::Level::ALL[l as usize % 3]),
+        ai: input.ai.map(|l| Level::ALL[l as usize % Level::ALL.len()]),
         // A few dozen entries is a long match; replays are the slow half.
         log: input
             .log
