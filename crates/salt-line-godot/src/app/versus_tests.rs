@@ -949,3 +949,84 @@ fn the_ease_is_drawn_and_aim_help_waits_for_it() {
     g.versus.help = [false, false];
     assert_ne!(draw(&g).bytes(), home.bytes(), "aim help, once home");
 }
+
+#[test]
+fn ai_opponent_takes_only_right_turns_and_resumes_as_ai() {
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    press(&mut g, Key::R);
+    assert!(g.versus.ai);
+    press(&mut g, Key::Enter);
+    assert!(vs(&g).ai);
+    for _ in 0..120 {
+        g.tick(FRAME, &idle());
+    }
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    assert_eq!(vs(&g).duel.turn, 0, "the human must ready and fire");
+    take_turn(&mut g, Shot::new(900, 600));
+    assert_eq!(vs(&g).side(), Side::Right);
+    // Player aim/fire input cannot drive the computer's turn.
+    press(&mut g, Key::Space);
+    assert_eq!(vs(&g).duel.turn, 1);
+    press(&mut g, Key::Escape);
+    let paused_turn = vs(&g).duel.turn;
+    for _ in 0..120 {
+        g.tick(FRAME, &idle());
+    }
+    assert_eq!(vs(&g).duel.turn, paused_turn);
+    press(&mut g, Key::Escape);
+    let effects = until(&mut g, |g| vs(g).duel.turn == 2);
+    let line = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::MatchFile(MatchFile::Write(s)) => Some(s),
+            _ => None,
+        })
+        .expect("AI shots are persisted");
+    let saved = crate::match_log::SavedMatch::parse(line).unwrap();
+    assert!(saved.ai);
+    let mut resumed = game();
+    resumed.saved_match = Some(saved);
+    resumed.resume_match();
+    assert!(vs(&resumed).ai && resumed.versus.ai);
+    assert_eq!(vs(&resumed).duel.turn, 2);
+    until(&mut g, |g| vs(g).stage == Stage::Handoff);
+    assert_eq!(vs(&g).side(), Side::Left);
+}
+
+#[test]
+fn ai_readies_itself_when_opening_the_next_round() {
+    let mut g = in_match();
+    g.versus.live.as_mut().unwrap().ai = true;
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::RoundOver(Side::Left);
+    live.stage = Stage::Result;
+    g.after_versus_result();
+    assert_eq!(vs(&g).side(), Side::Right);
+    until(&mut g, |g| vs(g).stage == Stage::Flight);
+    assert_eq!(vs(&g).log.len(), 2, "next round and AI shot");
+}
+
+#[test]
+fn ai_on_custom_ground_survives_suspend_and_resumes_its_turn() {
+    let mut g = game();
+    g.open_versus_setup();
+    g.versus.ai = true;
+    g.step_ground(1);
+    g.start_versus();
+    take_turn(&mut g, Shot::new(900, 600));
+    assert_eq!(vs(&g).side(), Side::Right);
+    let live = g.versus.live.take().unwrap();
+    g.suspend_live_match(live);
+    let saved = g.saved_match.as_ref().unwrap();
+    assert!(saved.ai && saved.ground.is_some());
+    let line = saved.to_line();
+    g.saved_match = Some(crate::match_log::SavedMatch::parse(&line).unwrap());
+    g.resume_match();
+    g.auto_pause_versus();
+    assert!(vs(&g).paused, "AI handoff must pause when focus is lost");
+    press(&mut g, Key::Escape);
+    until(&mut g, |g| vs(g).stage == Stage::Flight);
+    assert_eq!(vs(&g).log.len(), 2);
+    assert!(vs(&g).layout.is_some());
+}

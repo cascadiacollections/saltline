@@ -51,6 +51,10 @@
 //! the next round's first handoff plate. Dealing it is a pure function of
 //! the seed, so the entry carries nothing else.
 //!
+//! Format 3 stores an AI-opponent flag followed by the ground code (or `-`
+//! for generated ground), before the entry count. Human matches retain
+//! formats 1 and 2; all three formats are accepted.
+//!
 //! # What resuming promises
 //!
 //! The match rebuilt from its line is the match as it was played, byte for
@@ -108,6 +112,8 @@ pub const FORMAT: u32 = 1;
 /// The line's layout for a match on a layout's ground (DESIGN §13.9): as
 /// [`FORMAT`], with the layout's share code after the aim help.
 pub const GROUND_FORMAT: u32 = 2;
+/// AI opponent plus optional layout; older human matches still read unchanged.
+pub const AI_FORMAT: u32 = 3;
 
 /// The duel rules' own epoch: bumped on any change to this crate that
 /// changes what a logged match replays to (`crate::versus`'s screens, hit
@@ -145,6 +151,8 @@ pub struct SavedMatch {
     pub rolling: bool,
     /// Aim help, by [`Side::index`].
     pub help: [bool; 2],
+    /// The right gun is a local computer opponent.
+    pub ai: bool,
     /// Every shot and new round, in order.
     pub log: Vec<Entry>,
     /// The share code of the layout every round is played on, for a match
@@ -173,6 +181,7 @@ impl SavedMatch {
             width: duel.width(),
             rolling: duel.rules.gun_shift > 0.0,
             help,
+            ai: false,
             log: log.to_vec(),
             ground: None,
         }
@@ -234,7 +243,9 @@ impl SavedMatch {
     /// The module docs' line, newline-terminated.
     pub fn to_line(&self) -> String {
         let flag = |b: bool| u8::from(b);
-        let format = if self.ground.is_some() {
+        let format = if self.ai {
+            AI_FORMAT
+        } else if self.ground.is_some() {
             GROUND_FORMAT
         } else {
             FORMAT
@@ -249,9 +260,14 @@ impl SavedMatch {
             flag(self.help[0]),
             flag(self.help[1]),
         );
+        if self.ai {
+            line.push_str(" 1");
+        }
         if let Some(code) = &self.ground {
             line.push(' ');
             line.push_str(code);
+        } else if self.ai {
+            line.push_str(" -");
         }
         line.push_str(&format!(" {}", self.log.len()));
         for entry in &self.log {
@@ -282,8 +298,8 @@ impl SavedMatch {
             return Err(Stale::Damaged);
         }
         let format: u32 = number(fields.next())?;
-        if format != FORMAT {
-            version(format, GROUND_FORMAT)?;
+        if format != FORMAT && format != GROUND_FORMAT {
+            version(format, AI_FORMAT)?;
         }
         let epoch: u32 = number(fields.next())?;
         version(epoch, SIM_EPOCH)?;
@@ -296,23 +312,34 @@ impl SavedMatch {
         }
         let rolling = flag(fields.next())?;
         let help = [flag(fields.next())?, flag(fields.next())?];
-        let ground = if format == GROUND_FORMAT {
-            // A share code is base32 after its prefix; anything else in its
-            // place is a damaged line, whatever it decodes to (checked when
-            // the match is rebuilt, `SavedMatch::layout`).
-            let code = fields.next().ok_or(Stale::Damaged)?;
-            let ok = code.len() <= MAX_CODE_CHARS
-                && code.starts_with(CODE_PREFIX)
-                && code[CODE_PREFIX.len()..]
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase());
-            if !ok {
-                return Err(Stale::Damaged);
-            }
-            Some(code.to_string())
+        let ai = if format == AI_FORMAT {
+            flag(fields.next())?
+        } else {
+            false
+        };
+        let ground_token = if format >= GROUND_FORMAT {
+            fields.next()
         } else {
             None
         };
+        let ground =
+            if format == GROUND_FORMAT || (format == AI_FORMAT && ground_token != Some("-")) {
+                // A share code is base32 after its prefix; anything else in its
+                // place is a damaged line, whatever it decodes to (checked when
+                // the match is rebuilt, `SavedMatch::layout`).
+                let code = ground_token.ok_or(Stale::Damaged)?;
+                let ok = code.len() <= MAX_CODE_CHARS
+                    && code.starts_with(CODE_PREFIX)
+                    && code[CODE_PREFIX.len()..]
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase());
+                if !ok {
+                    return Err(Stale::Damaged);
+                }
+                Some(code.to_string())
+            } else {
+                None
+            };
         let n: usize = number(fields.next())?;
         if n > MAX_ENTRIES {
             return Err(Stale::Damaged);
@@ -333,6 +360,7 @@ impl SavedMatch {
             width,
             rolling,
             help,
+            ai,
             log,
             ground,
         })

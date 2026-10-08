@@ -155,6 +155,8 @@ pub(crate) struct VersusState {
     /// landing mark, the last arc and a short preview of the current aim.
     /// Off for both by default.
     pub(crate) help: [bool; 2],
+    /// The right gun is controlled locally by the computer.
+    pub(crate) ai: bool,
     /// ROLLING GUNS OFF on the pre-match screen: the guns stay where they
     /// are all match ([`versus::GUN_SHIFT`] off). On by default, and kept
     /// for a rematch, so the rule can be tried both ways.
@@ -181,6 +183,9 @@ pub(crate) struct VersusPlay {
     /// The match, as the rules have it: already past any shot being shown.
     pub(crate) duel: Match,
     pub(crate) stage: Stage,
+    pub(crate) ai: bool,
+    ai_wait: f64,
+    ai_aim: Option<((i32, i32), Shot)>,
     /// The last shot, while it is being played back.
     pub(crate) anim: Option<Anim>,
     /// Each side's aim (angle ticks, power ticks), kept between its turns.
@@ -234,6 +239,9 @@ impl VersusPlay {
         VersusPlay {
             duel,
             stage: Stage::Handoff,
+            ai: false,
+            ai_wait: 0.0,
+            ai_aim: None,
             anim: None,
             aims: [(900, 600); 2],
             arcs: [Vec::new(), Vec::new()],
@@ -307,6 +315,7 @@ impl VersusPlay {
     pub(crate) fn rebuild(saved: &SavedMatch) -> Option<VersusPlay> {
         let mut vs = VersusPlay::new(saved.start()?);
         vs.layout = saved.layout().ok().flatten();
+        vs.ai = saved.ai;
         for entry in &saved.log {
             let taken = match *entry {
                 Entry::Shot(angle, power) => vs.fire_turn((angle, power)).is_some(),
@@ -348,6 +357,10 @@ impl VersusPlay {
     /// The guns are rolling on screen (an ease begun and not finished).
     pub(crate) fn easing(&self) -> bool {
         self.anim.is_none() && self.ease.is_some_and(|e| e.t.is_some())
+    }
+
+    pub(crate) fn ai_turn(&self) -> bool {
+        self.ai && self.side() == Side::Right
     }
 
     /// Whose gun the readouts, the controls and the aim belong to.
@@ -461,7 +474,9 @@ impl Game {
 
     /// Put `duel` on screen at its first handoff, not kept on disk.
     fn start_versus_with(&mut self, duel: Match) {
-        self.versus.live = Some(VersusPlay::new(duel));
+        let mut vs = VersusPlay::new(duel);
+        vs.ai = self.versus.ai && !self.in_demo();
+        self.versus.live = Some(vs);
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
         self.mode = Mode::Versus;
@@ -508,7 +523,10 @@ impl Game {
             Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log),
             None => Some(SavedMatch::of(&vs.duel, help, &vs.log)),
         };
-        self.saved_match = saved;
+        self.saved_match = saved.map(|mut saved| {
+            saved.ai = vs.ai;
+            saved
+        });
         self.versus.suspended_source = vs.source;
     }
 
@@ -551,7 +569,8 @@ impl Game {
             Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log),
             None => Some(SavedMatch::of(&vs.duel, help, &vs.log)),
         };
-        if let Some(saved) = saved {
+        if let Some(mut saved) = saved {
+            saved.ai = vs.ai;
             self.fx
                 .push(Effect::MatchFile(MatchFile::Write(saved.to_line())));
         }
@@ -575,6 +594,7 @@ impl Game {
         // What is on disk is this match, as rebuilt.
         vs.saved_len = Some(vs.log.len());
         self.versus.help = saved.help;
+        self.versus.ai = saved.ai;
         // A match on a layout never rolls, whatever was chosen: the
         // choice for the next generated match stays as it was.
         let source = self.versus.suspended_source.take();
@@ -613,6 +633,10 @@ impl Game {
     /// GROUND row, start, back, and MAKE MAP. Rolling guns is OFF, and
     /// does not toggle, on a layout's ground (DESIGN §13.9).
     pub(super) fn handle_versus_setup_input(&mut self) {
+        if self.action_pressed(Action::Replay) {
+            self.versus.ai = !self.versus.ai;
+            self.play(Sound::Ui);
+        }
         let on_map = self.versus.ground.is_some();
         if self.action_pressed(Action::Up) && !on_map {
             self.versus.rolling_off = !self.versus.rolling_off;
@@ -667,7 +691,7 @@ impl Game {
             self.mode = Mode::Title;
             return;
         };
-        let (stage, paused) = (vs.stage, vs.paused);
+        let (stage, paused, ai_turn) = (vs.stage, vs.paused, vs.ai_turn());
         let fork = crate::input::Ed::ForkRound;
         if paused {
             if self.action_pressed(Action::Confirm) || self.action_pressed(Action::Back) {
@@ -685,6 +709,10 @@ impl Game {
         if self.action_pressed(Action::Back) {
             self.input.touch.cancel_drag();
             self.set_versus_paused(true);
+            return;
+        }
+        if ai_turn && matches!(stage, Stage::Handoff | Stage::Aiming) {
+            self.input.touch.cancel_drag();
             return;
         }
         if stage != Stage::Aiming {
@@ -730,6 +758,8 @@ impl Game {
             return;
         };
         vs.stage = Stage::Aiming;
+        vs.ai_wait = 0.0;
+        vs.ai_aim = None;
         (self.play.angle_ticks, self.play.power_ticks) = vs.aims[vs.side().index()];
         self.input.drag_from = None;
     }
@@ -808,6 +838,50 @@ impl Game {
         self.play(Sound::Flight);
     }
 
+    /// Drive only the computer's turn; pause and result plates remain player-controlled.
+    pub(super) fn step_versus_ai(&mut self, delta: f64) {
+        if self.mode != Mode::Versus || self.in_demo() || self.dev.auto {
+            return;
+        }
+        let Some(vs) = self.versus.live.as_mut() else {
+            return;
+        };
+        if vs.paused || !vs.ai_turn() {
+            return;
+        }
+        match vs.stage {
+            Stage::Handoff => {
+                vs.ai_wait += delta;
+                if vs.ai_wait >= 0.6 {
+                    self.begin_versus_turn();
+                }
+            }
+            Stage::Aiming => {
+                if vs.easing() {
+                    return;
+                }
+                let (from, shot) = *vs.ai_aim.get_or_insert_with(|| {
+                    (
+                        (self.play.angle_ticks, self.play.power_ticks),
+                        super::demo::opponent_shot(&vs.duel, vs.duel.seed),
+                    )
+                });
+                vs.ai_wait += delta;
+                let t = (vs.ai_wait / 0.7).clamp(0.0, 1.0);
+                let e = t * t * (3.0 - 2.0 * t);
+                let lerp = |a: i32, b: i32| a + ((b - a) as f64 * e).round() as i32;
+                (self.play.angle_ticks, self.play.power_ticks) = (
+                    lerp(from.0, shot.angle_ticks),
+                    lerp(from.1, shot.power_ticks),
+                );
+                if vs.ai_wait >= 1.0 {
+                    self.versus_fire();
+                }
+            }
+            Stage::Flight | Stage::Result => {}
+        }
+    }
+
     /// Walk the playback, announce the landing, then pass the phone or show
     /// the result.
     pub(super) fn step_versus(&mut self, delta: f64) {
@@ -870,6 +944,8 @@ impl Game {
             vs.hit = None;
             vs.self_hit = false;
             vs.landed = None;
+            vs.ai_wait = 0.0;
+            vs.ai_aim = None;
             vs.stage = match vs.duel.phase {
                 versus::Phase::Aiming => Stage::Handoff,
                 versus::Phase::RoundOver(_) | versus::Phase::MatchOver(_) => {
@@ -896,6 +972,8 @@ impl Game {
         match vs.duel.phase {
             versus::Phase::RoundOver(_) => {
                 vs.next_round();
+                vs.ai_wait = 0.0;
+                vs.ai_aim = None;
                 vs.stage = Stage::Handoff;
             }
             versus::Phase::MatchOver(_) => self.open_versus_setup(),
@@ -909,7 +987,10 @@ impl Game {
         let Some(vs) = self.versus.live.as_mut() else {
             return;
         };
-        if self.mode == Mode::Versus && matches!(vs.stage, Stage::Aiming | Stage::Flight) {
+        if self.mode == Mode::Versus
+            && (matches!(vs.stage, Stage::Aiming | Stage::Flight)
+                || (vs.ai_turn() && vs.stage == Stage::Handoff))
+        {
             self.input.touch.cancel_drag();
             vs.paused = true;
             self.fx.push(Effect::Redraw);

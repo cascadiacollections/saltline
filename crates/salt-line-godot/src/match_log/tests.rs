@@ -45,6 +45,7 @@ fn golden() -> (SavedMatch, Match) {
         width: 320,
         rolling: true,
         help: [true, false],
+        ai: false,
         log,
         ground: None,
     };
@@ -187,9 +188,9 @@ fn another_format_or_epoch_is_never_replayed() {
         f[i] = v.to_string();
         f.join(" ") + "\n"
     };
-    // Format 1 is the oldest; 2 (a match on a layout) the newest.
+    // Formats 1 and 2 remain readable; 3 adds the AI opponent.
     for (i, oldest, newest) in [
-        (1, FORMAT, GROUND_FORMAT),
+        (1, FORMAT, AI_FORMAT),
         (2, SIM_EPOCH, SIM_EPOCH),
         (3, MATCH_EPOCH, MATCH_EPOCH),
     ] {
@@ -208,7 +209,7 @@ fn another_format_or_epoch_is_never_replayed() {
     }
     // The format decides before anything after it is read: another
     // layout's line may not even have these fields.
-    let other = format!("match {} banana\n", GROUND_FORMAT + 1);
+    let other = format!("match {} banana\n", AI_FORMAT + 1);
     assert_eq!(SavedMatch::parse(&other), Err(Stale::NewerVersion));
     assert_eq!(
         note(Stale::OlderVersion),
@@ -309,6 +310,7 @@ proptest! {
             ],
             0..60,
         ),
+        ai in any::<bool>(),
         ground in prop::option::of("SL[0-9A-HJKMNP-TV-Z]{1,40}"),
     ) {
         let saved = SavedMatch {
@@ -318,6 +320,7 @@ proptest! {
             width,
             rolling,
             help,
+            ai,
             log,
             ground,
         };

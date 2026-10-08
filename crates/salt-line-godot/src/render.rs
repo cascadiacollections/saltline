@@ -1979,6 +1979,7 @@ mod tests {
         assert_eq!(
             actions(&buttons),
             [
+                Action::Replay,
                 Action::Left,
                 Action::Right,
                 Action::Up,
@@ -2040,6 +2041,22 @@ mod tests {
                 !c.palette_text(&Palette::default()).contains('.'),
                 "versus screen {i} left pixels undrawn"
             );
+        }
+    }
+
+    #[test]
+    fn ai_turns_offer_pause_without_human_aim_controls() {
+        use crate::app::VersusStage;
+        let mut g = game();
+        g.input.touch_active = true;
+        g.versus.ai = true;
+        g.start_versus();
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.duel.to_move = crate::versus::Side::Right;
+        for stage in [VersusStage::Handoff, VersusStage::Aiming] {
+            g.versus.live.as_mut().unwrap().stage = stage;
+            let (_, buttons) = draw(&g);
+            assert_eq!(actions(&buttons), [Action::Back]);
         }
     }
 

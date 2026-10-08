@@ -201,12 +201,19 @@ default token names are accepted; unknown or malformed lines are ignored.
 
 ### Local versus
 
-A prototype two-player mode for one phone, hot-seat (DESIGN §11). On a
+Local versus supports two players on one device or a local AI opponent. On a
 touchscreen the title has a LOCAL VERSUS row; with keys it is `2` (pad LB), and
 the keyed title does not list it. The pre-match screen sets AIM HELP for each
 player (Left / Right, or tap the row), off by default, and ROLLING GUNS (Up, or
 tap the row), on by default; START begins. After a match, REMATCH comes back to
 this screen with the last choices still set.
+
+Choose RIGHT OPPONENT: AI on the pre-match screen (R / controller Y, or tap
+the row) to play the left gun against the computer. HUMAN remains the default.
+The AI readies, aims and fires its own turns using the demo’s solver and
+deterministic near misses. Pause still stops play; round results wait for you.
+The opponent choice survives RESUME MATCH and is kept for a rematch.
+Both generated ground and custom maps support the AI.
 
 The left gun fires right and the right gun fires left; turns alternate. Each
 side has a colour, amber for left and blue for right, used for its gun's tag,

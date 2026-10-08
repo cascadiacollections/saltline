@@ -679,7 +679,7 @@ pub struct FrameState {
     devices: (bool, bool),
     run: Option<(u32, Phase, i32, u32, u64, u64)>,
     seed: (usize, Focus),
-    versus: (Option<versus::Fingerprint>, [bool; 2], bool),
+    versus: (Option<versus::Fingerprint>, [bool; 2], bool, bool),
     settings: (
         u8,
         bool,
@@ -1183,6 +1183,7 @@ impl Game {
         let input = self.any_input(intents);
         self.watch_title_idle(delta, input);
         self.step(delta);
+        self.step_versus_ai(delta);
         self.step_versus(delta);
         self.step_editor(delta);
         // The demo's own plates change nobody's screen: any tap on them is
@@ -1277,11 +1278,13 @@ impl Game {
     /// the other half of the dirty-flag redraw.
     pub fn busy(&self) -> bool {
         self.play.anim.is_some()
-            || self
-                .versus
-                .live
-                .as_ref()
-                .is_some_and(|v| (v.anim.is_some() || v.easing()) && !v.paused)
+            || self.versus.live.as_ref().is_some_and(|v| {
+                (v.anim.is_some()
+                    || v.easing()
+                    || (v.ai_turn()
+                        && matches!(v.stage, VersusStage::Handoff | VersusStage::Aiming)))
+                    && !v.paused
+            })
             || self.editor.testing_in_flight()
             || self.play.clear_hold > 0.0
             || self.status_time > 0.0
@@ -1889,6 +1892,7 @@ impl Game {
                 self.versus_fingerprint(),
                 self.versus.help,
                 self.versus.rolling_off,
+                self.versus.ai,
             ),
             settings: (
                 self.save.volume,

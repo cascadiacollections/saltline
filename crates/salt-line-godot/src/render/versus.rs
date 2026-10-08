@@ -179,7 +179,15 @@ impl Painter<'_> {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
         let colour = |side| pal.get(side_slot(side));
-        self.centred(y, "LOCAL VERSUS - PASS THE PHONE", fg);
+        self.centred(
+            y,
+            if self.g.versus.ai {
+                "LOCAL VERSUS - PLAY THE AI"
+            } else {
+                "LOCAL VERSUS - PASS THE PHONE"
+            },
+            fg,
+        );
         y += 9;
         self.centred(
             y,
@@ -203,6 +211,14 @@ impl Painter<'_> {
         };
         let make_map = Action::Edit(crate::input::Ed::MakeMap);
         let mut rows = vec![
+            (
+                Action::Replay,
+                format!(
+                    "RIGHT OPPONENT: {}",
+                    if self.g.versus.ai { "AI" } else { "HUMAN" }
+                ),
+                colour(Side::Right),
+            ),
             (
                 Action::Left,
                 format!("LEFT AIM HELP: {}", on(help[0])),
@@ -271,7 +287,7 @@ impl Painter<'_> {
             let w = self.canvas.w;
             self.draw_touch_button(w - 62 - ex, 3 + ey, 62, 13, "MAKE MAP", make_map);
         }
-        y += 4;
+        y = (y + 4).min(self.canvas.h - 8);
         if self.g.status_time > 0.0 {
             let text = self.g.status.clone();
             self.centred(y, &text, pal.get(slot::ALERT));
@@ -520,7 +536,11 @@ impl Painter<'_> {
             let shot = Shot::new(self.g.play.angle_ticks, self.g.play.power_ticks)
                 .quantized(&duel.loadout);
             let y = self.canvas.h - 8 - ey;
-            let name = format!("{} GUN", vs.side().name());
+            let name = if vs.ai_turn() {
+                "AI GUN".to_string()
+            } else {
+                format!("{} GUN", vs.side().name())
+            };
             self.canvas
                 .text_small(3 + ex, y, &format!("PWR {}", shot.power_ticks), fg);
             self.canvas.text_small(
@@ -586,9 +606,9 @@ impl Painter<'_> {
         }
 
         if self.g.input.touch_active && !vs.paused && !self.g.in_demo() {
-            if aiming {
+            if aiming && !vs.ai_turn() {
                 self.draw_play_controls(&duel.loadout);
-            } else if vs.stage == Stage::Flight {
+            } else if vs.stage == Stage::Flight || (aiming && vs.ai_turn()) {
                 self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
             }
         }
@@ -756,7 +776,23 @@ impl Painter<'_> {
             // The demo readies itself: no phone to pass, nothing to press.
             return;
         }
-        self.centred(y, "TAKE THE PHONE - NO PEEKING", fg);
+        if vs.ai_turn() {
+            self.centred(y, "AI IS THINKING", fg);
+            if plated {
+                let ey = self.g.display.corner_pad.1;
+                self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
+            }
+            return;
+        }
+        self.centred(
+            y,
+            if vs.ai {
+                "YOUR TURN"
+            } else {
+                "TAKE THE PHONE - NO PEEKING"
+            },
+            fg,
+        );
         y += 13;
         if plated {
             self.menu_row(y + 4, Action::Confirm, "", "READY", fg);

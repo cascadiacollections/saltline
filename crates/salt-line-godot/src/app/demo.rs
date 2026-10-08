@@ -733,29 +733,34 @@ impl Game {
         let Some(vs) = self.versus.live.as_ref() else {
             return lob;
         };
-        let duel = &vs.duel;
-        let side = duel.to_move;
-        let frame = versus::frame_for(&duel.screen, side);
-        let target = versus::target_in_frame(&duel.screen, side);
-        let Some(aim) = versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
-            .first()
-            .copied()
-        else {
-            return lob;
-        };
-        let h = demo_hash(cycle ^ DEMO_SALT, duel.round as u64, duel.turn as u64);
-        if h % 5 >= 2 {
-            return aim;
-        }
-        let flip = if (h >> 8) & 1 == 0 { 1 } else { -1 };
-        for shot in near_misses(aim, flip) {
-            let mut trial = duel.clone();
-            if let Some(report) = trial.fire(shot, false) {
-                if !report.hit && !report.self_hit {
-                    return shot;
-                }
+        opponent_shot(&vs.duel, cycle)
+    }
+}
+
+/// Shared local opponent policy: solve the current field, with deterministic near misses.
+pub(super) fn opponent_shot(duel: &versus::Match, salt: u64) -> Shot {
+    let lob = Shot::new(LOB.0, LOB.1);
+    let side = duel.to_move;
+    let frame = versus::frame_for(&duel.screen, side);
+    let target = versus::target_in_frame(&duel.screen, side);
+    let Some(aim) = versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
+        .first()
+        .copied()
+    else {
+        return lob;
+    };
+    let h = demo_hash(salt ^ DEMO_SALT, duel.round as u64, duel.turn as u64);
+    if h % 5 >= 2 {
+        return aim;
+    }
+    let flip = if (h >> 8) & 1 == 0 { 1 } else { -1 };
+    for shot in near_misses(aim, flip) {
+        let mut trial = duel.clone();
+        if let Some(report) = trial.fire(shot, false) {
+            if !report.hit && !report.self_hit {
+                return shot;
             }
         }
-        lob
     }
+    lob
 }
