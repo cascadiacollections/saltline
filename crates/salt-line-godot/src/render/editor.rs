@@ -724,3 +724,156 @@ impl Painter<'_> {
         self.draw_touch_button(w - 16 - 40 - ex, y, 40, bh, "FIRE", Action::Fire);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::{Draft, Editor};
+    use crate::save_format::Save;
+
+    fn draw(g: &Game) -> (Canvas, Vec<Button>) {
+        let mut canvas = Canvas::new(g.display.buffer_w, g.display.buffer_h);
+        let mut buttons = Vec::new();
+        frame(
+            g,
+            &Art::default(),
+            &mut canvas,
+            &mut buttons,
+            &mut Cache::default(),
+        );
+        (canvas, buttons)
+    }
+
+    /// A game laid out as a phone (touch, the corner pad) on a 400-column
+    /// buffer, or as a desktop with keys at 320.
+    fn game(phone: bool) -> Game {
+        let mut g = Game::new(phone, Save::default());
+        let window = if phone {
+            crate::cli::PHONE_WINDOW
+        } else {
+            (1280, 720)
+        };
+        g.fit_display(window, (0, 0));
+        g.take_effects();
+        g
+    }
+
+    fn editing(phone: bool, layout: salt_line_sim::layout::Layout) -> Game {
+        let mut g = game(phone);
+        g.editor.ed = Some(Editor::new(Draft {
+            layout,
+            from: None,
+            slot: None,
+        }));
+        g.open_editor();
+        g.take_effects();
+        g
+    }
+
+    fn text(c: &Canvas) -> String {
+        let t = c.palette_text(&Palette::default());
+        assert!(!t.contains('.'), "pixels left undrawn");
+        t
+    }
+
+    /// The editing screen on a phone, on a bundled map: the three rows of
+    /// big controls above the world's ceiling (SCULPT and MIRROR lit, the
+    /// brush sizes), the verdict's flag with READY and the fairness sign,
+    /// both guns, and the map's name and fingerprint. Drawn at the layout
+    /// width inside the phone's corner pad. Pins the touch layout a child
+    /// uses.
+    #[test]
+    fn the_editing_screen_on_a_phone_is_pinned() {
+        let g = editing(true, crate::custom::bundled::layouts()[1].clone());
+        assert_eq!(g.display.buffer_w, 320, "letterboxed at the layout width");
+        let (c, buttons) = draw(&g);
+        // Nothing touchable reaches below the sky the ground never fills.
+        let ceiling = 180 - salt_line_sim::terrain::WORLD_CEIL as i32;
+        assert!(buttons
+            .iter()
+            .filter(|b| matches!(b.action, Action::Edit(_)))
+            .all(|b| b.rect.y + b.rect.h <= ceiling || b.rect.y > 150));
+        assert!(buttons.iter().all(|b| b.rect.h >= 15));
+        insta::assert_snapshot!("editor_edit_phone", text(&c));
+    }
+
+    /// The editing screen with keys, on a map that does not pass: the stop
+    /// sign and the first blocking problem in a few words (with how many
+    /// more), the warning mark over the gun it names, the cursor and its
+    /// brush ticks, and the key hint. Pins how a problem reads.
+    #[test]
+    fn a_problem_on_the_editing_screen_is_pinned() {
+        let mut pit = crate::editor::Draft::blank().layout;
+        for c in 288 - 19..288 + 20 {
+            let floor = (276..303).contains(&c);
+            pit.heights[c] = salt_line_sim::layout::height_steps(if floor { 40.0 } else { 108.0 });
+        }
+        let mut g = editing(false, pit);
+        g.editor.ed.as_mut().unwrap().cursor = 160;
+        let (c, _) = draw(&g);
+        let ed = g.editor.ed.as_ref().unwrap();
+        assert!(!ed.verdict.playable());
+        insta::assert_snapshot!("editor_edit_problem", text(&c));
+    }
+
+    /// TEST FIRE on a phone, the right gun to fire in the range's strongest
+    /// wind: the side and wind buttons, the gate's count, DONE, the gun
+    /// markers and the aim buttons. Pins the test page's controls.
+    #[test]
+    fn test_fire_is_pinned() {
+        let mut g = editing(true, crate::custom::bundled::layouts()[0].clone());
+        g.editor.page = Page::Test;
+        let ed = g.editor.ed.as_ref().unwrap();
+        let mut t = crate::app::TestFire::new(ed.layout());
+        t.side = Side::Right;
+        t.wind_i = t.winds.len() - 1;
+        g.editor.test = Some(t);
+        let (c, buttons) = draw(&g);
+        assert!(buttons
+            .iter()
+            .any(|b| b.action == Action::Edit(Ed::TestSide)));
+        insta::assert_snapshot!("editor_test_fire", text(&c));
+    }
+
+    /// The slot list on a phone: the bundled maps, a saved one, one that
+    /// no longer passes (dimmed, marked FAILS) and one from a newer build
+    /// (dimmed, NEWER VERSION), with OPEN, COPY, DELETE and BACK. Pins how
+    /// kept-but-unplayable maps read: shown, never deleted.
+    #[test]
+    fn the_slot_list_is_pinned() {
+        let mut g = game(true);
+        let good = crate::custom::fork_duel(4, 0);
+        let mut bad = good.clone();
+        for c in 288 - 19..288 + 20 {
+            let floor = (276..303).contains(&c);
+            bad.heights[c] = salt_line_sim::layout::height_steps(if floor { 40.0 } else { 108.0 });
+        }
+        let text_file = format!(
+            "layouts 1\nlayout 1 {}\nlayout 2 {}\nlayout 3 SLZZZZZZZZ\n",
+            good.to_code().unwrap(),
+            bad.to_code().unwrap()
+        );
+        g.set_layouts(Some(&text_file));
+        g.open_editor();
+        g.editor.page = Page::Slots(crate::app::EditorPurpose::Open);
+        g.editor.list_sel = 4;
+        g.editor.list_top = 1;
+        let (c, _) = draw(&g);
+        insta::assert_snapshot!("editor_slots", text(&c));
+    }
+
+    /// The pre-match screen on a phone with a bundled map on the GROUND
+    /// row: its name and fingerprint, the `<` beside it, ROLLING GUNS read
+    /// OFF and greyed, and MAKE MAP in the corner. Pins the GROUND row.
+    #[test]
+    fn the_ground_row_is_pinned() {
+        let mut g = game(true);
+        g.open_versus_setup();
+        g.step_ground(1);
+        let (c, buttons) = draw(&g);
+        assert!(buttons
+            .iter()
+            .any(|b| b.action == Action::Edit(Ed::MakeMap)));
+        insta::assert_snapshot!("versus_setup_ground", text(&c));
+    }
+}

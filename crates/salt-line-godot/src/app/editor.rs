@@ -172,7 +172,7 @@ pub struct TestFire {
 }
 
 impl TestFire {
-    fn new(layout: &Layout) -> TestFire {
+    pub(crate) fn new(layout: &Layout) -> TestFire {
         let mut winds = crate::custom::duel_winds(&layout.wind);
         winds.push(0);
         winds.sort_unstable();
