@@ -53,7 +53,10 @@ fn sculpt_raises_in_whole_units_and_is_reversible_within_the_stroke() {
     );
     assert_eq!(h(&e, 100 + r + 2), flat, "nothing past the brush");
     assert!(
-        e.layout().heights.iter().all(|&v| (v - flat).is_multiple_of(ONE)),
+        e.layout()
+            .heights
+            .iter()
+            .all(|&v| (v - flat).is_multiple_of(ONE)),
         "whole units"
     );
     assert!(

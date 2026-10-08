@@ -66,6 +66,7 @@ pub mod game;
 pub mod icons;
 pub mod input;
 pub mod keypad;
+pub mod layouts_file;
 pub mod match_log;
 pub mod pads;
 pub mod palette;
