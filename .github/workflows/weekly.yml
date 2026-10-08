@@ -7,6 +7,12 @@ on:
   schedule:
     - cron: "17 9 * * 1" # Mondays, 09:17 UTC
   workflow_dispatch:
+    inputs:
+      rotation:
+        description: "Mutants shards to run: this week's rotation, one rotation (0-3: shards 4r..4r+3), or all 16"
+        type: choice
+        default: auto
+        options: [auto, "0", "1", "2", "3", all]
 
 permissions:
   contents: read
@@ -19,16 +25,57 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Mutates the code and reports each change no test notices. Sharded, since a
-  # full pass rebuilds and retests once per mutant. Config: .cargo/mutants.toml.
-  mutants:
-    name: mutants (shard ${{ matrix.shard }} of 4)
+  # Mutates the code and reports each change no test notices. A full pass, not
+  # --in-diff: the point is the code no pull request touched. Config:
+  # .cargo/mutants.toml.
+  #
+  # Sized from the 2026-10-05 run, where all four shards hit the 150-minute
+  # limit, three of them a fifth of the way through: ~1,150 mutants a shard
+  # at ~35 s each on the game crate (a 5 s rebuild and a 30 s debug-build
+  # test suite). Now the suite is built at opt-level 1 (~4x faster), the
+  # renderer's pure drawing is excluded, and the ~6,700 mutants left are
+  # dealt round-robin over 16 shards so each gets the same mix of the slow
+  # game crate and the fast sim crate: ~420 mutants and roughly 75 minutes a
+  # shard.
+  #
+  # All 16 every week would be ~20 runner-hours for a report that changes
+  # little from one week to the next, so the shards rotate: each week runs
+  # the four of rotation (ISO week % 4), shards 4r..4r+3, and every mutant
+  # is tested once every four weeks for about a quarter of the cost. A
+  # manual run can pick a rotation or run all 16.
+  mutants-plan:
+    name: mutants (pick shards)
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.pick.outputs.shards }}
+    steps:
+      - id: pick
+        env:
+          ROTATION: ${{ inputs.rotation || 'auto' }}
+        run: |
+          set -eu
+          case "$ROTATION" in
+            all) echo 'shards=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]' >> "$GITHUB_OUTPUT"; exit 0 ;;
+            auto) r=$(( 10#$(date -u +%V) % 4 )) ;;
+            [0-3]) r=$ROTATION ;;
+            *) echo "unknown rotation: $ROTATION" >&2; exit 1 ;;
+          esac
+          b=$(( r * 4 ))
+          echo "rotation $r: shards $b-$(( b + 3 )) of 16"
+          echo "shards=[$b,$(( b + 1 )),$(( b + 2 )),$(( b + 3 ))]" >> "$GITHUB_OUTPUT"
+
+  mutants:
+    name: mutants (shard ${{ matrix.shard }} of 16)
+    needs: mutants-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: ${{ fromJSON(needs.mutants-plan.outputs.shards) }}
+    env:
+      SHARDS: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,26 +93,35 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
+          # Stopped (SIGINT, so it restores the source and writes what it has)
+          # well inside the job's timeout, so a shard that runs long still
+          # reports what it tested instead of being killed with nothing.
           set +e
-          cargo mutants --in-place --shard "$SHARD/4"
+          timeout -s INT -k 5m 100m \
+            cargo mutants --in-place --shard "$SHARD/$SHARDS" --sharding round-robin
           code=$?
           set -e
           count() { if [ -f "mutants.out/$1.txt" ]; then wc -l < "mutants.out/$1.txt"; else echo 0; fi; }
           {
-            echo "## Mutants, shard $SHARD of 4"
+            echo "## Mutants, shard $SHARD of $SHARDS"
             echo
             echo "| caught | missed | timeout | unviable |"
             echo "|---|---|---|---|"
             echo "| $(count caught) | $(count missed) | $(count timeout) | $(count unviable) |"
             echo
+            if [ "$code" = 124 ]; then
+              echo "**Stopped at the time limit: these counts cover only the mutants tested before it.**"
+              echo
+            fi
             echo "### Missed (no test noticed these changes)"
             echo '```'
             cat mutants.out/missed.txt 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          # 0 all caught, 2 some missed, 3 some timed out: report, don't fail.
-          # Anything else means the tool or the unmutated baseline failed.
-          case "$code" in 0|2|3) exit 0 ;; *) exit "$code" ;; esac
+          # 0 all caught, 2 some missed, 3 some timed out, 124 stopped at the
+          # time limit: report, don't fail. Anything else means the tool or
+          # the unmutated baseline failed.
+          case "$code" in 0|2|3|124) exit 0 ;; *) exit "$code" ;; esac
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -90,6 +146,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: nightly
+      # install-action has no cargo-fuzz of its own and falls back to
+      # cargo-binstall, which fetches the static musl build. cargo-fuzz
+      # targets its own host triple by default, so it would build for
+      # x86_64-unknown-linux-musl, where AddressSanitizer cannot link (and the
+      # target is not installed): every target failed to build from
+      # 2026-09-28. --target below pins the runner's own triple.
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: cargo-fuzz
@@ -102,7 +164,7 @@ jobs:
         working-directory: fuzz
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo +nightly fuzz run "$TARGET" -- -max_total_time=600
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$TARGET" -- -max_total_time=600
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

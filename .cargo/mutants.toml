@@ -4,14 +4,20 @@
 
 # Engine glue only runs inside Godot, so no headless test can catch a mutant
 # there. The tool binaries are exercised by CI jobs, not by tests.
+#
+# profiling.rs only compiles with `--features profiling`, which the tests do
+# not enable, so every mutant there builds, passes and reads as missed.
 exclude_globs = [
     "crates/salt-line-godot/src/game.rs",
     "crates/salt-line-godot/src/lib.rs",
+    "crates/salt-line-godot/src/profiling.rs",
     "crates/salt-line-godot/src/save.rs",
     "crates/salt-line-godot/src/sprites.rs",
     "crates/salt-line-sim/src/bin/**",
 ]
 test_tool = "nextest"
+# Optimised tests with debug assertions on; see [profile.mutants] in Cargo.toml.
+profile = "mutants"
 
 # Mutants no test can reasonably catch, each with the reason.
 exclude_re = [
@@ -21,4 +27,18 @@ exclude_re = [
     # weighted's fallback after the loop is unreachable: a roll below the total
     # always returns inside it. It exists only so the function is total.
     "replace - with [+/] in Pcg32::weighted",
+    # The renderer's pure drawing: Painter's render_* and draw_* methods and
+    # the helpers that only put pixels down. Their output is checked by eye
+    # and by the playable job's smoke frame; the tests that reach them are
+    # nine snapshots of whole screens (render.rs, render/editor.rs), which
+    # pin a few frames, not the placement arithmetic inside every one, so
+    # about three in four of these mutants were missed (2026-10-05: 173 of
+    # 235 in render.rs), each paying for the whole suite. The renderer's
+    # layout and hit-testing (menu_row, result_plate_rect, demo_card_rect,
+    # ed_button, focused, lit, plated, on_keypad, hit_row_w, score_w,
+    # pip_count, preview_path and the like) decide what a tap lands on and
+    # stay under mutation. `cargo mutants -f crates/salt-line-godot/src/render.rs`
+    # still checks the drawing by hand.
+    "Painter<'_>::(render|draw)_",
+    "Painter<'_>::(dither_dim|editor_backdrop|side_border|backed_outline)\\b",
 ]
