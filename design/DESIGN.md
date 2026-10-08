@@ -1205,8 +1205,12 @@ match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
   the other untouched.
 - **The attract demo** never writes or clears the match file, and never
   touches the offer (§12.3).
-- **A match on a layout** (`--salt-layout`, §13.9) is not kept yet: its line
-  would need the layout's code (§13.4).
+- **A match on a layout** (the GROUND row, §13.9) is kept like any other,
+  its line in format 2 carrying the layout's code (§13.4), and resumes on
+  it. One started by `--salt-layout` is not kept.
+- **Forking the round** (MAKE MAP OF THIS ROUND, §13.11) takes an
+  unfinished match off the screen without ending it: its line stays and
+  RESUME MATCH offers it, as after a kill.
 
 ---
 
@@ -1410,10 +1414,14 @@ run.
 
 ## 13. Layouts, the editor and custom games
 
-**Status: Phase 1 built; the rest proposed.** Phase 1 is the data model,
-forking a generated screen into it, the share code, validation, and a dev
-flag that plays a custom duel on a code (`--salt-layout`). There is no
-editor and no menu for any of it yet; §13.8 onward is a plan.
+**Status: Phase 3 built (October 2026); challenges, courses and sharing
+proposed.** Phase 1 is the data model, forking a generated screen into it,
+the share code, validation, and a dev flag that plays a custom duel on a
+code (`--salt-layout`). Phase 3 is the map editor in the game, the slot
+file, the draft kept on disk, custom duels on the pre-match screen's
+GROUND row, bundled layouts, forking the round on screen, the clipboard,
+and resuming a match on a layout (§13.8, §13.9, §13.11). Phases 4 and 5
+(§13.12) are still a plan.
 
 **Owner decisions (October 2026):**
 
@@ -1427,12 +1435,27 @@ editor and no menu for any of it yet; §13.8 onward is a plan.
   seed and a screen index or a duel's match seed and round, can be turned
   into an editable layout. The generator is the first draft.
 
+**Owner decisions for Phase 3 (October 2026), final:**
+
+- Custom duels first. The editor is phone-first and touch-driven, usable
+  with a mouse, and has a controller and keyboard path.
+- **Fork this round** (a match's pause or result plate) crops the live
+  screen to 320 columns keeping both guns (§13.11 has the rule). **Fork
+  from a typed seed** makes a labelled 320-column draft (`FROM SEED X R2`).
+  The fork's origin is recorded beside its code (§13.8), not in it.
+- **A floating structure is a warning, not a block**, everywhere. Duels have
+  no structures; the rule stays for runs and challenges, downgraded.
+- **Rolling guns stay off on a layout**, and the pre-match screen's ROLLING
+  GUNS row reads OFF over one.
+- **A fixed duel wind turns round every round**, so neither side has it
+  behind them all match; ranges and calm are unchanged.
+
 ### 13.1 Concepts
 
 | Term | Meaning |
 |---|---|
 | **Layout** | One screen written down as data: the ground, the targets, the guns, the wind and a name. Built (Phase 1). |
-| **Custom duel** | A local versus match (§11) whose every round is played on one layout. Built behind a dev flag (Phase 1). |
+| **Custom duel** | A local versus match (§11) whose every round is played on one layout. Built behind a dev flag (Phase 1), then on the pre-match screen's GROUND row (Phase 3). |
 | **Challenge** | A one-gun layout played for shots, as a run screen is. Later. |
 | **Course** | An ordered list of layouts played as a short run, for challenges. Later. |
 
@@ -1562,11 +1585,18 @@ independent, on purpose:
   hand-made layout (moves only with `LAYOUT_FORMAT`) and a fork (moves with
   either), so a change to either is seen.
 
-**Resuming a match on a layout (later).** A suspended match is its seed,
+**Resuming a match on a layout (built).** A suspended match is its seed,
 its choices and its shots (§11.6); a match on a layout needs the layout as
-well, so its line would carry the code, and a new `match_log` format number.
-In Phase 1 a match on a layout is not kept on disk: it is a dev-flag match,
-started outside `start_versus`, which is what marks a match kept.
+well, so its line carries the code: `match_log` format 2,
+`match 2 … <help R> <code> <n> <log>`. A match on generated screens is still
+written as format 1, byte for byte, so every existing line and the pinned
+one are unchanged; a build reads both, and one from before layouts reads a
+format-2 line as a newer version and drops it with a note. A ground that
+does not decode, is not a duel or does not fit the match's width is a
+damaged line. No `MATCH_EPOCH` bump: the duel rules a format-1 line replays
+by are unchanged (the golden match's digest holds), and the one rule that
+changed, the fixed wind turning round, applies only to matches on a layout,
+which no earlier line could hold.
 
 ### 13.5 Validation
 
@@ -1585,7 +1615,7 @@ at fault, so the editor can mark it:
 | a duel's first gun is the left one, the pivots at least 44 apart (the chassis plus twice the blast's reach, so no one blast reaches both guns) | `GunsOutOfOrder`, `GunsTooClose` |
 | a challenge has 1–3 targets; a duel has none (Phase 1) | `NoTargets`, `TooManyTargets`, `StructuresInDuel` |
 | a structure's footprint is off the edge columns | `StructureOffScreen` |
-| **not floating:** at least half its footprint within 4 units of its seat | `StructureFloating` |
+| **not floating:** at least half its footprint within 4 units of its seat (a warning, not a block: owner decision) | `StructureFloating` |
 | **not buried:** no ground higher than its top on both sides within 3 columns | `StructureBuried` |
 | in front of the gun, 8 columns clear of its chassis | `StructureBehindGun`, `StructureOnGun` |
 | target centres at least 40 apart (§2.3 step 5) | `StructuresTooClose` |
@@ -1620,12 +1650,20 @@ weakest strengths blowing each way (calm, when the range starts at zero).
 A one-gun check takes 47 µs at the median and under 300 µs at worst, a duel check
 about 100 µs, so the editor can recheck after every edit.
 
+A **fixed duel wind is checked both ways** (`custom::duel_winds`), since a
+match on the layout turns it round every second round (owner decision).
+
 **Fairness and mirror tools** for duels: `Layout::asymmetry` (the largest
 difference between a column and its mirror), `Layout::mirror_left` (copy the
 left half onto the right, exactly) and `custom::duel_counts` (each gun's
 shot count in each wind checked; a side with fewer shots has the harder
 ground). On mirrored ground the counts are mirror images exactly, which a
-test holds.
+test holds. The editor's fairness sign (§13.11) counts past the gate's cap
+of 8, which nearly every playable duel reaches on both sides: to
+`editor::FAIRNESS_CAP` (64), a side more than a tenth (and two shots) short
+reading HARDER. That costs about 0.9 ms against the gate's 0.1, so a drag's
+frames check only the gate (`editor::quick_verdict`) and the stroke's end
+the whole verdict (NOTES §9).
 
 ### 13.6 Fork from a seed
 
@@ -1707,24 +1745,49 @@ round-trips random layouts, and a fuzz target (`layout_code`, in the weekly
 job) feeds the decoder both raw text and bodies framed with a valid checksum,
 so mutations reach the bit-level decoder rather than stopping at the CRC.
 
-### 13.8 Local storage (proposed)
+### 13.8 Local storage (built)
 
-- **Slots in a text file**, `user://layouts.txt`: one line per saved layout,
-  `layout <slot> <code>`, the slot a number from 1 to 12. Plain text the
-  player owns, like the save (README, "Nothing for sale"): a layout is
-  already text, so the file is just a list of codes.
+`layouts_file.rs`, engine-free and fuzzed (`layouts_file`, in the weekly
+job).
+
+- **Slots in a text file**, `user://layouts.txt`: a `layouts 1` header, then
+  one line per saved layout, `layout <slot> <code> [origin]`, the slot a
+  number from 1 to 32 (`MAX_SLOTS`). Plain text the player owns, like the
+  save (README, "Nothing for sale"): a layout is already text, so the file
+  is just a list of codes. `origin` is where a fork came from
+  (`seed:<text>:<round>` or `match:<seed>:<round>:<width>`), kept beside the
+  code rather than in it, so the share code's format is unchanged (§13.13,
+  Provenance).
 - **Durable as the save is** (`app.rs`, "Order is behaviour"): written only
-  through an `Effect::Store`, replaced atomically through a temp file and a
-  rename (`save::store`), never written after a panic, and reported back
-  through `Game::stored` so a failed write says so on screen.
-- **Bundled layouts** ship read-only as codes in `res://`, and are listed
-  before the slots.
-- **Kept when unread.** A line in a newer `LAYOUT_FORMAT` is kept verbatim
-  and written back unchanged, and a layout that no longer passes validation
-  is shown dimmed with its problem rather than deleted. Nothing a player made
-  is thrown away by a build that does not understand it.
+  through an `Effect::Store` (`Store::Layouts`), replaced atomically through
+  a temp file and a rename (`save::write`), never written after a panic, and
+  reported back through `Game::stored`. Memory takes the new file only once
+  the write is confirmed, and only then is a draft it saved cleared, so a
+  failed write says MAP NOT SAVED - DRAFT KEPT and loses nothing. At launch
+  the copy is chosen as the save's is (a whole file over a whole temp).
+- **Bundled layouts** ship read-only as codes (`custom::bundled`), compiled
+  in rather than read from `res://`: the same text, testable without an
+  engine. They are listed before the slots.
+- **Kept when unread.** A line this build cannot read (another tag, a slot
+  out of range or taken twice) is kept verbatim and written back after the
+  slots; a code in a newer `LAYOUT_FORMAT` keeps its slot, shown dimmed as
+  NEWER VERSION; a layout that no longer passes the duel gate is shown
+  dimmed and marked FAILS, and does not start a match. A file whose header
+  is from a newer build is never written. Nothing a player made is thrown
+  away by a build that does not understand it.
+- **The draft**, `user://draft.txt`: the layout being edited, one
+  newline-terminated, versioned line (`draft 1 <mirror> <slot> <origin>
+  <code>`), kept by `resume`'s file rules at its own three paths as the
+  match file is (§11.6): replaced atomically after every edit that changed
+  it, set aside while a launch reads it. It is cleared only once saved or
+  discarded. A draft from a newer build is put back unread.
 - **Demo isolation (§12.3).** The demo never reads or writes the layouts
-  file. If a demo leg ever plays a layout, it plays a bundled one.
+  file or the draft: it starts only from the title and never opens the
+  editor, every write checks for the demo too, and both are disk effects,
+  so the demo's backstop drops and flags any that slip through. The demo's
+  duels are generated: the GROUND choice is set aside with the rest of the
+  versus state. A test runs a whole demo cycle over both files and checks
+  them byte for byte.
 
 ### 13.9 Custom duels
 
@@ -1733,33 +1796,37 @@ versus `Match`. Its screen becomes a `versus::Ground`, dealt fresh (no
 craters, guns home) at the start of every round instead of a generated
 screen. Its wind becomes the rules' wind range, so each turn draws from the
 layout's range by `turn_wind`, or, for a fixed wind, holds that wind every
-turn in the shared frame. Hits, rounds, equal shots and aim help are
+turn of a round in the shared frame, turned round every second round
+(Phase 3, owner decision). Hits, rounds, equal shots and aim help are
 versus's own. **The guns do not roll on a layout** (`Match::on_ground`
 turns the roll off whatever the pre-match screen says): versus's ladder is
 counted from `EMPLACEMENT_X`, so a layout's guns would snap to the default
 spots or never roll, and filling the craters under them would rewrite the
-author's ground. Rolling from a layout's own spots is Phase 3 work
-(§13.13).
+author's ground. Rolling from a layout's own spots is later work, and off
+by owner decision for Phase 3 (§13.13).
 
 `--salt-layout <code>` starts a custom duel at the first handoff, so no
 pre-match screen is shown to say the guns will not roll; the GROUND row
-will (§13.12). A code that does not read or pass, or a one-gun layout,
+does (below). A code that does not read or pass, or a one-gun layout,
 leaves the title up with a note (and the console says why).
 
-**Proposed (Phase 3, with the editor; §13.12).**
+**Built (Phase 3, with the editor; §13.12).**
 
-- The pre-match screen gets a GROUND row: GENERATED (today's duel), the
-  bundled layouts, then the player's slots, each with its name and a small
-  silhouette of its ground. With a layout picked, the rolling-guns row reads
-  OFF, greyed, until rolling from a layout's spots exists.
-- A rematch keeps the ground. Today the dev flag's rematch deals a generated
-  match.
-- A small set of bundled duel layouts, made with the editor (forked from
-  good rounds and touched up), so the mode has something to pick before
-  anyone makes one. A CI test decodes and validates every bundled code.
-- After that: a match on a layout is kept on disk like any other (§11.6),
-  its line carrying the layout's code (§13.4); and a pasted code can be
-  played or saved.
+- The pre-match screen has a GROUND row: GENERATED (today's duel), the
+  bundled layouts, then the player's slots, each with its name and its
+  four-character fingerprint (no silhouette: the row budget went to the
+  `<` beside it). The row steps on (Down, or tap it) and back (`<`). With a
+  layout picked, ROLLING GUNS reads OFF, greyed, and does not toggle. A
+  layout that no longer passes is shown dimmed and does not start.
+- A rematch keeps the ground; so does RESUME MATCH, which picks it again
+  on the GROUND row.
+- Four bundled duel layouts, RIDGE, MESAS, CANYON and SPIRES (fixed wind),
+  each made with the editor's own tools from a blank draft
+  (`custom::bundled::recipe`). A CI test decodes every code, holds it to its
+  recipe, the duel gate and a FAIR fairness sign.
+- A match on a layout is kept on disk like any other (§11.6), its line
+  carrying the layout's code (§13.4). A pasted code goes into the editor,
+  from where it can be saved and played.
 
 **Challenges and courses (later).** A one-gun layout plays as a run screen
 does: a gun, targets, the base loadout, shots counted. A course strings a few
@@ -1782,62 +1849,126 @@ checks itself. Nothing in Phase 1 depends on it.
 - **Its own terrain.** Layouts are ground the game's own generator drafted or
   the player drew, with the game's own rules.
 
-### 13.11 The editor (proposed)
+### 13.11 The editor (built)
 
-In the game, phone-first. Every tool works by touch, with a finger in the way,
-and maps to a mouse: drag is drag, the wheel sizes the brush. A controller or
-keyboard gets a path too: a cursor moved by the d-pad or arrow keys, one
-column or one step at a time, with coarse snapping (whole units, and five
-columns at a time when held).
+`editor.rs` is the model (the draft and every edit, engine-free and
+proptested); `app/editor.rs` the pages, input and files; `render/editor.rs`
+the drawing.
 
-| Tool | Does |
-|---|---|
-| SCULPT | drag up or down to raise or lower the ground under a soft brush |
-| SMOOTH | drag to even out bumps |
-| STAMP | drop one of the generator's shapes (ridge, chasm, mesa, spires, basin) at a point, from `terrain::shape` |
-| PLACE | pick one of the five structures and drag it along the ground; it seats itself. Challenges only: a duel has no structures until structures as cover are designed (§13.13) |
-| GUNS | drag the left gun; in a duel the right one follows as its mirror |
-| MIRROR | copy the left half onto the right |
-| WIND | CALM, FIXED or RANGE, in tenths |
-| UNDO / REDO | whole-layout snapshots: a layout is under a kilobyte, so 64 steps cost nothing |
-| TEST FIRE | fire either gun with aim help, in calm air and at each end of the wind's range in turn, with the gate's shot count for each; leaving the test puts the ground back |
-| HINTS | draw the gate's shots as arcs, so a player can see the ways through |
+**Where it lives.** The phone title has no row to spare (§11.6), so the
+editor is reached from the versus pre-match screen, the mode its maps are
+for: a MAKE MAP plate in its top-right corner on a touchscreen (as the
+title's DEMO and MUS plates are, so the rows stay put) and a keyed MAKE MAP
+row (`E`) otherwise; and from a match's pause and result plates, MAKE MAP OF
+THIS ROUND (`E`). With a draft kept, it opens straight onto it; otherwise on
+a start page: NEW BLANK MAP, FORK A SEED, OPEN A MAP (bundled and saved),
+PASTE A CODE. Leaving goes back to the pre-match screen, or to the title if
+forking left a match suspended there (where RESUME MATCH is).
 
-- **Validation is live.** It is cheap enough (§13.5) to run after every edit.
-  A problem shows as a mark on the structure or gun at fault, with a symbol
-  rather than a sentence (floating, buried, too close, no way through). A
-  green flag means the layout can be played and saved. On a **fork**, a
-  floating structure is a warning, not a block: the generator put it there
-  (§13.5), and the player can play it as it is or move it. A layout made or
-  moved in the editor keeps the rule as a block.
-- **Nothing made is lost.** The layout being edited is written to disk as a
-  draft whenever it changes, the way a match is kept (§11.6), and comes back
-  after the app is killed. Overwriting or deleting a slot can be undone
-  until the editor is left.
-- **Kid-friendly.** Big touch targets, no smaller than the aim buttons;
-  nothing that a wrong tap cannot undo; the ground can never leave the world
-  (the brush clamps at 12 and 108).
-- **Where a layout starts.** From a blank level ground, a slot, a bundled
-  layout, or a fork. A fork is labelled where it came from, as `FROM SEED X
-  R2` (round 2) or `FROM SEED X S7` (screen 7), until it is saved under a
-  name. Pending the owner's answer on width (§13.13), the plan is:
-  - **Fork this round** (from the pause or result plate of a duel) forks the
-    screen the players actually saw, cropped to 320 columns (option (a)).
-  - **Fork from a seed** (typed on the keypad) is a 320-column draft from
-    the seed, labelled as such (option (b)).
-- **Codes are pasted, not typed.** A share code comes in from the clipboard
-  (PASTE) and goes out to it (COPY); the keypad is not offered for codes,
-  since two hundred characters is no one's idea of typing. Each layout shows
-  a four-character fingerprint of its code (from its digest), so two players
-  can check by eye that they have the same layout.
+**The editing screen.** Three rows of buttons, each 18 rows tall (as tall as
+the aim buttons), all above the world's ceiling: the top 72 rows of the
+180-row buffer are sky whatever the ground does, so no button ever covers
+ground a finger means to edit. Row one: MENU, the verdict, UNDO, REDO. Row
+two: SCULPT, SMOOTH, STAMP, GUNS, WIND, MIRROR, TEST. Row three: the tool's
+options (brush S/M/L; the five stamps; CALM/RANGE/FIXED and the wind's
+numbers with `-` `+`). Everything below is the canvas, where a drag is a
+stroke with the tool in hand, one undo step however long. The draft's name
+(or origin) and fingerprint sit bottom left. Drawn at 320 columns,
+letterboxed on a wider phone, inside its corner pad. A kid's path: tap a
+tool, put a finger on the ground and pull it up into a hill; tap STAMP and
+tap where a mesa goes; tap TEST and fire both guns; UNDO undoes anything.
+
+**Keys and a controller.** `[` `]` (LB/RB) step the tool, `,` `.` (X/Y) its
+option, the arrows or d-pad move a cursor (Shift: five columns) and nudge
+the ground a unit under the brush, Enter (A) applies a stamp or a smoothing,
+Z/Y undo and redo, I mirrors, T tests, C copies, P pastes, Esc (B) opens the
+menu, whose rows a focus reaches (with UNDO, REDO, MIRROR and TEST among
+them when no touchscreen is in use). The keypad pages take typed keys, or
+the d-pad over the keypad as seed entry does.
+
+**SCULPT is reversible within a stroke.** How far the finger is above or
+below where it went down is how far the ground under the brush rises or
+falls, from the stroke's start, in whole world units (coarse snapping: a
+finger is not a stylus; a buffer pixel is a world unit), the brush's centre
+snapped to two columns. Sliding sideways paints the change along, and
+dragging back to the start undoes it. A soft brush (`dmath::bump`) at three
+sizes. **SMOOTH** smooths a pass under the brush at each move. **STAMP**
+adds the generator's own template (`terrain::shape` on level ground) at the
+point tapped; dragging moves it rather than stamping a trail.
+**GUNS** drags the gun nearer the finger, within the edge margin and
+`MIN_GUN_GAP`, stopping at the last column it can be seated on.
+
+**MIRROR** (on for any draft already symmetric, so for BLANK) makes every
+edit on both sides at once: brushes and stamps mirrored about the middle and
+the guns moved as a pair. Turning it on makes the draft symmetric (the left
+half copied onto the right, the right gun put at the left's mirror) as one
+undoable step. With it off, either side and either gun can be edited alone,
+and the verdict says GUNS NOT MIRRORED, which a duel cannot be played with
+(versus places the right gun as the left's mirror; §13.13).
+
+**WIND** sets CALM, RANGE or FIXED; `-` `+` move the chosen number by a
+tenth, added to what is there, so a fork's thousandths (1.234) are never
+snapped unasked; a range's ends stay in order. **NAME** is the seed keypad,
+twelve characters at most.
+
+**UNDO / REDO** keep 64 whole-draft snapshots. A stroke, a run of key
+nudges at one spot, a run of WIND presses and a run of typing are each one
+step; a press that changes nothing leaves no step. Replacing the draft
+(BLANK, a fork, a paste, a map opened over it) is an edit too, so UNDO
+brings the old draft back.
+
+**The verdict** after every edit: a stop sign and the first problem that
+blocks in a few words (LEFT GUN NOT ON GROUND, GUNS TOO CLOSE, RIGHT CAN'T
+HIT - WIND 2.5, with `+N` for more), a warning triangle for one that only
+warns, or a flag and READY with the fairness sign (LEFT HARDER, FAIR, RIGHT
+HARDER); a warning mark over a gun a problem names. SAVE refuses while
+anything blocks, saying why; warnings save.
+
+**TEST FIRE** puts the draft's ground on screen with both guns: the gun to
+fire (tap to switch), the wind (tap to step through calm and every wind
+the gate checks), the gate's shot count for that gun in that wind, and the
+match's aim controls. Shots are resolved exactly as a match's
+(`versus::resolve`), with the HIT, MISS or OOPS called out; craters stay
+until DONE and are thrown away with the test.
+
+**Save, open, copy, paste.** SAVE lists the first free slot and the saved
+ones (the draft's own slot chosen); a tap saves there. A saved draft is
+cleared from disk, and the editor carries on with it. Overwriting a slot
+(saving over a different layout) and DELETE in the slot list leave an UNDO
+toast up until the editor is left, as does DISCARD MAP for the draft, its
+history and all; a page change spends the tap that caused it (§11.4's "one
+touch, one screen"), so no double tap can overwrite or delete. COPY CODE
+puts the share code on the clipboard; PASTE CODE reads it
+(`Effect::ReadClipboard`, the adapter handing the text to `Game::pasted`),
+decodes and loads it: a duel of the layout width goes in as the draft,
+problems and all; text that is not a code, a one-gun layout or another
+width is refused with a note.
+
+**Fork this round** takes the round on screen's ground as dealt (no
+craters) and the guns where they stand, cropped to 320 columns
+(`editor::crop_live`): if both guns, chassis and margin, fit the centred
+320-column window, that window; otherwise each gun keeps its own side, the
+leftmost and rightmost 160 columns joined and the middle lost, the eight
+columns either side of the join eased to meet half way. The guns stay
+mirror images either way. An unfinished match is suspended, not ended. On a
+Pixel (400 columns) with the guns home it is always the second rule. The
+draft is labelled FROM MATCH R2 (a match seed is twenty digits nobody
+reads). FORK A SEED is the keypad and a round: FROM SEED DUNE R2.
+
+**Not built, from the proposal.** PLACE (structures, for challenges; hidden
+for duels, which have no structures until structures as cover are designed,
+§13.13) and HINTS (the gate's shots drawn as arcs) are Phase 4's. The mouse
+wheel does not size the brush: S, M and L do, for every input alike. Codes
+are pasted, never typed: two hundred characters is no one's idea of typing
+on a keypad.
 
 ### 13.12 Phases
 
 | Phase | What | Done when |
 |---|---|---|
 | **1 (built)** | data model, forks, share code, validation, `--salt-layout`, `--salt-fork-run`, `--salt-fork-duel`, `just layouts` | forks within 1/32 and the code round trip are tested; the decoder is fuzzed; generation and goldens unchanged; a code plays as a custom duel on desktop at 320 columns, letterboxed in a wider window. There is no phone path for `--salt-layout`: a phone has no command line, so the first phone play is Phase 3's |
-| 3 | the editor and custom duels in the menus together: SCULPT, SMOOTH, GUNS, MIRROR, WIND, UNDO, TEST FIRE, the draft kept on app kill, slots in the layouts file, the GROUND row on the pre-match screen, a rematch keeps the ground, fork this round and fork from a seed (§13.11), bundled layouts made with the editor; then match resume on a layout and pasting a code | a child makes a duel layout and plays it without help, and the owner and his son pick a bundled layout from the pre-match screen, both on the Pixel |
-| 4 | challenges and courses: one-gun layouts as a mode, PLACE, STAMP and HINTS | a course of bundled challenges plays start to finish with a result |
+| **3 (built)** | the editor and custom duels in the menus together: SCULPT, SMOOTH, STAMP, GUNS, MIRROR, WIND, NAME, UNDO, TEST FIRE, the draft kept on app kill, slots in the layouts file, the GROUND row on the pre-match screen, a rematch keeps the ground, fork this round and fork from a seed (§13.11), bundled layouts made with the editor's tools, match resume on a layout and pasting a code | a child makes a duel layout and plays it without help, and the owner and his son pick a bundled layout from the pre-match screen, both on the Pixel (to be confirmed by the owner: the PR's test script) |
+| 4 | challenges and courses: one-gun layouts as a mode, PLACE and HINTS (STAMP came with Phase 3) | a course of bundled challenges plays start to finish with a result |
 | 5 | sharing through the relay | a code sent from one phone plays on another |
 
 The phase that was 2 (custom duels in the menus, alone) is folded into 3: a
@@ -1846,28 +1977,19 @@ the editor is the tool to make them.
 
 ### 13.13 Open questions
 
-- **Floating generated structures.** About 9% of run screens stand a target
-  on a spire or a lip (§13.5). Options: let the rule stand and have the
-  editor flag forks; move a fork's floating structure to the nearest place it
-  stands (fork only, nothing generated changes); or make the generator obey
-  the rule too, which changes generation and needs a `SIM_EPOCH` bump.
+- ~~**Floating generated structures.**~~ Resolved (owner, October 2026): the
+  rule stands as a warning, not a block, everywhere (`editor::severity`);
+  nothing generated changes.
 - **Structures in duels**, as cover. Versus flies a duel shot against the
   other gun's box only, so structures would need adding to its world, and
   rules for a gun behind a collapsed one.
-- **OWNER QUESTION: forking the round you just played, on a wider phone.**
-  A duel's ground depends on the buffer width (it is laid out between the
-  guns and mirrored about the middle), and the Pixel's buffer is wider than
-  320, so `custom::fork_duel`, which regenerates at 320, gives ground the
-  players never saw. Options:
-  (a) fork the live screen and crop it to 320 columns, keeping each gun's
-  side of the ground (the middle is what is lost);
-  (b) fork the seed at 320 and label it as a 320-wide draft from that seed;
-  (c) let layouts have any width from 320 to 400, which the owner's
-  one-width decision rules out today.
-  Recommended: (a) for "fork this round" and (b) for "fork from a typed
-  seed"; §13.11 plans for that, pending the answer.
-- **Rolling guns on a custom duel (Phase 3).** Off on layouts for now
-  (§13.9). The fix is a ladder measured from the layout's own guns, each
+- ~~**OWNER QUESTION: forking the round you just played, on a wider
+  phone.**~~ Resolved (owner, October 2026): (a) for fork this round, a
+  crop of the live screen keeping both guns (the rule is in §13.11), and
+  (b) for fork from a typed seed, labelled as such.
+- **Rolling guns on a custom duel (later).** Off on layouts (owner,
+  October 2026), and shown OFF on the GROUND row (§13.9). The fix, when it
+  is wanted, is a ladder measured from the layout's own guns, each
   spot checked for seating (§13.5) before the guns may stand there, craters
   under the guns filled back to the layout's ground (as now), and the roll's
   gate checking only the winds the layout can blow: a range's ends either
@@ -1881,14 +2003,18 @@ the editor is the tool to make them.
   little (§13.5's timings).
 - **Guns that are not mirror images.** Versus places the right gun as the
   left's mirror. Freeing that means a second muzzle in its frames.
-- **A fixed wind in a duel** blows the same way for both, so it helps one
-  side. Options: flip its direction each round, so each side has it behind
-  them for a round; or allow only calm or a range in duels and keep fixed
-  winds for challenges.
-- **A floating structure on a fork** is planned as a warning rather than a
-  block (§13.11), the rule otherwise kept. Confirm.
-- **Provenance.** Should a fork's code say where it came from (seed and
-  screen), for display? It costs about 15 characters.
+- ~~**A fixed wind in a duel**~~ Resolved (owner, October 2026): it turns
+  round every second round (`versus::Match::wind_at`), and the gate checks
+  it both ways.
+- ~~**A floating structure on a fork**~~ Resolved: a warning, not a block,
+  on any layout.
+- ~~**Provenance.**~~ Resolved: a fork's origin is kept beside its code in
+  the slot file and the draft (§13.8), not in the code, so the share code
+  and its format are unchanged and a shared code says no more than the
+  layout.
+- **Guns that are not mirror images** stay unplayable in a duel: with
+  MIRROR off the editor lets either gun be dragged alone, and the verdict
+  blocks until they are mirrored again.
 - **Names.** A word filter for names once codes can be shared?
 - **Challenge scoring**, and where its results are kept.
 

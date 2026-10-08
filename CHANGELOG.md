@@ -12,6 +12,20 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- A map editor for local versus: MAKE MAP on the pre-match screen. Sculpt
+  hills and dig chasms with a finger, smooth them, stamp ridges, mesas and
+  spires, move the guns, set the wind, name it, test-fire both guns, and
+  save it to one of 32 slots. Everything can be undone, and the map you are
+  making is kept even if the app is killed. Works with a mouse, keys or a
+  controller too.
+- Custom duels: the pre-match screen's GROUND row plays a match on a map,
+  every round on the same ground: four ship with the game, then your own.
+  A rematch keeps the map, and a match on a map resumes after the app is
+  killed like any other.
+- MAKE MAP OF THIS ROUND, on a match's pause or result plate, starts a map
+  from the round you are playing; the match waits for RESUME MATCH.
+- Share a map as a code: COPY CODE and PASTE CODE in the editor, with a
+  four-character fingerprint to check two phones hold the same map.
 - The attract demo opens each part with a short card naming what is coming:
   ROGUELIKE (topple targets, draft a build) before a run, TWO PLAYERS (one
   phone, take turns) before a duel.
@@ -22,7 +36,16 @@ second. See RELEASING.md for the release steps.
   (DESIGN §13). Any generated run screen or duel round can be forked into a
   layout and shared as a short checked code; `--salt-layout <code>` plays a
   local duel on one, and `--salt-fork-run` / `--salt-fork-duel` print a
-  fork's code. No editor or menu yet.
+  fork's code.
+- For developers: `--salt-editor` (with `--salt-editor-page` and
+  `--salt-layout`), `--salt-setup` and `--salt-phone` (a Pixel's layout on a
+  desktop, for headless captures); `just layouts editor` times the editor's
+  checks; a `layouts_file` fuzz target joins the weekly job.
+
+### Changed
+
+- A map's fixed wind turns round every second round of a match (only maps
+  have fixed winds; generated duels are unchanged).
 
 ## [0.1.0] - 2026-10-04
 

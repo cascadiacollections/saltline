@@ -99,8 +99,8 @@
 //! # Effect catalogue
 //!
 //! Every [`Effect`], who asks for it, and what `game.rs` does with it. Only
-//! a save write reports back; only effects that touch a file are dropped
-//! after a panic.
+//! a save write (`Store`) and `ReadClipboard` report back; only effects
+//! that touch a file are dropped after a panic.
 //!
 //! | Effect | Emitted by | Adapter action | Feedback via `stored()` | Dropped after panic |
 //! |---|---|---|---|---|
@@ -111,11 +111,17 @@
 //! | `RecheckDisplay` | [`Game::tick`], on entering Title or GameOver | `frame::DisplayPoll::invalidate` | no | no |
 //! | `Buffer { w, h, letterbox }` | launch, a run started or continued, a draft taken, a screen change, a versus match started or left, a change of window size or cutout | resize the canvas, set the window's content scale size, offset the node | no | no |
 //! | `Aspect` | a run started or continued, leaving a resumed run | set the window's content scale aspect | no | no |
-//! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT | `DisplayServer::clipboard_set` | no | no |
+//! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT, the editor's COPY CODE | `DisplayServer::clipboard_set` | no | no |
+//! | `ReadClipboard` | the editor's PASTE CODE (`app/editor.rs`) | `DisplayServer::clipboard_get`, handed to [`Game::pasted`], whose effects are applied at once | no (the text comes back through `pasted`) | no |
 //! | `Quit` | back on the title or the error screen | `SceneTree::quit` | no | no |
 //! | `Store(Learned)` | an onboarding step done for the first time | `save::store`, then [`Game::stored`] | yes, ignored | yes |
 //! | `Store(Settings)` | settings once they settle (`durable::Debounce`) or on leaving Controls; at once on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
 //! | `Store(Score)` | a run finished, or a finished run found at launch | `resume::replace` with its `clear` text, then, only if that is confirmed, `save::store` with the entry placed; then [`Game::stored`] | yes: placed in memory on success; on failure the run file is rewritten with the finished runs kept (`RunFile::Write`) | yes |
+//! | `Store(Layouts)` | the editor's SAVE, a slot deleted, a toast's UNDO (`app/editor.rs`) | `save::write` of the slot file (`layouts_file`), then [`Game::stored`] | yes: memory takes the new slots only on success, then a saved draft is cleared (`DraftFile(Discard)`); on failure a note, and the draft is kept | yes |
+//! | `DraftFile(Write)` | the editor's draft changed, once a stroke has ended (`persist_draft`) | `resume::replace_at` at `layouts_file::DRAFT_FILES` | no | yes |
+//! | `DraftFile(Restore)` | [`Game::saved_draft`], once the set-aside draft has been read (or is from a newer build) | rename `draft-loading.txt` back to `draft.txt` | no | yes |
+//! | `DraftFile(Discard)` | the draft saved (from `stored`) or DISCARD MAP | `resume::replace_at` with `""` | no | yes |
+//! | `DraftFile(Abandon)` | [`Game::saved_draft`], for a draft this build cannot read | as `MatchFile(Abandon)`, at the draft's paths | no | yes |
 //! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft); [`Game::stored`], for a score that did not reach disk; launch or CONTINUE, dropping a line that will not replay | `resume::replace`: the run file becomes the text (`Game::run_file_text`: finished runs still to score, then the live run) | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
 //! | `RunFile(Discard)` | a CONTINUE that failed to rebuild (a finished run's file is cleared by its `Store(Score)` instead) | `resume::discard`: delete every run file, or blank `run.txt` | no | yes |
