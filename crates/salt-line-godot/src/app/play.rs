@@ -258,11 +258,12 @@ impl Game {
         }
     }
 
-    /// The run is over: score it and show the result.
+    /// The run is over: score it, keep it to watch again, and show the
+    /// result.
     pub(crate) fn finish_run(&mut self) {
         // A demo run that ends is not scored, and its result screen is not
         // shown: the demo moves on to its next leg (`demo_step`).
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         // The run file goes before the score is recorded, never after, and
@@ -285,11 +286,15 @@ impl Game {
             shots,
             daily: self.play.daily,
         };
+        self.history.last_run = None;
         if persisted {
             // Scored with any earlier runs still waiting in the run file.
             let line = resume::Saved::of(run, self.play.daily).to_line();
             self.run_file.unscored.push(Unscored { entry, line });
             self.score_unscored(false);
+            // Kept to watch again (DESIGN §9), after the score: a crash in
+            // between costs the replay, never a score.
+            self.record_run();
         } else {
             // Never in the run file (a `--salt-screen` jump): nothing to
             // clear, and nothing kept if the board cannot be written.

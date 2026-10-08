@@ -1,0 +1,11 @@
+---
+source: crates/salt-line-godot/src/history/tests.rs
+expression: rows
+---
+[
+    "OCT 8  AI EASY  YOU WON 2-1",
+    "OCT 8  AI HARD  AI WON 0-2",
+    "OCT 8  2 PLAYERS  LEFT WON 2-0  MESA",
+    "OCT 8  2 PLAYERS  RIGHT WON 1-2  MAP",
+    "RUN  1 SCREEN  SEED 7",
+]

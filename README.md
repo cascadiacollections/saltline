@@ -142,6 +142,8 @@ request.
 | D | D-pad down (on the title) | DEMO (top-left corner) | Watch the attract demo (see below) |
 | Down | D-pad down (on the pre-match screen) | GROUND row, `<` | Pick the ground for a local versus match: generated, or a map |
 | E | X (pre-match, a match's pause or result) | MAKE MAP (pre-match, top-right corner) | Open the map editor (see below); on a match's pause or result, make a map of the round |
+| W | D-pad up (on the title) | REPLAYS (top-left, under DEMO) | The list of finished runs and matches, to watch again (see below) |
+| W | D-pad up (run over, match won) | WATCH | Watch the run or match just finished |
 | D | D-pad down (on Controls) | IDLE DEMO | Start the demo by itself after 30 s on the title (on by default) |
 | C | X | COPY SEED | Copy the seed (on the run-over screen) |
 | R | Y | SAME SEED AGAIN | Replay the same seed |
@@ -196,7 +198,8 @@ bindings and resets them with R/Y. For practical custom remapping, add lines
 using `bind ACTION KEY PAD`, for example `bind fire F X`. Supported actions are
 `left`, `right`, `up`, `down`, `fire`, `fuse_down`, `fuse_up`,
 `reposition_left`, `reposition_right`, `draft_1`, `draft_2`, `draft_3`,
-`confirm`, `back`, `copy`, `replay`, `controls`, `mute`, `versus` and `demo`. The displayed
+`confirm`, `back`, `copy`, `replay`, `controls`, `mute`, `last_arc`, `seed`,
+`new_run`, `versus`, `demo` and `watch`. The displayed
 default token names are accepted; unknown or malformed lines are ignored.
 
 ### Local versus
@@ -322,6 +325,33 @@ How it stays out of your things is worth a look if you are learning the code:
 versus code on an empty slate, and moves it back, and every place that would
 write a file checks for the demo first. `app/demo_tests.rs` and the last test in
 `app/disk_tests.rs` prove it, down to the bytes on the (simulated) disk.
+
+### Replays
+
+Every finished run, and every match played to the end, is kept so it can
+be watched again (DESIGN §9): the last 20 runs and the last 20 matches,
+shown as one list, newest first. REPLAYS on the title (`W`, d-pad up, or the plate under DEMO
+on a touchscreen) lists them with the date, against whom (`AI EASY`,
+`2 PLAYERS`), who won and on which map; tap a row, or choose it and press
+Enter, to watch it. WATCH on the end-of-run screen and on a won match's
+plate does the same for what you just played, and comes back to that
+screen afterwards.
+
+A replay is the game itself playing the logged shots again, so it looks
+and sounds exactly as it did. The bar at the bottom has PAUSE, the speed
+(1X, 2X, 4X), NEXT SHOT and NEXT ROUND (NEXT SCREEN in a run), and EXIT
+sits on its own at the top, where the pause button is in a game; with
+keys or a controller, Enter or A pauses, Up changes speed, Right and Down
+skip, and Esc or B goes back. NEXT SHOT while paused steps through the shots
+one at a time. At the end, AGAIN plays it from the start.
+
+Watching never changes anything you keep: no score, setting, saved run or
+saved match, and not the list itself. A match quit before it was won is not
+kept. A replay recorded by a build whose simulation has since changed stays
+in the list, dimmed and marked OLD, but cannot be watched, since it would no
+longer play out the same way; one that does not rebuild to the result it
+records is never shown at all. The list lives in `user://history.txt`, one
+plain line per run or match.
 
 ## Tools
 

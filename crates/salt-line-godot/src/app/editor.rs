@@ -430,7 +430,7 @@ impl Game {
     /// never lost"): checked every frame, written once a stroke has ended,
     /// never during the demo, and never over a newer build's draft.
     pub(super) fn persist_draft(&mut self) {
-        if self.in_demo() || self.editor.newer_draft {
+        if self.spectating() || self.editor.newer_draft {
             return;
         }
         let Some(ed) = self.editor.ed.as_ref() else {
@@ -453,7 +453,7 @@ impl Game {
     /// Clear the draft file (a draft saved or discarded), unless it is a
     /// newer build's.
     fn clear_draft_file(&mut self) {
-        if !self.in_demo() && !self.editor.newer_draft {
+        if !self.spectating() && !self.editor.newer_draft {
             self.fx.push(Effect::DraftFile(DraftFile::Discard));
         }
     }
@@ -529,7 +529,7 @@ impl Game {
 
     /// Ask for the slot file to become `slots`, for `why`.
     fn write_slots(&mut self, slots: &Slots, why: SlotWrite) {
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         if self.layouts.slots.from_the_future {
@@ -552,7 +552,7 @@ impl Game {
     /// problems shown, to be fixed; text that is not a duel layout of the
     /// layout width is refused with a note.
     pub fn pasted(&mut self, text: &str) -> Vec<Effect> {
-        if self.mode != Mode::Editor || self.in_demo() {
+        if self.mode != Mode::Editor || self.spectating() {
             return self.take_effects();
         }
         let page = self.editor.page;
@@ -698,7 +698,7 @@ impl Game {
     /// layout width, `editor::crop_live`) into the editor. An unfinished
     /// match is suspended, not lost: RESUME MATCH is offered on the title.
     pub(crate) fn fork_this_round(&mut self) {
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         let Some(vs) = self.versus.live.as_ref() else {

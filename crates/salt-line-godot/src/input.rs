@@ -66,6 +66,8 @@ pub enum Key {
     M,
     L,
     D,
+    /// WATCH and REPLAYS (DESIGN §9.4).
+    W,
     /// The map editor's keys (DESIGN §13.11): E opens it from the
     /// pre-match screen and forks the round from a match's plates; T test
     /// fire, Z undo, Y redo, I mirror, X delete a slot, P paste a code.
@@ -83,7 +85,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 33] = [
+    pub const ALL: [Key; 34] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -108,6 +110,7 @@ impl Key {
         Self::M,
         Self::L,
         Self::D,
+        Self::W,
         Self::E,
         Self::T,
         Self::Z,
@@ -146,6 +149,7 @@ impl Key {
             "M" => Self::M,
             "L" => Self::L,
             "D" => Self::D,
+            "W" => Self::W,
             // The map editor's keys (E T Z Y I X P) are read as keys, not
             // through bindings, so no `bind` line may put an action on
             // them, where the editor would take its presses first.
@@ -241,6 +245,9 @@ pub enum Action {
     /// The attract demo: started from the title, and IDLE DEMO toggled in
     /// Controls (DESIGN §12).
     Demo,
+    /// WATCH on a run's result and a won match's plate, and the title's
+    /// REPLAYS list (DESIGN §9.4).
+    Watch,
     AimMode,
     ArcHint,
     /// A seed keypad key: types its character.
@@ -251,6 +258,27 @@ pub enum Action {
     /// the keypad: keys and a controller reach the same things through
     /// the editor's own keys and a focus.
     Edit(Ed),
+    /// A button of the REPLAYS list or the bar over a replay being watched
+    /// (DESIGN §9.4). Touch only: keys and a controller use the bindable
+    /// actions (`app/watch.rs` says which).
+    Wb(Wb),
+}
+
+/// The REPLAYS list's and the watch bar's buttons (`app/watch.rs`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Wb {
+    /// A row of the list, by its place on the page.
+    Row(u8),
+    /// The list's paging.
+    PagePrev,
+    PageNext,
+    /// The watch bar: leave, pause or play (AGAIN at the end), the speed,
+    /// on to the next shot, on to the next round (a run's next screen).
+    Exit,
+    Pause,
+    Speed,
+    NextShot,
+    NextRound,
 }
 
 /// The map editor's buttons, and the pre-match screen's GROUND row and
@@ -307,7 +335,7 @@ pub enum Ed {
 impl Action {
     /// Every action a `bind` line can name, in the order the save file and
     /// the Controls screen know them.
-    pub const BINDABLE: [Action; 23] = [
+    pub const BINDABLE: [Action; 24] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -331,6 +359,7 @@ impl Action {
         Self::NewRun,
         Self::Versus,
         Self::Demo,
+        Self::Watch,
     ];
 
     /// The action's name in a `bind` line (`bind fire SPACE A`). `None` for a
@@ -360,12 +389,14 @@ impl Action {
             Self::NewRun => "new_run",
             Self::Versus => "versus",
             Self::Demo => "demo",
+            Self::Watch => "watch",
             Self::TitleMusic
             | Self::AimMode
             | Self::ArcHint
             | Self::Type(_)
             | Self::Delete
-            | Self::Edit(_) => {
+            | Self::Edit(_)
+            | Self::Wb(_) => {
                 return None;
             }
         })
@@ -417,6 +448,9 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         // D for demo. D-pad down is read by neither the title nor Controls,
         // the two screens that ask for this.
         Action::Demo => ("D", "DPAD_DOWN"),
+        // W for watch. D-pad up is read by none of the screens that ask for
+        // this: the title, a run's result and a won match's plate.
+        Action::Watch => ("W", "DPAD_UP"),
         _ => ("", ""),
     }
 }
@@ -702,6 +736,7 @@ mod tests {
                 "new_run",
                 "versus",
                 "demo",
+                "watch",
             ]
         );
     }

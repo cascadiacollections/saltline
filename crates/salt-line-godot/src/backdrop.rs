@@ -94,7 +94,7 @@
 //! telling a layering bug from any other. It is not a player setting.
 //!
 //! Every caller of [`Backdrop::draw`] (a run, versus, the editor and its
-//! test fire, and the demo through them) needs a scene in `backdrop/tests.rs`
+//! test fire, and the demo and a watch through them) needs a scene in `backdrop/tests.rs`
 //! that draws it both ways; a new caller without one is untested here.
 //!
 //! # Measured

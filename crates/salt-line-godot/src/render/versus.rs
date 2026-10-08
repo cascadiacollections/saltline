@@ -140,8 +140,23 @@ pub(super) fn result_plate_rect(
         (false, true) => 28,
         (false, false) => 20,
     };
-    let ph = if g.in_demo() { body } else { body + rows_h };
-    Some(((buffer_w - 200) / 2, (buffer_h - ph) / 2, 200, ph))
+    // A won match's plate adds WATCH (DESIGN §9.4): a plated row is 20
+    // rows with the gap above it, a keyed one 8.
+    let watch_h = match (over, plated) {
+        (false, _) => 0,
+        (true, true) => 20,
+        (true, false) => 8,
+    };
+    let rows_h = rows_h + watch_h;
+    let ph = if g.spectating() { body } else { body + rows_h };
+    // Centred, but never up over the score plate in the corner (its
+    // bottom is row `3 + SCORE_H + 8` below the cutout pad), which the
+    // won match's plate, the tallest, would reach at 180 rows.
+    let below_score = 3 + SCORE_H + 8 + g.display.corner_pad.1 + 2;
+    let top = ((buffer_h - ph) / 2)
+        .max(below_score)
+        .min(buffer_h - ph - 2);
+    Some(((buffer_w - 200) / 2, top, 200, ph))
 }
 
 /// What a plate or callout says about a side ([`say`]).
@@ -706,7 +721,7 @@ impl Painter<'_> {
             self.canvas.text_small(x, 28 + ey, &text, fg);
         }
 
-        if self.g.input.touch_active && !vs.paused && !self.g.in_demo() {
+        if self.g.input.touch_active && !vs.paused && !self.g.spectating() {
             if aiming && !vs.ai_turn() {
                 self.draw_play_controls(&duel.loadout);
             } else if vs.stage == Stage::Flight || (aiming && vs.ai_turn()) {
@@ -830,7 +845,7 @@ impl Painter<'_> {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
         // The demo leaves the board in plain view: nobody is peeking.
-        let demo = self.g.in_demo();
+        let demo = self.g.spectating();
         if !demo {
             self.dither_dim();
         }
@@ -905,7 +920,7 @@ impl Painter<'_> {
     fn render_result(&mut self, vs: &crate::app::VersusPlay) {
         let pal = self.pal;
         let (fg, dim) = (pal.get(slot::UI_FG), pal.get(DIM));
-        if !self.g.in_demo() {
+        if !self.g.spectating() {
             self.dither_dim();
         }
         let (w, h) = (self.canvas.w, self.canvas.h);
@@ -951,6 +966,7 @@ impl Painter<'_> {
         };
         let rows: Vec<(Action, &str)> = [
             (Action::Confirm, next),
+            (Action::Watch, "WATCH"),
             (Action::Replay, title),
             (
                 Action::Edit(crate::input::Ed::ForkRound),
@@ -959,6 +975,7 @@ impl Painter<'_> {
         ]
         .into_iter()
         .filter(|&(action, _)| title_row || action != Action::Replay)
+        .filter(|&(action, _)| over || action != Action::Watch)
         .collect();
         let labels: Vec<(String, &str)> = rows
             .iter()
@@ -968,20 +985,22 @@ impl Painter<'_> {
             })
             .collect();
         // The demo moves on by itself: no buttons, and no prompts.
-        let rows = if self.g.in_demo() {
+        let rows = if self.g.spectating() {
             &rows[..0]
         } else {
             &rows[..]
         };
         for (&(action, text), keyed) in rows.iter().zip(keyed_rows(&labels)) {
-            let c = if action == Action::Confirm || (armed && action == Action::Replay) {
+            let c = if matches!(action, Action::Confirm | Action::Watch)
+                || (armed && action == Action::Replay)
+            {
                 fg
             } else {
                 dim
             };
             y = self.menu_row(if plated { y + 4 } else { y }, action, &keyed, text, c);
         }
-        if plated && !self.g.in_demo() {
+        if plated && !self.g.spectating() {
             let ey = self.g.display.corner_pad.1;
             self.draw_touch_button((w - 20) / 2, 3 + ey, 20, 13, "II", Action::Back);
         }

@@ -60,7 +60,9 @@
 //! reads actions and runs each mode's input; `app/play.rs` is a run in play;
 //! `app/versus.rs` is a local versus match in play; `app/demo.rs` is the
 //! attract demo, which plays both of those for the camera without touching
-//! anything the player keeps; `app/session.rs` is the buffer, sound,
+//! anything the player keeps; `app/watch.rs` plays a finished run or match
+//! again from its log the same way, and is the REPLAYS list;
+//! `app/session.rs` is the buffer, sound,
 //! settings, crash reports and the run on disk.
 //!
 //! # Order is behaviour
@@ -131,6 +133,7 @@
 //! | `MatchFile(Discard)` | a kept match left: its result plate left after the win (REMATCH or TITLE), or quit; a saved match that no longer rebuilds | `resume::replace_at` with `""`: delete every match file, or blank `match.txt` | no | yes |
 //! | `MatchFile(Abandon)` | [`Game::saved_match`], for a match this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes `match-loading.txt` and `match.txt.new`, never `match.txt` (`resume::drop_set_aside_at`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
+//! | `History(text)` | a kept run finished (`finish_run`), a kept match left once won (`drop_live_match`); never while the demo or a watch runs (`app/watch.rs`) | `save::write` of `user://history.txt` by way of `history.txt.new` | no | yes |
 //! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play or a versus match not paused, a menu-started demo, each until its quiet limit | `DisplayServer::screen_set_keep_on` | no | no |
 //!
 //! # Scoring at most once
@@ -306,6 +309,10 @@ pub enum Mode {
     /// The map editor (DESIGN §13.11, `app/editor.rs`): its start page,
     /// the editing screen, its menus, the slot list and test fire.
     Editor,
+    /// The REPLAYS list (DESIGN §9.4, `app/watch.rs`): finished runs and
+    /// matches, newest first, to watch again. A watch itself is `Playing`
+    /// or `Versus` with [`Game::watching`] set.
+    Replays,
 }
 
 /// A shot being replayed to the player. The sim has already resolved it.
@@ -543,6 +550,9 @@ pub enum Effect {
     /// sleeps unless this holds it (DESIGN §12.4). Asked for only when
     /// [`Game::screen_awake_wanted`] changes; see [`Game::take_effects`].
     ScreenAwake(bool),
+    /// Make the history file (`user://history.txt`, DESIGN §9) this text:
+    /// written whole and atomically (`save::write`), a run or match added.
+    History(String),
 }
 
 /// What to do with the saved run (DESIGN §9.6). Which files that means is the
@@ -643,6 +653,7 @@ impl Effect {
                 | Effect::MatchFile(_)
                 | Effect::DraftFile(_)
                 | Effect::CrashReport(_)
+                | Effect::History(_)
         )
     }
 }
@@ -697,6 +708,9 @@ pub struct FrameState {
     ),
     /// The attract demo running, and the IDLE DEMO setting.
     demo: (bool, Option<bool>),
+    /// A watch (paused, speed, ended, entry), the REPLAYS list's chosen
+    /// row, and how many records it lists.
+    watch: (Option<watch::Fingerprint>, usize, usize),
     /// What the map editor shows (`editor_fingerprint`), and the ground
     /// the pre-match screen has picked.
     editor: (Option<editor::Fingerprint>, Option<String>),
@@ -743,6 +757,11 @@ pub struct Game {
     /// The attract demo, while it runs (`app/demo.rs`). It holds whatever
     /// of the player's it set aside, untouched, until it ends.
     pub(crate) demo: Option<Demo>,
+    /// A finished run or match being watched again (`app/watch.rs`). Like
+    /// the demo, it holds what it set aside until it ends.
+    pub(crate) watch: Option<Watch>,
+    /// The history of finished runs and matches, and the REPLAYS list.
+    pub(crate) history: HistoryState,
     /// The player's saved layouts, as last confirmed on disk (DESIGN
     /// §13.8). The demo never reads or writes them.
     pub(crate) layouts: LayoutsState,
@@ -1013,6 +1032,8 @@ impl Default for Game {
             versus: VersusState::default(),
             saved_match: None,
             demo: None,
+            watch: None,
+            history: HistoryState::default(),
             layouts: LayoutsState::default(),
             editor: EditorState::default(),
             title_idle: 0.0,
@@ -1097,11 +1118,25 @@ impl Game {
             return false;
         }
         let exempt = self.dev.auto || self.dev.capturing;
+        // A watch is chosen by someone holding the phone, and watched
+        // without input by design, as a demo from the menu is; paused, it
+        // lets the screen sleep as a paused run does.
+        if let Some(w) = &self.watch {
+            return !w.paused && (exempt || self.input_quiet < DEMO_AWAKE_LIMIT);
+        }
         if let Some(demo) = &self.demo {
             return demo.started == DemoStarted::Menu
                 && (exempt || self.input_quiet < DEMO_AWAKE_LIMIT);
         }
         self.live_play() && (exempt || self.input_quiet < AWAKE_QUIET_LIMIT)
+    }
+
+    /// Somebody is playing: [`Game::live_play`], but not the demo or a
+    /// watch, which are shown rather than played, and not the error screen.
+    /// What asks for desktop GameMode (the adapter's `is_active_play`), so
+    /// a watch, paused or not, lets it go.
+    pub fn active_play(&self) -> bool {
+        !self.spectating() && !self.crash.broken && self.live_play()
     }
 
     /// A run or a versus match on screen and running: `Playing`, or
@@ -1117,7 +1152,8 @@ impl Game {
             | Mode::Paused
             | Mode::GameOver
             | Mode::VersusSetup
-            | Mode::Editor => false,
+            | Mode::Editor
+            | Mode::Replays => false,
         }
     }
 
@@ -1126,7 +1162,7 @@ impl Game {
     /// and the demo. Runs at the end of the frame, once the mode has
     /// settled, so a screen entered this frame starts from zero.
     fn watch_input_quiet(&mut self, delta: f64, input: bool) {
-        if input || !(self.live_play() || self.in_demo()) {
+        if input || !(self.live_play() || self.spectating()) {
             self.input_quiet = 0.0;
         } else {
             self.input_quiet += delta;
@@ -1164,6 +1200,7 @@ impl Game {
         let before = self.frame_state();
         let title_music_before = self.title_music_playing();
         let demo_before = self.in_demo();
+        let watch_before = self.watching();
         self.begin_input_frame(delta, intents);
         let versus_before = self.versus_screen();
         let editor_before = self.editor_screen();
@@ -1172,6 +1209,9 @@ impl Game {
             if self.demo_interrupted(intents) {
                 self.stop_demo();
             }
+        } else if watch_before {
+            // A watch reads only its own controls (`app/watch.rs`).
+            self.handle_watch_input();
         } else {
             self.handle_mode_input(delta);
         }
@@ -1188,11 +1228,19 @@ impl Game {
         }
         let input = self.any_input(intents);
         self.watch_title_idle(delta, input);
-        self.step(delta);
+        let watching = self.watching();
+        if watching {
+            // The watch steps the run or match itself, at its own speed.
+            self.watch_frame(delta);
+        } else {
+            self.step(delta);
+        }
         let ai_before = self.versus_screen();
         let ai_moved = self.step_versus_ai(delta);
         let ai_after = self.versus_screen();
-        self.step_versus(delta);
+        if !watching {
+            self.step_versus(delta);
+        }
         self.step_editor(delta);
         // The demo's own plates change nobody's screen: any tap on them is
         // a request to stop (`demo_interrupted`), never to be spent. Nor
@@ -1201,7 +1249,8 @@ impl Game {
         let versus_now = self.versus_screen();
         let only_ai = ai_moved && versus_before == ai_before && ai_after == versus_now;
         if ((versus_now != versus_before && !only_ai) || self.editor_screen() != editor_before)
-            && !self.in_demo()
+            && !self.spectating()
+            && !watch_before
         {
             self.settle_touch();
         }
@@ -1210,12 +1259,13 @@ impl Game {
         self.persist_draft();
         self.tick_settings(delta);
         self.watch_input_quiet(delta, input);
-        if demo_before && self.in_demo() {
+        if (demo_before && self.in_demo()) || (watch_before && self.watching()) {
             // Every write is stopped where it would be asked for (DESIGN
-            // §12); this is the backstop, and the tests fail if it is hit.
+            // §12, §9.4); this is the backstop, and the tests fail if it is
+            // hit.
             debug_assert!(
                 !self.fx.iter().any(Effect::touches_disk),
-                "the demo asked for a disk write: {:?}",
+                "the demo or a watch asked for a disk write: {:?}",
                 self.fx
             );
             self.fx.retain(|e| !e.touches_disk());
@@ -1301,13 +1351,16 @@ impl Game {
             || self.status_time > 0.0
             || self.dev.auto
             || self.demo.is_some()
+            || self.watch.as_ref().is_some_and(|w| !w.paused && !w.ended)
             || self.input.touch.active()
     }
 
     /// Menus, overlays and the error screen run at the idle frame rate; so
-    /// does the editor, but for a test shot in flight.
+    /// does the editor, but for a test shot in flight, and a watch paused
+    /// or at its end (`app/watch.rs`): nothing on it moves.
     pub fn idle(&self) -> bool {
-        self.crash.broken
+        self.watch.as_ref().is_some_and(|w| w.paused || w.ended)
+            || self.crash.broken
             || !(matches!(self.mode, Mode::Playing | Mode::Versus)
                 || (self.mode == Mode::Editor && self.editor.testing_in_flight()))
     }
@@ -1437,7 +1490,7 @@ impl Game {
         self.unfocused = true;
         self.demo_unwatched();
         self.auto_pause();
-        self.flush_settings();
+        self.flush_settings_final();
         self.flush_draft();
         self.take_effects()
     }
@@ -1452,7 +1505,7 @@ impl Game {
     /// The window is closing or the node leaving the tree: a close is final.
     pub fn closing(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
-        self.flush_settings();
+        self.flush_settings_final();
         self.flush_draft();
         self.take_effects()
     }
@@ -1916,6 +1969,11 @@ impl Game {
                 self.save.learned,
             ),
             demo: (self.demo.is_some(), self.save.idle_demo),
+            watch: (
+                self.watch_fingerprint(),
+                self.history.focus,
+                self.history.file.records.len(),
+            ),
             editor: (
                 self.editor_fingerprint(),
                 self.versus.ground.as_ref().map(|g| g.label()),
@@ -1959,6 +2017,12 @@ impl Game {
                 _ => "Demo",
             };
         }
+        if self.watching() {
+            return match self.mode {
+                Mode::Versus => "Watch/Versus",
+                _ => "Watch/Playing",
+            };
+        }
         match self.mode {
             Mode::Title => "Title",
             Mode::Controls => "Controls",
@@ -1969,15 +2033,16 @@ impl Game {
             Mode::VersusSetup => "VersusSetup",
             Mode::Versus => "Versus",
             Mode::Editor => "Editor",
+            Mode::Replays => "Replays",
         }
     }
 
     /// The prompt that teaches the next thing the player has not done yet
     /// (`presentation`'s `LEARN_*` bits), if any.
     pub(crate) fn onboarding_prompt(&self, phase: Phase, wind: Option<f64>) -> Option<String> {
-        // The demo teaches nothing: its prompts would name controls that
-        // only end it.
-        if self.in_demo() {
+        // The demo and a watch teach nothing: their prompts would name
+        // controls they do not read.
+        if self.spectating() {
             return None;
         }
         if phase == Phase::Drafting
@@ -2049,6 +2114,7 @@ mod editor;
 mod play;
 mod session;
 mod versus;
+mod watch;
 
 pub(crate) use demo::Demo;
 pub use demo::{Card as DemoCard, Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};
@@ -2065,6 +2131,8 @@ pub use editor::{
 };
 pub use versus::{Call as VersusCall, Stage as VersusStage, DING_DELAY, VERSUS_HOLD};
 pub(crate) use versus::{VersusPlay, VersusState};
+pub use watch::SPEEDS as WATCH_SPEEDS;
+pub(crate) use watch::{HistoryState, Watch};
 
 #[cfg(test)]
 mod awake_tests;
@@ -2078,3 +2146,5 @@ mod editor_tests;
 mod tests;
 #[cfg(test)]
 mod versus_tests;
+#[cfg(test)]
+mod watch_tests;

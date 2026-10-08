@@ -813,3 +813,70 @@ fills the sky and redraws the ground each frame.
   equivalent.
 - `--salt-flat` draws the old single canvas: the tests' reference and a
   developer fallback, not a player setting.
+
+## 12. Run history and WATCH (DESIGN §9), stage 1
+
+The owner asked for history and WATCH on the device, runs and matches
+alike, with share codes and GIFs left for later. Where the spec left a gap
+or proposed something else:
+
+- **Twenty of each kind, not 500.** §9.1 proposed 500 runs plus the
+  board's. With no PLAY AGAIN or sharing yet, an entry's only use is to be
+  watched, and a child scrolls a short list. The first cut kept twenty in
+  all; review asked for a cap per kind (an afternoon of matches would push
+  the last run out), decided for the owner: 20 runs and 20 matches, each
+  pushing out only its own oldest, shown as one list newest first. The
+  same game is never recorded twice.
+- **Written whole, not appended.** §9.1 proposed append and compact. A full
+  file is about 10–30 KB (a run or a match on generated screens is a few
+  hundred characters, a match on a map about 5,000 for its layout's code);
+  one atomic replace each time (the slot file's way) means a crash leaves
+  the old file or the new one, never a torn line to skip, and no
+  compaction to get wrong. A write drops the oldest records until the file
+  is under 512 KiB, which only forty worst-case lines (a 2,000-entry match
+  on a map, about 24 KB) could reach. Reading has no file limit: lines are
+  judged one at a time (32 KiB at most), so a damaged or huge file never
+  costs the good lines in it.
+- **What is recorded.** A run where its run file is cleared for the score,
+  after the score; a match where its match file is cleared, only if won. A
+  quit match is not recorded, nor a finished run a launch finds and scores:
+  both are rare or unwanted, and the second would need its line judged
+  twice. Each rule has a test; the demo's runs and duels are kept out by
+  the same guard as every other write, and its backstop.
+- **Sound on.** The demo is muted because it plays to an empty room; a
+  watch is chosen by the person holding the phone. A skip is silent, or
+  NEXT ROUND would play a round's worth of sounds in one frame.
+- **Pacing.** A watch reuses the demo's aim (0.8 s, the swing 0.55 s) and
+  draft (1.6 s) holds and the AI's cued plate (2 s); a plain handoff is 1 s
+  and a round's result 2 s, slower than the demo's 0.8 and 1.8 s so a child
+  can say who won. At 4x a run of about 60 shots plays in well under a
+  minute.
+- **Skips land on real frames.** NEXT SHOT and NEXT ROUND step the game in
+  tenths of a second, fast and silent, until the next shot is fired or the
+  next round's plate (a run's next screen) is up, rather than jumping state
+  directly: what is shown after a skip is a frame the game really showed.
+  A paused watch stays paused, so NEXT SHOT steps a game shot by shot.
+- **The phone title.** It has no row to spare (§11.6), so REPLAYS is a
+  corner plate under DEMO, both being things to watch. The won match's
+  plate grew a row (WATCH, under REMATCH) and so grew 20 rows; centred at
+  180 rows it would cover the corner of the score plate, so its top is now
+  held below that (`result_plate_rect`); no other plate moved (their pinned
+  frames are unchanged).
+- **Checked twice.** Before a watch, the line is rebuilt off screen and its
+  result compared with the one it records; while it plays, every shot the
+  game fires is compared with its log entry and the end with the record.
+  Neither has ever fired in the tests; they are there so a determinism bug
+  shows as a note rather than as a different game.
+- **A watch is shown, not played.** It never asks for desktop GameMode, and
+  paused or at its end it drops to the idle frame rate; the screen is held
+  only while it plays. Mute and F1 work during it; a mute is kept in memory
+  and written once the watch is over, since nothing is written while
+  spectating.
+- **EXIT apart.** On a phone the bar first had EXIT beside PAUSE; review
+  moved it to the top centre, where a game's II is, so a child tapping
+  PAUSE cannot leave by mistake. Tapping the board to pause was not added:
+  a child taps the board a lot, and a pause they did not mean is as
+  confusing as an exit.
+- **No epoch bump.** Nothing in the sim or the duel rules changed.
+- **Fuzzing.** The new `history_file` target ran 3.9 million inputs in 90 s
+  locally with no finding.

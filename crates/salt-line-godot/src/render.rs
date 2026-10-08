@@ -126,6 +126,9 @@ pub fn frame(
         p.render_demo_card();
         p.render_demo_banner();
     }
+    if g.watching() {
+        p.render_watch_bar();
+    }
 }
 
 /// The attract demo's banner (DESIGN §12), on a touchscreen: always on
@@ -281,6 +284,9 @@ impl Painter<'_> {
                     // which keeps the menu rows (and the board under them)
                     // where they were.
                     self.draw_touch_button(3 + ex, 3 + ey, 42, 13, "DEMO", Action::Demo);
+                    // REPLAYS under it: watching, like the demo, and the
+                    // phone title has no row to spare (DESIGN §11.6).
+                    self.draw_touch_button(3 + ex, 19 + ey, 42, 13, "REPLAYS", Action::Watch);
                 }
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
@@ -361,6 +367,14 @@ impl Painter<'_> {
                 if !self.plated() {
                     let demo = self.g.input_label(Action::Demo);
                     y = self.menu_row(y, Action::Demo, &format!("{demo}  DEMO"), "DEMO", fg);
+                    let watch = self.g.input_label(Action::Watch);
+                    y = self.menu_row(
+                        y,
+                        Action::Watch,
+                        &format!("{watch}  REPLAYS"),
+                        "REPLAYS",
+                        fg,
+                    );
                 }
                 let back = self.g.input_label(Action::Back);
                 y = self.menu_row(y, Action::Back, &format!("{back}  QUIT"), "QUIT", dim);
@@ -555,11 +569,17 @@ impl Painter<'_> {
                     self.centred(y, &format!("SEED {}", format_seed(seed)), dim);
                     y += 14;
                 }
-                let rows = [
+                // WATCH only for a run kept to watch (not a `--salt-screen`
+                // jump, whose log cannot rebuild it).
+                let rows: Vec<(Action, &str)> = [
                     (Action::Replay, "SAME SEED AGAIN"),
+                    (Action::Watch, "WATCH"),
                     (Action::Copy, "COPY SEED"),
                     (Action::Confirm, "TITLE"),
-                ];
+                ]
+                .into_iter()
+                .filter(|&(a, _)| a != Action::Watch || self.g.history.last_run.is_some())
+                .collect();
                 let labels: Vec<(String, &str)> = rows
                     .iter()
                     .map(|&(action, text)| (self.g.input_label(action), text))
@@ -574,6 +594,7 @@ impl Painter<'_> {
                 }
             }
             Mode::VersusSetup => self.render_versus_setup(y),
+            Mode::Replays => self.render_replays(y),
             _ => {}
         }
     }
@@ -812,7 +833,7 @@ impl Painter<'_> {
         if self.g.input.touch_active
             && self.g.mode == Mode::Playing
             && phase != Phase::Drafting
-            && !self.g.in_demo()
+            && !self.g.spectating()
         {
             self.draw_play_controls(&loadout);
         }
@@ -1293,7 +1314,7 @@ impl Painter<'_> {
         for (i, m) in offers.iter().enumerate() {
             let x = gap + i as i32 * (card_w + gap);
             self.canvas.plate(x, top, card_w, card_h, pal);
-            if self.g.input.touch_active && !self.g.in_demo() {
+            if self.g.input.touch_active && !self.g.spectating() {
                 let action = [Action::Draft1, Action::Draft2, Action::Draft3][i.min(2)];
                 self.touch_button(Rect::new(x, top, card_w, card_h), action);
             }
@@ -1333,7 +1354,7 @@ impl Painter<'_> {
         }
 
         // The demo picks for itself; its banner says what a tap does.
-        if self.g.in_demo() {
+        if self.g.spectating() {
             return;
         }
         let hint = if self.g.input.touch_active {
@@ -1458,6 +1479,7 @@ impl Painter<'_> {
 
 mod editor;
 mod versus;
+mod watch;
 
 /// The versus TITLE row once armed (the pause plate's, or a round's result
 /// plate's), on a touchscreen and with keys (after the key's name): the
@@ -1806,6 +1828,7 @@ mod tests {
             [
                 Action::TitleMusic,
                 Action::Demo,
+                Action::Watch,
                 Action::Confirm,
                 Action::Seed,
                 Action::Versus,
@@ -1825,6 +1848,7 @@ mod tests {
             [
                 Action::TitleMusic,
                 Action::Demo,
+                Action::Watch,
                 Action::Confirm,
                 Action::NewRun,
                 Action::Seed,
@@ -1887,6 +1911,7 @@ mod tests {
             [
                 Action::TitleMusic,
                 Action::Demo,
+                Action::Watch,
                 Action::Confirm,
                 Action::NewRun,
                 Action::Seed,
@@ -1902,6 +1927,17 @@ mod tests {
                 "{:?} off the screen",
                 b.action
             );
+        }
+        // The REPLAYS corner plate (DESIGN §9.4) shares the corner with
+        // DEMO, and no button overlaps another.
+        for (i, a) in buttons.iter().enumerate() {
+            for b in &buttons[i + 1..] {
+                let apart = a.rect.x + a.rect.w <= b.rect.x
+                    || b.rect.x + b.rect.w <= a.rect.x
+                    || a.rect.y + a.rect.h <= b.rect.y
+                    || b.rect.y + b.rect.h <= a.rect.y;
+                assert!(apart, "{:?} overlaps {:?}", a.action, b.action);
+            }
         }
     }
 

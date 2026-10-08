@@ -545,7 +545,7 @@ impl VersusPlay {
 
 /// What `vs` is kept on disk as, with the aim help `help`: format 1, 2 on
 /// a layout's ground, or 3 against the AI (`match_log`).
-fn saved_line(vs: &VersusPlay, help: [bool; 2]) -> Option<SavedMatch> {
+pub(super) fn saved_line(vs: &VersusPlay, help: [bool; 2]) -> Option<SavedMatch> {
     let mut saved = match &vs.layout {
         Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log)?,
         None => SavedMatch::of(&vs.duel, help, &vs.log),
@@ -636,7 +636,7 @@ impl Game {
     /// Put `duel` on screen at its first handoff, not kept on disk.
     fn start_versus_with(&mut self, duel: Match) {
         let mut vs = VersusPlay::new(duel);
-        vs.ai = (self.versus.ai && !self.in_demo()).then_some(self.versus.level);
+        vs.ai = (self.versus.ai && !self.spectating()).then_some(self.versus.level);
         self.versus.live = Some(vs);
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -676,22 +676,25 @@ impl Game {
     /// on disk and RESUME MATCH offers it, as after the app was killed.
     /// For MAKE MAP OF THIS ROUND mid-match.
     pub(super) fn suspend_live_match(&mut self, vs: VersusPlay) {
-        if !vs.kept || self.in_demo() {
+        if !vs.kept || self.spectating() {
             return;
         }
         self.saved_match = saved_line(&vs, self.versus.help);
         self.versus.suspended_source = vs.source;
     }
 
-    /// Drop the match on screen, and clear its line if it was kept. A
-    /// match the demo set aside is not on screen, and the demo's own are
-    /// never kept, but the demo is checked too (DESIGN §12.3).
+    /// Drop the match on screen, and clear its line if it was kept: a won
+    /// match is kept to watch again (DESIGN §9) as its line goes; a match
+    /// quit before it was won is not. A match the demo or a watch set
+    /// aside is not on screen, and theirs are never kept, but both are
+    /// checked too (DESIGN §12.3).
     pub(super) fn drop_live_match(&mut self) {
         let Some(vs) = self.versus.live.take() else {
             return;
         };
-        if vs.kept && !self.in_demo() {
+        if vs.kept && !self.spectating() {
             self.fx.push(Effect::MatchFile(MatchFile::Discard));
+            self.record_match(&vs);
         }
     }
 
@@ -701,7 +704,7 @@ impl Game {
     /// when the players leave that plate (`drop_live_match`). Checked every
     /// frame, written only on a change, never during the demo.
     pub(super) fn persist_match(&mut self) {
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         let help = self.versus.help;
@@ -918,6 +921,9 @@ impl Game {
                     self.set_quit_armed(None);
                     self.play(Sound::Ui);
                     self.after_versus_result();
+                } else if won && self.action_pressed(Action::Watch) {
+                    // WATCH the match just won, then back to this plate.
+                    self.watch_live_match();
                 } else if round_title && self.action_pressed(Action::Replay) {
                     self.press_versus_title(won, quit_armed);
                 } else if self.make_map_pressed(fork) {
@@ -1073,7 +1079,7 @@ impl Game {
     /// focus, and nothing here runs in the demo or for the dev autopilot,
     /// which drive both guns themselves.
     pub(super) fn step_versus_ai(&mut self, delta: f64) -> bool {
-        if self.mode != Mode::Versus || self.in_demo() || self.dev.auto || self.unfocused {
+        if self.mode != Mode::Versus || self.spectating() || self.dev.auto || self.unfocused {
             return false;
         }
         let Some(vs) = self.versus.live.as_mut() else {
