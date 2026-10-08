@@ -11,10 +11,13 @@
 //! cargo run --release -p salt-line-godot --example duel
 //! cargo run --release -p salt-line-godot --example duel -- --left kid --right steady
 //! cargo run --release -p salt-line-godot --example duel -- --no-equal-shots --shift 0
+//! cargo run --release -p salt-line-godot --example duel -- --left kid --right ai-easy
 //! ```
 //!
 //! Flags: `--matches N` (default 200), `--width W` (default 320), `--bot
-//! kid|steady` for both guns or `--left` / `--right` for one (default kid),
+//! kid|steady` for both guns or `--left` / `--right` for one (default kid;
+//! either also takes `ai-easy`, `ai-medium` or `ai-hard`, the game's own AI
+//! opponent, DESIGN §11.7),
 //! and one per lever in [`Rules`]: `--wind MAX`, `--wind-min MIN`, `--reach
 //! R`, `--equal-shots` / `--no-equal-shots`, `--shift D` and `--back N` /
 //! `--forward N` (the roll ladder, in steps). A lever left out takes the
@@ -55,11 +58,17 @@
 //! aim help and without lapses. Both are guesses, so read lever settings
 //! against each other, not as a forecast of real play.
 //!
+//! The `ai-*` players are not bots of this kind but the game's AI itself
+//! (`salt_line_godot::opponent::ai_shot`), shot for shot as a match against
+//! it plays, easing off while ahead included; on the left gun it plays the
+//! same way. The report adds each gun's hit rate, to read its odds against.
+//!
 //! Everything is seeded: the same flags print the same report. The roll
 //! timing is wall-clock and is the one line that varies.
 
 use std::time::Instant;
 
+use salt_line_godot::opponent::{self, Level};
 use salt_line_godot::versus::{self, Match, Phase, Rules, Side, HITS_TO_WIN_ROUND};
 use salt_line_sim::ballistics::{End, Shot};
 use salt_line_sim::rng::{substream, Pcg32};
@@ -98,6 +107,22 @@ const STEADY: Profile = Profile {
     fidget: 0.0,
 };
 
+/// Who plays a gun: a bot, or the game's AI at a level.
+#[derive(Clone, Copy, Debug)]
+enum Player {
+    Bot(Profile),
+    Ai(Level),
+}
+
+impl Player {
+    fn name(self) -> String {
+        match self {
+            Player::Bot(p) => p.name.to_string(),
+            Player::Ai(level) => format!("ai-{}", level.token()),
+        }
+    }
+}
+
 /// Power moves in steps of this many ticks, as a key press or a drag does.
 const POWER_STEP: i32 = 5;
 
@@ -110,8 +135,8 @@ const TAG_BOT: u64 = 0x4442_4F54;
 struct Args {
     matches: u64,
     width: usize,
-    /// Each gun's bot, by [`Side::index`].
-    bots: [Profile; 2],
+    /// Each gun's player, by [`Side::index`].
+    bots: [Player; 2],
     rules: Rules,
 }
 
@@ -119,7 +144,7 @@ fn parse_args() -> Args {
     let mut a = Args {
         matches: 200,
         width: 320,
-        bots: [KID, KID],
+        bots: [Player::Bot(KID); 2],
         rules: Rules::DEFAULT,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -129,9 +154,12 @@ fn parse_args() -> Args {
         std::process::exit(2)
     };
     let profile = |flag: &str, v: &str| match v {
-        "kid" => KID,
-        "steady" => STEADY,
-        _ => bad(flag, v),
+        "kid" => Player::Bot(KID),
+        "steady" => Player::Bot(STEADY),
+        _ => match v.strip_prefix("ai-").and_then(Level::from_token) {
+            Some(level) => Player::Ai(level),
+            None => bad(flag, v),
+        },
     };
     while i < argv.len() {
         let flag = argv[i].as_str();
@@ -182,7 +210,7 @@ fn parse_args() -> Args {
             }
             "--help" | "-h" => {
                 println!(
-                    "duel [--matches N] [--width W] [--bot kid|steady] [--left kid|steady] [--right kid|steady] [--wind MAX] [--wind-min MIN] [--reach R] [--equal-shots | --no-equal-shots] [--shift D] [--back N] [--forward N]"
+                    "duel [--matches N] [--width W] [--bot P] [--left P] [--right P] (P: kid|steady|ai-easy|ai-medium|ai-hard) [--wind MAX] [--wind-min MIN] [--reach R] [--equal-shots | --no-equal-shots] [--shift D] [--back N] [--forward N]"
                 );
                 std::process::exit(0);
             }
@@ -279,6 +307,9 @@ struct Tally {
     first_opener_matches: u64,
     /// Matches won, by [`Side::index`].
     side_matches: [u64; 2],
+    /// Shots fired and hits made, by [`Side::index`].
+    side_shots: [u64; 2],
+    side_hits: [u64; 2],
     /// Rounds that ended with someone past [`HITS_TO_WIN_ROUND`] hits.
     overtime: u64,
     shutouts: u64,
@@ -306,10 +337,14 @@ fn play_match(seed: u64, args: &Args, t: &mut Tally) {
         let reference = duel.clone();
         let mut bots = Side::BOTH.map(|side| {
             let angles = hitting_angles(&duel, side);
+            let open = match args.bots[side.index()] {
+                Player::Bot(p) => p.open,
+                Player::Ai(_) => 0.0,
+            };
             Bot {
                 angle: angles[0],
                 angles,
-                bias: rng.signed(args.bots[side.index()].open),
+                bias: rng.signed(open),
                 last_wind: None,
                 last_hit: None,
             }
@@ -317,7 +352,18 @@ fn play_match(seed: u64, args: &Args, t: &mut Tally) {
         let mut turns = 0;
         while duel.phase == Phase::Aiming && turns < MAX_TURNS {
             let side = duel.to_move;
-            let p = args.bots[side.index()];
+            let p = match args.bots[side.index()] {
+                Player::Bot(p) => p,
+                Player::Ai(level) => {
+                    let shot = opponent::ai_shot(&duel, level);
+                    let report = fire(&mut duel, shot, t);
+                    t.side_shots[side.index()] += 1;
+                    t.side_hits[side.index()] += report.hit as u64;
+                    bots[side.index()].last_hit = None;
+                    turns += 1;
+                    continue;
+                }
+            };
             let wind = own_wind(&duel, side);
             let bot = &mut bots[side.index()];
             if let Some(shot) = bot.last_hit {
@@ -337,19 +383,9 @@ fn play_match(seed: u64, args: &Args, t: &mut Tally) {
             // What would have hit in the wind that blew, read before the
             // shot digs its crater.
             let wanted = ideal_power(&duel, side, bot.angle, wind) as f64;
-            let clock = Instant::now();
-            let report = duel.fire(shot, false).expect("aiming");
-            let spent = clock.elapsed().as_secs_f64();
-            if report.rolled.is_some() {
-                t.rolled_fire.push(spent);
-                let (l, r) = (
-                    versus::muzzle_of(&duel.screen, Side::Left),
-                    versus::muzzle_of(&duel.screen, Side::Right),
-                );
-                t.roll_heights.push((l.y - r.y).abs());
-            } else {
-                t.plain_fire.push(spent);
-            }
+            let report = fire(&mut duel, shot, t);
+            t.side_shots[side.index()] += 1;
+            t.side_hits[side.index()] += report.hit as u64;
             let bot = &mut bots[side.index()];
             let gain = if !report.hit && rng.next_f64() < p.overcorrect {
                 2.0 * p.learn
@@ -391,6 +427,24 @@ fn play_match(seed: u64, args: &Args, t: &mut Tally) {
     }
 }
 
+/// Fire `shot`, timing it and noting what a roll of the guns cost.
+fn fire(duel: &mut Match, shot: Shot, t: &mut Tally) -> versus::TurnReport {
+    let clock = Instant::now();
+    let report = duel.fire(shot, false).expect("aiming");
+    let spent = clock.elapsed().as_secs_f64();
+    if report.rolled.is_some() {
+        t.rolled_fire.push(spent);
+        let (l, r) = (
+            versus::muzzle_of(&duel.screen, Side::Left),
+            versus::muzzle_of(&duel.screen, Side::Right),
+        );
+        t.roll_heights.push((l.y - r.y).abs());
+    } else {
+        t.plain_fire.push(spent);
+    }
+    report
+}
+
 /// Would `shot` hit the other gun now, as the guns stand, in this turn's
 /// wind?
 fn would_hit(duel: &Match, side: Side, shot: Shot) -> bool {
@@ -428,7 +482,7 @@ fn main() {
     for m in 0..args.matches {
         play_match(substream(0x5EED_D0E1, m), &args, &mut t);
     }
-    let [left, right] = args.bots.map(|p| p.name);
+    let [left, right] = args.bots.map(Player::name);
     println!(
         "{left} v {right} | wind {:.1}..{:.1} | reach {:.1} | equal shots {} | shift {:.0} (-{}..+{}) | {} matches at width {}",
         r.wind_min,
@@ -471,6 +525,13 @@ fn main() {
         pct(t.side_matches[1], t.matches),
         turns.iter().map(|&n| n as f64).sum::<f64>() / turns.len().max(1) as f64,
         p90,
+    );
+    println!(
+        "hit rate: left ({left}) {:.1}% of {}, right ({right}) {:.1}% of {}",
+        pct(t.side_hits[0], t.side_shots[0]),
+        t.side_shots[0],
+        pct(t.side_hits[1], t.side_shots[1]),
+        t.side_shots[1],
     );
     println!(
         "rolls {} | shot with a roll: mean {:.2} ms, max {:.2} ms (without: mean {:.2} ms) | pivot height gap after a roll: mean {:.2}, max {:.2}",

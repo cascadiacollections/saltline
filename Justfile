@@ -60,8 +60,9 @@ balance-sweep seeds="100" screens="40" build="base" from="40" to="100" step="5" 
 
 # Two bots play local versus matches; the report gives shots per hit, turns per round,
 # how often a repeated hit lands and how often the opener wins. Bot is kid (aim help)
-# or steady; flags set one lever each (see examples/duel.rs), e.g.
-# `just duel 400 kid --right steady` or `just duel 200 steady --no-equal-shots --shift 0`.
+# or steady, or the game's AI opponent as ai-easy, ai-medium or ai-hard (DESIGN §11.7);
+# flags set one lever each (see examples/duel.rs), e.g. `just duel 400 kid --right steady`,
+# `just duel 400 kid --right ai-easy` or `just duel 200 steady --no-equal-shots --shift 0`.
 # Deterministic local-versus rules report (duel harness).
 duel matches="200" bot="kid" *flags:
     cargo run --release -p salt-line-godot --example duel -- --matches {{ matches }} --bot {{ bot }} {{ flags }}
