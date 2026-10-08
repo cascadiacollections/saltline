@@ -952,7 +952,7 @@ fn the_ease_is_drawn_and_aim_help_waits_for_it() {
 
 // ------------------------------------------------------------- the AI
 
-use crate::app::versus::{AI_AIM, AI_HANDOFF, AI_HANDOFF_CUED, AUTO_READY};
+use crate::app::versus::{AI_AIM, AI_HANDOFF, AI_HANDOFF_CUED, AUTO_READY, AUTO_READY_CUED};
 use crate::opponent::Level;
 
 /// A match against the AI at `level`, chosen on the pre-match screen with
@@ -1115,6 +1115,28 @@ fn the_ai_plate_holds_longer_with_a_cue() {
     wait(&mut g, AI_HANDOFF + 0.1);
     assert_eq!(vs(&g).stage, Stage::Handoff, "the cue is read out");
     wait(&mut g, AI_HANDOFF_CUED - AI_HANDOFF);
+    assert_eq!(vs(&g).stage, Stage::Aiming);
+}
+
+/// The player's plate readies itself after [`AUTO_READY`], or
+/// [`AUTO_READY_CUED`] (the AI's own cued hold) when it has a cue to read.
+#[test]
+fn the_players_plate_holds_longer_with_a_cue() {
+    const { assert!(AUTO_READY_CUED >= 2.0 && AUTO_READY_CUED > AUTO_READY) };
+    assert_eq!(AUTO_READY_CUED, AI_HANDOFF_CUED);
+    // Level past the mark, the player (who opens round 1) to move: TIED.
+    let mut g = ai_match(Level::Easy);
+    let live = g.versus.live.as_mut().unwrap();
+    let n = rules::HITS_TO_WIN_ROUND;
+    live.duel.hits = [n, n];
+    live.duel.turn = 2 * n;
+    assert_eq!(live.duel.stakes(), Some(rules::Stakes::Tied));
+    assert!(!vs(&g).ai_turn() && vs(&g).handoff_cued());
+    wait(&mut g, AUTO_READY + 0.1);
+    assert_eq!(vs(&g).stage, Stage::Handoff, "the cue is read out");
+    wait(&mut g, AUTO_READY_CUED - AUTO_READY - 0.2);
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    wait(&mut g, 0.2);
     assert_eq!(vs(&g).stage, Stage::Aiming);
 }
 

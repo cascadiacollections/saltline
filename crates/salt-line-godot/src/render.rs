@@ -2061,16 +2061,33 @@ mod tests {
     }
 
     /// Against the AI nothing says to pass the phone, and the sides are
-    /// YOU and AI, never LEFT or RIGHT, on every plate and callout of a
-    /// whole round: hits, misses, a last shot to tie and the result.
+    /// YOU and AI, never LEFT or RIGHT: the pre-match screen's heading and
+    /// aim rows at every level and aim-help choice, and every plate and
+    /// callout of a whole match (hits, misses, a last shot to tie and the
+    /// result). The one exception is the RIGHT OPPONENT row itself, which
+    /// is the switch between the two kinds of match and says which gun the
+    /// AI takes.
     #[test]
     fn an_ai_match_says_you_and_ai_and_never_pass_the_phone() {
+        use crate::opponent::Level;
         use crate::versus::{Phase, Side};
-        use versus::{handoff_prompt, hit_line, say, setup_heading, Says};
+        use versus::{aim_rows, handoff_prompt, hit_line, say, setup_heading, Says};
+        let mut said = vec![setup_heading(true).to_string()];
+        for level in Level::ALL {
+            for help in [[false, false], [true, false], [false, true], [true, true]] {
+                said.extend(aim_rows(true, level, help));
+            }
+        }
+        assert!(said.contains(&"YOUR AIM HELP: ON".to_string()));
+        assert!(said.contains(&"AI LEVEL: MEDIUM".to_string()));
+        // A human match keeps its sides' names.
+        assert_eq!(
+            aim_rows(false, Level::Hard, [true, false]),
+            ["LEFT AIM HELP: ON", "RIGHT AIM HELP: OFF"]
+        );
         let mut g = game();
         g.versus.ai = true;
         g.start_versus();
-        let mut said = vec![setup_heading(true).to_string()];
         let vs = g.versus.live.as_mut().unwrap();
         // Hits from both sides to 3-2, a miss, then hits to the end.
         let mut turn = 0;

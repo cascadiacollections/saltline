@@ -60,7 +60,7 @@
 //!
 //! The `ai-*` players are not bots of this kind but the game's AI itself
 //! (`salt_line_godot::opponent::ai_shot`), shot for shot as a match against
-//! it plays, easing off while ahead included; on the left gun it plays the
+//! it plays, easing off while it leads on hits included; on the left gun it plays the
 //! same way. The report adds each gun's hit rate, to read its odds against.
 //!
 //! Everything is seeded: the same flags print the same report. The roll

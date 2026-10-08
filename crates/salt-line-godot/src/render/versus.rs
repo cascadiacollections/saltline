@@ -186,6 +186,25 @@ pub(super) fn setup_heading(ai: bool) -> &'static str {
     }
 }
 
+/// The pre-match screen's two aim rows, left then right. Against the AI
+/// the left row is the player's (YOUR AIM HELP) and the right row is the
+/// AI's level: it needs no aim help, and the right player's choice keeps
+/// for a human match.
+pub(super) fn aim_rows(ai: bool, level: crate::opponent::Level, help: [bool; 2]) -> [String; 2] {
+    let on = |b: bool| if b { "ON" } else { "OFF" };
+    if ai {
+        [
+            format!("YOUR AIM HELP: {}", on(help[0])),
+            format!("AI LEVEL: {}", level.name()),
+        ]
+    } else {
+        [
+            format!("LEFT AIM HELP: {}", on(help[0])),
+            format!("RIGHT AIM HELP: {}", on(help[1])),
+        ]
+    }
+}
+
 /// The lines the handoff plate adds under the name of the player taking
 /// the phone, each with its palette slot: what rides on their shot (a last
 /// shot to tie or a hit to win, in their colour, or a tie that plays on),
@@ -265,6 +284,7 @@ impl Painter<'_> {
             Some(g) => (format!("GROUND: {} - FAILS", g.label()), dim),
         };
         let make_map = Action::Edit(crate::input::Ed::MakeMap);
+        let [left_row, right_row] = aim_rows(self.g.versus.ai, self.g.versus.level, help);
         let mut rows = vec![
             (
                 Action::Replay,
@@ -274,22 +294,8 @@ impl Painter<'_> {
                 ),
                 colour(Side::Right),
             ),
-            (
-                Action::Left,
-                format!("LEFT AIM HELP: {}", on(help[0])),
-                colour(Side::Left),
-            ),
-            // Against the AI the right row is its level: it needs no aim
-            // help, and the right player's choice keeps for a human match.
-            (
-                Action::Right,
-                if self.g.versus.ai {
-                    format!("AI: {}", self.g.versus.level.name())
-                } else {
-                    format!("RIGHT AIM HELP: {}", on(help[1]))
-                },
-                colour(Side::Right),
-            ),
+            (Action::Left, left_row, colour(Side::Left)),
+            (Action::Right, right_row, colour(Side::Right)),
             (
                 Action::Up,
                 format!("ROLLING GUNS: {}", on(rolling)),

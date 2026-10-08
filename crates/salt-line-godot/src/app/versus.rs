@@ -87,7 +87,8 @@
 //! [`AI_HANDOFF`] ([`AI_HANDOFF_CUED`] when the plate has a cue to read),
 //! then the barrel swings to its shot over [`AI_SWING`] and fires at
 //! [`AI_AIM`]. The player's plate stays, so the turns still read as turns,
-//! but readies itself after [`AUTO_READY`] (READY skips it). Every one of
+//! but readies itself after [`AUTO_READY`] ([`AUTO_READY_CUED`] with a
+//! cue, as long as the AI's own cued plate; READY skips it). Every one of
 //! these waits stops under the pause plate, and the handoff plates pause
 //! when focus goes, since in an AI match they no longer wait for a tap.
 
@@ -157,6 +158,10 @@ pub const AI_AIM: f64 = 1.0;
 /// Seconds the player's handoff plate waits in an AI match before it
 /// readies by itself. READY (a tap, a key) skips it.
 pub const AUTO_READY: f64 = 1.5;
+/// Seconds the player's handoff plate waits when it shows a cue (the set
+/// `VersusPlay::handoff_cued` tests): as long as the AI's cued plate, so a
+/// LAST SHOT or GUNS ROLLED is read out before the player's aim appears.
+pub const AUTO_READY_CUED: f64 = AI_HANDOFF_CUED;
 
 /// Seconds a versus screen ignores new touches after it appears. Longer
 /// than a tap (about 0.12 s on a phone), so whatever a device reports for
@@ -753,7 +758,7 @@ impl Game {
         // Between rounds of a match against the AI, TITLE is not offered:
         // a child playing alone mashing the plate (or Y, which toggles the
         // AI on the pre-match screen) would throw the match away. Leaving
-        // mid-match is the pause plate's QUIT, as it is between turns.
+        // mid-match is the pause plate's TITLE, as it is between turns.
         let round_title =
             !(vs.ai.is_some() && matches!(vs.duel.phase, versus::Phase::RoundOver(_)));
         let fork = crate::input::Ed::ForkRound;
@@ -932,7 +937,12 @@ impl Game {
         match vs.stage {
             Stage::Handoff if !vs.ai_turn() => {
                 vs.ai_wait += delta;
-                if vs.ai_wait >= AUTO_READY {
+                let hold = if vs.handoff_cued() {
+                    AUTO_READY_CUED
+                } else {
+                    AUTO_READY
+                };
+                if vs.ai_wait >= hold {
                     self.begin_versus_turn();
                 }
                 false

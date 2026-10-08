@@ -692,14 +692,16 @@ impl Game {
     }
 
     /// The duel leg's next shot: one that hits, or two times in five a
-    /// near miss, tried on a copy of the match so it really misses. The
-    /// local AI aims the same way (`crate::opponent`), at odds of its own.
+    /// near miss, tried on a copy of the match so it really misses, and the
+    /// plain [`LOB`] when none is found, untried, as it always was. The
+    /// local AI aims the same way (`crate::opponent`), at odds and with a
+    /// fallback of its own.
     fn demo_duel_shot(&self, cycle: u64) -> Shot {
         let Some(vs) = self.versus.live.as_ref() else {
             return Shot::new(LOB.0, LOB.1);
         };
         let duel = &vs.duel;
         let h = demo_hash(cycle ^ DEMO_SALT, duel.round as u64, duel.turn as u64);
-        opponent::shot(duel, h, DEMO_ODDS)
+        opponent::shot(duel, h, DEMO_ODDS, opponent::Fallback::Lob)
     }
 }
