@@ -813,7 +813,6 @@ fills the sky and redraws the ground each frame.
   equivalent.
 - `--salt-flat` draws the old single canvas: the tests' reference and a
   developer fallback, not a player setting.
-||||||| parent of 63549b2 (Docs: run history and WATCH, stage 1 of DESIGN §9)
 
 ## 12. Run history and WATCH (DESIGN §9), stage 1
 
@@ -821,16 +820,23 @@ The owner asked for history and WATCH on the device, runs and matches
 alike, with share codes and GIFs left for later. Where the spec left a gap
 or proposed something else:
 
-- **Twenty, in one list, not 500 per kind.** §9.1 proposed 500 runs plus
-  the board's. With no PLAY AGAIN or sharing yet, an entry's only use is to
-  be watched, and a child scrolls a list of twenty, not five hundred. One
-  list for both kinds (the question the brief left open) because it is read
-  as "what did we play lately"; the cost, an afternoon of matches pushing
-  the last run out, is written down in §9.1.
-- **Written whole, not appended.** §9.1 proposed append and compact. Twenty
-  lines is a few kilobytes; one atomic replace each time (the slot file's
-  way) means a crash leaves the old file or the new one, never a torn line
-  to skip, and no compaction to get wrong.
+- **Twenty of each kind, not 500.** §9.1 proposed 500 runs plus the
+  board's. With no PLAY AGAIN or sharing yet, an entry's only use is to be
+  watched, and a child scrolls a short list. The first cut kept twenty in
+  all; review asked for a cap per kind (an afternoon of matches would push
+  the last run out), decided for the owner: 20 runs and 20 matches, each
+  pushing out only its own oldest, shown as one list newest first. The
+  same game is never recorded twice.
+- **Written whole, not appended.** §9.1 proposed append and compact. A full
+  file is about 10–30 KB (a run or a match on generated screens is a few
+  hundred characters, a match on a map about 5,000 for its layout's code);
+  one atomic replace each time (the slot file's way) means a crash leaves
+  the old file or the new one, never a torn line to skip, and no
+  compaction to get wrong. A write drops the oldest records until the file
+  is under 512 KiB, which only forty worst-case lines (a 2,000-entry match
+  on a map, about 24 KB) could reach. Reading has no file limit: lines are
+  judged one at a time (32 KiB at most), so a damaged or huge file never
+  costs the good lines in it.
 - **What is recorded.** A run where its run file is cleared for the score,
   after the score; a match where its match file is cleared, only if won. A
   quit match is not recorded, nor a finished run a launch finds and scores:
@@ -861,6 +867,16 @@ or proposed something else:
   game fires is compared with its log entry and the end with the record.
   Neither has ever fired in the tests; they are there so a determinism bug
   shows as a note rather than as a different game.
+- **A watch is shown, not played.** It never asks for desktop GameMode, and
+  paused or at its end it drops to the idle frame rate; the screen is held
+  only while it plays. Mute and F1 work during it; a mute is kept in memory
+  and written once the watch is over, since nothing is written while
+  spectating.
+- **EXIT apart.** On a phone the bar first had EXIT beside PAUSE; review
+  moved it to the top centre, where a game's II is, so a child tapping
+  PAUSE cannot leave by mistake. Tapping the board to pause was not added:
+  a child taps the board a lot, and a pause they did not mean is as
+  confusing as an exit.
 - **No epoch bump.** Nothing in the sim or the duel rules changed.
 - **Fuzzing.** The new `history_file` target ran 3.9 million inputs in 90 s
   locally with no finding.

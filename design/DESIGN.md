@@ -750,24 +750,36 @@ file's, plain text the player owns (README, "Nothing for sale").
   "not that one"), a `--salt-screen` jump (its log cannot rebuild it), the
   demo's runs and duels, and a finished run a launch finds and scores (the
   app died on its last shot; rare, and its line would be judged twice).
-- **Retention:** the newest 20 (`history::MAX_RECORDS`), runs and matches
-  in one list. It is a family's "what did we play lately", read top down by
-  a child; two lists would ask for a choice before every look. The cost: an
-  afternoon of matches pushes the last run off the end. The proposed 500
-  plus every run on the board waits for PLAY AGAIN and sharing (§9.7), when
-  old runs are worth more than a look.
+- **Retention (owner decision, October 2026):** the newest 20 runs
+  (`history::MAX_RUNS`) and the newest 20 matches (`MAX_MATCHES`), each
+  kind capped on its own: a new run pushes out the oldest run, a new match
+  the oldest match, so an afternoon of matches never costs the last run.
+  They are shown as one list, newest first: a family's "what did we play
+  lately", read top down by a child, with no choice to make first. The
+  same game is never recorded twice (the same seed and log, or the same
+  match line). The proposed 500 plus every run on the board waits for PLAY
+  AGAIN and sharing (§9.7), when old runs are worth more than a look.
 - **Durability:** the file is rewritten whole, through `durable::write_atomic`
   (`save::write`), each time a run or match is added: a crash leaves the old
   file or the new one, and launch picks between the file and its temporary
-  copy as for the slot file. Reading is total: a line this build cannot
-  read (torn, hand-edited, NULs) is dropped and counted, the list says
-  `1 REPLAY COULD NOT BE READ`, and the next write leaves it out. A file
+  copy as for the slot file. A write drops the oldest records until the
+  file is under `history::MAX_FILE_CHARS` (512 KiB).
+- **Reading** is total and line by line. The header is read first: a file
   whose header is from a newer build is read for what this build
   understands and never written, as the save and the slot file are not;
-  what finishes meanwhile is kept for the session.
+  what finishes meanwhile is kept for the session. Then each line on its
+  own: one this build cannot read (torn, hand-edited, NULs, longer than
+  `MAX_LINE_CHARS`, 32 KiB) is dropped and counted, and the list says
+  `1 REPLAY COULD NOT BE READ`; one of a newer line format is counted
+  apart (`1 REPLAY FROM A NEWER VERSION`). The next write leaves both out.
+  No size of file costs the good lines in it.
 - **Why not SQLite:** it's a C dependency on every target (Android, iOS,
   Windows arm64 cross-builds), it isn't hand-editable, and nothing here needs a
-  query engine. The largest realistic history is a few hundred kilobytes.
+  query engine. A realistic history is about 10–30 KB: a run or a match on
+  generated screens is a few hundred characters, a match on a map about
+  5,000 (its layout's code). The worst case is bounded by the write limit
+  above: the longest honest line, a 2,000-entry match on a map, is about
+  24 KB.
 
 ### 9.2 Line format (built)
 
@@ -859,10 +871,13 @@ This follows the touch menus and §11.4's "reading it at a glance".
   versus code, the way the attract demo plays the solver's (§12): the aim
   swings to each shot, the shell flies, lands and topples, drafts are taken,
   the plates and the fanfare come as they came. The bar along the bottom
-  centre, where the demo's banner sits: EXIT, PAUSE (PLAY, AGAIN at the end),
-  the speed (1X, 2X, 4X, in turn), NEXT SHOT and NEXT ROUND (NEXT SCREEN in a
-  run), each as tall as the aim buttons; with keys or a controller a plate
-  naming Enter/A, Up, Right, Down and Esc/B. The speed multiplies the time of
+  centre, where the demo's banner sits: PAUSE (PLAY, AGAIN at the end), the
+  speed (1X, 2X, 4X, in turn), NEXT SHOT and NEXT ROUND (NEXT SCREEN in a
+  run), each as tall as the aim buttons; EXIT apart from them, top centre
+  where a game's II is, so a child's tap meant for PAUSE never leaves. With
+  keys or a controller a plate naming Enter/A, Up, Right, Down and Esc/B.
+  Mute and the F1 overlay work as anywhere; a mute made while watching is
+  kept in memory and saved once the watch is over. The speed multiplies the time of
   everything the watch moves. NEXT SHOT and NEXT ROUND run the same steps
   fast and silent within one frame until the next shot is fired or the next
   round's first plate is up; paused, NEXT SHOT steps shot by shot. A run's
@@ -880,8 +895,10 @@ This follows the touch menus and §11.4's "reading it at a glance".
   mute included. A skip is silent.
 - **Screen.** Held on while a watch plays, as for a demo started from the
   menu (`DEMO_AWAKE_LIMIT` without input), let go while it is paused, as a
-  paused run is. Focus lost pauses the watch. Full frame rate: a 4× flight
-  at 30 fps stutters.
+  paused run is. Focus lost pauses the watch. Full frame rate while it
+  plays (a 4× flight at 30 fps stutters), `frame::IDLE_FPS` while paused or
+  at its end. A watch is shown, not played: it never asks for desktop
+  GameMode (`Game::active_play`).
 - **Not built:** PLAY AGAIN (a new run on the same seed and width) and COPY
   (the run line), which go with stage 2.
 
@@ -890,15 +907,19 @@ This follows the touch menus and §11.4's "reading it at a glance".
 - **The file** (`history/tests.rs`): the format pinned by a snapshot, every
   kind of line round-tripped, a property round trip for run lines from any
   epoch, any text read and read again unchanged, damaged lines dropped and
-  counted, the cap, a newer build's file, another epoch listed but refused,
-  and a record whose result or log was tampered with refused. A fuzz target
+  counted, a newer line format told apart, the caps per kind, the write
+  limit, a large file keeping its good lines, duplicates, a newer build's
+  file, another epoch listed but refused, and a record whose result or log
+  was tampered with refused. A fuzz target
   (`fuzz/fuzz_targets/history_file.rs`) runs in the weekly workflow.
 - **Watching** (`app/watch_tests.rs`): where runs and matches are recorded
   and where they are not; a watched run ends on the same `state_hash` as the
   run played, and a watched match on the same `match_log::state_hash`; no
   disk effect while watching, and everything kept the same afterwards; the
-  speeds; pause; NEXT SHOT and NEXT ROUND; AGAIN; a mismatched record
-  refused; the list on keys and touch.
+  speeds; pause; NEXT SHOT and NEXT ROUND; AGAIN; mute while watching; the
+  frame rate and GameMode of a paused or finished watch; a mismatched
+  record refused; the list on keys and touch. `backdrop/tests.rs` holds a
+  watch of a run and of a match to the layered renderer's flat frame.
 - **Render snapshots** (`render/watch.rs`): the list with keys and on a
   phone, the watch bar on both, the phone title's REPLAYS plate and the won
   plate's WATCH row.
@@ -933,14 +954,22 @@ This follows the touch menus and §11.4's "reading it at a glance".
 
 ### 9.7 Later stages (proposed)
 
-- **Stage 2: share codes.** A history line carried as a code, `SR` plus the
-  line in base32 with a check, the way a layout travels as `SL…` (§13.7):
-  COPY on a row, paste in seed entry to import it, PLAY AGAIN on its seed.
-  The line already says what it is and how to read it (its kind and line
-  format first, its epochs inside), so the code adds only the encoding. An
-  imported line from another epoch imports as a seed, or a match's result,
-  only. Open: how long a long run's code gets (a 60-shot run's line is about
-  500 characters), and whether a match's code should drop its aim help.
+- **Stage 2: share codes.** A history record carried as a code, `SR…`, the
+  way a layout travels as `SL…` (§13.7): COPY on a row, paste in seed entry
+  to import it, PLAY AGAIN on its seed. Not the stored line re-encoded:
+  base32 of the text would make a match on a map about 1,000–6,500
+  characters, the map's `SL…` text inside it encoded a second time. The
+  code needs a packed binary payload of its own (the kind, the line format
+  and the epochs, the seed and options as integers, the shots as packed
+  ticks) that embeds the map's layout bytes rather than its `SL` text,
+  with its own size limit, checked before anything is decoded. The stored
+  line stays the source: it already says what it is and how to read it
+  (its kind and line format first, its epochs inside), and
+  `history::Record::parse` already tells a newer line format
+  (`LineError::Newer`) from damage, so a code from a newer build can say
+  MADE BY A NEWER VERSION rather than "could not be read". An imported
+  record from another epoch imports as a seed, or a match's result, only.
+  Open: whether a match's code should drop its aim help.
 - **Stage 3: GIFs.** A short GIF of a shot or a round, rendered off screen
   from a replay by the same `render::frame` the game draws with (the buffer
   is already the native pixels, in sixteen colours), for sharing outside

@@ -328,9 +328,9 @@ write a file checks for the demo first. `app/demo_tests.rs` and the last test in
 
 ### Replays
 
-Every finished run, and every match won, is kept so it can be watched
-again (DESIGN §9): the last 20 of them, runs and matches in one list,
-newest first. REPLAYS on the title (`W`, d-pad up, or the plate under DEMO
+Every finished run, and every match played to the end, is kept so it can
+be watched again (DESIGN §9): the last 20 runs and the last 20 matches,
+shown as one list, newest first. REPLAYS on the title (`W`, d-pad up, or the plate under DEMO
 on a touchscreen) lists them with the date, against whom (`AI EASY`,
 `2 PLAYERS`), who won and on which map; tap a row, or choose it and press
 Enter, to watch it. WATCH on the end-of-run screen and on a won match's
@@ -338,8 +338,9 @@ plate does the same for what you just played, and comes back to that
 screen afterwards.
 
 A replay is the game itself playing the logged shots again, so it looks
-and sounds exactly as it did. The bar at the bottom has EXIT, PAUSE, the
-speed (1X, 2X, 4X), NEXT SHOT and NEXT ROUND (NEXT SCREEN in a run); with
+and sounds exactly as it did. The bar at the bottom has PAUSE, the speed
+(1X, 2X, 4X), NEXT SHOT and NEXT ROUND (NEXT SCREEN in a run), and EXIT
+sits on its own at the top, where the pause button is in a game; with
 keys or a controller, Enter or A pauses, Up changes speed, Right and Down
 skip, and Esc or B goes back. NEXT SHOT while paused steps through the shots
 one at a time. At the end, AGAIN plays it from the start.
