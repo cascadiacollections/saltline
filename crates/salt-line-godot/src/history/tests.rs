@@ -513,3 +513,24 @@ proptest! {
         prop_assert_eq!(again.records, h.records);
     }
 }
+
+#[test]
+fn a_record_too_long_to_read_back_is_never_written() {
+    let mut h = History::default();
+    h.push(run_record(7));
+    // A run so long its line passes MAX_LINE_CHARS: the next launch would
+    // read it as damaged and drop it, so it is not kept at all.
+    let mut long = run_record(8);
+    if let Kind::Run(r) = &mut long.kind {
+        while r.log.len() <= MAX_LINE_CHARS {
+            r.log.push_str(" 1:100:100");
+        }
+    }
+    assert_eq!(h.push(long), None);
+    assert_eq!(h.records.len(), 1);
+    // Whatever push writes, parse reads back whole.
+    let text = h.push(run_record(9)).unwrap();
+    let back = History::parse(&text);
+    assert_eq!(back.records, h.records);
+    assert_eq!(back.damaged, 0);
+}

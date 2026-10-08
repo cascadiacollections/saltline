@@ -656,8 +656,14 @@ impl History {
     /// fits [`MAX_FILE_CHARS`]. Returns the file's new text, or `None` when
     /// there is nothing to write: the same game is already listed (it is
     /// not added twice), or the file is a newer build's and must not be
-    /// written (the record is kept in memory, for this session).
+    /// written (the record is kept in memory, for this session). A record
+    /// whose line is longer than [`MAX_LINE_CHARS`] is not kept at all: the
+    /// next launch would read it as damaged and drop it, so a run that long
+    /// is watched from its result screen only, never from the list.
     pub fn push(&mut self, record: Record) -> Option<String> {
+        if record.to_line().trim_end().len() > MAX_LINE_CHARS {
+            return None;
+        }
         if self.records.iter().any(|r| r.same_game(&record)) {
             return None;
         }

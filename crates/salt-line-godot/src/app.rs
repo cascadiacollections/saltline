@@ -1490,7 +1490,7 @@ impl Game {
         self.unfocused = true;
         self.demo_unwatched();
         self.auto_pause();
-        self.flush_settings();
+        self.flush_settings_final();
         self.flush_draft();
         self.take_effects()
     }
@@ -1505,7 +1505,7 @@ impl Game {
     /// The window is closing or the node leaving the tree: a close is final.
     pub fn closing(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
-        self.flush_settings();
+        self.flush_settings_final();
         self.flush_draft();
         self.take_effects()
     }

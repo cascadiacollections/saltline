@@ -645,3 +645,18 @@ fn recording_the_same_match_twice_keeps_one() {
     assert!(history_writes(&fx).is_empty());
     assert_eq!(g.history.file.records.len(), 1);
 }
+
+#[test]
+fn a_mute_during_a_watch_survives_the_app_being_paused() {
+    let (mut g, _, _) = finished(9);
+    press(&mut g, Key::W);
+    press(&mut g, Key::M);
+    assert!(g.watching() && g.save.muted);
+    // A phone may kill the app once it is paused, watch or no watch.
+    let fx = g.app_paused(&[]);
+    assert!(
+        fx.contains(&Effect::Store(Store::Settings)),
+        "the mute was written as the app paused: {fx:?}"
+    );
+    assert!(!g.settings.dirty());
+}

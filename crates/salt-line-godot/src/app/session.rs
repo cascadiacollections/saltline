@@ -144,6 +144,21 @@ impl Game {
         }
     }
 
+    /// [`Self::flush_settings`] for the app being paused or closed, when it
+    /// may never run again. A watch keeps a mute pending (nothing is written
+    /// while one plays), but the save holds only the player's settings, which
+    /// a watch changes only by that mute, so here it is written: a phone may
+    /// kill the paused app before the watch ends. The demo still keeps its
+    /// change for after it.
+    pub(super) fn flush_settings_final(&mut self) {
+        if self.in_demo() {
+            return;
+        }
+        if self.settings.take() {
+            self.fx.push(Effect::Store(Store::Settings));
+        }
+    }
+
     /// Ask for the save to be written for a settings change. During the
     /// attract demo the change is kept pending instead, for after it.
     pub(super) fn write_settings(&mut self) {
