@@ -1243,6 +1243,7 @@ impl Game {
             slot,
             code: code.clone(),
             origin: ed.draft.from.clone(),
+            tail: None,
         });
         let replaced = old.is_some_and(|o| o.code != code);
         self.write_slots(

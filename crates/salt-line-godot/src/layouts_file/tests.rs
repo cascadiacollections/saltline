@@ -17,6 +17,7 @@ fn slots_round_trip_in_slot_order() {
         slot: 7,
         code: code(1),
         origin: None,
+        tail: None,
     });
     s.put(SlotEntry {
         slot: 2,
@@ -25,6 +26,7 @@ fn slots_round_trip_in_slot_order() {
             text: "DUNE".into(),
             round: 1,
         }),
+        tail: None,
     });
     let text = s.serialize();
     assert!(text.starts_with("layouts 1\nlayout 2 SL"), "{text}");
@@ -38,6 +40,7 @@ fn slots_round_trip_in_slot_order() {
         slot: 2,
         code: code(3),
         origin: None,
+        tail: None,
     });
     assert_eq!(old.map(|e| e.code), Some(code(2)));
     assert_eq!(s.entries.len(), 2);
@@ -52,26 +55,48 @@ fn slots_round_trip_in_slot_order() {
 fn what_this_build_cannot_read_is_kept() {
     let newer_code = "SLZZZZZZZZ";
     let text = format!(
-        "layouts 1\nlayout 3 {newer_code}\nlayout 3 {}\nchallenge 1 SL00\nlayout 99 {}\nlayout 4 {} meadow\n",
+        "layouts 1\nlayout 3 {newer_code}\nlayout 3 {}\nchallenge 1 SL00\nlayout 99 {}\nlayout 4 {} meadow green\nlayout 6 banana\n",
         code(1),
         code(2),
         code(3),
     );
     let s = Slots::parse(&text);
-    assert_eq!(s.entries.len(), 1);
+    assert_eq!(s.entries.len(), 2);
     assert_eq!(s.get(3).unwrap().code, newer_code);
     assert!(s.get(3).unwrap().layout().is_err(), "kept, shown dimmed");
+    // An origin this build cannot read keeps the layout, its words kept.
+    let four = s.get(4).unwrap();
+    assert_eq!(
+        (four.origin.as_ref(), four.tail.as_deref()),
+        (None, Some("meadow green"))
+    );
     assert_eq!(s.kept.len(), 4, "{:?}", s.kept);
     assert!(!s.from_the_future);
     let again = Slots::parse(&s.serialize());
     assert_eq!(again, s);
-    assert!(Slots::parse("layouts 2\nlayout 1 SL00\n").from_the_future);
+    assert!(s.serialize().contains(" meadow green\n"));
+    // A kept line that names a slot holds it: a save never sits beside it.
+    assert!(s.taken(6));
+    assert_eq!(s.free(), Some(1));
+    let mut full = Slots::parse(&text);
+    for n in [1, 2, 5] {
+        full.put(SlotEntry {
+            slot: n,
+            code: code(n as u64),
+            origin: None,
+            tail: None,
+        });
+    }
+    assert_eq!(full.free(), Some(7), "3, 4 and 6 are taken");
+    let future = Slots::parse("layouts 2\nlayout 1 SL00\n");
+    assert!(future.from_the_future, "shown, never written");
     // A file with no header still gives up its slots.
     let bare = Slots::parse(&format!("layout 5 {}\n", code(4)));
     assert_eq!(bare.entries.len(), 1);
     assert!(!sound(&format!("layout 5 {}\n", code(4))));
     assert!(!sound("layouts 1\0\n"));
-    assert_eq!(Slots::parse("\0"), Slots::default());
+    assert!(Slots::parse("\0").damaged, "never written over");
+    assert!(Slots::parse("\0").entries.is_empty());
 }
 
 #[test]
@@ -108,7 +133,10 @@ fn a_draft_survives_its_line() {
     };
     let line = blank.to_line().unwrap();
     assert!(line.starts_with("draft 1 0 - - SL"), "{line}");
-    assert_eq!(SavedDraft::parse(&line), Ok(blank));
+    assert_eq!(SavedDraft::parse(&line), Ok(blank.clone()));
+    // An origin a newer build wrote is dropped, the draft kept.
+    let odd = line.replacen("draft 1 0 - -", "draft 1 0 - comet:7", 1);
+    assert_eq!(SavedDraft::parse(&odd), Ok(blank));
 }
 
 #[rstest::rstest]
@@ -118,7 +146,6 @@ fn a_draft_survives_its_line() {
 #[case::mirror_not_a_flag("draft 1 2 - - SLX\n")]
 #[case::slot_zero("draft 1 1 0 - SLX\n")]
 #[case::slot_too_big("draft 1 1 33 - SLX\n")]
-#[case::bad_origin("draft 1 1 - nowhere SLX\n")]
 #[case::not_a_code("draft 1 1 - - banana\n")]
 #[case::bad_checksum("draft 1 1 - - SL0000000\n")]
 #[case::two_lines("draft 1 1 - - SLX\ndraft 1 1 - - SLX\n")]

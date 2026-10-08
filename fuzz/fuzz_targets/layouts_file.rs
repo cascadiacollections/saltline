@@ -18,7 +18,11 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let slots = Slots::parse(text);
-    assert_eq!(Slots::parse(&slots.serialize()), slots);
+    // A file from a newer build is never written, so only this build's
+    // need survive being written.
+    if !slots.from_the_future && !slots.damaged {
+        assert_eq!(Slots::parse(&slots.serialize()), slots);
+    }
     for e in &slots.entries {
         let _ = e.layout();
     }

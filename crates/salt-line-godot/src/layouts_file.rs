@@ -88,6 +88,10 @@ pub struct SlotEntry {
     pub code: String,
     /// Where it was forked from, if the editor knew.
     pub origin: Option<Origin>,
+    /// What followed the code on its line, verbatim, when this build could
+    /// not read it as an origin (a newer build's, or a hand edit): kept and
+    /// written back, never a reason to lose the layout before it.
+    pub tail: Option<String>,
 }
 
 impl SlotEntry {
@@ -106,6 +110,10 @@ pub struct Slots {
     pub kept: Vec<String>,
     /// The header is from a newer build: shown, never written.
     pub from_the_future: bool,
+    /// The file could not be read at all (too large, or with NULs a torn
+    /// write leaves): never written over, so what is in it is not lost to
+    /// the next save.
+    pub damaged: bool,
 }
 
 impl Slots {
@@ -114,6 +122,7 @@ impl Slots {
     pub fn parse(text: &str) -> Slots {
         let mut out = Slots::default();
         if text.len() > MAX_FILE_CHARS || text.contains('\0') {
+            out.damaged = true;
             return out;
         }
         let mut header_seen = false;
@@ -156,6 +165,9 @@ impl Slots {
             if let Some(o) = &e.origin {
                 s.push(' ');
                 s.push_str(&o.token());
+            } else if let Some(t) = &e.tail {
+                s.push(' ');
+                s.push_str(t);
             }
             s.push('\n');
         }
@@ -186,7 +198,18 @@ impl Slots {
 
     /// The lowest empty slot, if any is left.
     pub fn free(&self) -> Option<u8> {
-        (1..=MAX_SLOTS).find(|s| self.get(*s).is_none())
+        (1..=MAX_SLOTS).find(|s| !self.taken(*s))
+    }
+
+    /// Whether `slot` holds anything: a layout, or a kept line that names
+    /// it (a second line for a slot, or one whose code is not shaped like a
+    /// code), which a save there would otherwise sit beside.
+    pub fn taken(&self, slot: u8) -> bool {
+        self.get(slot).is_some()
+            || self.kept.iter().any(|k| {
+                let mut f = k.split(' ');
+                f.next() == Some("layout") && f.next().and_then(canonical::<u8>) == Some(slot)
+            })
     }
 }
 
@@ -204,17 +227,17 @@ fn parse_slot_line(line: &str) -> Option<SlotEntry> {
     if !code_like(code) {
         return None;
     }
-    let origin = match f.next() {
-        None => None,
-        Some(t) => Some(Origin::parse(t)?),
+    let rest: Vec<&str> = f.collect();
+    let origin = match rest.as_slice() {
+        [t] => Origin::parse(t),
+        _ => None,
     };
-    if f.next().is_some() {
-        return None;
-    }
+    let tail = (origin.is_none() && !rest.is_empty()).then(|| rest.join(" "));
     Some(SlotEntry {
         slot,
         code: code.to_string(),
         origin,
+        tail,
     })
 }
 
@@ -322,9 +345,11 @@ impl SavedDraft {
                 Some(s)
             }
         };
+        // An origin this build cannot read (a newer build's) is dropped,
+        // never the draft with it.
         let from = match f.next().ok_or(Stale::Damaged)? {
             "-" => None,
-            t => Some(Origin::parse(t).ok_or(Stale::Damaged)?),
+            t => Origin::parse(t),
         };
         let code = f.next().ok_or(Stale::Damaged)?;
         if f.next().is_some() || !code_like(code) {
