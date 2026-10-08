@@ -35,6 +35,17 @@ second. See RELEASING.md for the release steps.
   `SaltLine-sbom.cdx.json`, a CycloneDX list of everything inside: every Rust
   crate, the Godot version and the Linux portal bridge. RELEASING.md,
   "Verifying a download", shows how.
+- Replays: every finished run and every won match is kept (the last 20 of
+  each) to watch again. REPLAYS on the title (`W`, d-pad up, or the plate
+  under DEMO) lists them; WATCH on the end-of-run screen and on a won
+  match's plate plays what you just played. The game plays the shots again
+  itself, at 1x, 2x or 4x, with pause, NEXT SHOT and NEXT ROUND, and
+  nothing you keep changes while you watch (#75).
+- Star up to five favourite replays so they are never pushed off the list:
+  the star beside a row, `S` or Y on the chosen row, or STAR at the end of
+  a replay. Starred replays are listed first and don't count toward the
+  20 runs and 20 matches; taking a star off gives the replay another 20
+  games before it can go (#77).
 - For developers: the cross-platform determinism check now also runs on Android
   (x86_64 emulator) and iOS (arm64 simulator) in CI, and `just android-digest`
   runs it on an attached Android phone as arm64-v8a.

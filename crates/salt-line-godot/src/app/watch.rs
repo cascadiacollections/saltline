@@ -120,7 +120,10 @@ pub const LIST_ROWS_KEYS: usize = 10;
 /// What a watch frame shows that input or a step can change, for
 /// `FrameState`: paused, the speed, ended, the next entry; whether it is
 /// starred, and a star refused.
-pub(crate) type Fingerprint = ((bool, usize, bool, usize), (bool, bool));
+pub(crate) type Fingerprint = (
+    (bool, usize, bool, usize),
+    (bool, Option<crate::history::StarError>),
+);
 
 /// The finished runs and matches, as the history file has them, and where
 /// the REPLAYS list stands.
@@ -128,7 +131,7 @@ pub(crate) type Fingerprint = ((bool, usize, bool, usize), (bool, bool));
 pub(crate) struct HistoryState {
     /// The file as last read or written, newest last.
     pub(crate) file: crate::history::History,
-    /// The list's chosen row, counted newest first.
+    /// The list's chosen row, counted from the top (`History::listed`).
     pub(crate) focus: usize,
     /// The run on the result screen, if it was recorded: its WATCH.
     pub(crate) last_run: Option<Record>,
@@ -181,9 +184,10 @@ pub(crate) struct Watch {
     pub(crate) show: Watchable,
     /// The record it was checked from: what STAR at its end stars.
     pub(crate) record: Record,
-    /// STAR at the end was refused: there are `MAX_STARS` already. Said on
-    /// the bar, where a status note is not shown.
-    pub(crate) stars_full: bool,
+    /// Why STAR at the end was refused (`MAX_STARS` already, or a record
+    /// too long to keep). Said on the bar, where a status note is not
+    /// shown.
+    pub(crate) star_refused: Option<crate::history::StarError>,
     /// Index into [`SPEEDS`].
     pub(crate) speed: usize,
     pub(crate) paused: bool,
@@ -284,9 +288,12 @@ impl Game {
 
     // --------------------------------------------------------------- list
 
-    /// The REPLAYS list, on its newest row.
+    /// The REPLAYS list, its chosen row the newest one not starred (the
+    /// game just played, below the favourites), or the top one if all are
+    /// starred.
     pub(crate) fn open_replays(&mut self) {
-        self.history.focus = 0;
+        let file = &self.history.file;
+        self.history.focus = file.listed().position(|r| !r.starred).unwrap_or(0);
         self.mode = Mode::Replays;
     }
 
@@ -316,13 +323,15 @@ impl Game {
         if let Some(i) = starred {
             let index = page * rows + i as usize;
             if index < n {
-                self.star_listed(index);
+                // The page stays put under the finger: the row moves, the
+                // list does not turn a page after it.
+                self.star_listed(index, false);
             }
             return;
         }
         if self.action_pressed(Action::Star) {
             if n > 0 {
-                self.star_listed(self.history.focus);
+                self.star_listed(self.history.focus, true);
             }
             return;
         }
@@ -369,10 +378,12 @@ impl Game {
         self.watch_record(&record);
     }
 
-    /// Star or unstar the list's row `index`, and write the file. The
-    /// chosen row follows it to its new place (the starred are listed
-    /// first), so it stays the one marked.
-    fn star_listed(&mut self, index: usize) {
+    /// Star the list's row `index`, or take its star off, and write the
+    /// file. With keys or a controller (`follow`) the chosen row follows it
+    /// to its new place (the starred are listed first), so it stays the one
+    /// marked; a tap on a row's star leaves the chosen row, and so the page,
+    /// where it is.
+    fn star_listed(&mut self, index: usize, follow: bool) {
         let Some(record) = self.history.file.listed().nth(index).cloned() else {
             return;
         };
@@ -380,21 +391,30 @@ impl Game {
         match self.history.file.set_star(&record, on) {
             Ok(text) => {
                 self.play(Sound::Ui);
-                self.note(if on {
-                    "STARRED - THIS ONE STAYS".into()
-                } else {
-                    "STAR TAKEN OFF".into()
-                });
+                // A newer build's file is never written: the star lasts
+                // until the game is closed, and the note says so.
+                let unsaved = self.history.file.from_the_future;
+                self.note(
+                    match (on, unsaved) {
+                        (true, false) => "STARRED - THIS ONE STAYS",
+                        (false, false) => "STAR TAKEN OFF",
+                        (true, true) => "STARRED UNTIL THE GAME CLOSES",
+                        (false, true) => "STAR OFF UNTIL THE GAME CLOSES",
+                    }
+                    .into(),
+                );
                 if let Some(text) = text {
                     self.fx.push(Effect::History(text));
                 }
-                if let Some(at) = self
+                let n = self.history.file.records.len();
+                let at = self
                     .history
                     .file
                     .listed()
-                    .position(|r| r.same_game(&record))
-                {
-                    self.history.focus = at;
+                    .position(|r| r.same_game(&record));
+                match at {
+                    Some(at) if follow => self.history.focus = at,
+                    _ => self.history.focus = self.history.focus.min(n.saturating_sub(1)),
                 }
                 self.fx.push(Effect::Redraw);
             }
@@ -411,12 +431,11 @@ impl Game {
         let record = w.record.clone();
         let on = !self.history.file.is_starred(&record);
         let result = self.history.file.set_star(&record, on);
-        let full = matches!(result, Err(crate::history::StarError::Full));
         if let Ok(Some(_)) = result {
             self.history.unsaved = true;
         }
         if let Some(w) = self.watch.as_mut() {
-            w.stars_full = full;
+            w.star_refused = result.err();
         }
         self.play(Sound::Ui);
         self.fx.push(Effect::Redraw);
@@ -450,12 +469,15 @@ impl Game {
         }
     }
 
-    /// WATCH on a won match's plate: the match on screen.
+    /// WATCH on a won match's plate: the match on screen. Only a player's
+    /// match kept on disk: a dev `--layout` match is never recorded, so it
+    /// is neither watched nor, from its watch's end, starred into the list.
     pub(super) fn watch_live_match(&mut self) {
         let record = self
             .versus
             .live
             .as_ref()
+            .filter(|vs| vs.kept)
             .and_then(|vs| self.match_record(vs, self.versus.help));
         if let Some(record) = record {
             self.watch_record(&record);
@@ -497,7 +519,7 @@ impl Game {
         self.watch = Some(Watch {
             show,
             record,
-            stars_full: false,
+            star_refused: None,
             speed: 0,
             paused: false,
             ended: false,
@@ -525,7 +547,7 @@ impl Game {
         w.wait = 0.0;
         w.cue = None;
         w.pending = None;
-        w.stars_full = false;
+        w.star_refused = None;
         let show = w.show.clone();
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -951,7 +973,7 @@ impl Game {
         self.watch.as_ref().map(|w| {
             (
                 (w.paused, w.speed, w.ended, w.cursor),
-                (self.history.file.is_starred(&w.record), w.stars_full),
+                (self.history.file.is_starred(&w.record), w.star_refused),
             )
         })
     }

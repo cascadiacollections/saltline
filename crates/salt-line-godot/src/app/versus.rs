@@ -864,6 +864,9 @@ impl Game {
         // quits at once. Anything else asks twice.
         let won = stage == Stage::Result && matches!(vs.duel.phase, versus::Phase::MatchOver(_));
         let quit_armed = vs.quit_armed;
+        // WATCH only for a player's match kept on disk (DESIGN §9.4): a dev
+        // `--layout` match is never recorded.
+        let kept = vs.kept;
         // Between rounds of a match against the AI, TITLE is not offered:
         // a child playing alone mashing the plate (or Y, which toggles the
         // AI on the pre-match screen) would throw the match away. Leaving
@@ -921,7 +924,7 @@ impl Game {
                     self.set_quit_armed(None);
                     self.play(Sound::Ui);
                     self.after_versus_result();
-                } else if won && self.action_pressed(Action::Watch) {
+                } else if won && kept && self.action_pressed(Action::Watch) {
                     // WATCH the match just won, then back to this plate.
                     self.watch_live_match();
                 } else if round_title && self.action_pressed(Action::Replay) {

@@ -51,12 +51,14 @@ use crate::input::Wb;
 const BAR_H: i32 = 18;
 /// Pixels between the bar's buttons.
 const BAR_GAP: i32 = 3;
-/// A list row's star button: as wide as a page button, as tall as a row's
-/// plate.
+/// A list row's star button: as wide as a page button (22 by 13), as tall
+/// as a row's touch target (15, a little more than its 13-row plate).
 const STAR_W: i32 = 22;
-const STAR_H: i32 = 13;
+const STAR_H: i32 = 15;
 /// Pixels between a row's plate and its star button: about a fingertip at
-/// a phone's scale, so a tap on one is not on the other.
+/// a phone's scale, so a tap on one is not on the other. Never less: where
+/// the column would run into the screen's edge (a narrow buffer, a long
+/// row, a cutout's pad), the rows move left instead.
 const STAR_GAP: i32 = 12;
 
 /// The star drawn on buttons and before a starred row, 7 by 7: filled, and
@@ -167,16 +169,18 @@ impl Painter<'_> {
                 .map(|r| crate::font::small_width(&row_text(r).0) as i32 + 20)
                 .max()
                 .unwrap_or(0);
-            let star_x = ((self.canvas.w + widest) / 2 + STAR_GAP)
-                .min(self.canvas.w - STAR_W - 3 - g.display.corner_pad.0);
+            let want = (self.canvas.w + widest) / 2 + STAR_GAP;
+            let star_x = want.min(self.canvas.w - STAR_W - 3 - g.display.corner_pad.0);
+            // The rows move left by what the column could not.
+            let shift = want - star_x;
             for (i, record) in records.iter().enumerate().skip(page * rows).take(rows) {
                 let (text, watchable) = row_text(record);
                 let c = if watchable { fg } else { dim };
                 let row = (i - page * rows) as u8;
                 if plated {
                     let star = Action::Wb(Wb::RowStar(row));
-                    self.star_button(star_x, y - 5, STAR_W, STAR_H + 2, record.starred, star);
-                    y = self.menu_row(y, Action::Wb(Wb::Row(row)), "", &text, c);
+                    self.star_button(star_x, y - 5, STAR_W, STAR_H, record.starred, star);
+                    y = self.menu_row_at(y, Action::Wb(Wb::Row(row)), &text, c, -shift);
                 } else {
                     let (marker, c) = if i == focus {
                         (">  ", alert)
@@ -244,7 +248,7 @@ impl Painter<'_> {
         };
         let (paused, ended, rate, duel) = (w.paused, w.ended, w.rate(), w.duel());
         let starred = self.g.history.file.is_starred(&w.record);
-        let stars_full = w.stars_full;
+        let refused = w.star_refused;
         let pal = self.pal;
         // The secondary tone: `SKY_LO`, but `ROCK` over a duel, where
         // `SKY_LO` is the right player's colour (DESIGN §11.4).
@@ -320,8 +324,8 @@ impl Painter<'_> {
                 }
                 x += bw + BAR_GAP;
             }
-            if ended && stars_full {
-                let note = crate::history::StarError::Full.note();
+            if let Some(why) = refused.filter(|_| ended) {
+                let note = why.note();
                 let tw = crate::font::small_width(&note) as i32 + 12;
                 let ny = y - 15;
                 self.canvas.plate((cw - tw) / 2, ny, tw, 11, pal);
@@ -330,8 +334,8 @@ impl Painter<'_> {
             return;
         }
         let label = |a| self.g.input_label(a);
-        let state = if ended && stars_full {
-            crate::history::StarError::Full.note()
+        let state = if let Some(why) = refused.filter(|_| ended) {
+            why.note()
         } else if ended && starred {
             "END OF REPLAY  -  STARRED".to_string()
         } else if ended {
@@ -359,7 +363,7 @@ impl Painter<'_> {
                         "{}  {}",
                         label(Action::Star),
                         if starred {
-                            "UNSTAR"
+                            "TAKE STAR OFF"
                         } else {
                             "STAR - KEEP THIS ONE"
                         }
@@ -494,8 +498,9 @@ mod tests {
     fn the_replays_list_is_pinned() {
         let mut g = game(false);
         star_the_run(&mut g);
+        // Opened on the newest row not starred: the match, under the run.
         g.open_replays();
-        press(&mut g, Key::Down);
+        assert_eq!(g.history.focus, 1);
         let (keys, buttons) = draw(&g);
         assert!(buttons.is_empty());
         insta::assert_snapshot!("replays_keys", keys.palette_text(&Palette::default()));
@@ -527,6 +532,80 @@ mod tests {
             .unwrap();
         assert!(stars[0].rect.x - widest >= STAR_GAP);
         insta::assert_snapshot!("replays_phone", phone.palette_text(&Palette::default()));
+    }
+
+    /// The star column keeps its gap from the widest row whatever the
+    /// buffer's width (320 to 400) and a cutout's pad: the rows move left
+    /// rather than the gap shrink. The widest row a list can show is 53
+    /// characters.
+    #[test]
+    fn the_star_column_keeps_its_gap_at_every_width() {
+        use crate::history::{DuelRecord, Kind};
+        let worst = Record::new(
+            20_726,
+            Kind::Duel(DuelRecord {
+                ai: None,
+                ground: Ground::Map("ABCDEFGHIJKL".into()),
+                winner: crate::versus::Side::Right,
+                rounds: [1, 2],
+                line: format!("match 1 {} 1 1 320 1 0 0 0", salt_line_sim::SIM_EPOCH + 1),
+            }),
+        );
+        assert_eq!(
+            row_text(&worst).0,
+            "SEP 30  2 PLAYERS  RIGHT WON 1-2  ABCDEFGHIJKL  NEWER"
+        );
+        assert_eq!(row_text(&worst).0.len(), 53);
+        let mut widths = Vec::new();
+        for window in [
+            (1280, 720),
+            (1600, 720),
+            (2400, 1080),
+            (2000, 900),
+            (2560, 1080),
+        ] {
+            for pad in [0, 10, 24] {
+                let mut g = Game::new(true, Save::default());
+                g.fit_display(window, (0, 0));
+                g.display.corner_pad = (pad, 6);
+                g.history.file.push(worst.clone());
+                g.history
+                    .file
+                    .push(Record::run(20_733, &finished_run(9, 320, 5), false));
+                g.open_replays();
+                let (_, buttons) = draw(&g);
+                laid_out(&g, &buttons);
+                let rect = |a: Wb| {
+                    buttons
+                        .iter()
+                        .find(|b| b.action == Action::Wb(a))
+                        .unwrap()
+                        .rect
+                };
+                let widest = (0..2)
+                    .map(|i| rect(Wb::Row(i)))
+                    .map(|r| r.x + r.w)
+                    .max()
+                    .unwrap();
+                let star = rect(Wb::RowStar(0));
+                assert!(
+                    star.x - widest >= STAR_GAP,
+                    "w {} pad {pad}",
+                    g.display.buffer_w
+                );
+                assert!(
+                    star.x + star.w <= g.display.buffer_w - pad,
+                    "w {} pad {pad}",
+                    g.display.buffer_w
+                );
+                assert!(rect(Wb::Row(0)).x >= 0);
+                widths.push(g.display.buffer_w);
+            }
+        }
+        assert!(
+            widths.contains(&320) && widths.iter().any(|&w| w >= 390),
+            "{widths:?}"
+        );
     }
 
     /// A replay played to its end.
@@ -571,7 +650,7 @@ mod tests {
         laid_out(&g, &buttons);
         insta::assert_snapshot!("watch_end_phone", phone.palette_text(&Palette::default()));
         if let Some(w) = g.watch.as_mut() {
-            w.stars_full = true;
+            w.star_refused = Some(crate::history::StarError::Full);
         }
         let (full, buttons) = draw(&g);
         laid_out(&g, &buttons);

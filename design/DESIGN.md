@@ -761,8 +761,9 @@ file's, plain text the player owns (README, "Nothing for sale").
   (`history::MAX_RUNS`) and the newest 20 matches (`MAX_MATCHES`), each
   kind capped on its own: a new run pushes out the oldest run, a new match
   the oldest match, so an afternoon of matches never costs the last run.
-  They are shown as one list, newest first: a family's "what did we play
-  lately", read top down by a child, with no choice to make first. The
+  They are shown as one list, the starred first, then the rest newest
+  first (newest by when each was added to the file): a family's "what did
+  we play lately", read top down by a child, with no choice to make first. The
   same game is never recorded twice (the same seed and log, or the same
   match line). The proposed 500 plus every run on the board waits for PLAY
   AGAIN and sharing (§9.7), when old runs are worth more than a look.
@@ -775,17 +776,26 @@ file's, plain text the player owns (README, "Nothing for sale").
   hand rather than a second list, a bound on the file (at most 45 records),
   and fewer than the six rows of a phone's page, so with the starred listed
   first the newest game is still on the first page. A sixth is refused:
-  `5 STARS - UNSTAR ONE FIRST`. Unstarring drops nothing on the spot (a
-  tap by mistake can be undone); the record takes its turn among the
-  unstarred again and goes with the next game of its kind, or at the next
-  launch, if it is then past its kind's cap. A star is a write of the file:
+  `5 STARS - TAKE ONE OFF FIRST`. **Taking a star off counts as adding
+  the replay again (owner decision, October 2026):** it moves to the end
+  of the file, the newest place of its kind, so it survives 20 more games
+  of its kind, across launches too, since the file's order is what is
+  kept. Its line, date included, is untouched. In the list it drops from
+  the starred at the top to just below them, the first of the rest, where
+  the eye already is, so a tap by mistake is easy to undo; its date stays
+  the day it was played, so that row's date can be older than the one
+  below it. Like any game added, it may push the oldest unstarred one of
+  its kind past the cap. A star is a write of the file:
   from the list at once; from a replay's end once the watch is over, or as
   the app is paused or closed (§9.4).
 - **Older builds and stars.** A build from before stars reads `star` as a
   damaged line and drops it, and its next write would apply the caps to
   the starred records and lose them. So a file with a star says
-  `history 2`: such a build reads it as a newer build's file, lists every
-  record (unstarred), and never writes it. The cost, only while something
+  `history 2`: such a build reads it as a newer build's file and never
+  writes it. It still applies the caps to what it read, in memory, so its
+  list shows only the newest 20 of each kind, without stars: an older
+  starred replay can be missing from that build's list, though it stays in
+  the file and this build shows it again. The cost, only while something
   is starred: games finished on that older build are kept for its session
   only. With no star the header stays `history 1`, which every build reads
   and writes.
@@ -890,7 +900,8 @@ This follows the touch menus and §11.4's "reading it at a glance".
 
 - **REPLAYS** from the title: `W` (pad d-pad up) and a keyed row; on a
   touchscreen a plate under DEMO in the top-left corner, since the phone
-  title has no row to spare (§11.6). A list, newest first, one line each:
+  title has no row to spare (§11.6). A list, the starred first, then
+  newest first, one line each:
   `OCT 8  AI EASY  YOU WON 2-1  MESA`, `OCT 7  RUN  9 SCREENS  SEED 1234`,
   `OCT 7  2 PLAYERS  LEFT WON 2-0`. Rows from another epoch are dimmed and
   marked. On a touchscreen a row is a plate, six to a page, with `<` `>`
@@ -901,12 +912,17 @@ This follows the touch menus and §11.4's "reading it at a glance".
   the game just played is still on the first page. On a touchscreen each
   row has a star button of its own, a filled star when starred and a hollow
   one when not, in a column to the right of the rows, 12 pixels from the
-  widest (about a fingertip on a phone), as tall as a row's plate, so a tap
-  meant to watch a row does not star it. With keys or a controller `S`
-  (pad Y, the `star` binding) stars or unstars the chosen row, a starred
-  row has a star in front of it, and the hint says `S  STAR`. The chosen
-  row follows the record to its new place; the status line says `STARRED -
-  THIS ONE STAYS` or `STAR TAKEN OFF`.
+  widest (about a fingertip on a phone; never less: at a narrow width or
+  with a cutout's pad the rows move left instead), 22 by 15, as tall as a
+  row's touch target, so a tap meant to watch a row does not star it. A
+  tap on a star leaves the page where it is, even if the row moves to
+  another. With keys or a controller `S` (pad Y, the `star` binding) stars
+  the chosen row or takes its star off, a starred row has a star in front
+  of it, and the hint says `S  STAR`; the chosen row follows the record to
+  its new place. The list opens on the newest row not starred, the game
+  just played, rather than on a favourite. The status line says `STARRED -
+  THIS ONE STAYS` or `STAR TAKEN OFF` (in a newer build's file, which is
+  never written, `STARRED UNTIL THE GAME CLOSES`).
 - **WATCH** on the end-of-run screen (OUT OF SHELLS), for a run kept on disk,
   and on a won match's plate, under REMATCH. The watch comes back to the
   screen it started from, which is just as it was.
@@ -928,14 +944,16 @@ This follows the touch menus and §11.4's "reading it at a glance".
   plate, without buttons.
 - **STAR at the end** ("keep this one"): at a replay's end the bar gains
   STAR after AGAIN and the speed (STARRED, lit, once set), and the keys'
-  plate says `S  STAR - KEEP THIS ONE` (`UNSTAR` once set). A won match
-  watched from its own plate is not recorded until the plate is left, so
-  starring it records it now, starred; leaving the plate later finds it
-  already listed. Nothing may be written while a watch runs, so the star is
+  plate says `S  STAR - KEEP THIS ONE` (`S  TAKE STAR OFF` once set). A
+  won match watched from its own plate is not recorded until the plate is
+  left, so starring it records it now, starred; leaving the plate later
+  finds it already listed. Only a player's match kept on disk offers WATCH
+  at all: a dev `--layout` match is never recorded, nor starred into the
+  list. Nothing may be written while a watch runs, so the star is
   set in memory and the file written when the watch ends, or as the app is
   paused or closed (a phone may kill a paused app before the watch ends),
-  as a mute is. Five starred already: a plate over the bar says so, since
-  a watch shows no status line.
+  as a mute is. Five starred already, or a run too long to keep: a plate
+  over the bar says so, since a watch shows no status line.
 - **Nothing kept changes.** The demo's two rules (§12.3): the player's run,
   versus state and buffer are set aside whole and put back, and every disk
   write checks `Game::spectating` (the demo or a watch). A backstop in the
@@ -965,7 +983,8 @@ This follows the touch menus and §11.4's "reading it at a glance".
   file, another epoch listed but refused, and a record whose result or log
   was tampered with refused. Stars: exempt from the caps, the unstarred
   trimmed first, the limit (and a hand-made file over it), listed first,
-  unstarring dropping nothing on the spot, the round trip (the record's
+  a star taken off counting as added again (across a launch too), a `star`
+  line with no record after it counted as damage, the round trip (the record's
   line unchanged, the header 2 only while starred), what an older build
   makes of a starred file, and starring a game not yet listed. A fuzz target
   (`fuzz/fuzz_targets/history_file.rs`) runs in the weekly workflow.
@@ -978,12 +997,16 @@ This follows the touch menus and §11.4's "reading it at a glance".
   record refused; the list on keys and touch; stars from the list (keys and
   a row's star button, the row still watching), the sixth refused, STAR at a
   replay's end written only after the watch or as the app is paused or
-  closed, a won match starred from its replay, and a starred run outlasting
-  25 newer ones. `backdrop/tests.rs` holds a
+  closed, a won match starred from its replay, a starred run outlasting
+  25 newer ones, the list opening on the newest row not starred, a tap on
+  a star keeping the page, a newer build's file saying the star lasts the
+  session, a run too long to keep refused at a replay's end, and no WATCH
+  for a match not kept on disk. `backdrop/tests.rs` holds a
   watch of a run and of a match to the layered renderer's flat frame.
 - **Render snapshots** (`render/watch.rs`): the list with keys and on a
   phone (a starred row on each, the phone's star column clear of the
-  rows), the watch bar on both, a replay's end with STAR on both and the
+  rows, and kept at every width from 320 to 400 with the worst-case
+  53-character row), the watch bar on both, a replay's end with STAR on both and the
   five-stars plate, the phone title's REPLAYS plate and the won plate's
   WATCH row.
 - **Golden runs:** `crates/salt-line-sim/tests/golden_runs.txt` holds a few

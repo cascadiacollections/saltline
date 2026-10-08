@@ -712,12 +712,13 @@ fn the_star_key_stars_the_chosen_row_and_writes_the_file() {
     press(&mut g, Key::Enter);
     assert_eq!(g.play.run.as_ref().unwrap().run_seed, 9);
     press(&mut g, Key::Escape);
-    // S again takes the star off: back in its place by date.
+    // S again takes the star off: it counts as just added, so it stays at
+    // the top, the first of the rest, and the chosen row with it.
     let fx = press(&mut g, Key::S);
     assert_eq!(history_writes(&fx).len(), 1);
     assert_eq!(g.history.file.stars(), 0);
-    assert_eq!(listed_seeds(&g), [13, 11, 9]);
-    assert_eq!(g.history.focus, 2);
+    assert_eq!(listed_seeds(&g), [9, 13, 11]);
+    assert_eq!(g.history.focus, 0);
     assert_eq!(g.status, "STAR TAKEN OFF");
 }
 
@@ -733,7 +734,7 @@ fn a_sixth_star_is_refused_plainly() {
     g.history.focus = g.history.file.records.len() - 1;
     let fx = press(&mut g, Key::S);
     assert!(history_writes(&fx).is_empty());
-    assert_eq!(g.status, "5 STARS - UNSTAR ONE FIRST");
+    assert_eq!(g.status, "5 STARS - TAKE ONE OFF FIRST");
     assert_eq!(g.history.file.stars(), crate::history::MAX_STARS);
 }
 
@@ -879,4 +880,110 @@ fn a_starred_run_outlasts_more_than_twenty_newer_ones() {
     assert!(read.is_starred(&first));
     assert_eq!(read.records.len(), crate::history::MAX_RUNS + 1);
     assert_eq!(read.listed().next().unwrap().same_game(&first), true);
+}
+
+#[test]
+fn the_list_opens_on_the_game_just_played_not_a_favourite() {
+    let mut g = listed_three();
+    // Seed 9, the oldest, starred: listed first.
+    let nine = g.history.file.listed().nth(2).unwrap().clone();
+    g.history.file.set_star(&nine, true).unwrap();
+    press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Title);
+    press(&mut g, Key::W);
+    assert_eq!(listed_seeds(&g), [9, 13, 11]);
+    assert_eq!(g.history.focus, 1, "the newest not starred: 13");
+    press(&mut g, Key::Enter);
+    assert_eq!(g.play.run.as_ref().unwrap().run_seed, 13);
+    // All starred: the top row.
+    press(&mut g, Key::Escape);
+    press(&mut g, Key::Escape);
+    for r in g.history.file.records.clone() {
+        g.history.file.set_star(&r, true).unwrap();
+    }
+    press(&mut g, Key::W);
+    assert_eq!(g.history.focus, 0);
+}
+
+#[test]
+fn a_tap_on_a_rows_star_keeps_the_page() {
+    let mut g = Game::new(true, Save::default());
+    g.fit_display(WINDOW, (0, 0));
+    // Eight runs: two pages of six on a phone.
+    let (_, run, _) = finished(9);
+    for day in 1..=8 {
+        let mut r = Record::run(day, &run, false);
+        if let Kind::Run(k) = &mut r.kind {
+            k.seed = day;
+        }
+        g.history.file.push(r);
+    }
+    touch_frame(&mut g, Vec::new());
+    tap(&mut g, Action::Watch);
+    tap(&mut g, Action::Wb(Wb::PageNext));
+    let rows = g.replay_rows();
+    assert_eq!(g.history.focus / rows, 1, "on the second page");
+    // Star the second page's first row: it moves to page one, the page
+    // under the finger does not.
+    let fx = tap(&mut g, Action::Wb(Wb::RowStar(0)));
+    assert_eq!(history_writes(&fx).len(), 1);
+    assert_eq!(g.history.file.stars(), 1);
+    assert_eq!(g.history.focus / rows, 1, "still the second page");
+    assert!(g.history.file.listed().next().unwrap().starred);
+}
+
+#[test]
+fn a_star_in_a_newer_builds_file_says_it_lasts_this_session() {
+    let mut g = game();
+    let line = run_line(9);
+    g.set_history(Some(&format!("history 9\n{line}")));
+    assert!(g.history.file.from_the_future);
+    press(&mut g, Key::W);
+    let fx = press(&mut g, Key::S);
+    assert!(history_writes(&fx).is_empty());
+    assert_eq!(g.history.file.stars(), 1);
+    assert_eq!(g.status, "STARRED UNTIL THE GAME CLOSES");
+}
+
+/// The line of a run on `seed`, finished and recorded.
+fn run_line(seed: u64) -> String {
+    let (g, _, _) = finished(seed);
+    g.history.last_run.unwrap().to_line()
+}
+
+#[test]
+fn star_at_the_end_says_why_a_run_too_long_to_keep_cannot_be_starred() {
+    let (mut g, _, _) = finished(9);
+    press(&mut g, Key::W);
+    to_the_end(&mut g);
+    // As if its line were too long to keep: never listed.
+    g.history.file.records.clear();
+    if let Some(w) = g.watch.as_mut() {
+        if let Kind::Run(r) = &mut w.record.kind {
+            while r.log.len() <= crate::history::MAX_LINE_CHARS {
+                r.log.push_str(" 1:100:100");
+            }
+        }
+    }
+    press(&mut g, Key::S);
+    assert_eq!(
+        g.watch.as_ref().unwrap().star_refused,
+        Some(crate::history::StarError::NotKept)
+    );
+    assert!(!g.history.unsaved);
+    let fx = press(&mut g, Key::Escape);
+    assert!(history_writes(&fx).is_empty());
+}
+
+#[test]
+fn a_match_not_kept_on_disk_offers_no_watch_and_so_no_star() {
+    // A dev `--layout` match: on screen, never kept, never recorded.
+    let (mut g, saved, _) = on_won_plate();
+    g.versus.live.as_mut().unwrap().kept = false;
+    let _ = saved;
+    press(&mut g, Key::W);
+    assert!(!g.watching());
+    g.watch_live_match();
+    assert!(!g.watching());
+    assert!(g.history.file.records.is_empty());
 }

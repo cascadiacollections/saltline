@@ -331,7 +331,7 @@ write a file checks for the demo first. `app/demo_tests.rs` and the last test in
 
 Every finished run, and every match played to the end, is kept so it can
 be watched again (DESIGN §9): the last 20 runs and the last 20 matches,
-shown as one list, newest first. REPLAYS on the title (`W`, d-pad up, or the plate under DEMO
+shown as one list, your starred favourites first, then newest first. REPLAYS on the title (`W`, d-pad up, or the plate under DEMO
 on a touchscreen) lists them with the date, against whom (`AI EASY`,
 `2 PLAYERS`), who won and on which map; tap a row, or choose it and press
 Enter, to watch it. WATCH on the end-of-run screen and on a won match's
@@ -352,11 +352,13 @@ right of a row (the row itself still watches it); with keys or a controller
 choose the row and press `S` or Y. The end of a replay offers STAR too
 ("keep this one"). Starred replays are listed first, and do not count
 toward the 20 runs and 20 matches; with five starred, starring another says
-`5 STARS - UNSTAR ONE FIRST`. Taking a star off keeps the replay for now; it
-goes when newer games push it out, as any other. The star is yours, not
+`5 STARS - TAKE ONE OFF FIRST`. Taking a star off counts as adding the
+replay again: it moves to just below the starred, keeps its own date, and
+lasts another 20 games of its kind before newer ones push it out. The star is yours, not
 part of the replay: it is kept on a line of its own before the replay's
 line. While anything is starred the file says `history 2`, which a build
-from before stars reads but never writes, so it cannot lose them.
+from before stars reads but never writes, so it cannot lose them (its
+list may not show the older starred ones, but they stay in the file).
 
 Watching never changes anything you keep: no score, setting, saved run or
 saved match, and not the list itself, except a star you set at its end,

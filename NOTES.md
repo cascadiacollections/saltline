@@ -902,24 +902,42 @@ they are never pushed off the list. Where the request left a choice:
 - **Older builds: header 2 while starred, 1 otherwise.** A build from
   before stars reads `star` as damage and its next write would apply the
   caps to the starred, losing them silently. With `history 2` in the
-  header it reads the file as a newer build's: it lists every record
-  (unstarred) and never writes the file. The price, paid only while
+  header it reads the file as a newer build's and never writes it. It still
+  caps what it read in memory, so its list shows only the newest 20 of
+  each kind, without stars: an older starred replay can be missing there,
+  though it is still in the file and this build shows it again. The price, paid only while
   something is starred and only on a downgrade: what that build finishes is
   kept for its session. Writing header 1 whenever nothing is starred keeps
   a family that never stars anything fully compatible both ways.
-- **Unstarring drops nothing on the spot.** Applying the cap at once would
-  make a stray tap on an old favourite delete it before it could be starred
-  again. It stays listed, takes its turn among the unstarred, and goes with
-  the next game of its kind (or at the next launch, if it is past the cap
-  then).
+- **Taking a star off counts as adding it again** (review, then owner
+  decision). The first cut left it in place and capped it at the next
+  game or launch, so a stray tap on an old favourite could lose it before
+  it was starred again. Now it moves to the end of the file, the newest
+  place of its kind: it lasts 20 more games of its kind, across launches,
+  since the file's order is what is kept, and no record line changes. The
+  list shows it just below the starred, the first of the rest, where the
+  eye already is; its date stays the day it was played, which can be older
+  than the row below it. That seemed less surprising than jumping down to
+  wherever its date would put it, and an older date out of order says
+  nothing wrong. Like any record added, it may push the oldest unstarred
+  one of its kind past the cap.
 - **Trim order.** When a write is over 512 KiB, every unstarred record goes
   first, oldest first; only then the oldest starred. Five real starred
   lines never come near it.
 - **Touch: a star button per row, apart.** A star on the focused row would
   need a focus, which a touch list does not have (a tap on a row watches
   it). Each row's star sits in its own column 12 pixels right of the
-  widest row on the page, 22 by 15, the size of the page buttons; a test
-  pins the gap.
+  widest row on the page, 22 by 15 (a page button's width, a row's touch
+  target's height). Where the column would run off a narrow screen or into
+  a cutout's pad, the rows move left rather than the gap shrink; a test
+  pins it at every width from 320 to 400 with the worst-case 53-character
+  row. A tap on a star never turns the page, even when its row moves to
+  page one; keys and a controller follow the row instead.
+- **The list opens on the game just played,** the newest row not starred,
+  rather than on a favourite: that is what a child opening it after a game
+  wants to see first.
+- **Only kept matches.** WATCH, and so STAR, is offered only on a player's
+  match kept on disk; a dev `--layout` match is never recorded.
 - **Keys: `S`, pad Y, a new `star` binding.** The list reads Up, Down,
   Left, Right, Enter/A and Esc/B, and a watch also Up, Right, Down, Space
   and M; S (seed entry) and Y (REPLAY, seed entry, reposition) are read on
@@ -931,7 +949,11 @@ they are never pushed off the list. Where the request left a choice:
   mute made while watching is. A won match watched from its own plate is
   not yet recorded (that happens when the plate is left), so starring it
   records it there and then. A status note is not drawn during a watch, so
-  `5 STARS - UNSTAR ONE FIRST` is a plate over the bar.
+  `5 STARS - TAKE ONE OFF FIRST` (or, for a run too long to keep, `TOO
+  LONG TO KEEP - CANNOT STAR`) is a plate over the bar. Child-facing text
+  says "take off", never "unstar". In a newer build's file, which is never
+  written, the list says `STARRED UNTIL THE GAME CLOSES`. A lone or
+  trailing `star` line counts as damage.
 - **Fuzzing.** The `history_file` target now also checks the star bound,
   that a record's own line reads back unstarred, and that the header says
   1 exactly when nothing is starred; about 740,000 inputs in 90 s (a dev

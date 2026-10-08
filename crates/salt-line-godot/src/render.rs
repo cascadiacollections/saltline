@@ -701,10 +701,23 @@ impl Painter<'_> {
             self.centred(y, keyed, c);
             return y + 8;
         }
+        self.menu_row_at(y, action, text, c, 0)
+    }
+
+    /// A touchscreen's [`Self::menu_row`] plate, centred `dx` pixels off the
+    /// screen's centre. Returns the y of the next line.
+    fn menu_row_at(
+        &mut self,
+        y: i32,
+        action: Action,
+        text: &str,
+        c: crate::palette::Rgba,
+        dx: i32,
+    ) -> i32 {
         let pal = self.pal;
         let tw = crate::font::small_width(text) as i32;
         let pad = 10;
-        let x = (self.canvas.w - tw) / 2 - pad;
+        let x = (self.canvas.w - tw) / 2 - pad + dx;
         self.canvas.plate(x, y - 4, tw + 2 * pad, 13, pal);
         if self.focused(action) {
             self.canvas

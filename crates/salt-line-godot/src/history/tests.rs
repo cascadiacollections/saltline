@@ -605,7 +605,7 @@ fn only_a_few_can_be_starred() {
     let before = h.clone();
     assert_eq!(star_day(&mut h, MAX_STARS as u64 + 1), Err(StarError::Full));
     assert_eq!(h, before, "a refused star changes nothing");
-    assert_eq!(StarError::Full.note(), "5 STARS - UNSTAR ONE FIRST");
+    assert_eq!(StarError::Full.note(), "5 STARS - TAKE ONE OFF FIRST");
     // Starring one already starred is no change, and no write.
     assert_eq!(star_day(&mut h, 1), Ok(None));
     // Unstar one, and another can be starred.
@@ -626,7 +626,7 @@ fn only_a_few_can_be_starred() {
 }
 
 #[test]
-fn unstarring_drops_nothing_on_the_spot() {
+fn a_star_taken_off_counts_as_added_again() {
     let mut h = History::default();
     h.push(old_run(1, 3));
     star_day(&mut h, 1).unwrap();
@@ -634,18 +634,57 @@ fn unstarring_drops_nothing_on_the_spot() {
         h.push(old_run(seed, 3));
     }
     assert_eq!(h.records.len(), MAX_RUNS + 1);
-    // Unstarred by mistake: still listed, and starred again.
     let one = h.records[0].clone();
+    let line = one.to_line();
+    // Its star taken off: the newest run, so the oldest other run goes.
     let text = h.set_star(&one, false).unwrap().unwrap();
-    assert_eq!(h.records.len(), MAX_RUNS + 1);
-    assert!(h.set_star(&one, true).unwrap().is_some());
-    // Left unstarred, it goes with the next run of its kind...
-    h.set_star(&one, false).unwrap();
-    h.push(old_run(500, 3));
-    assert!(!h.records.iter().any(|r| r.day == 1));
     assert_eq!(h.records.len(), MAX_RUNS);
-    // ...or the next time the file is read.
+    assert_eq!(
+        h.records.last().unwrap().day,
+        1,
+        "moved to the newest place"
+    );
+    assert!(!h.records.iter().any(|r| r.day == 10), "the oldest went");
+    // Its line is untouched, date and all, and it is listed first of all,
+    // where it was, now that nothing is starred.
+    assert_eq!(h.records.last().unwrap().to_line(), line);
+    assert!(text.lines().last().map(|l| format!("{l}\n")) == Some(line));
+    assert_eq!(h.listed().next().unwrap().day, 1);
+    // It survives the next twenty runs but one, across a launch too: the
+    // file's order is kept.
+    let mut h = History::parse(&text);
+    assert_eq!(h, History::parse(&h.serialize()));
+    for seed in 100..100 + MAX_RUNS as u64 - 1 {
+        let text = h.push(old_run(seed, 3)).unwrap();
+        h = History::parse(&text);
+    }
+    assert!(h.records.iter().any(|r| r.day == 1), "kept for 19 more");
+    let text = h.push(old_run(500, 3)).unwrap();
     assert!(!History::parse(&text).records.iter().any(|r| r.day == 1));
+    // Below the starred in the list, the first of the rest.
+    let mut h = History::default();
+    for day in 1..=4 {
+        h.push(old_run(day, 3));
+    }
+    star_day(&mut h, 1).unwrap();
+    star_day(&mut h, 2).unwrap();
+    let two = h.records[1].clone();
+    h.set_star(&two, false).unwrap();
+    let days: Vec<u64> = h.listed().map(|r| r.day).collect();
+    assert_eq!(days, [1, 2, 4, 3]);
+}
+
+#[test]
+fn a_star_line_with_no_record_after_it_is_damage() {
+    let good = run_record(7).to_line();
+    let text = format!("{HEADER} {FORMAT}\nstar\nstar\n{good}star\n");
+    let h = History::parse(&text);
+    assert_eq!(h.records.len(), 1);
+    assert!(h.records[0].starred);
+    assert_eq!(h.damaged, 2, "the doubled star and the trailing one");
+    // In a newer build's file nothing is counted: it is never written.
+    let h = History::parse(&text.replacen("history 2", "history 9", 1));
+    assert_eq!(h.damaged, 0);
 }
 
 #[test]
@@ -717,10 +756,17 @@ fn a_star_is_its_own_line_and_round_trips() {
         Record::parse(&read.records[1].to_line()).unwrap().starred,
         false
     );
-    // Unstarred again, the file is format 1 again.
+    // Its star taken off, the file is format 1 again, the match moved to
+    // the newest place, its line the same.
     let mut back = read;
     let text = back.set_star(&duel, false).unwrap().unwrap();
-    assert_eq!(text, plain);
+    assert!(text.starts_with("history 1\n"));
+    assert_eq!(text.lines().last().unwrap(), duel.to_line().trim_end());
+    let mut lines: Vec<&str> = text.lines().collect();
+    let mut want: Vec<&str> = plain.lines().collect();
+    lines.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(lines, want);
 }
 
 #[test]
@@ -738,8 +784,10 @@ fn an_older_build_reads_a_starred_file_but_never_writes_it() {
         .unwrap();
     assert!(header > FORMAT_PLAIN, "an older build leaves it alone");
     assert_eq!(Record::parse(STAR), Err(LineError::Damaged));
-    // Every record line is one a format-1 build reads: the list there shows
-    // them all, starred ones included, just without their stars.
+    // Every record line is one a format-1 build reads. It still caps what
+    // it read in memory, so its list shows the newest 20 of each kind,
+    // without stars: an older starred record can be missing from that
+    // build's list, but the file, never written there, still holds it.
     for line in text.lines().skip(1).filter(|l| *l != STAR) {
         assert!(Record::parse(line).is_ok(), "{line}");
     }

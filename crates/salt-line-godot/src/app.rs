@@ -310,7 +310,8 @@ pub enum Mode {
     /// the editing screen, its menus, the slot list and test fire.
     Editor,
     /// The REPLAYS list (DESIGN §9.4, `app/watch.rs`): finished runs and
-    /// matches, newest first, to watch again. A watch itself is `Playing`
+    /// matches, the starred first, then newest first, to watch again. A
+    /// watch itself is `Playing`
     /// or `Versus` with [`Game::watching`] set.
     Replays,
 }
