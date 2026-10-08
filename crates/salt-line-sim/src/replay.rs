@@ -34,8 +34,10 @@
 //! `tests/golden_runs.rs` does it against hashes recorded in a checked-in
 //! corpus.
 //!
-//! Status: the game does not yet keep or replay run history (DESIGN §9 is
-//! proposed). Today this module serves those tests and the determinism gate.
+//! The game rebuilds a run killed mid-way from its log (`resume`, DESIGN
+//! §9.6), and keeps finished runs' logs to watch again (`history`, DESIGN
+//! §9.1), checking each against its recorded result with
+//! [`Replay::reconstruct`] before it is shown.
 
 use crate::ballistics::Shot;
 use crate::run::{LoggedShot, Phase, RunState};

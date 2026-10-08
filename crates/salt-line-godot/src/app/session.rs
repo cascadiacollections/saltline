@@ -24,7 +24,7 @@ impl Game {
     /// Show `text` on the status line for `STATUS_TIME` seconds. Not in
     /// the attract demo, whose only words are its banner.
     pub(super) fn note(&mut self, text: String) {
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         self.status = text;
@@ -52,7 +52,7 @@ impl Game {
     /// again even if the app is killed straight after.
     /// The attract demo learns nothing: its shots are not the player's.
     pub(super) fn learn(&mut self, bit: u32) {
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         if self.save.learned & bit == 0 {
@@ -129,7 +129,7 @@ impl Game {
     pub(super) fn tick_settings(&mut self, delta: f64) {
         // Settings are flushed as the demo starts, and none can change
         // during it; anything pending would wait for it to end.
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         if self.settings.tick(delta, self.mode == Mode::Controls) {
@@ -147,7 +147,7 @@ impl Game {
     /// Ask for the save to be written for a settings change. During the
     /// attract demo the change is kept pending instead, for after it.
     pub(super) fn write_settings(&mut self) {
-        if self.in_demo() {
+        if self.spectating() {
             self.settings.touch();
             return;
         }
@@ -183,7 +183,7 @@ impl Game {
     /// The player has moved on from last session's report (started a run):
     /// stop offering it.
     pub(super) fn retire_last_crash(&mut self) {
-        if self.in_demo() {
+        if self.spectating() {
             return;
         }
         if self.crash.last_crash.take().is_some() && !self.crash.crash_copied {
@@ -206,6 +206,12 @@ impl Game {
     /// sleeps its screen stops the demo with the app anyway.
     pub(super) fn auto_pause(&mut self) {
         if self.dev.auto || self.dev.capturing || self.in_demo() {
+            return;
+        }
+        // A watch pauses itself, under its own bar: nobody is watching.
+        if let Some(w) = self.watch.as_mut() {
+            w.paused = true;
+            self.fx.push(Effect::Redraw);
             return;
         }
         self.auto_pause_versus();
@@ -260,7 +266,7 @@ impl Game {
     /// Never during the attract demo: `run_persist` may still be set for the
     /// suspended run, and the run on screen is the demo's.
     pub(super) fn persist_run(&mut self) {
-        if !self.run_file.run_persist || self.in_demo() {
+        if !self.run_file.run_persist || self.spectating() {
             return;
         }
         let Some(run) = self.play.run.as_ref() else {

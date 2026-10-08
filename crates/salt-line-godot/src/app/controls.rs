@@ -227,6 +227,10 @@ impl Game {
                 } else if self.action_pressed(Action::Demo) {
                     // Like versus, the demo never touches the kept run.
                     self.start_demo(DemoStarted::Menu);
+                } else if self.action_pressed(Action::Watch) {
+                    // Nor does watching a finished one (DESIGN §9.4).
+                    self.play(Sound::Ui);
+                    self.open_replays();
                 } else if self.crash.last_crash.is_some() && self.action_pressed(Action::Copy) {
                     self.copy_last_crash();
                 } else if self.action_pressed(Action::Controls) {
@@ -309,8 +313,12 @@ impl Game {
                     let seed = self.play.last_seed;
                     let daily = self.play.daily;
                     self.start_run(seed, daily);
+                } else if self.action_pressed(Action::Watch) {
+                    // WATCH the run just ended, then back to this screen.
+                    self.watch_last_run();
                 }
             }
+            Mode::Replays => self.handle_replays_input(delta),
             Mode::Playing => self.handle_play_input(delta),
             Mode::VersusSetup => self.handle_versus_setup_input(),
             Mode::Versus => self.handle_versus_input(delta),

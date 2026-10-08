@@ -89,6 +89,7 @@ use crate::cli::DevArgs;
 use crate::crash;
 use crate::durable;
 use crate::frame::{self, DisplayPoll, Redraw};
+use crate::history::{self, HISTORY_PATH, HISTORY_TEMP_PATH};
 use crate::input::{self, Event, Intents, Typed};
 use crate::layouts_file::{
     self, DRAFT_FILES, DRAFT_LOADING_PATH, DRAFT_PATH, LAYOUTS_PATH, LAYOUTS_TEMP_PATH,
@@ -288,6 +289,7 @@ impl INode2D for SaltLine {
         self.find_saved_run();
         self.find_saved_match();
         self.find_layouts();
+        self.find_history();
         self.setup_audio();
         self.project_fps = Engine::singleton().get_max_fps();
         self.fps_cap = self.project_fps;
@@ -798,6 +800,12 @@ impl SaltLine {
                 // Linux, a power assertion on macOS, SetThreadExecutionState
                 // on Windows).
                 Effect::ScreenAwake(on) => DisplayServer::singleton().screen_set_keep_on(on),
+                // The history of finished runs and matches, written whole
+                // and atomically; a failed write loses only the newest
+                // replay, and is logged by `save::write`.
+                Effect::History(text) => {
+                    save::write(HISTORY_PATH, HISTORY_TEMP_PATH, &text);
+                }
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (
                         save::on_disk(crash::REPORT_PATH),
@@ -916,6 +924,21 @@ impl SaltLine {
         };
         let fx = self.g.saved_draft(found);
         self.apply(fx);
+    }
+
+    /// Hand the core the history of finished runs and matches (DESIGN §9):
+    /// the file, or its temporary copy if a write died before its rename,
+    /// chosen as the slot file's is. Read only: nothing in it is replayed
+    /// until a row is chosen, and that is checked first (`history`).
+    fn find_history(&mut self) {
+        let main = save::read(HISTORY_PATH);
+        let temp = save::read(HISTORY_TEMP_PATH);
+        let text = match durable::pick_by(main.as_deref(), temp.as_deref(), history::sound) {
+            durable::Pick::Main => main,
+            durable::Pick::Temp => temp,
+            durable::Pick::Empty => None,
+        };
+        self.g.set_history(text.as_deref());
     }
 
     fn setup_audio(&mut self) {
@@ -1432,7 +1455,7 @@ fn title_volume_db(master: f32) -> f32 {
 }
 
 /// The keys the core reads, and the engine's names for them.
-const KEYS: [(input::Key, Key); 33] = [
+const KEYS: [(input::Key, Key); 34] = [
     (input::Key::Left, Key::LEFT),
     (input::Key::Right, Key::RIGHT),
     (input::Key::Up, Key::UP),
@@ -1457,6 +1480,7 @@ const KEYS: [(input::Key, Key); 33] = [
     (input::Key::M, Key::M),
     (input::Key::L, Key::L),
     (input::Key::D, Key::D),
+    (input::Key::W, Key::W),
     (input::Key::E, Key::E),
     (input::Key::T, Key::T),
     (input::Key::Z, Key::Z),
