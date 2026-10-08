@@ -1132,6 +1132,8 @@ fn a_quit_match_is_cleared() {
     press(&mut g, &mut disk, Key::Escape);
     assert!(vs(&g).paused);
     press(&mut g, &mut disk, Key::R);
+    assert!(disk.match_main.is_some(), "one press only arms TITLE");
+    press(&mut g, &mut disk, Key::R);
     assert_eq!(g.mode, Mode::Title);
     assert_eq!(disk.match_main, None);
     assert!(disk.launch().saved_match.is_none());
@@ -1149,6 +1151,7 @@ fn a_quit_match_is_cleared() {
     let (mut disk, _) = play_and_kill(2, Kill::Plate);
     let mut g = relaunch_and_resume(&mut disk);
     press(&mut g, &mut disk, Key::Escape);
+    press(&mut g, &mut disk, Key::R);
     press(&mut g, &mut disk, Key::R);
     assert_eq!(disk.match_main, None);
     assert!(disk.launch().saved_match.is_none());
@@ -1171,6 +1174,7 @@ fn match_then_quit(disk: &mut FakeDisk) -> Vec<match_log::Entry> {
     }
     let shots = vs(&g).log.clone();
     press(&mut g, disk, Key::Escape);
+    press(&mut g, disk, Key::R);
     press(&mut g, disk, Key::R);
     assert_eq!(g.mode, Mode::Title);
     shots
@@ -1361,6 +1365,7 @@ fn a_suspended_run_and_a_suspended_match_live_side_by_side() {
     // Quit the match: the run is still there to continue.
     press(&mut g, &mut disk, Key::Escape);
     press(&mut g, &mut disk, Key::R);
+    press(&mut g, &mut disk, Key::R);
     assert_eq!(disk.match_main, None);
     assert_eq!(disk.run, run_file);
     press(&mut g, &mut disk, Key::Enter);
@@ -1391,8 +1396,10 @@ fn a_resumed_match_keeps_its_width_on_a_wider_screen() {
     // Quit: back to the device's width.
     tick(&mut g, &mut disk, at(keys(&[Key::Escape])));
     tick(&mut g, &mut disk, at(idle()));
-    tick(&mut g, &mut disk, at(keys(&[Key::R])));
-    tick(&mut g, &mut disk, at(idle()));
+    for _ in 0..2 {
+        tick(&mut g, &mut disk, at(keys(&[Key::R])));
+        tick(&mut g, &mut disk, at(idle()));
+    }
     assert_eq!(g.mode, Mode::Title);
     assert_eq!(g.display.buffer_w, device);
 }

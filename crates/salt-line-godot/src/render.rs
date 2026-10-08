@@ -1390,13 +1390,28 @@ impl Painter<'_> {
         // A match's pause can also fork its round into the map editor
         // (DESIGN §13.11); a run's cannot.
         let fork = self.g.mode == Mode::Versus;
+        // A match's TITLE asks twice while the match is still to be won
+        // (`app/versus.rs`, "Quitting from the pause plate"): armed, its
+        // row says what the second press does, in UI text.
+        let armed = fork
+            && self
+                .g
+                .versus
+                .live
+                .as_ref()
+                .is_some_and(|vs| vs.quit_armed.is_some());
+        let (title_text, title_c) = if armed {
+            (QUIT_AGAIN_TAP, fg)
+        } else {
+            ("TITLE", dim)
+        };
         if self.g.input.touch_active {
             let ph = if fork { 80 } else { 64 };
             let top = (h - ph) / 2;
             self.canvas.plate((w - 150) / 2, top, 150, ph, pal);
             self.centred(top + 8, "PAUSED", fg);
             let y = self.menu_row(top + 26, Action::Confirm, "", "RESUME", fg);
-            let y = self.menu_row(y, Action::Replay, "", "TITLE", dim);
+            let y = self.menu_row(y, Action::Replay, "", title_text, title_c);
             if fork {
                 self.menu_row(
                     y,
@@ -1414,7 +1429,12 @@ impl Painter<'_> {
         let resume = self.g.input_label(Action::Confirm);
         self.centred((h - ph) / 2 + 21, &format!("{resume} / BACK  RESUME"), fg);
         let title = self.g.input_label(Action::Replay);
-        self.centred((h - ph) / 2 + 31, &format!("{title}  TITLE"), dim);
+        let title_text = if armed { QUIT_AGAIN_KEY } else { "TITLE" };
+        self.centred(
+            (h - ph) / 2 + 31,
+            &format!("{title}  {title_text}"),
+            title_c,
+        );
         if fork {
             let key = versus::map_key(self.g);
             self.centred(
@@ -1428,6 +1448,11 @@ impl Painter<'_> {
 
 mod editor;
 mod versus;
+
+/// The versus pause plate's TITLE row once armed, on a touchscreen and
+/// with keys (after the key's name): the second press quits.
+const QUIT_AGAIN_TAP: &str = "TAP AGAIN TO QUIT";
+const QUIT_AGAIN_KEY: &str = "PRESS AGAIN TO QUIT";
 
 /// Where the demo's mode card sits: `(x, y, w, h)` in a buffer `buffer_w`
 /// wide: centred, as wide as its longest line plus 8 a side, two lines
@@ -2052,20 +2077,18 @@ mod tests {
                 let (_, buttons) = draw(&g);
                 assert_eq!(g.display.buffer_h, 180);
                 let pause = buttons.iter().find(|b| b.action == Action::Back).unwrap();
-                let first_row = buttons
-                    .iter()
-                    .filter(|b| b.action != Action::Back)
-                    .map(|b| b.rect.y)
-                    .min()
-                    .unwrap();
-                // The plate's top, 56 rows over its first row's target
-                // (the winner, the round, the score, then the row).
-                let plate_top = first_row - 56;
+                let vs = g.versus.live.as_ref().unwrap();
+                let (_, plate_top, _, _) =
+                    versus::result_plate_rect(&g, vs, true, g.display.buffer_w, 180).unwrap();
                 assert!(
                     pause.rect.y + pause.rect.h < plate_top,
-                    "pad {pad} ai {ai} over {over}: II at {:?}, rows from {first_row}",
+                    "pad {pad} ai {ai} over {over}: II at {:?}, plate from {plate_top}",
                     pause.rect
                 );
+                // And every row's target is on the plate.
+                for b in buttons.iter().filter(|b| b.action != Action::Back) {
+                    assert!(b.rect.y >= plate_top, "{:?} above the plate", b.action);
+                }
             }
         }
         g.display.corner_pad.1 = 0;

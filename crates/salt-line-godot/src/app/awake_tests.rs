@@ -286,7 +286,9 @@ fn a_versus_match_holds_the_screen_through_its_plates_but_not_its_pause() {
     // Paused on the result plate too.
     p.press(Key::Escape);
     assert!(!p.held());
-    // Leaving the match from its pause goes back to the title.
+    // Leaving the match from its pause (TITLE, pressed twice) goes back
+    // to the title.
+    p.press(Key::R);
     p.press(Key::R);
     assert_eq!(p.g.mode, Mode::Title);
     assert!(!p.held());
