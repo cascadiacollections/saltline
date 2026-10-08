@@ -58,8 +58,8 @@ With `just` installed, the same common operations are available as `just test`,
 
 Every push to `main` that passes CI replaces the
 [`dev` prerelease](https://github.com/cascadiacollections/saltline/releases/tag/dev)
-with that commit's builds: Linux x86_64, macOS (universal), Windows x86_64 and
-arm64, and an Android arm64 APK. They are for testing, not distribution: the
+with that commit's builds: Linux x86_64 and arm64, macOS (universal), Windows
+x86_64 and arm64, and an Android arm64 APK. They are for testing, not distribution: the
 desktop builds are unsigned. The APK is signed with the release key once the
 owner has set it up (so dev builds and releases install over each other), and
 with the debug key until then. Each dev APK gets a higher versionCode than the

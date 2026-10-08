@@ -505,6 +505,15 @@ jobs:
           - os: ubuntu-24.04
             preset: Linux
             output: SaltLine.x86_64
+            zip: SaltLine-linux-x86_64.zip
+          # Linux on ARM (Raspberry Pi 5, Ampere, Asahi, Snapdragon laptops),
+          # built, exported and smoke-launched natively on the arm64 runner:
+          # its own GDExtension, its own portal bridge, the editor's arm64
+          # build. Nothing is cross-compiled or emulated.
+          - os: ubuntu-24.04-arm
+            preset: Linux ARM64
+            output: SaltLine.arm64
+            zip: SaltLine-linux-arm64.zip
           - os: macos-latest
             preset: macOS
             output: SaltLine.app
@@ -536,7 +545,7 @@ jobs:
           path: |
             addons/xdg_portals/bin
             addons/xdg_portals/xdg_portals.gdextension
-          key: xdg-portals-ubuntu-24.04-${{ hashFiles('tools/build_xdg_portals.sh', 'tools/xdg_portals_linux.gdextension.in') }}
+          key: xdg-portals-${{ matrix.os }}-${{ hashFiles('tools/build_xdg_portals.sh', 'tools/xdg_portals_linux.gdextension.in') }}
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: build the Linux desktop portal bridge
         if: runner.os == 'Linux' && steps.portal-cache.outputs.cache-hit != 'true'
@@ -835,7 +844,7 @@ jobs:
           case "${{ runner.os }}" in
             macOS) ditto -c -k --keepParent "build/${{ matrix.output }}" dist/SaltLine-macos.zip ;;
             Windows) 7z a -tzip dist/SaltLine-windows-x86_64.zip "./build/${{ matrix.output }}" > /dev/null ;;
-            Linux) (cd build && zip -q ../dist/SaltLine-linux-x86_64.zip "${{ matrix.output }}") ;;
+            Linux) (cd build && zip -q "../dist/${{ matrix.zip }}" "${{ matrix.output }}") ;;
           esac
           ls -l dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1158,7 +1167,7 @@ jobs:
   # crate list), plus the two binary dependencies Cargo cannot see, the Godot
   # export templates and the Linux XDG Portals bridge (tools/release_sbom.py).
   # Default features only, which is what ships; every target, since the
-  # release spans six. Dev-dependencies are left out and build-only crates
+  # release spans seven. Dev-dependencies are left out and build-only crates
   # (proc macros, codegen) are kept but marked `excluded`. CycloneDX JSON,
   # uploaded as dist-sbom so the release jobs attach and attest it like any
   # other download. It runs on pull requests too, though they never publish:

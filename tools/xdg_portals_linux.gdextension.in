@@ -6,8 +6,9 @@ reloadable = false
 
 [libraries]
 
-; Salt Line currently builds this optional backend for Linux x86_64 only.
-; All other platforms use the addon's pure-GDScript null backend.
+; Salt Line builds this optional backend for Linux x86_64 and arm64, each on
+; its own architecture (tools/build_xdg_portals.sh). All other platforms use
+; the addon's pure-GDScript null backend.
 ; The editor entries must come first: the editor binary carries both the
 ; `editor` and `debug` feature tags, and the first matching key wins. Listing
 ; `linux.debug.*` first would send the editor to a template_debug library it
@@ -17,6 +18,11 @@ linux.template_debug.x86_64 = "res://addons/xdg_portals/bin/libxdg_portals.linux
 linux.template_release.x86_64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.template_release.x86_64.so"
 linux.debug.x86_64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.template_debug.x86_64.so"
 linux.release.x86_64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.template_release.x86_64.so"
+linux.editor.arm64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.editor.arm64.so"
+linux.template_debug.arm64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.template_debug.arm64.so"
+linux.template_release.arm64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.template_release.arm64.so"
+linux.debug.arm64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.template_debug.arm64.so"
+linux.release.arm64 = "res://addons/xdg_portals/bin/libxdg_portals.linux.template_release.arm64.so"
 
 [dependencies]
 

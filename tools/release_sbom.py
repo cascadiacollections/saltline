@@ -121,7 +121,9 @@ def build(cargo_bom: dict, godot: str, commit: str | None, repo: str) -> dict:
         "externalReferences": [
             {"type": "vcs", "url": f"https://github.com/{XDG_REPO}"}
         ],
-        "properties": [{"name": "saltline:platforms", "value": "linux-x86_64"}],
+        "properties": [
+            {"name": "saltline:platforms", "value": "linux-x86_64,linux-arm64"}
+        ],
     }
 
     app = {
