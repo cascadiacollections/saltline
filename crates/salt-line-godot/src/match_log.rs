@@ -18,7 +18,17 @@
 //! ```text
 //! match <format> <sim epoch> <match epoch> <seed> <width> <rolling> <help L> <help R> <n> <log>
 //! match 1 6 1 1234567 360 1 0 1 4 900:600 870:640 / 850:610
+//!
+//! match <format> <sim epoch> <match epoch> <seed> <width> <rolling> <help L> <help R> <ground> <n> <log>
+//! match 2 6 1 1234567 320 0 0 1 SL0J8… 4 900:600 870:640 / 850:610
 //! ```
+//!
+//! Format 1 is a match on generated screens, and is what such a match is
+//! still written as, so its line is unchanged. Format 2
+//! ([`GROUND_FORMAT`]) is a match on a layout (DESIGN §13.9): the same
+//! fields with the layout's share code after the aim help. A build reads
+//! both; one from before layouts reads format 2 as a newer version and
+//! drops it with a note, as it should.
 //!
 //! | Field | Meaning |
 //! |---|---|
@@ -29,6 +39,7 @@
 //! | `width` | buffer width the match was generated at; a resumed match keeps it, letterboxed if the device's differs |
 //! | `rolling` | `1` if the guns roll after a hit (ROLLING GUNS on the pre-match screen), `0` if not |
 //! | `help L`, `help R` | each side's aim help, `1` on |
+//! | `ground` | format 2 only: the share code of the layout the match is played on (DESIGN §13.7) |
 //! | `n` | how many log entries follow, so a line missing some is never read as a shorter match |
 //! | `log` | in order: `A:P` for a shot, the aim as dialled (angle ticks, power ticks) before `Match::fire` puts it on the instruments' grid; `/` for the next round dealt, when the players moved on from a round's result |
 //!
@@ -64,6 +75,7 @@
 
 use salt_line_sim::ballistics::Shot;
 use salt_line_sim::dmath::MAX_ANGLE_TICKS;
+use salt_line_sim::layout::{self, Layout, CODE_PREFIX, MAX_CODE_CHARS};
 use salt_line_sim::rng::mix64;
 use salt_line_sim::{POWER_TICKS_MAX, SCREEN_W_MAX, SCREEN_W_MIN, SIM_EPOCH};
 
@@ -89,8 +101,13 @@ pub const MATCH_FILES: Paths = Paths {
 /// (DESIGN §9.2) can be mistaken for it.
 const TAG: &str = "match";
 
-/// The line's layout. Bumped when fields are added, moved or reread.
+/// The line's layout for a match on generated screens. Bumped when fields
+/// are added, moved or reread.
 pub const FORMAT: u32 = 1;
+
+/// The line's layout for a match on a layout's ground (DESIGN §13.9): as
+/// [`FORMAT`], with the layout's share code after the aim help.
+pub const GROUND_FORMAT: u32 = 2;
 
 /// The duel rules' own epoch: bumped on any change to this crate that
 /// changes what a logged match replays to (`crate::versus`'s screens, hit
@@ -130,6 +147,9 @@ pub struct SavedMatch {
     pub help: [bool; 2],
     /// Every shot and new round, in order.
     pub log: Vec<Entry>,
+    /// The share code of the layout every round is played on, for a match
+    /// on a layout ([`GROUND_FORMAT`]); `None` for generated screens.
+    pub ground: Option<String>,
 }
 
 /// The rules a match plays by, given whether its guns roll: the game's, with
@@ -154,7 +174,18 @@ impl SavedMatch {
             rolling: duel.rules.gun_shift > 0.0,
             help,
             log: log.to_vec(),
+            ground: None,
         }
+    }
+
+    /// [`SavedMatch::of`] for a match on `layout`'s ground. `None` for a
+    /// layout the share code cannot hold, which no layout that passed its
+    /// checks is.
+    pub fn on_ground(duel: &Match, layout: &Layout, help: [bool; 2], log: &[Entry]) -> Option<Self> {
+        Some(Self {
+            ground: Some(layout.to_code().ok()?),
+            ..Self::of(duel, help, log)
+        })
     }
 
     /// The rules it was played by.
@@ -162,11 +193,47 @@ impl SavedMatch {
         rules_for(self.rolling)
     }
 
+    /// The layout the match is played on, read from its code, if it is a
+    /// match on a layout. `Err` for a code that does not read, is not a
+    /// duel, or does not fit the match's width or the placement rules: a
+    /// damaged line, never a match to rebuild. (The solvability gate is
+    /// not asked: the line was written by a build of this epoch, whose
+    /// match started only on a layout that passed it.)
+    pub fn layout(&self) -> Result<Option<Layout>, Stale> {
+        let Some(code) = self.ground.as_deref() else {
+            return Ok(None);
+        };
+        let layout = Layout::from_code(code).map_err(|_| Stale::Damaged)?;
+        let fits = layout.is_duel()
+            && layout.width() == self.width
+            && layout::check_placement(&layout).is_empty();
+        if fits {
+            Ok(Some(layout))
+        } else {
+            Err(Stale::Damaged)
+        }
+    }
+
+    /// The match as it stood before its first shot: on generated screens,
+    /// or on its layout (`custom::layout_match`). `None` for a ground that
+    /// does not read ([`SavedMatch::layout`]).
+    pub fn start(&self) -> Option<Match> {
+        Some(match self.layout().ok()? {
+            None => Match::with_rules(self.seed, self.width, self.rules()),
+            Some(layout) => crate::custom::layout_match(&layout, self.seed, self.rules()),
+        })
+    }
+
     /// The module docs' line, newline-terminated.
     pub fn to_line(&self) -> String {
         let flag = |b: bool| u8::from(b);
+        let format = if self.ground.is_some() {
+            GROUND_FORMAT
+        } else {
+            FORMAT
+        };
         let mut line = format!(
-            "{TAG} {FORMAT} {} {} {} {} {} {} {} {}",
+            "{TAG} {format} {} {} {} {} {} {} {}",
             self.epoch,
             self.match_epoch,
             self.seed,
@@ -174,8 +241,12 @@ impl SavedMatch {
             flag(self.rolling),
             flag(self.help[0]),
             flag(self.help[1]),
-            self.log.len(),
         );
+        if let Some(code) = &self.ground {
+            line.push(' ');
+            line.push_str(code);
+        }
+        line.push_str(&format!(" {}", self.log.len()));
         for entry in &self.log {
             match entry {
                 Entry::Shot(a, p) => line.push_str(&format!(" {a}:{p}")),
@@ -204,7 +275,9 @@ impl SavedMatch {
             return Err(Stale::Damaged);
         }
         let format: u32 = number(fields.next())?;
-        version(format, FORMAT)?;
+        if format != FORMAT {
+            version(format, GROUND_FORMAT)?;
+        }
         let epoch: u32 = number(fields.next())?;
         version(epoch, SIM_EPOCH)?;
         let match_epoch: u32 = number(fields.next())?;
@@ -216,6 +289,23 @@ impl SavedMatch {
         }
         let rolling = flag(fields.next())?;
         let help = [flag(fields.next())?, flag(fields.next())?];
+        let ground = if format == GROUND_FORMAT {
+            // A share code is base32 after its prefix; anything else in its
+            // place is a damaged line, whatever it decodes to (checked when
+            // the match is rebuilt, `SavedMatch::layout`).
+            let code = fields.next().ok_or(Stale::Damaged)?;
+            let ok = code.len() <= MAX_CODE_CHARS
+                && code.starts_with(CODE_PREFIX)
+                && code[CODE_PREFIX.len()..]
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase());
+            if !ok {
+                return Err(Stale::Damaged);
+            }
+            Some(code.to_string())
+        } else {
+            None
+        };
         let n: usize = number(fields.next())?;
         if n > MAX_ENTRIES {
             return Err(Stale::Damaged);
@@ -237,6 +327,7 @@ impl SavedMatch {
             rolling,
             help,
             log,
+            ground,
         })
     }
 
@@ -250,7 +341,7 @@ impl SavedMatch {
     /// (each side's kept aim and last arc) by the same steps, through
     /// `VersusPlay::rebuild`.
     pub fn replay(&self) -> Option<Match> {
-        let mut duel = Match::with_rules(self.seed, self.width, self.rules());
+        let mut duel = self.start()?;
         for entry in &self.log {
             match *entry {
                 Entry::Shot(angle, power) => {
@@ -349,6 +440,9 @@ pub fn judge(text: Option<&str>) -> Found {
         Ok(s) => s,
         Err(why) => return Found::Discard(why),
     };
+    if let Err(why) = saved.layout() {
+        return Found::Discard(why);
+    }
     match saved.replay() {
         None => Found::Discard(Stale::Diverged),
         Some(_) => Found::Resume(saved),

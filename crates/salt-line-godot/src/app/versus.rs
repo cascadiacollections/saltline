@@ -290,8 +290,7 @@ impl VersusPlay {
     /// killed as it was won still says who won). `None` for a log that
     /// does not replay.
     pub(crate) fn rebuild(saved: &SavedMatch) -> Option<VersusPlay> {
-        let duel = Match::with_rules(saved.seed, saved.width, saved.rules());
-        let mut vs = VersusPlay::new(duel);
+        let mut vs = VersusPlay::new(saved.start()?);
         for entry in &saved.log {
             let taken = match *entry {
                 Entry::Shot(angle, power) => vs.fire_turn((angle, power)).is_some(),

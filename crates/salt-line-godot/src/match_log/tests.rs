@@ -46,6 +46,7 @@ fn golden() -> (SavedMatch, Match) {
         rolling: true,
         help: [true, false],
         log,
+        ground: None,
     };
     (saved, duel)
 }
@@ -186,23 +187,28 @@ fn another_format_or_epoch_is_never_replayed() {
         f[i] = v.to_string();
         f.join(" ") + "\n"
     };
-    for (i, now) in [(1, FORMAT), (2, SIM_EPOCH), (3, MATCH_EPOCH)] {
+    // Format 1 is the oldest; 2 (a match on a layout) the newest.
+    for (i, oldest, newest) in [
+        (1, FORMAT, GROUND_FORMAT),
+        (2, SIM_EPOCH, SIM_EPOCH),
+        (3, MATCH_EPOCH, MATCH_EPOCH),
+    ] {
         assert_eq!(
-            SavedMatch::parse(&field(i, now - 1)),
+            SavedMatch::parse(&field(i, oldest - 1)),
             Err(Stale::OlderVersion),
             "field {i}"
         );
         assert_eq!(
-            SavedMatch::parse(&field(i, now + 1)),
+            SavedMatch::parse(&field(i, newest + 1)),
             Err(Stale::NewerVersion),
             "field {i}"
         );
         // Whole, only not this build's: a sound copy, discarded with a note.
-        assert!(sound(&field(i, now + 1)));
+        assert!(sound(&field(i, newest + 1)));
     }
     // The format decides before anything after it is read: another
     // layout's line may not even have these fields.
-    let other = format!("match {} banana\n", FORMAT + 1);
+    let other = format!("match {} banana\n", GROUND_FORMAT + 1);
     assert_eq!(SavedMatch::parse(&other), Err(Stale::NewerVersion));
     assert_eq!(
         note(Stale::OlderVersion),
@@ -303,6 +309,7 @@ proptest! {
             ],
             0..60,
         ),
+        ground in prop::option::of("SL[0-9A-HJKMNP-TV-Z]{1,40}"),
     ) {
         let saved = SavedMatch {
             epoch: SIM_EPOCH,
@@ -312,9 +319,110 @@ proptest! {
             rolling,
             help,
             log,
+            ground,
         };
         let line = saved.to_line();
         prop_assert_eq!(SavedMatch::parse(&line), Ok(saved));
         prop_assert!(sound(&line));
+    }
+}
+
+// ------------------------------------------------------ a match on a layout
+
+/// A match on a forked layout, played `n` shots by `bot_match`'s rules,
+/// and its line.
+fn layout_saved(seed: u64, n: usize) -> (SavedMatch, Match, Layout) {
+    let layout = crate::custom::fork_duel(seed, 1);
+    let mut duel = crate::custom::layout_match(&layout, seed, rules_for(true));
+    let mut log = Vec::new();
+    for i in 0..n {
+        if matches!(duel.phase, Phase::RoundOver(_)) {
+            duel.next_round();
+            log.push(Entry::NextRound);
+        }
+        if matches!(duel.phase, Phase::MatchOver(_)) {
+            break;
+        }
+        let side = duel.to_move;
+        let aim = if i % 3 == 2 {
+            LOB
+        } else {
+            let frame = versus::frame_for(&duel.screen, side);
+            let target = versus::target_in_frame(&duel.screen, side);
+            versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
+                .first()
+                .map_or(LOB, |s| (s.angle_ticks, s.power_ticks))
+        };
+        duel.fire(Shot::new(aim.0, aim.1), false).unwrap();
+        log.push(Entry::Shot(aim.0, aim.1));
+    }
+    let saved = SavedMatch::on_ground(&duel, &layout, [true, false], &log).unwrap();
+    (saved, duel, layout)
+}
+
+/// A match on a layout is written as format 2, its ground's code after the
+/// aim help, and replays to the match as played, on that ground.
+#[test]
+fn a_match_on_a_layout_carries_its_ground() {
+    let (saved, live, layout) = layout_saved(21, 14);
+    let line = saved.to_line();
+    let code = layout.to_code().unwrap();
+    assert!(
+        line.starts_with(&format!("match {GROUND_FORMAT} ")),
+        "{line}"
+    );
+    assert!(line.contains(&format!(" 1 0 {code} ")), "{line}");
+    let back = SavedMatch::parse(&line).unwrap();
+    assert_eq!(back, saved);
+    assert_eq!(back.layout(), Ok(Some(layout)));
+    assert!(!back.rolling, "the guns never roll on a layout");
+    let replayed = back.replay().unwrap();
+    assert!(replayed.ground.is_some());
+    assert_eq!(format!("{replayed:?}"), format!("{live:?}"));
+    assert!(matches!(judge(Some(&line)), Found::Resume(_)));
+    // A generated match is still written as format 1, unchanged.
+    let (shots, gen) = bot_match(21, 320, true, 3);
+    assert!(SavedMatch::of(&gen, [false; 2], &shots)
+        .to_line()
+        .starts_with("match 1 "));
+}
+
+/// A format-2 line whose ground is not a duel layout that fits it is
+/// damaged, never a match to rebuild.
+#[rstest::rstest]
+#[case::not_a_code("banana")]
+#[case::bad_checksum("SL0000000")]
+#[case::lower_case("sl00")]
+#[case::one_gun("ONE_GUN")]
+#[case::other_width("WIDE")]
+fn a_ground_that_does_not_fit_is_damaged(#[case] ground: &str) {
+    let (mut saved, _, layout) = layout_saved(5, 2);
+    saved.ground = Some(match ground {
+        "ONE_GUN" => Layout::from_run_screen(1, 0).to_code().unwrap(),
+        "WIDE" => {
+            let mut wide = layout.clone();
+            wide.heights.push(wide.heights[0]);
+            wide.to_code().unwrap()
+        }
+        other => other.to_string(),
+    });
+    let line = saved.to_line();
+    assert!(
+        matches!(judge(Some(&line)), Found::Discard(Stale::Damaged)),
+        "{line}"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// A match on a layout survives its line and replays to itself.
+    #[test]
+    fn a_ground_line_round_trips_and_replays(seed in 0u64..1000, n in 0usize..10) {
+        let (saved, live, _) = layout_saved(seed, n);
+        let back = SavedMatch::parse(&saved.to_line()).unwrap();
+        prop_assert_eq!(&back, &saved);
+        let replayed = back.replay().unwrap();
+        prop_assert_eq!(state_hash(&replayed), state_hash(&live));
     }
 }
