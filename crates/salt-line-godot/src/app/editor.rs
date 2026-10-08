@@ -549,13 +549,35 @@ impl Game {
         self.apply_buffer_size();
     }
 
-    /// `--salt-editor`, with `--salt-layout`'s code loaded if given.
-    pub(super) fn open_editor_from_dev(&mut self, code: Option<&str>) {
+    /// `--salt-editor`, with `--salt-layout`'s code loaded if given and
+    /// `--salt-editor-page`'s page open.
+    pub(super) fn open_editor_from_dev(&mut self, code: Option<&str>, page: Option<&str>) {
         self.open_editor();
         if let Some(code) = code {
-            self.fx.clear();
             let fx = self.pasted(code);
             self.fx.extend(fx);
+        }
+        match page {
+            Some("start") => self.goto(Page::Start),
+            Some("menu") => self.goto(Page::Menu),
+            Some("slots") => self.goto(Page::Slots(Purpose::Open)),
+            Some("save") => self.goto(Page::Slots(Purpose::Save)),
+            Some("seed") => {
+                self.editor.text = "DUNE".into();
+                self.goto(Page::Seed);
+            }
+            Some("name") => self.editor_row(RowAct::Name),
+            Some("test") => self.begin_test(),
+            _ => {}
+        }
+    }
+
+    /// `--salt-setup`: the pre-match screen, `code`'s layout picked on the
+    /// GROUND row if given.
+    pub(super) fn open_setup_from_dev(&mut self, code: Option<&str>) {
+        self.open_versus_setup();
+        if let Some(layout) = code.and_then(|c| Layout::from_code(c).ok()) {
+            self.versus.ground = Some(self.ground_for(&layout));
         }
     }
 

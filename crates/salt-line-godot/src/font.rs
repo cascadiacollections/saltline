@@ -94,6 +94,9 @@ pub fn small_glyph(c: char) -> Option<[&'static str; SMALL_H]> {
         '<' => ["001", "011", "111", "011", "001"],
         '(' => ["010", "100", "100", "100", "010"],
         ')' => ["010", "001", "001", "001", "010"],
+        // The map editor's keys for the previous and next tool.
+        '[' => ["110", "100", "100", "100", "110"],
+        ']' => ["011", "001", "001", "001", "011"],
         // A small multiplication sign. A lower-case `x` never gets here: it
         // is upper-cased above and draws as the letter `X`.
         '*' => ["000", "101", "010", "101", "000"],

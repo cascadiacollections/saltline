@@ -21,6 +21,10 @@ use salt_line_sim::run::parse_seed;
 /// When `--salt-shot` captures if `--salt-shot-at` does not say.
 pub const DEFAULT_SHOT_AT: f64 = 0.05;
 
+/// The window `--salt-phone` lays the game out for: a Pixel 10 held
+/// landscape, 2424 by 1080 (a buffer of 400).
+pub const PHONE_WINDOW: (i32, i32) = (2424, 1080);
+
 /// Every developer flag, parsed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DevArgs {
@@ -62,6 +66,16 @@ pub struct DevArgs {
     /// `--salt-editor`: open the map editor at once (DESIGN §13.11), on the
     /// kept draft if there is one, or on `--salt-layout`'s code if given.
     pub editor: bool,
+    /// `--salt-editor-page <page>`: with `--salt-editor`, open that page
+    /// (`start`, `menu`, `slots`, `save`, `seed`, `name` or `test`), for
+    /// captures. The editing screen otherwise.
+    pub editor_page: Option<String>,
+    /// `--salt-setup`: open the versus pre-match screen at once, with
+    /// `--salt-layout`'s code picked on its GROUND row if given.
+    pub setup: bool,
+    /// `--salt-phone`: lay the game out as a phone would (touch controls,
+    /// the corner pad, [`PHONE_WINDOW`]), for captures on a desktop.
+    pub phone: bool,
     /// `--salt-fork-run <seed>:<screen>`: print the share code of that run
     /// screen forked into a layout, and quit (`custom::fork_report`).
     pub fork_run: Option<String>,
@@ -90,6 +104,9 @@ impl DevArgs {
             demo: flag(args, "--salt-demo"),
             layout: value(args, "--salt-layout"),
             editor: flag(args, "--salt-editor"),
+            editor_page: value(args, "--salt-editor-page"),
+            setup: flag(args, "--salt-setup"),
+            phone: flag(args, "--salt-phone"),
             fork_run: value(args, "--salt-fork-run"),
             fork_duel: value(args, "--salt-fork-duel"),
         }
@@ -159,6 +176,9 @@ mod tests {
                 demo: false,
                 layout: None,
                 editor: false,
+                editor_page: None,
+                setup: false,
+                phone: false,
                 fork_run: None,
                 fork_duel: None,
             }

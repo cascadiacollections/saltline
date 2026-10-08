@@ -699,6 +699,8 @@ impl Painter<'_> {
                 } else {
                     "ARROWS AIM  SPACE FIRE  [ ] WIND  , . GUN  ESC DONE"
                 };
+                let hw = crate::font::small_width(hint) as i32 + 8;
+                self.canvas.plate((w - hw) / 2, h - 25 - ey, hw, 11, pal);
                 self.centred(h - 22 - ey, hint, pal.get(slot::SKY_LO));
             }
         }

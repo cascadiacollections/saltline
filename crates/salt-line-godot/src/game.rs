@@ -182,6 +182,9 @@ pub struct SaltLine {
     elapsed: f64,
     /// `--salt-shot-at <seconds>`: when to grab the screenshot.
     shot_at: f64,
+    /// `--salt-phone`: the window a phone would have, whatever the real
+    /// one is, for captures of the phone's layout on a desktop.
+    phone_window: Option<(i32, i32)>,
     /// Present only in the dedicated profiling build; no clocks or samples in
     /// ordinary release builds.
     #[cfg(feature = "profiling")]
@@ -220,13 +223,20 @@ impl INode2D for SaltLine {
             frames: 0,
             elapsed: 0.0,
             shot_at: crate::cli::DEFAULT_SHOT_AT,
+            phone_window: None,
             #[cfg(feature = "profiling")]
             profile: ProfileCapture::new(),
         }
     }
 
     fn ready(&mut self) {
-        let mobile = Os::singleton().has_feature("mobile");
+        // `--salt-phone` lays the game out as a phone would (touch controls,
+        // the rounded corners' pad, a phone's window), for captures.
+        let phone = DevArgs::parse(&Self::cmdline_all()).phone;
+        let mobile = Os::singleton().has_feature("mobile") || phone;
+        if phone {
+            self.phone_window = Some(crate::cli::PHONE_WINDOW);
+        }
         // Aspect::Keep can letterbox on desktop too (16:10, ultrawide and
         // Long Lens). The area outside the one drawn texture is not sky.
         RenderingServer::singleton().set_default_clear_color(Color::BLACK);
@@ -247,7 +257,7 @@ impl INode2D for SaltLine {
         self.setup_audio();
         self.project_fps = Engine::singleton().get_max_fps();
         self.fps_cap = self.project_fps;
-        let window = Self::window_size();
+        let window = self.window_size();
         self.cutout = self.cutout_px(window);
         // And again on the first frame: on a phone the safe area may not be
         // settled yet while the scene is still coming up.
@@ -921,7 +931,10 @@ impl SaltLine {
 // ---------------------------------------------------------------- per frame
 
 impl SaltLine {
-    fn window_size() -> (i32, i32) {
+    fn window_size(&self) -> (i32, i32) {
+        if let Some(w) = self.phone_window {
+            return w;
+        }
         let size = DisplayServer::singleton().window_get_size();
         (size.x, size.y)
     }
@@ -932,7 +945,7 @@ impl SaltLine {
     /// platform round trip on a phone. The core decides what the buffer
     /// makes of them.
     fn poll_display(&mut self, delta: f64) {
-        let size = Self::window_size();
+        let size = self.window_size();
         if self.display.check(size, delta) {
             self.cutout = self.cutout_px(size);
         }

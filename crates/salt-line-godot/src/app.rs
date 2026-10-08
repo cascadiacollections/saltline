@@ -1534,7 +1534,9 @@ impl Game {
         if args.demo {
             self.start_demo(DemoStarted::Menu);
         } else if args.editor {
-            self.open_editor_from_dev(args.layout.as_deref());
+            self.open_editor_from_dev(args.layout.as_deref(), args.editor_page.as_deref());
+        } else if args.setup {
+            self.open_setup_from_dev(args.layout.as_deref());
         } else if let Some(code) = args.layout.as_deref() {
             match crate::custom::read(code) {
                 Ok(layout) if layout.is_duel() => self.start_layout_match(&layout),
