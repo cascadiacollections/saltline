@@ -144,7 +144,8 @@ pub struct SaltLine {
     /// versions of each they hold. See `backdrop` and `upload_backdrop`.
     sky: Option<Layer>,
     ground: Option<Layer>,
-    backdrop_versions: (u64, u64),
+    outline: Option<Layer>,
+    backdrop_versions: (u64, u64, u64),
     /// What `draw` last drew under the overlay, to know when to draw again.
     backdrop_drawn: Option<Shown>,
     /// Whether this frame needs drawing at all. See `frame::Redraw`.
@@ -224,7 +225,8 @@ impl INode2D for SaltLine {
             shadow: Shadow::default(),
             sky: None,
             ground: None,
-            backdrop_versions: (0, 0),
+            outline: None,
+            backdrop_versions: (0, 0, 0),
             backdrop_drawn: None,
             redraw: Redraw::default(),
             project_fps: 0,
@@ -413,8 +415,8 @@ impl INode2D for SaltLine {
         // In play, the sky and then the ground's window go first (see
         // `backdrop`). The frame is one whole-frame texture at the internal
         // resolution, with the strips that changed since it was last updated
-        // drawn over it (see `strips::Layers`), all blitted 1:1 at whole-pixel
-        // positions. Godot's viewport stretch does the only scaling in the
+        // drawn in place of its rows (see `strips::Layers`), all blitted 1:1
+        // at whole-pixel positions. Godot's viewport stretch does the only scaling in the
         // game, with nearest filtering set project-wide. A texture updated in
         // place needs no new draw; this runs again only when which strips are
         // shown, or where the ground is, changes.
@@ -435,20 +437,33 @@ impl INode2D for SaltLine {
                     );
                 }
             }
+            if let Some(outline) = self.outline.as_ref().filter(|_| shown.outline) {
+                let tex = outline.texture.clone();
+                self.base_mut().draw_texture(&tex, Vector2::ZERO);
+            }
         }
-        let layers: Vec<_> = self
-            .whole
+        // Each row from one texture only (`Layers::whole_rows`): the frame
+        // may be transparent, and a strip must not let the whole-frame
+        // texture's older pixels show through it.
+        if let Some(whole) = &self.whole {
+            let tex = whole.texture.clone();
+            let w = whole.w as f32;
+            for (y0, y1) in self.layers.whole_rows(whole.h) {
+                let rows = Rect2::new(
+                    Vector2::new(0.0, y0 as f32),
+                    Vector2::new(w, (y1 - y0) as f32),
+                );
+                self.base_mut().draw_texture_rect_region(&tex, rows, rows);
+            }
+        }
+        let strips: Vec<_> = self
+            .strips
             .iter()
-            .chain(
-                self.strips
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, _)| self.layers.shown(i))
-                    .map(|(_, s)| s),
-            )
-            .map(|l| (l.texture.clone(), Vector2::new(0.0, l.y as f32)))
+            .enumerate()
+            .filter(|&(i, _)| self.layers.shown(i))
+            .map(|(_, l)| (l.texture.clone(), Vector2::new(0.0, l.y as f32)))
             .collect();
-        for (tex, at) in layers {
+        for (tex, at) in strips {
             self.base_mut().draw_texture(&tex, at);
         }
     }
@@ -1279,6 +1294,14 @@ impl SaltLine {
             if v != self.backdrop_versions.1 || self.ground.is_none() {
                 self.backdrop_versions.1 = v;
                 redraw |= Layer::keep(&mut self.ground, ground);
+                uploads += 1;
+            }
+        }
+        if shown.is_some_and(|s| s.outline) {
+            let (outline, v) = b.outline_layer();
+            if v != self.backdrop_versions.2 || self.outline.is_none() {
+                self.backdrop_versions.2 = v;
+                redraw |= Layer::keep(&mut self.outline, outline);
                 uploads += 1;
             }
         }

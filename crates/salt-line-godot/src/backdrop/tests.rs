@@ -23,6 +23,7 @@ struct Both {
     /// Frames checked, and how many of them were layered.
     frames: usize,
     shown: usize,
+    outlined: usize,
 }
 
 impl Both {
@@ -35,6 +36,7 @@ impl Both {
             layered: (Canvas::new(1, 1), layered, Vec::new()),
             frames: 0,
             shown: 0,
+            outlined: 0,
         }
     }
 
@@ -78,6 +80,7 @@ impl Both {
         assert_eq!(fb.len(), lb.len(), "{what}: the same buttons");
         self.frames += 1;
         self.shown += usize::from(backdrop.shown().is_some());
+        self.outlined += usize::from(backdrop.shown().is_some_and(|s| s.outline));
     }
 }
 
@@ -123,6 +126,7 @@ fn an_autopiloted_run_is_the_same_layered() {
         g.start_dev(&args, 20_000);
         play(&mut both, &mut g, window, 40.0, 30.0, "run");
         assert!(both.shown > both.frames / 2, "most frames were layered");
+        assert!(both.outlined > 0, "a collapse flashed the outline");
     }
 }
 

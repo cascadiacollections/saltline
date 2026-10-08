@@ -1062,8 +1062,7 @@ impl Painter<'_> {
             && anim.settled < presentation::COLLAPSE_TIME
             && (anim.settled * 30.0) as i32 % 2 == 0
         {
-            let (w, h) = (self.canvas.w, self.canvas.h);
-            self.canvas.rect_outline(1, 1, w - 2, h - 2, alert);
+            self.cache.backdrop.outline(self.canvas, alert);
         }
     }
 

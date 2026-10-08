@@ -243,19 +243,33 @@ const GPU_CHECK_FRAMES: u64 = 600;
 /// the viewport and compared, pixel for pixel, with the same frame drawn
 /// flat on the CPU. Readback stalls the GPU, which is why it runs only
 /// once the timings are taken.
+///
+/// The viewport read in a frame's `process` may still hold an older frame
+/// than the last one drawn (the renderer can be a frame or two behind), so
+/// each read is compared with the last few flat frames: a read that is
+/// exactly one of them is right, and one that matches none is wrong.
 #[derive(Default)]
 pub struct GpuCheck {
     /// Drawn frames still to compare; 0 when not running.
     left: u64,
-    /// The flat frame the viewport should show after this frame is drawn,
-    /// its size, and whether it was drawn in layers.
-    expected: Option<(Vec<u8>, i32, i32, bool)>,
+    /// The flat frames lately drawn, newest first, each with its size and
+    /// whether it was drawn in layers.
+    recent: std::collections::VecDeque<(Vec<u8>, i32, i32, bool)>,
+    /// A frame was drawn since the last comparison.
+    pending: bool,
     frames: u64,
     layered: u64,
-    bad_frames: u64,
-    bad_pixels: u64,
+    /// Reads that matched the newest frame, an older one, or none.
+    newest: u64,
+    older: u64,
+    none: u64,
+    /// The first few wrong pixels: x, y, read back, newest flat frame.
+    samples: Vec<(i32, i32, [u8; 3], [u8; 3])>,
     sizes: Option<(i32, i32, i32, i32)>,
 }
+
+/// How many recent flat frames a read is compared with.
+const GPU_CHECK_LAG: usize = 3;
 
 impl GpuCheck {
     pub fn start(&mut self) {
@@ -270,49 +284,74 @@ impl GpuCheck {
     /// The frame just drawn should look like `flat`, `w` by `h`.
     pub fn expect(&mut self, flat: &[u8], w: i32, h: i32, layered: bool) {
         if self.running() {
-            self.expected = Some((flat.to_vec(), w, h, layered));
+            self.recent.push_front((flat.to_vec(), w, h, layered));
+            self.recent.truncate(GPU_CHECK_LAG);
+            self.pending = true;
         }
     }
 
     /// Whether a frame is waiting to be compared with the viewport.
     pub fn pending(&self) -> bool {
-        self.expected.is_some()
+        self.pending
     }
 
-    /// Compare the last drawn frame with `image`, the viewport read back,
-    /// whose buffer starts `left` pixels in (the letterbox). Returns the
+    /// Compare `image`, the viewport read back, whose buffer starts `left`
+    /// pixels in (the letterbox), with the recent flat frames. Returns the
     /// report when the last frame has been compared.
     pub fn compare(&mut self, image: Gd<godot::classes::Image>, left: i32) -> Option<String> {
-        let (want, w, h, layered) = self.expected.take()?;
+        self.pending = false;
         let mut image = image;
         image.convert(godot::classes::image::Format::RGBA8);
         let (iw, ih) = (image.get_width(), image.get_height());
-        self.sizes = Some((w, h, iw, ih));
         let got = image.get_data();
         let got = got.as_slice();
-        let mut bad = 0u64;
-        if ih != h || iw < left + w {
-            bad = (w * h) as u64;
-        } else {
+        let wrong = |want: &[u8], w: i32, h: i32| -> Vec<(i32, i32, [u8; 3], [u8; 3])> {
+            if ih != h || iw < left + w {
+                return vec![(-1, -1, [0; 3], [0; 3])];
+            }
+            let mut out = Vec::new();
             for y in 0..h {
                 for x in 0..w {
                     let a = ((y * iw + x + left) * 4) as usize;
                     let b = ((y * w + x) * 4) as usize;
                     if got[a..a + 3] != want[b..b + 3] {
-                        bad += 1;
+                        let rgb = |p: &[u8]| [p[0], p[1], p[2]];
+                        out.push((x, y, rgb(&got[a..a + 3]), rgb(&want[b..b + 3])));
                     }
                 }
             }
+            out
+        };
+        let mut matched = None;
+        let mut first_wrong = Vec::new();
+        for (lag, (want, w, h, _)) in self.recent.iter().enumerate() {
+            self.sizes = Some((*w, *h, iw, ih));
+            let bad = wrong(want, *w, *h);
+            if bad.is_empty() {
+                matched = Some(lag);
+                break;
+            }
+            if lag == 0 {
+                first_wrong = bad;
+            }
         }
         self.frames += 1;
-        self.layered += u64::from(layered);
-        self.bad_frames += u64::from(bad > 0);
-        self.bad_pixels += bad;
+        self.layered += u64::from(self.recent.front().is_some_and(|f| f.3));
+        match matched {
+            Some(0) => self.newest += 1,
+            Some(_) => self.older += 1,
+            None => {
+                self.none += 1;
+                let room = 12usize.saturating_sub(self.samples.len());
+                self.samples
+                    .extend(first_wrong.into_iter().take(room.min(4)));
+            }
+        }
         self.left -= 1;
         (self.left == 0).then(|| {
             format!(
-                "salt-profile: gpu check frames={} layered={} mismatched_frames={} mismatched_pixels={} buffer_and_viewport={:?}",
-                self.frames, self.layered, self.bad_frames, self.bad_pixels, self.sizes
+                "salt-profile: gpu check frames={} layered={} exact_newest={} exact_older={} matching_none={} buffer_and_viewport={:?} samples(x,y,got,want)={:?}",
+                self.frames, self.layered, self.newest, self.older, self.none, self.sizes, self.samples
             )
         })
     }

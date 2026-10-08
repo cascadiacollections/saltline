@@ -25,6 +25,12 @@
 //! The strips sit at whole-pixel offsets in the internal-resolution buffer,
 //! and the viewport stretch scales the finished viewport, so they meet with
 //! no seam.
+//!
+//! Every row is drawn from exactly one texture: a shown strip's rows from the
+//! strip, the rest from the whole-frame texture ([`Layers::whole_rows`]). The
+//! frame can be transparent in places (the layered frame, `backdrop`), and a
+//! transparent pixel of a strip drawn over the whole-frame texture would let
+//! that texture's older pixel show through.
 
 /// How many strips the frame is cut into. 12 strips of a 180-row buffer are
 /// 15 rows each: small enough that a shell in flight dirties one or two. A
@@ -128,6 +134,22 @@ impl Layers {
         self.shown[i]
     }
 
+    /// The rows `[start, end)` to draw from the whole-frame texture, in runs:
+    /// those of every strip not shown. With [`shown`](Self::shown) strips
+    /// drawn from their own textures, every row of a frame `h` tall is drawn
+    /// once.
+    pub fn whole_rows(&self, h: i32) -> Vec<(i32, i32)> {
+        let mut runs: Vec<(i32, i32)> = Vec::new();
+        for i in (0..STRIPS).filter(|&i| !self.shown[i]) {
+            let (y0, y1) = rows(h, i);
+            match runs.last_mut() {
+                Some(last) if last.1 == y0 => last.1 = y1,
+                _ => runs.push((y0, y1)),
+            }
+        }
+        runs
+    }
+
     /// Start over: the whole-frame texture holds the frame, no strip shown.
     pub fn reset(&mut self) {
         self.shown = [false; STRIPS];
@@ -219,8 +241,37 @@ mod tests {
                 let drawn = if layers.shown(i) { strip[i] } else { whole[i] };
                 assert_eq!(drawn, frame[i], "step {step}: strip {i} is stale");
             }
+            // And each row comes from one texture only: the whole frame's
+            // under a hidden strip, the strip's own under a shown one.
+            let h = 180;
+            let mut from = vec![0; h as usize];
+            for (y0, y1) in layers.whole_rows(h) {
+                (y0..y1).for_each(|y| from[y as usize] += 1);
+            }
+            for i in (0..STRIPS).filter(|&i| layers.shown(i)) {
+                let (y0, y1) = rows(h, i);
+                (y0..y1).for_each(|y| from[y as usize] += 1);
+            }
+            assert!(from.iter().all(|&n| n == 1), "step {step}: {from:?}");
         }
         assert!(wholes > 0, "the test must exercise whole-frame uploads");
+    }
+
+    #[test]
+    fn the_whole_frame_is_drawn_in_runs_around_shown_strips() {
+        let mut layers = Layers::default();
+        assert_eq!(layers.whole_rows(180), [(0, 180)]);
+        let mut some = [false; STRIPS];
+        some[0] = true;
+        some[5] = true;
+        layers.plan(some);
+        assert_eq!(layers.whole_rows(180), [(15, 75), (90, 180)]);
+        layers.plan([true; STRIPS]);
+        assert_eq!(
+            layers.whole_rows(180),
+            [(0, 180)],
+            "a whole upload hides them"
+        );
     }
 
     #[test]

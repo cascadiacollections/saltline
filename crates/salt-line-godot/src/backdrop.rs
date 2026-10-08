@@ -33,7 +33,11 @@
 //!    `cam_x`-th column at the buffer's left edge, so a camera move, the
 //!    landing shake included, is a different source rectangle on the GPU and
 //!    no upload at all.
-//! 3. **Overlay**: everything else, drawn by the CPU into the frame's canvas
+//! 3. **Outline**: the alert outline a collapse flashes around the buffer
+//!    ([`Backdrop::outline`]), a texture drawn once and shown or not. It is
+//!    one pixel wide but touches every row, so drawn into the frame it would
+//!    send the whole frame up every time it blinked.
+//! 4. **Overlay**: everything else, drawn by the CPU into the frame's canvas
 //!    as before, but over transparent pixels instead of over the sky. It is
 //!    still uploaded in strips (`strips`), and most of it is transparent, so
 //!    fewer strips change.
@@ -66,7 +70,17 @@
 //!   differs is painted into the overlay (see `edge_patches`);
 //! * the stars, drawn in the flat frame before the ground hides them, are in
 //!   the overlay, and drawn only where no ground is in front of them
-//!   (`sky::draw_stars`).
+//!   (`sky::draw_stars`);
+//! * the outline is painted mid-frame: whatever the overlay holds on the
+//!   outline's pixels by then is painted over in the flat frame, so
+//!   [`Backdrop::outline`] makes those pixels transparent again, and the
+//!   outline layer under the overlay shows through them until something
+//!   painted later covers it, as in the flat frame;
+//! * the overlay on the GPU is the canvas as last drawn. It goes up in
+//!   strips over a whole-frame texture (`strips`), so each of its rows must
+//!   be drawn from one texture only: a transparent pixel of a strip drawn
+//!   over the whole-frame texture would show that texture's older pixel
+//!   (`strips::Layers::whole_rows`, and the test there).
 //!
 //! The tests below hold the layered frame to this: [`Backdrop::composite`]
 //! puts the three layers together on the CPU as the node does on the GPU,
@@ -96,6 +110,7 @@ pub struct Backdrop {
     pub layered: bool,
     sky: Kept<SkyKey>,
     ground: Kept<GroundKey>,
+    outline: Kept<(i32, i32, Rgba)>,
     /// The overlay pixels that put the ground's edge columns right. See
     /// `edge_patches`.
     patches: Vec<Patch>,
@@ -112,6 +127,7 @@ impl Default for Backdrop {
             layered: false,
             sky: Kept::default(),
             ground: Kept::default(),
+            outline: Kept::default(),
             patches: Vec::new(),
             narrow: Canvas::new(2, 1),
             shown: None,
@@ -204,6 +220,8 @@ pub struct Shown {
     /// included). May be negative or run past the world's end: no ground
     /// shows there.
     pub cam_x: i32,
+    /// The collapse outline is on. See [`Backdrop::outline`].
+    pub outline: bool,
 }
 
 impl Shown {
@@ -258,6 +276,36 @@ impl Backdrop {
         (&self.ground.canvas, self.ground.version)
     }
 
+    /// The outline layer, and how many times it has been drawn.
+    pub fn outline_layer(&self) -> (&Canvas, u64) {
+        (&self.outline.canvas, self.outline.version)
+    }
+
+    /// Paint the one-pixel `colour` outline just inside the buffer's edge,
+    /// as `Canvas::rect_outline(1, 1, w - 2, h - 2, colour)` would. Flat, or
+    /// with no backdrop this frame, that is what it does. Layered, the
+    /// outline layer is shown instead, and the overlay's pixels under the
+    /// outline are cleared, as the outline would have painted over them:
+    /// only what is painted after this shows over it (see the module docs).
+    pub fn outline(&mut self, canvas: &mut Canvas, colour: Rgba) {
+        let (w, h) = (canvas.w, canvas.h);
+        let Some(shown) = self.shown.as_mut() else {
+            canvas.rect_outline(1, 1, w - 2, h - 2, colour);
+            return;
+        };
+        shown.outline = true;
+        canvas.rect_outline(1, 1, w - 2, h - 2, [0; 4]);
+        let key = (w, h, colour);
+        if self.outline.key != Some(key) {
+            let layer = &mut self.outline.canvas;
+            layer.resize(w, h);
+            layer.clear();
+            layer.rect_outline(1, 1, w - 2, h - 2, colour);
+            self.outline.key = Some(key);
+            self.outline.version += 1;
+        }
+    }
+
     /// Draw a playfield's sky and ground: the screen's `phase` sky with its
     /// stars (`seed`, `time`), and `screen`'s ground with its detail, no
     /// grass near `guns`. Flat, into `canvas` as before; layered, into the
@@ -284,7 +332,10 @@ impl Backdrop {
         canvas.clear();
         self.keep_sky(view, pal, phase);
         self.keep_ground(screen, guns, view.h, pal);
-        self.shown = Some(Shown { cam_x: view.cam_x });
+        self.shown = Some(Shown {
+            cam_x: view.cam_x,
+            outline: false,
+        });
         self.edge_patches(view, screen, guns, pal);
         for p in &self.patches {
             // No ground here per view: the sky shows, so the overlay must
@@ -384,8 +435,13 @@ impl Backdrop {
     /// over a pixel the overlay has not painted ([`Canvas::put_blend_on`]).
     /// Flat, there is nothing beneath: the canvas holds every colour itself.
     pub fn under(&self, x: i32, y: i32) -> Rgba {
-        if self.shown.is_none() {
+        let Some(shown) = self.shown else {
             return [0; 4];
+        };
+        if shown.outline {
+            if let Some(c) = opaque(self.outline.canvas.get(x, y)) {
+                return c;
+            }
         }
         self.ground_at(x, y)
             .unwrap_or_else(|| self.sky.canvas.get(x, y))
@@ -393,8 +449,8 @@ impl Backdrop {
 
     /// The finished frame from `overlay`, this frame's canvas: the layers put
     /// together on the CPU exactly as the node draws them on the GPU, sky,
-    /// then the ground's [`window`], then the overlay, each opaque pixel
-    /// hiding what is under it. For captures (`--salt-shot`) and tests; the
+    /// then the ground's [`window`], then the outline if on, then the
+    /// overlay, each opaque pixel hiding what is under it. For captures (`--salt-shot`) and tests; the
     /// flat frame is `overlay` itself.
     pub fn composite(&self, overlay: &Canvas) -> Vec<u8> {
         let Some(shown) = self.shown else {
@@ -412,6 +468,14 @@ impl Backdrop {
                         let at = y as usize * stride + (win.dst_x + i) as usize * 4;
                         out[at..at + 4].copy_from_slice(&c);
                     }
+                }
+            }
+        }
+        if shown.outline {
+            let layer = self.outline.canvas.bytes().as_chunks::<4>().0;
+            for (dst, src) in out.as_chunks_mut::<4>().0.iter_mut().zip(layer) {
+                if src[3] != 0 {
+                    dst.copy_from_slice(src);
                 }
             }
         }
