@@ -231,8 +231,8 @@ same ground: the four that ship (RIDGE, MESAS, CANYON, SPIRES), then any you
 have made, each with a four-character fingerprint so two phones can check
 they hold the same map. Tap the row (or Down) for the next, `<` for the one
 before. On a map the guns do not roll (ROLLING GUNS reads OFF), and a map's
-fixed wind blows the other way every second round so neither side has it
-behind them all match. A rematch keeps the ground.
+fixed wind blows the other way every pair of turns, so both players shoot
+with it and against it as often. A rematch keeps the ground.
 
 ### Map editor
 

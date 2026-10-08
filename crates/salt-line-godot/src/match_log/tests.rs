@@ -413,6 +413,58 @@ fn a_ground_that_does_not_fit_is_damaged(#[case] ground: &str) {
     );
 }
 
+/// A match on a map with a fixed wind (bundled SPIRES), played across
+/// pairs of turns and rounds: each turn's wind is the pair rule's, and its
+/// format-2 line replays to the match as played at every point.
+#[test]
+fn a_fixed_wind_match_replays_its_turning_wind() {
+    let spires = crate::custom::bundled::layouts()[3].clone();
+    let salt_line_sim::layout::WindSpec::Fixed(w) = spires.wind else {
+        panic!("SPIRES has a fixed wind");
+    };
+    let w = salt_line_sim::layout::wind_units(w);
+    let mut duel = crate::custom::layout_match(&spires, 9, rules_for(true));
+    let mut log = Vec::new();
+    let mut rounds_seen = 0;
+    for i in 0..40 {
+        if matches!(duel.phase, Phase::MatchOver(_)) {
+            break;
+        }
+        if matches!(duel.phase, Phase::RoundOver(_)) {
+            duel.next_round();
+            log.push(Entry::NextRound);
+            rounds_seen += 1;
+        }
+        let want = if (duel.turn / 2) % 2 == 1 { -w } else { w };
+        assert_eq!(
+            duel.screen.wind, want,
+            "round {}, turn {}",
+            duel.round, duel.turn
+        );
+        let side = duel.to_move;
+        let aim = if i % 3 == 2 {
+            LOB
+        } else {
+            let frame = versus::frame_for(&duel.screen, side);
+            let target = versus::target_in_frame(&duel.screen, side);
+            versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
+                .first()
+                .map_or(LOB, |s| (s.angle_ticks, s.power_ticks))
+        };
+        duel.fire(Shot::new(aim.0, aim.1), false).unwrap();
+        log.push(Entry::Shot(aim.0, aim.1));
+        let saved = SavedMatch::on_ground(&duel, &spires, [false; 2], &log).unwrap();
+        let back = SavedMatch::parse(&saved.to_line()).unwrap();
+        let replayed = back.replay().unwrap();
+        assert_eq!(
+            format!("{replayed:?}"),
+            format!("{duel:?}"),
+            "after {i} shots"
+        );
+    }
+    assert!(rounds_seen >= 1, "into a second round");
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
 

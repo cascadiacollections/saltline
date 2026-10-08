@@ -710,8 +710,9 @@ seeds: 4,000 run screens at 40 a seed, 300 duel rounds at 3 a seed).
 The owner's decisions are in DESIGN §13 (custom duels first; phone-first,
 with mouse, keys and a controller; wind only; 320 columns; fork this round
 as a crop keeping both guns, fork a seed as a labelled draft; floating
-structures warn; no rolling on a map; a fixed wind turns round each
-round). What was decided here, and measured:
+structures warn; no rolling on a map; a fixed wind turns round every pair
+of turns, changed in place from every round before the PR merged; sculpt
+and MAKE MAP's place kept as built). What was decided here, and measured:
 
 - **Where it lives.** The phone title's worst case already fills the screen
   (§11.6), so the editor is on the versus pre-match screen, a MAKE MAP

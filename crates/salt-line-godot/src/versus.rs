@@ -708,10 +708,11 @@ pub struct Ground {
     /// The screen each round starts on, in the shared frame, with no
     /// craters. Its `wind` is ignored; the match sets each turn's.
     pub screen: Screen,
-    /// A wind for every turn of the first round, in the shared frame, in
-    /// place of [`turn_wind`]'s draw; `None` draws as usual, by the rules'
-    /// range. It blows the other way in every second round
-    /// ([`Match::wind_at`]), so neither side has it behind them all match.
+    /// A fixed wind, in the shared frame, in place of [`turn_wind`]'s draw;
+    /// `None` draws as usual, by the rules' range. It blows this way for
+    /// the first pair of turns of every round and turns round with every
+    /// pair after ([`Match::wind_at`]), so neither side has it behind them
+    /// more often than the other.
     pub wind: Option<f64>,
 }
 
@@ -823,13 +824,20 @@ impl Match {
     }
 
     /// The wind for turn `turn` of this round, in the shared frame: the
-    /// ground's fixed wind if it has one, turned round in every second
-    /// round (owner decision, October 2026: a fixed wind blows the same way
-    /// for both guns, so it helps one side; flipping it each round gives
-    /// each side a round with it behind them), else [`turn_wind`]'s draw.
+    /// ground's fixed wind if it has one, turned round with every pair of
+    /// turns (turns 0 and 1 blow as set, 2 and 3 the other way, and so on,
+    /// from the start of every round), else [`turn_wind`]'s draw.
+    ///
+    /// Owner decision, October 2026: a fixed wind blows the same way for
+    /// both guns, so it helps one side. Within a pair each side shoots once
+    /// in the same wind; across pairs the wind alternates, so each side has
+    /// it behind them as often as the other however long a round runs. (A
+    /// flip per round, tried first, left rounds one and three of a best of
+    /// three blowing the same way.) A pure function of the turn, so a match
+    /// log replays it.
     pub fn wind_at(&self, turn: u32) -> f64 {
         match &self.ground {
-            Some(Ground { wind: Some(w), .. }) if self.round % 2 == 1 => -*w,
+            Some(Ground { wind: Some(w), .. }) if (turn / 2) % 2 == 1 => -*w,
             Some(Ground { wind: Some(w), .. }) => *w,
             _ => turn_wind(self.seed, self.round, turn, &self.rules),
         }

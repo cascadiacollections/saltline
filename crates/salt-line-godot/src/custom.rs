@@ -94,7 +94,7 @@ pub fn layout_match(layout: &Layout, seed: u64, base: Rules) -> Match {
 
 /// The winds a duel layout's gate checks, in thousandths, in the layout's
 /// frame: [`WindSpec::extremes`], and for a fixed wind its reverse as well,
-/// since a match on a layout turns a fixed wind round every second round
+/// since a match on a layout turns a fixed wind round every pair of turns
 /// (`versus::Match::wind_at`).
 pub fn duel_winds(wind: &WindSpec) -> Vec<i32> {
     match *wind {

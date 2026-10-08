@@ -1447,8 +1447,13 @@ and resuming a match on a layout (§13.8, §13.9, §13.11). Phases 4 and 5
   no structures; the rule stays for runs and challenges, downgraded.
 - **Rolling guns stay off on a layout**, and the pre-match screen's ROLLING
   GUNS row reads OFF over one.
-- **A fixed duel wind turns round every round**, so neither side has it
-  behind them all match; ranges and calm are unchanged.
+- **A fixed duel wind turns round every pair of turns**: each player shoots
+  once a pair in the same wind, and the next pair blows the other way, from
+  the start of every round, so neither side has it behind them more often
+  over a best of three. Ranges and calm are unchanged.
+- **SCULPT stays as built** (the ground rises or falls by how far the
+  finger is dragged from where it went down), and **MAKE MAP stays on the
+  versus pre-match screen**.
 
 ### 13.1 Concepts
 
@@ -1596,7 +1601,10 @@ does not decode, is not a duel or does not fit the match's width is a
 damaged line. No `MATCH_EPOCH` bump: the duel rules a format-1 line replays
 by are unchanged (the golden match's digest holds), and the one rule that
 changed, the fixed wind turning round, applies only to matches on a layout,
-which no earlier line could hold.
+which no earlier line could hold. That rule was first a flip every round
+and is now a flip every pair of turns (owner, October 2026), changed in
+place, with no format or epoch bump, because no format-2 line was ever
+written by a released build: Phase 3 had not merged.
 
 ### 13.5 Validation
 
@@ -1651,7 +1659,7 @@ A one-gun check takes 47 µs at the median and under 300 µs at worst, a duel ch
 about 100 µs, so the editor can recheck after every edit.
 
 A **fixed duel wind is checked both ways** (`custom::duel_winds`), since a
-match on the layout turns it round every second round (owner decision).
+match on the layout turns it round every pair of turns (owner decision).
 
 **Fairness and mirror tools** for duels: `Layout::asymmetry` (the largest
 difference between a column and its mirror), `Layout::mirror_left` (copy the
@@ -1809,8 +1817,10 @@ versus `Match`. Its screen becomes a `versus::Ground`, dealt fresh (no
 craters, guns home) at the start of every round instead of a generated
 screen. Its wind becomes the rules' wind range, so each turn draws from the
 layout's range by `turn_wind`, or, for a fixed wind, holds that wind every
-turn of a round in the shared frame, turned round every second round
-(Phase 3, owner decision). Hits, rounds, equal shots and aim help are
+turn in the shared frame, turned round every pair of turns from the start
+of each round (Phase 3, owner decision: `Match::wind_at`, a pure function
+of the turn, which a match log replays). Hits, rounds, equal shots and aim
+help are
 versus's own. **The guns do not roll on a layout** (`Match::on_ground`
 turns the roll off whatever the pre-match screen says): versus's ladder is
 counted from `EMPLACEMENT_X`, so a layout's guns would snap to the default
@@ -2030,11 +2040,13 @@ the editor is the tool to make them.
 - **Guns that are not mirror images.** Versus places the right gun as the
   left's mirror. Freeing that means a second muzzle in its frames.
 - ~~**A fixed wind in a duel**~~ Resolved (owner, October 2026): it turns
-  round every second round (`versus::Match::wind_at`), and the gate checks
-  it both ways. Open: in a best of three, rounds one and three blow the
-  same way, so one side has it behind them twice if the match goes the
-  distance; turning it round every pair of turns (each shooter the same
-  wind relative to their own gun) would even that out. Owner's call.
+  round every pair of turns (`versus::Match::wind_at`), and the gate checks
+  it both ways. A flip every round, built first, left rounds one and three
+  of a best of three blowing the same way.
+- ~~**SCULPT's model**~~ Resolved (owner, October 2026): kept as built, the
+  ground moving by how far the finger is dragged, not pulled to the finger.
+- ~~**Where the editor lives**~~ Resolved (owner, October 2026): on the
+  versus pre-match screen (MAKE MAP), not the title.
 - ~~**A floating structure on a fork**~~ Resolved: a warning, not a block,
   on any layout.
 - ~~**Provenance.**~~ Resolved: a fork's origin is kept beside its code in

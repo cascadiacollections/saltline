@@ -67,7 +67,7 @@ pub fn recipe(i: usize) -> Option<Layout> {
             sculpt(&mut e, 120.0, 14.0);
             "CANYON"
         }
-        // Spires in a steady wind that turns round each round.
+        // Spires in a steady wind that turns round every pair of turns.
         3 => {
             stamp(&mut e, Stamp::Spires, 150);
             e.set_wind_mode(WindMode::Fixed);

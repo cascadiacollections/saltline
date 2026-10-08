@@ -44,8 +44,9 @@ second. See RELEASING.md for the release steps.
 
 ### Changed
 
-- A map's fixed wind turns round every second round of a match (only maps
-  have fixed winds; generated duels are unchanged).
+- A map's fixed wind turns round every pair of turns, so both players shoot
+  with it and against it as often (only maps have fixed winds; generated
+  duels are unchanged).
 
 ## [0.1.0] - 2026-10-04
 

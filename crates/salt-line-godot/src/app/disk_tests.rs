@@ -1672,6 +1672,44 @@ fn a_custom_duel_survives_rematch_and_resume() {
     assert!(disk.match_main.as_deref().unwrap().starts_with("match 2 "));
 }
 
+/// A match on a fixed-wind map (bundled SPIRES) killed at every turn of a
+/// first round and into the second, and resumed: the same match, its wind
+/// the pair rule's for the turn it resumes on.
+#[test]
+fn a_fixed_wind_match_resumes_on_the_right_wind() {
+    let n = crate::custom::bundled::BUNDLED.len();
+    let spires = crate::custom::bundled::layouts()[n - 1].clone();
+    assert!(matches!(
+        spires.wind,
+        salt_line_sim::layout::WindSpec::Fixed(_)
+    ));
+    let mut rounds = 0;
+    for turns in [0, 1, 2, 3, 4, 5, 7, 10, 13, 16] {
+        let mut disk = FakeDisk::default();
+        let mut g = disk.launch();
+        press(&mut g, &mut disk, Key::Num2);
+        for _ in 0..n {
+            press(&mut g, &mut disk, Key::Down);
+        }
+        assert_eq!(g.versus.ground.as_ref().unwrap().layout, spires);
+        press(&mut g, &mut disk, Key::Enter);
+        for _ in 0..turns {
+            if matches!(vs(&g).duel.phase, crate::versus::Phase::MatchOver(_)) {
+                break;
+            }
+            match_turn(&mut g, &mut disk);
+        }
+        let want = match_state(&g);
+        rounds = rounds.max(vs(&g).duel.round);
+        drop(g);
+        let back = relaunch_and_resume(&mut disk);
+        assert_eq!(match_state(&back), want, "{turns} turns");
+        let duel = &vs(&back).duel;
+        assert_eq!(duel.screen.wind, duel.wind_at(duel.turn), "{turns} turns");
+    }
+    assert!(rounds >= 1, "the kills reached a second round");
+}
+
 /// The demo never reads or writes the slot file or the draft (DESIGN
 /// §12.3, §13.8): through a whole demo cycle every file is byte for byte as
 /// it was, no disk effect is asked for, and the editor afterwards opens on
