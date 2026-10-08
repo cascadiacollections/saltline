@@ -44,8 +44,9 @@ pub fn fork_duel(match_seed: u64, round: u32) -> Layout {
     Layout::from_screen(&screen, vec![left, right], wind_spec(&rules))
 }
 
-/// The layout wind that is `rules`' per-turn wind.
-fn wind_spec(rules: &Rules) -> WindSpec {
+/// The layout wind that is `rules`' per-turn wind: what a fork of a
+/// generated duel round blows.
+pub fn wind_spec(rules: &Rules) -> WindSpec {
     let (min, max) = (
         layout::wind_milli(rules.wind_min),
         layout::wind_milli(rules.wind_max),
@@ -114,14 +115,22 @@ pub fn duel_counts(layout: &Layout) -> Vec<(i32, [usize; 2])> {
 /// editor counts further, so its fairness sign can tell two sides apart
 /// that both pass the gate with room to spare.
 pub fn duel_counts_capped(layout: &Layout, cap: usize) -> Vec<(i32, [usize; 2])> {
+    duel_counts_in(layout, &duel_winds(&layout.wind), cap)
+}
+
+/// [`duel_counts`] in the winds given (thousandths, the layout's frame),
+/// counting up to `cap`: TEST FIRE shows the gate's count in calm air too,
+/// which a fixed wind's gate does not check.
+pub fn duel_counts_in(layout: &Layout, winds: &[i32], cap: usize) -> Vec<(i32, [usize; 2])> {
     if !layout.is_duel() {
         return Vec::new();
     }
     let lo = Loadout::new();
     let reach = Rules::DEFAULT.hit_reach;
     let ground = Screen::from_layout(layout, 0.0);
-    duel_winds(&layout.wind)
-        .into_iter()
+    winds
+        .iter()
+        .copied()
         .map(|wind| {
             let mut shared = ground.clone();
             shared.wind = wind_units(wind);

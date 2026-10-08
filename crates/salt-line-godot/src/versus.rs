@@ -860,35 +860,22 @@ impl Match {
             return None;
         }
         let shooter = self.to_move;
-        let width = self.width();
-        let lo = self.loadout.clone();
-        let own_box = emplacement_box(&self.screen, shooter);
-        let target = target_in_frame(&self.screen, shooter);
-        let mut frame = frame_for(&self.screen, shooter);
-        let traces = fly(&frame, target, shot.quantized(&lo), &lo, record_path);
-        let hit = traces
-            .iter()
-            .any(|t| hits(t, target, &lo, self.rules.hit_reach));
-        for t in &traces {
-            run::crater_detonation(&mut frame.field, t.end, t.damage_scale, &lo);
-        }
-        let (field, traces) = match shooter {
-            Side::Left => (frame.field, traces),
-            Side::Right => (
-                mirror_field(&frame.field),
-                traces.iter().map(|t| mirror_trace(t, width)).collect(),
-            ),
-        };
+        let Resolved {
+            field,
+            traces,
+            hit,
+            self_hit,
+        } = resolve(
+            &self.screen,
+            shooter,
+            shot,
+            &self.loadout,
+            self.rules.hit_reach,
+            record_path,
+        );
         self.screen.field = field;
         let landing = traces.first().and_then(Trace::detonation);
         self.landing[shooter.index()] = landing;
-        // In the shared frame, where both the traces and the box now are.
-        // A shell that ended on a structure ended on the other gun, the
-        // only box it can strike, so a self-hit is never also a hit.
-        let self_hit = !hit
-            && traces
-                .iter()
-                .any(|t| hits(t, own_box, &lo, self.rules.hit_reach));
 
         if hit {
             self.hits[shooter.index()] += 1;
@@ -1047,6 +1034,60 @@ impl Match {
         self.screen.wind = self.wind_at(0);
         self.phase = Phase::Aiming;
         true
+    }
+}
+
+/// What one shot does to a shared screen: the field with its craters, the
+/// traces, and whether it hit the other gun or only the shooter's own.
+pub struct Resolved {
+    /// The field after the shot, in the shared frame.
+    pub field: Heightfield,
+    /// Every shell's flight, in the shared frame.
+    pub traces: Vec<Trace>,
+    /// It reached the other gun.
+    pub hit: bool,
+    /// It reached only the shooter's own gun.
+    pub self_hit: bool,
+}
+
+/// Resolve `shooter`'s `shot` on `shared` as [`Match::fire`] does, touching
+/// nothing: flown in the shooter's frame ([`frame_for`]) with the other
+/// gun's box as the only one it can strike, its craters dug there, and the
+/// field and traces reflected back into the shared frame. The editor's
+/// TEST FIRE fires through here too, so a test shot is a match's shot.
+pub fn resolve(
+    shared: &Screen,
+    shooter: Side,
+    shot: Shot,
+    lo: &Loadout,
+    reach: f64,
+    record_path: bool,
+) -> Resolved {
+    let width = shared.width;
+    let own_box = emplacement_box(shared, shooter);
+    let target = target_in_frame(shared, shooter);
+    let mut frame = frame_for(shared, shooter);
+    let traces = fly(&frame, target, shot.quantized(lo), lo, record_path);
+    let hit = traces.iter().any(|t| hits(t, target, lo, reach));
+    for t in &traces {
+        run::crater_detonation(&mut frame.field, t.end, t.damage_scale, lo);
+    }
+    let (field, traces) = match shooter {
+        Side::Left => (frame.field, traces),
+        Side::Right => (
+            mirror_field(&frame.field),
+            traces.iter().map(|t| mirror_trace(t, width)).collect(),
+        ),
+    };
+    // In the shared frame, where both the traces and the box now are. A
+    // shell that ended on a structure ended on the other gun, the only box
+    // it can strike, so a self-hit is never also a hit.
+    let self_hit = !hit && traces.iter().any(|t| hits(t, own_box, lo, reach));
+    Resolved {
+        field,
+        traces,
+        hit,
+        self_hit,
     }
 }
 
