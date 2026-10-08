@@ -1779,8 +1779,17 @@ job).
   newline-terminated, versioned line (`draft 1 <mirror> <slot> <origin>
   <code>`), kept by `resume`'s file rules at its own three paths as the
   match file is (§11.6): replaced atomically after every edit that changed
-  it, set aside while a launch reads it. It is cleared only once saved or
-  discarded. A draft from a newer build is put back unread.
+  it (as a finger lifts, or at once if the app loses focus mid-drag), set
+  aside while a launch reads it. It is cleared only once saved (the
+  revision that was saved) or discarded and the editor left. A draft from a
+  newer build is put back unread and never written over or cleared; the
+  start page says so, and a map made meanwhile is kept by saving it.
+- **A line's origin it cannot read** (a newer build's kind, a hand edit)
+  never costs the layout: in the slot file it is kept verbatim after the
+  code, in the draft it is dropped and the draft kept. A slot named by any
+  line, read or kept, is never offered as free, and one whose code this
+  build cannot read is never saved over or deleted. A slot file that cannot
+  be read at all (too large, or torn with NULs) is never written over.
 - **Demo isolation (§12.3).** The demo never reads or writes the layouts
   file or the draft: it starts only from the title and never opens the
   editor, every write checks for the demo too, and both are disk effects,
@@ -1862,8 +1871,10 @@ title's DEMO and MUS plates are, so the rows stay put) and a keyed MAKE MAP
 row (`E`) otherwise; and from a match's pause and result plates, MAKE MAP OF
 THIS ROUND (`E`). With a draft kept, it opens straight onto it; otherwise on
 a start page: NEW BLANK MAP, FORK A SEED, OPEN A MAP (bundled and saved),
-PASTE A CODE. Leaving goes back to the pre-match screen, or to the title if
-forking left a match suspended there (where RESUME MATCH is).
+PASTE A CODE. Leaving goes back to the pre-match screen; opened by MAKE MAP
+OF THIS ROUND over a match it suspended, the menu's last row is BACK TO
+MATCH and goes straight back into it. A match on a map forks to the map
+itself, name and slot and all.
 
 **The editing screen.** Three rows of buttons, each 18 rows tall (as tall as
 the aim buttons), all above the world's ceiling: the top 72 rows of the
@@ -1898,13 +1909,15 @@ point tapped; dragging moves it rather than stamping a trail.
 **GUNS** drags the gun nearer the finger, within the edge margin and
 `MIN_GUN_GAP`, stopping at the last column it can be seated on.
 
-**MIRROR** (on for any draft already symmetric, so for BLANK) makes every
-edit on both sides at once: brushes and stamps mirrored about the middle and
-the guns moved as a pair. Turning it on makes the draft symmetric (the left
-half copied onto the right, the right gun put at the left's mirror) as one
-undoable step. With it off, either side and either gun can be edited alone,
-and the verdict says GUNS NOT MIRRORED, which a duel cannot be played with
-(versus places the right gun as the left's mirror; §13.13).
+**MIRROR** (on by default for a duel, owner decision, forks included: a
+fork's tenth of asymmetry stays, every edit after it is mirrored) makes
+every edit on both sides at once: brushes and stamps mirrored about the
+middle and the guns moved as a pair. Turning it back on makes the draft
+symmetric (the left half copied onto the right, the right gun put at the
+left's mirror) as one undoable step. With it off, either side and either
+gun can be edited alone, and the verdict says GUNS NOT MIRRORED, which a
+duel cannot be played with (versus places the right gun as the left's
+mirror; §13.13).
 
 **WIND** sets CALM, RANGE or FIXED; `-` `+` move the chosen number by a
 tenth, added to what is there, so a fork's thousandths (1.234) are never
@@ -1935,9 +1948,14 @@ until DONE and are thrown away with the test.
 ones (the draft's own slot chosen); a tap saves there. A saved draft is
 cleared from disk, and the editor carries on with it. Overwriting a slot
 (saving over a different layout) and DELETE in the slot list leave an UNDO
-toast up until the editor is left, as does DISCARD MAP for the draft, its
-history and all; a page change spends the tap that caused it (§11.4's "one
-touch, one screen"), so no double tap can overwrite or delete. COPY CODE
+toast up, as does DISCARD MAP for the draft, its history and all (its file
+kept until the editor is left, so a kill meanwhile loses nothing). A toast
+goes as soon as the draft changes, so no UNDO from before an edit can take
+the edit away; on the editing screen it takes the verdict's place in the
+top row, over the sky, out of a drag's way. A page change spends the tap
+that caused it (§11.4's "one touch, one screen"), so no double tap can
+overwrite or delete. A finger that is dragging when another button or a
+key ends its stroke is spent, so the stroke is never applied twice. COPY CODE
 puts the share code on the clipboard; PASTE CODE reads it
 (`Effect::ReadClipboard`, the adapter handing the text to `Game::pasted`),
 decodes and loads it: a duel of the layout width goes in as the draft,
@@ -2005,7 +2023,10 @@ the editor is the tool to make them.
   left's mirror. Freeing that means a second muzzle in its frames.
 - ~~**A fixed wind in a duel**~~ Resolved (owner, October 2026): it turns
   round every second round (`versus::Match::wind_at`), and the gate checks
-  it both ways.
+  it both ways. Open: in a best of three, rounds one and three blow the
+  same way, so one side has it behind them twice if the match goes the
+  distance; turning it round every pair of turns (each shooter the same
+  wind relative to their own gun) would even that out. Owner's call.
 - ~~**A floating structure on a fork**~~ Resolved: a warning, not a block,
   on any layout.
 - ~~**Provenance.**~~ Resolved: a fork's origin is kept beside its code in

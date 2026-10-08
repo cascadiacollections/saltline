@@ -120,7 +120,7 @@
 //! | `Store(Layouts)` | the editor's SAVE, a slot deleted, a toast's UNDO (`app/editor.rs`) | `save::write` of the slot file (`layouts_file`), then [`Game::stored`] | yes: memory takes the new slots only on success, then a saved draft is cleared (`DraftFile(Discard)`); on failure a note, and the draft is kept | yes |
 //! | `DraftFile(Write)` | the editor's draft changed, once a stroke has ended (`persist_draft`) | `resume::replace_at` at `layouts_file::DRAFT_FILES` | no | yes |
 //! | `DraftFile(Restore)` | [`Game::saved_draft`], once the set-aside draft has been read (or is from a newer build) | rename `draft-loading.txt` back to `draft.txt` | no | yes |
-//! | `DraftFile(Discard)` | the draft saved (from `stored`) or DISCARD MAP | `resume::replace_at` with `""` | no | yes |
+//! | `DraftFile(Discard)` | the draft saved (from `stored`), DISCARD MAP once the editor is left, or a blank draft file at launch ([`Game::saved_draft`]); never over a newer build's draft | `resume::replace_at` with `""` | no | yes |
 //! | `DraftFile(Abandon)` | [`Game::saved_draft`], for a draft this build cannot read | as `MatchFile(Abandon)`, at the draft's paths | no | yes |
 //! | `RunFile(Write)` | a run started, then each time its log grows (a shot, a draft); [`Game::stored`], for a score that did not reach disk; launch or CONTINUE, dropping a line that will not replay | `resume::replace`: the run file becomes the text (`Game::run_file_text`: finished runs still to score, then the live run) | no | yes |
 //! | `RunFile(Restore)` | [`Game::saved_run`], once the set-aside run has rebuilt | rename `run-loading.txt` back to `run.txt` | no | yes |
@@ -473,6 +473,8 @@ pub enum SlotWrite {
         slot: u8,
         replaced: bool,
         before: String,
+        /// The draft's revision saved: only that is cleared once confirmed.
+        rev: u64,
     },
     /// `slot` emptied; `before` is the file as it was, for UNDO.
     Delete { slot: u8, before: String },
@@ -1406,6 +1408,7 @@ impl Game {
         self.input.touch.release_all();
         self.auto_pause();
         self.flush_settings();
+        self.flush_draft();
         self.fx.push(Effect::Redraw);
         self.take_effects()
     }
@@ -1421,6 +1424,7 @@ impl Game {
         self.demo_unwatched();
         self.auto_pause();
         self.flush_settings();
+        self.flush_draft();
         self.take_effects()
     }
 
@@ -1435,6 +1439,7 @@ impl Game {
     pub fn closing(&mut self, pending: &[Event]) -> Vec<Effect> {
         self.events(pending);
         self.flush_settings();
+        self.flush_draft();
         self.take_effects()
     }
 

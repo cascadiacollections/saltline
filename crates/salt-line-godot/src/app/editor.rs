@@ -17,8 +17,8 @@
 //! The phone title has no row to spare (§11.6), so the editor is reached
 //! from the versus pre-match screen, the mode its maps are for, through a
 //! corner plate that mirrors the title's DEMO and MUS plates. Leaving it
-//! goes back there, or to the title if forking a match left that match
-//! suspended (where RESUME MATCH is offered).
+//! goes back there; opened by MAKE MAP OF THIS ROUND over a match it
+//! suspended, it goes back to that match (BACK TO MATCH).
 //!
 //! # Pages
 //!
@@ -35,23 +35,26 @@
 //!
 //! * **On disk after every edit** (`persist_draft`), as a versus match is
 //!   kept (§11.6): `user://draft.txt`, one versioned line, replaced
-//!   atomically; not while a finger is still dragging, but as it lifts. It
-//!   comes back at the next launch, and the editor opens on it.
+//!   atomically; not while a finger is still dragging, but as it lifts, or
+//!   at once if the app loses focus mid-drag (`flush_draft`). It comes back
+//!   at the next launch, and the editor opens on it.
 //! * **Cleared** only once it is saved to a slot (the slot file's write
-//!   confirmed, `layouts_stored`) or discarded.
+//!   confirmed, `layouts_stored`, for the revision that was saved) or
+//!   discarded and the editor left. A newer build's draft is never written
+//!   over or cleared (`newer_draft`).
 //! * **Every replacement is an edit.** BLANK, a fork, a paste or a slot
 //!   opened over a draft replace it through the editor's undo, so UNDO
 //!   brings it back. DISCARD and every slot overwrite or delete leave an
-//!   UNDO toast up until the editor is left; a second tap can never do
-//!   them, because a page change spends the tap that caused it (`One touch,
-//!   one screen` in `app/versus.rs`) and the toast's UNDO sits where no
-//!   button of the page before was.
+//!   UNDO toast up until the draft next changes or the editor is left; a
+//!   second tap can never do them, because a page change spends the tap
+//!   that caused it (`One touch, one screen` in `app/versus.rs`). A slot
+//!   this build cannot read is never saved over or deleted.
 //!
 //! # The demo never touches any of it
 //!
 //! The demo starts only from the title and never opens the editor; the
 //! slot file and the draft are only written from the editor's own pages,
-//! each write checks for the demo as well (`persist_draft`, `save_to`),
+//! each write checks for the demo as well (`persist_draft`, `write_slots`),
 //! and both are disk effects, so the demo's backstop in `Game::tick`
 //! drops and flags any that slipped through (DESIGN §12.3).
 
@@ -65,8 +68,9 @@ use crate::versus;
 use crate::versus::Side;
 use salt_line_sim::layout::{wind_units, Layout, LAYOUT_WIDTH};
 
-/// Slot rows the slot list shows at once.
-pub const VISIBLE_ROWS: usize = 6;
+/// Slot rows the slot list shows at once, each as tall as the aim
+/// buttons, above the list's own buttons.
+pub const VISIBLE_ROWS: usize = 5;
 
 /// A page of the editor. See the module docs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,11 +133,14 @@ pub enum SlotRow {
 }
 
 /// A word left on screen after a slot was overwritten or deleted, or the
-/// draft discarded, with what UNDO puts back.
+/// draft discarded, with what UNDO puts back. It goes as soon as the draft
+/// changes (`rev`): an UNDO from before an edit would take the edit with it.
 #[derive(Clone, Debug)]
 pub struct Toast {
     pub text: String,
     pub undo: ToastUndo,
+    /// The draft's revision when it went up (`None`: no draft).
+    pub rev: Option<u64>,
 }
 
 /// What a toast's UNDO puts back.
@@ -321,8 +328,16 @@ pub(crate) struct EditorState {
     /// The draft's revision last saved to a slot, after which the draft
     /// file was cleared.
     pub(crate) saved: Option<u64>,
-    /// A draft file from a newer build was left in place unread.
+    /// A draft file from a newer build was left in place unread: no draft
+    /// is written or cleared while it is, so the newer build finds it.
     pub(crate) newer_draft: bool,
+    /// DISCARD MAP has dropped the draft but its file is kept until the
+    /// toast's UNDO can no longer bring it back (the editor left), so a
+    /// kill meanwhile loses nothing.
+    pub(crate) pending_discard: bool,
+    /// The editor was opened by MAKE MAP OF THIS ROUND over a match it
+    /// suspended: leaving it goes back to that match.
+    pub(crate) from_match: bool,
 }
 
 impl Default for EditorState {
@@ -340,6 +355,8 @@ impl Default for EditorState {
             written: None,
             saved: None,
             newer_draft: false,
+            pending_discard: false,
+            from_match: false,
         }
     }
 }
@@ -405,9 +422,9 @@ impl Game {
 
     /// Keep the draft on disk whenever it has changed (see "The draft is
     /// never lost"): checked every frame, written once a stroke has ended,
-    /// never during the demo.
+    /// never during the demo, and never over a newer build's draft.
     pub(super) fn persist_draft(&mut self) {
-        if self.in_demo() {
+        if self.in_demo() || self.editor.newer_draft {
             return;
         }
         let Some(ed) = self.editor.ed.as_ref() else {
@@ -427,19 +444,31 @@ impl Game {
         }
     }
 
-    /// Drop the draft and clear it from disk.
-    fn clear_draft(&mut self) {
-        self.editor.ed = None;
-        self.editor.written = None;
-        self.editor.saved = None;
-        if !self.in_demo() {
+    /// Clear the draft file (a draft saved or discarded), unless it is a
+    /// newer build's.
+    fn clear_draft_file(&mut self) {
+        if !self.in_demo() && !self.editor.newer_draft {
             self.fx.push(Effect::DraftFile(DraftFile::Discard));
         }
+    }
+
+    /// The app is losing focus or closing: a stroke under a finger ends
+    /// here, and the draft goes to disk now, since a paused app may never
+    /// get another frame (Android kills it in the background).
+    pub(super) fn flush_draft(&mut self) {
+        if let Some(ed) = self.editor.ed.as_mut() {
+            ed.end_stroke();
+        }
+        self.persist_draft();
     }
 
     /// The slot file reached disk, or did not (`Store::Layouts`).
     pub(super) fn layouts_stored(&mut self, text: String, why: SlotWrite, ok: bool) {
         if !ok {
+            if let SlotWrite::Save { .. } = why {
+                // Not saved: the draft is a draft still, to be written.
+                self.editor.written = None;
+            }
             self.note(match why {
                 SlotWrite::Save { .. } => "MAP NOT SAVED - DRAFT KEPT".into(),
                 SlotWrite::Delete { .. } | SlotWrite::Undo => "MAPS NOT SAVED".into(),
@@ -447,22 +476,30 @@ impl Game {
             return;
         }
         self.layouts.set(Slots::parse(&text));
+        let rev_now = self.editor.ed.as_ref().map(|e| e.rev);
         match why {
             SlotWrite::Save {
                 slot,
                 replaced,
                 before,
+                rev,
             } => {
-                if let Some(ed) = self.editor.ed.as_mut() {
-                    ed.saved_to(slot);
-                    self.editor.saved = Some(ed.rev);
+                // Only the revision that was saved is done with: an edit
+                // made since stays a draft.
+                if rev_now == Some(rev) {
+                    if let Some(ed) = self.editor.ed.as_mut() {
+                        ed.saved_to(slot);
+                        self.editor.saved = Some(ed.rev);
+                    }
                     self.editor.written = None;
-                    self.fx.push(Effect::DraftFile(DraftFile::Discard));
+                    self.clear_draft_file();
                 }
+                let rev = self.editor.ed.as_ref().map(|e| e.rev);
                 if replaced {
                     self.editor.toast = Some(Toast {
                         text: format!("SLOT {slot} REPLACED"),
                         undo: ToastUndo::Slots(before),
+                        rev,
                     });
                 } else {
                     self.editor.toast = None;
@@ -473,6 +510,7 @@ impl Game {
                 self.editor.toast = Some(Toast {
                     text: format!("SLOT {slot} DELETED"),
                     undo: ToastUndo::Slots(before),
+                    rev: rev_now,
                 });
             }
             SlotWrite::Undo => {
@@ -490,6 +528,10 @@ impl Game {
         }
         if self.layouts.slots.from_the_future {
             self.note("MAPS FILE IS FROM A NEWER VERSION".into());
+            return;
+        }
+        if self.layouts.slots.damaged {
+            self.note("MAPS FILE IS DAMAGED - NOT WRITTEN".into());
             return;
         }
         self.fx.push(Effect::Store(Store::Layouts {
@@ -544,6 +586,7 @@ impl Game {
         self.editor.focus = 0;
         self.editor.test = None;
         self.editor.toast = None;
+        self.editor.from_match = false;
         self.input.touch.cancel_drag();
         self.set_run_width(Some(LAYOUT_WIDTH));
         self.apply_buffer_size();
@@ -581,21 +624,25 @@ impl Game {
         }
     }
 
-    /// Leave the editor: to the pre-match screen, or to the title if a
-    /// match was left suspended to fork it (RESUME MATCH is there). A draft
-    /// a slot already holds is done with; any other stays kept.
+    /// Leave the editor: back to the match it was opened from (MAKE MAP OF
+    /// THIS ROUND), or to the pre-match screen, or to the title if a match
+    /// is suspended (RESUME MATCH is there). A draft a slot already holds
+    /// is done with; any other stays kept. A discarded draft's file goes
+    /// now, its UNDO gone with the toast.
     pub(crate) fn leave_editor(&mut self) {
-        if let Some(ed) = self.editor.ed.as_mut() {
-            ed.end_stroke();
-        }
+        self.flush_draft();
         if !self.editor.unsaved() && self.editor.ed.is_some() {
             self.editor.ed = None;
             self.editor.written = None;
             self.editor.saved = None;
         }
+        if std::mem::take(&mut self.editor.pending_discard) && self.editor.ed.is_none() {
+            self.clear_draft_file();
+        }
         self.editor.test = None;
         self.editor.toast = None;
         self.input.touch.cancel_drag();
+        let back_to_match = std::mem::take(&mut self.editor.from_match);
         self.mode = if self.saved_match.is_some() {
             Mode::Title
         } else {
@@ -603,6 +650,9 @@ impl Game {
         };
         self.refresh_ground();
         self.apply_buffer_size();
+        if back_to_match && self.saved_match.is_some() {
+            self.resume_match();
+        }
     }
 
     /// Start editing `draft`: over the draft there is, as an undoable
@@ -616,6 +666,10 @@ impl Game {
                 self.editor.saved = None;
             }
         }
+        // A new draft overwrites the discarded one's file, and no UNDO from
+        // before it may take it away.
+        self.editor.pending_discard = false;
+        self.editor.toast = None;
         self.editor.page = Page::Edit;
         self.editor.test = None;
     }
@@ -630,18 +684,34 @@ impl Game {
         let Some(vs) = self.versus.live.as_ref() else {
             return;
         };
-        let wind = vs
-            .layout
-            .as_ref()
-            .map_or_else(|| crate::custom::wind_spec(&vs.duel.rules), |l| l.wind);
-        let draft = model::fork_live(&vs.duel.screen, vs.duel.seed, vs.duel.round, wind);
+        // A match on a map forks to that map, name and all (and its slot,
+        // to save back to); a generated one to its round, cropped.
+        let draft = match &vs.layout {
+            Some(l) => Draft {
+                layout: l.clone(),
+                from: None,
+                slot: match self.versus.ground.as_ref().map(|g| g.source) {
+                    Some(GroundSource::Slot(s)) => Some(s),
+                    _ => None,
+                },
+            },
+            None => model::fork_live(
+                &vs.duel.screen,
+                vs.duel.seed,
+                vs.duel.round,
+                crate::custom::wind_spec(&vs.duel.rules),
+            ),
+        };
         let over = matches!(vs.duel.phase, versus::Phase::MatchOver(_));
+        let mut suspended = false;
         if over {
             self.drop_live_match();
         } else if let Some(vs) = self.versus.live.take() {
+            suspended = vs.kept;
             self.suspend_live_match(vs);
         }
         self.open_editor();
+        self.editor.from_match = suspended;
         self.start_draft(draft);
     }
 
@@ -742,7 +812,12 @@ impl Game {
                 rows.push((RowAct::Paste, "PASTE CODE".into()));
                 rows.push((RowAct::NewMap, "NEW MAP".into()));
                 rows.push((RowAct::Discard, "DISCARD MAP".into()));
-                rows.push((RowAct::Leave, "EXIT EDITOR".into()));
+                let leave = if e.from_match && self.saved_match.is_some() {
+                    "BACK TO MATCH"
+                } else {
+                    "EXIT EDITOR"
+                };
+                rows.push((RowAct::Leave, leave.into()));
                 rows
             }
             _ => Vec::new(),
@@ -810,6 +885,11 @@ impl Game {
 
     /// The map editor's input for this frame.
     pub(super) fn handle_editor_input(&mut self, delta: f64) {
+        // A toast goes as soon as the draft has changed under it.
+        let rev = self.editor.ed.as_ref().map(|e| e.rev);
+        if self.editor.toast.as_ref().is_some_and(|t| t.rev != rev) {
+            self.editor.toast = None;
+        }
         if self.ed_pressed(Ed::ToastUndo) {
             self.toast_undo();
             return;
@@ -944,10 +1024,13 @@ impl Game {
             return;
         };
         let undo = ToastUndo::Draft(Box::new(ed));
-        self.clear_draft();
+        // The file stays until the UNDO is gone (`leave_editor`), or a new
+        // draft overwrites it.
+        self.editor.pending_discard = true;
         self.editor.toast = Some(Toast {
             text: "MAP DISCARDED".into(),
             undo,
+            rev: None,
         });
         self.goto(Page::Start);
     }
@@ -970,9 +1053,9 @@ impl Game {
                 self.write_slots(&slots, SlotWrite::Undo);
             }
             ToastUndo::Draft(ed) => {
+                // Its file was never cleared: it holds what it held.
                 self.editor.ed = Some(*ed);
-                self.editor.written = None;
-                self.editor.saved = None;
+                self.editor.pending_discard = false;
                 self.goto(Page::Edit);
             }
         }
@@ -1135,6 +1218,10 @@ impl Game {
                 if let Some(row) = pick.and_then(|i| rows.get(i).copied()) {
                     self.play(Sound::Ui);
                     match row {
+                        SlotRow::Slot(s) if self.unreadable(s) => {
+                            self.editor.list_sel = pick.unwrap_or(0);
+                            self.note("THAT SLOT HOLDS A NEWER MAP - PICK ANOTHER".into());
+                        }
                         SlotRow::New(s) | SlotRow::Slot(s) => self.save_to(s),
                         SlotRow::Bundled(_) => {}
                     }
@@ -1156,13 +1243,27 @@ impl Game {
                         self.note("CODE COPIED".into());
                     }
                 } else if self.ed_pressed(Ed::Delete) || self.pressed(Key::X) {
-                    if let Some(SlotRow::Slot(s)) = sel {
-                        self.play(Sound::Ui);
-                        self.delete_slot(s);
+                    match sel {
+                        Some(SlotRow::Slot(s)) if self.unreadable(s) => {
+                            self.note("A NEWER VERSION'S MAP IS KEPT".into());
+                        }
+                        Some(SlotRow::Slot(s)) => {
+                            self.play(Sound::Ui);
+                            self.delete_slot(s);
+                        }
+                        _ => {}
                     }
                 }
             }
         }
+    }
+
+    /// A slot whose code this build cannot read: never saved over or
+    /// deleted here, kept for the build that can.
+    fn unreadable(&self, slot: u8) -> bool {
+        self.layouts
+            .checked(slot)
+            .is_some_and(|(layout, _)| layout.is_none())
     }
 
     fn row_code(&self, row: SlotRow) -> Option<String> {
@@ -1246,14 +1347,19 @@ impl Game {
             tail: None,
         });
         let replaced = old.is_some_and(|o| o.code != code);
+        let rev = ed.rev;
         self.write_slots(
             &slots,
             SlotWrite::Save {
                 slot,
                 replaced,
                 before,
+                rev,
             },
         );
+        // Not written as a draft meanwhile: the save clears it, or, if the
+        // save fails, `layouts_stored` asks for the draft again.
+        self.editor.written = Some(rev);
         self.goto(Page::Edit);
     }
 
@@ -1272,6 +1378,9 @@ impl Game {
             self.goto(Page::Start);
             return;
         }
+        // Whether a finger was mid-stroke as this frame began, before any
+        // button or key below could end the stroke.
+        let was_stroking = self.editor.ed.as_ref().is_some_and(Editor::stroking);
         if self.ed_pressed(Ed::Menu) || self.action_pressed(Action::Back) {
             self.play(Sound::Ui);
             self.end_editor_stroke();
@@ -1358,6 +1467,13 @@ impl Game {
             if apply && matches!(ed.tool, Tool::Stamp | Tool::Smooth) {
                 ed.nudge(1);
             }
+        }
+        // Something else ended the stroke under a finger this frame (a
+        // second finger on UNDO or a tool, a key): that drag is done, and
+        // must not start the stroke again from where it went down.
+        if was_stroking && !ed.stroking() && drag.is_some() {
+            self.input.touch.cancel_drag();
+            return;
         }
         // A drag on the ground is a stroke with the tool in hand.
         match (drag, dropped) {

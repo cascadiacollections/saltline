@@ -135,25 +135,39 @@ impl Painter<'_> {
         let mut y = self.editor_backdrop(&heading);
         let pal = self.pal;
         let touch = self.g.input.touch_active;
-        let pitch = if touch { 16 } else { 11 };
         let rows = self.g.editor_rows();
         let w = self.canvas.w;
-        for (i, (_, text)) in rows.iter().enumerate() {
-            let focused = !touch && self.g.editor.focus == i;
+        if touch {
+            // Two columns of buttons as tall as the aim buttons, row by row.
+            let (cw, gap, pitch) = (140, 8, ROW_H + 4);
+            let x0 = (w - 2 * cw - gap) / 2;
+            for (i, (_, text)) in rows.iter().enumerate() {
+                let (col, line) = ((i % 2) as i32, (i / 2) as i32);
+                let x = x0 + col * (cw + gap);
+                self.ed_button(x, y - 6 + line * pitch, cw, text, Ed::Row(i as u8), false);
+            }
+            y += rows.len().div_ceil(2) as i32 * pitch;
+        }
+        for (i, (_, text)) in rows.iter().enumerate().filter(|_| !touch) {
+            let focused = self.g.editor.focus == i;
             let tw = crate::font::small_width(text) as i32;
             let (x, pw) = ((w - tw) / 2 - 12, tw + 24);
-            if touch {
-                self.canvas.plate(x, y - 4, pw, 13, pal);
-                self.touch_button(Rect::new(x, y - 5, pw, 15), Action::Edit(Ed::Row(i as u8)));
-            }
-            let lit = focused || self.g.input.touch.held(Action::Edit(Ed::Row(i as u8)));
             if focused {
                 self.canvas
                     .rect_outline(x, y - 4, pw, 13, pal.get(slot::ALERT));
             }
-            let c = pal.get(if lit { slot::ALERT } else { slot::UI_FG });
+            let c = pal.get(if focused { slot::ALERT } else { slot::UI_FG });
             self.centred(y, text, c);
-            y += pitch;
+            y += 11;
+        }
+        if self.g.editor.page == Page::Start && self.g.editor.newer_draft {
+            self.centred(y, "A NEWER VERSION'S DRAFT IS KEPT:", pal.get(slot::ALERT));
+            self.centred(
+                y + 8,
+                "SAVE TO KEEP WHAT YOU MAKE HERE",
+                pal.get(slot::ALERT),
+            );
+            y += 18;
         }
         if !touch {
             y += 2;
@@ -233,14 +247,15 @@ impl Painter<'_> {
         let w = self.canvas.w;
         let (ex, ey) = self.g.display.corner_pad;
         let (x, pw) = (16 + ex, w - 32 - 2 * ex);
+        y -= 6;
         for i in 0..VISIBLE_ROWS {
             let Some(&row) = rows.get(top + i) else { break };
             let (text, dimmed) = self.g.slot_row_text(row);
-            self.canvas.plate(x, y - 4, pw, 13, pal);
+            self.canvas.plate(x, y, pw, ROW_H, pal);
             let chosen = top + i == sel;
             if chosen {
                 self.canvas
-                    .rect_outline(x, y - 4, pw, 13, pal.get(slot::ALERT));
+                    .rect_outline(x + 1, y + 1, pw - 2, ROW_H - 2, pal.get(slot::ALERT));
             }
             let c = pal.get(if dimmed {
                 slot::ROCK
@@ -249,10 +264,11 @@ impl Painter<'_> {
             } else {
                 slot::UI_FG
             });
-            self.canvas.text_small(x + 6, y, &text, c);
-            self.touch_button(Rect::new(x, y - 5, pw, 15), Action::Edit(Ed::Row(i as u8)));
-            y += 16;
+            self.canvas.text_small(x + 6, y + 7, &text, c);
+            self.touch_button(Rect::new(x, y, pw, ROW_H), Action::Edit(Ed::Row(i as u8)));
+            y += ROW_H + 3;
         }
+        y += 6;
         if rows.is_empty() {
             self.centred(y, "NO MAPS SAVED YET", pal.get(slot::SKY_LO));
         }
@@ -356,7 +372,6 @@ impl Painter<'_> {
                 .text_small(7 + ex, h - 8 - ey, hint, pal.get(slot::SKY_LO));
         }
         self.editor_status(80 + ey);
-        self.editor_toast();
     }
 
     /// Where keys and a controller act: a dotted line down to the ground
@@ -392,7 +407,7 @@ impl Painter<'_> {
         let pal = self.pal;
         let (ex, ey) = self.g.display.corner_pad;
         let w = self.canvas.w;
-        let (fg, alert) = (pal.get(slot::UI_FG), pal.get(slot::ALERT));
+        let alert = pal.get(slot::ALERT);
         // Row 1: MENU, the verdict, UNDO and REDO.
         let y1 = 3 + ey;
         self.ed_button(3 + ex, y1, 36, "MENU", Ed::Menu, false);
@@ -401,6 +416,24 @@ impl Painter<'_> {
         self.ed_button(rx + bw + 3, y1, bw, "REDO", Ed::Redo, false);
         let (sx, sw) = (3 + ex + 39, rx - 3 - (3 + ex + 39));
         self.canvas.plate(sx, y1, sw, ROW_H, pal);
+        // A toast (a slot just replaced) takes the verdict's place until the
+        // next edit, its UNDO inside it: up here, over the sky, so no drag
+        // on the ground can land on it.
+        if let Some(toast) = self.g.editor.toast.as_ref() {
+            let text = toast.text.clone();
+            self.canvas.text_small(sx + 6, y1 + 7, &text, alert);
+            self.ed_button(sx + sw - 46, y1, 46, "UNDO", Ed::ToastUndo, false);
+        } else {
+            self.render_verdict(ed, sx, sw, y1);
+        }
+        self.render_edit_tools(ed, y1);
+    }
+
+    /// The verdict in its plate at `sx`, `sw` wide, on row `y1`: a symbol
+    /// and a few words.
+    fn render_verdict(&mut self, ed: &Editor, sx: i32, sw: i32, y1: i32) {
+        let pal = self.pal;
+        let (fg, alert) = (pal.get(slot::UI_FG), pal.get(slot::ALERT));
         let v = &ed.verdict;
         let block = v.problems.iter().find(|(_, s)| *s == Severity::Block);
         let warn = v.problems.iter().find(|(_, s)| *s == Severity::Warn);
@@ -451,7 +484,15 @@ impl Painter<'_> {
             text
         };
         self.canvas.text_small(sx + 13, y1 + 7, &text, c);
+    }
 
+    /// Rows two and three of the editing screen: the tools, then the
+    /// tool's options.
+    fn render_edit_tools(&mut self, ed: &Editor, y1: i32) {
+        let pal = self.pal;
+        let (ex, _) = self.g.display.corner_pad;
+        let w = self.canvas.w;
+        let fg = pal.get(slot::UI_FG);
         // Row 2: the tools, MIRROR and TEST.
         let y2 = y1 + ROW_H + 3;
         let n = Tool::ALL.len() as i32 + 2;

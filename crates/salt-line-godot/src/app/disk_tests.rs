@@ -1713,6 +1713,24 @@ fn the_demo_leaves_the_maps_and_the_draft_alone() {
     assert_eq!(disk.files(), files);
 }
 
+/// A newer build's draft is never written over or cleared: a map made
+/// meanwhile is not kept as a draft, and saving it leaves that file alone.
+#[test]
+fn a_newer_builds_draft_survives_editing_and_saving() {
+    let newer = "draft 9 1 - - SL00\n";
+    let mut disk = FakeDisk {
+        draft_main: Some(newer.into()),
+        ..FakeDisk::default()
+    };
+    let mut g = open_editor(&mut disk);
+    assert!(g.editor.newer_draft);
+    blank_and_edit(&mut g, &mut disk);
+    assert_eq!(disk.draft_main.as_deref(), Some(newer));
+    save_first_slot(&mut g, &mut disk);
+    assert!(disk.layouts.is_some(), "the map was saved");
+    assert_eq!(disk.draft_main.as_deref(), Some(newer), "and the file kept");
+}
+
 /// A draft file this build cannot read is dropped with a note; one from a
 /// newer build is put back unread, for that build.
 #[rstest::rstest]

@@ -839,11 +839,13 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// An editor on `draft`, MIRROR on if its ground and guns already
-    /// mirror (any duel the generator made does to within its tenth of
-    /// asymmetry, so a fork starts with it off; a blank one with it on).
+    /// An editor on `draft`, MIRROR on for a duel (owner decision: the
+    /// default for duels), which a duel's guns need to be played. The
+    /// ground is left as it is: a fork's tenth of asymmetry stays until
+    /// MIRROR is turned off and on again, but every edit from here is made
+    /// on both sides.
     pub fn new(draft: Draft) -> Editor {
-        let mirror = draft.layout.asymmetry() == 0.0 && guns_mirrored(&draft.layout);
+        let mirror = draft.layout.is_duel();
         Editor::with_mirror(draft, mirror)
     }
 
@@ -945,7 +947,7 @@ impl Editor {
     /// Replace the whole draft (a fork, a paste, a slot opened, BLANK) as
     /// one undoable edit, so nothing is lost to a wrong tap.
     pub fn replace(&mut self, draft: Draft) {
-        self.mirror = draft.layout.asymmetry() == 0.0 && guns_mirrored(&draft.layout);
+        self.mirror = draft.layout.is_duel();
         self.cursor = draft.layout.guns.first().copied().unwrap_or(0);
         self.edit(None, |e| e.draft = draft);
     }
@@ -1354,11 +1356,6 @@ impl Editor {
         winds.dedup();
         winds
     }
-}
-
-/// A two-gun layout's guns stand as mirror images.
-fn guns_mirrored(l: &Layout) -> bool {
-    l.guns.len() == 2 && l.guns[0] as usize + l.guns[1] as usize + 1 == l.width()
 }
 
 /// A height in sixteenths as world units (re-exported for the renderer's

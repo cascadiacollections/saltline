@@ -532,6 +532,83 @@ fn save_open_overwrite_delete_and_their_undo() {
     assert_eq!(g.layouts.slots.get(1).unwrap().code, first);
 }
 
+/// A save in the same frame as an edit not yet on disk: the draft is not
+/// written back after the save cleared it.
+#[test]
+fn a_save_is_not_followed_by_a_stale_draft() {
+    let (mut g, mut node) = blank();
+    node.drag(
+        &mut g,
+        (150.0, above_ground(0.0)),
+        &[(150.0, above_ground(20.0))],
+    );
+    node.ed(&mut g, Ed::Menu);
+    node.row(&mut g, RowAct::Save);
+    // An edit the disk has not seen, then the save, in one frame: the
+    // frame's draft write would land after the save cleared the file.
+    g.editor.ed.as_mut().unwrap().set_name("LATE");
+    g.input.touch_active = false;
+    let enter = Intents {
+        events: vec![Event::key(Key::Enter)],
+        ..node.idle()
+    };
+    let fx = g.tick(FRAME, &enter);
+    assert!(
+        !fx.iter()
+            .any(|e| matches!(e, Effect::DraftFile(DraftFile::Write(_)))),
+        "{fx:?}"
+    );
+    node.apply(&mut g, fx);
+    node.frames(&mut g, 2);
+    assert_eq!(node.draft, None, "saved, so no draft");
+    assert_eq!(g.layouts.slots.get(1).map(|e| e.slot), Some(1));
+    assert_eq!(layout(&g).name.as_str(), "LATE");
+}
+
+/// A slot this build cannot read is shown but never saved over or deleted.
+#[test]
+fn a_newer_versions_slot_is_never_overwritten_or_deleted() {
+    let (mut g, mut node) = blank();
+    g.set_layouts(Some("layouts 1\nlayout 1 SLZZZZZZZZ\n"));
+    node.ed(&mut g, Ed::Menu);
+    node.row(&mut g, RowAct::Save);
+    let rows = g.slot_rows(Purpose::Save);
+    let at = rows
+        .iter()
+        .position(|r| *r == super::editor::SlotRow::Slot(1))
+        .unwrap();
+    node.ed(&mut g, Ed::Row(at as u8));
+    assert_eq!(g.status, "THAT SLOT HOLDS A NEWER MAP - PICK ANOTHER");
+    assert_eq!(g.layouts.slots.get(1).unwrap().code, "SLZZZZZZZZ");
+    node.ed(&mut g, Ed::Back);
+    node.row(&mut g, RowAct::NewMap);
+    node.row(&mut g, RowAct::Open);
+    let rows = g.slot_rows(Purpose::Open);
+    let at = rows
+        .iter()
+        .position(|r| *r == super::editor::SlotRow::Slot(1))
+        .unwrap();
+    for _ in 0..at {
+        g.input.touch_active = false;
+        node.key(&mut g, Key::Down);
+    }
+    node.key(&mut g, Key::X);
+    assert_eq!(g.layouts.slots.get(1).unwrap().code, "SLZZZZZZZZ");
+    assert!(node.layouts.is_none(), "nothing written");
+}
+
+/// A slot file that could not be read at all is never written over.
+#[test]
+fn a_damaged_slot_file_is_never_written_over() {
+    let (mut g, mut node) = blank();
+    g.set_layouts(Some("layouts 1\nlayout 1 SL\0\0\0"));
+    node.ed(&mut g, Ed::Menu);
+    node.row(&mut g, RowAct::Save);
+    node.ed(&mut g, Ed::Row(0));
+    assert_eq!(g.status, "MAPS FILE IS DAMAGED - NOT WRITTEN");
+    assert!(node.layouts.is_none());
+}
+
 #[test]
 fn a_failed_slot_write_keeps_the_draft() {
     let (mut g, mut node) = blank();
@@ -562,15 +639,133 @@ fn discarding_a_map_can_be_undone_until_the_editor_is_left() {
         &[(150.0, above_ground(20.0))],
     );
     let made = layout(&g).clone();
+    let on_disk = node.draft.clone();
+    assert!(on_disk.is_some());
     node.ed(&mut g, Ed::Menu);
     node.row(&mut g, RowAct::Discard);
     assert_eq!(g.editor.page, Page::Start);
     assert!(g.editor.ed.is_none());
-    assert_eq!(node.draft, None);
+    assert_eq!(node.draft, on_disk, "kept on disk while UNDO is offered");
     node.ed(&mut g, Ed::ToastUndo);
     assert_eq!(layout(&g), &made);
-    assert!(node.draft.is_some(), "kept on disk again");
+    assert_eq!(node.draft, on_disk);
     assert!(g.editor.ed.as_ref().unwrap().can_undo(), "history and all");
+
+    // Discarded again, then a new map: the toast goes with the first edit,
+    // so no UNDO from before can take the new map away.
+    node.ed(&mut g, Ed::Menu);
+    node.row(&mut g, RowAct::Discard);
+    assert!(g.editor.toast.is_some());
+    node.row(&mut g, RowAct::Blank);
+    assert!(
+        g.editor.toast.is_none(),
+        "a new map ends the discard's UNDO"
+    );
+    node.drag(
+        &mut g,
+        (90.0, above_ground(0.0)),
+        &[(90.0, above_ground(12.0))],
+    );
+    assert_ne!(node.draft, on_disk, "the new map is the draft now");
+
+    // Discarded and the editor left: only now is the file cleared.
+    node.ed(&mut g, Ed::Menu);
+    node.row(&mut g, RowAct::Discard);
+    assert!(node.draft.is_some());
+    node.row(&mut g, RowAct::Leave);
+    assert_eq!(node.draft, None);
+}
+
+/// A finger still down as the app is paused: the stroke is ended and the
+/// draft written at once, for a phone that never gives the app another
+/// frame.
+#[test]
+fn a_stroke_under_a_finger_is_kept_when_the_app_is_paused() {
+    let (mut g, mut node) = blank();
+    node.frames(&mut g, 20);
+    node.draw(&mut g);
+    let x = 120.0;
+    let down = Intents {
+        events: vec![Event::FingerDown {
+            index: 0,
+            x,
+            y: above_ground(0.0),
+        }],
+        ..node.idle()
+    };
+    node.tick(&mut g, down);
+    let moved = Intents {
+        events: vec![Event::FingerMoved {
+            index: 0,
+            x,
+            y: above_ground(18.0),
+        }],
+        ..node.idle()
+    };
+    node.tick(&mut g, moved);
+    assert!(g.editor.ed.as_ref().unwrap().stroking());
+    let before = node.draft.clone();
+    let fx = g.app_paused(&[]);
+    node.apply(&mut g, fx);
+    assert!(!g.editor.ed.as_ref().unwrap().stroking());
+    assert_ne!(node.draft, before, "the stroke reached the disk");
+    assert!(node
+        .draft
+        .as_deref()
+        .unwrap()
+        .contains(&layout(&g).to_code().unwrap()));
+}
+
+/// A second finger on UNDO while the first is still dragging: the stroke
+/// is taken back once, and not begun again from where the finger went
+/// down.
+#[test]
+fn undo_during_a_drag_takes_the_stroke_back_once() {
+    let (mut g, mut node) = blank();
+    let flat = layout(&g).clone();
+    node.frames(&mut g, 20);
+    let buttons = node.draw(&mut g);
+    let undo = buttons
+        .iter()
+        .find(|b| b.action == Action::Edit(Ed::Undo))
+        .unwrap()
+        .rect;
+    let steps = [
+        vec![Event::FingerDown {
+            index: 0,
+            x: 100.0,
+            y: above_ground(0.0),
+        }],
+        vec![Event::FingerMoved {
+            index: 0,
+            x: 100.0,
+            y: above_ground(15.0),
+        }],
+        vec![
+            Event::FingerDown {
+                index: 1,
+                x: undo.x as f32 + 4.0,
+                y: undo.y as f32 + 4.0,
+            },
+            Event::FingerUp { index: 1 },
+        ],
+        vec![Event::FingerMoved {
+            index: 0,
+            x: 100.0,
+            y: above_ground(20.0),
+        }],
+        vec![Event::FingerUp { index: 0 }],
+    ];
+    for events in steps {
+        let i = Intents {
+            events,
+            ..node.idle()
+        };
+        node.tick(&mut g, i);
+    }
+    node.frames(&mut g, 2);
+    assert_eq!(layout(&g), &flat, "the stroke was taken back, not redone");
+    assert!(g.editor.ed.as_ref().unwrap().can_redo());
 }
 
 // ------------------------------------------------------------ the clipboard
@@ -687,11 +882,31 @@ fn fork_this_round_keeps_both_guns_and_the_match() {
         .iter()
         .any(|(p, _)| matches!(p, Problem::GunNotSeated(_) | Problem::GunOffScreen(_))));
     assert_eq!(g.editor.ed.as_ref().unwrap().draft.label(), "FROM MATCH R1");
-    // Leaving goes to the title, where RESUME MATCH is.
+    // The menu offers the way back, and takes it: the match as it was.
     node.ed(&mut g, Ed::Menu);
+    assert!(g
+        .editor_rows()
+        .contains(&(RowAct::Leave, "BACK TO MATCH".to_string())));
     node.row(&mut g, RowAct::Leave);
-    assert_eq!(g.mode, Mode::Title);
-    assert!(g.saved_match.is_some());
+    assert_eq!(g.mode, Mode::Versus);
+    assert!(g.saved_match.is_none());
+    assert_eq!(g.versus.live.as_ref().unwrap().duel.screen.width, 400);
+}
+
+/// A match on a map forks to the map itself, name and all.
+#[test]
+fn fork_a_round_on_a_map_is_the_map() {
+    let (mut g, mut node) = setup(WINDOW);
+    node.ed(&mut g, Ed::GroundNext);
+    node.tap(&mut g, Action::Confirm);
+    assert_eq!(g.mode, Mode::Versus);
+    node.frames(&mut g, 20);
+    g.input.touch_active = false;
+    node.key(&mut g, Key::Escape);
+    node.key(&mut g, Key::E);
+    assert_eq!(g.mode, Mode::Editor);
+    assert_eq!(layout(&g), &crate::custom::bundled::layouts()[0]);
+    assert_eq!(g.editor.ed.as_ref().unwrap().draft.label(), "RIDGE");
 }
 
 // ----------------------------------------------------------- GROUND row

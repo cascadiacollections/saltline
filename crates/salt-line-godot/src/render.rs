@@ -1984,6 +1984,7 @@ mod tests {
                 Action::Up,
                 Action::Edit(crate::input::Ed::GroundNext),
                 Action::Edit(crate::input::Ed::GroundPrev),
+                Action::Edit(crate::input::Ed::GroundNext),
                 Action::Confirm,
                 Action::Back,
                 Action::Edit(crate::input::Ed::MakeMap)

@@ -604,17 +604,6 @@ impl Game {
             self.step_ground(step);
             self.play(Sound::Ui);
         }
-        if self.pressed(Key::E)
-            || self.pad_pressed(Pad::X)
-            || self
-                .input
-                .touch
-                .pressed(Action::Edit(crate::input::Ed::MakeMap))
-        {
-            self.play(Sound::Ui);
-            self.open_editor();
-            return;
-        }
         for (action, side) in [(Action::Left, Side::Left), (Action::Right, Side::Right)] {
             if self.action_pressed(action) {
                 let i = side.index();
@@ -622,13 +611,26 @@ impl Game {
                 self.play(Sound::Ui);
             }
         }
+        // MAKE MAP's keys are asked last, so a binding of a key or button
+        // they share wins (presses are taken once).
         if self.action_pressed(Action::Confirm) || self.pressed(Key::KpEnter) {
             self.play(Sound::Ui);
             self.start_versus();
         } else if self.action_pressed(Action::Back) {
             self.play(Sound::Ui);
             self.leave_versus();
+        } else if self.make_map_pressed(crate::input::Ed::MakeMap) {
+            self.play(Sound::Ui);
+            self.open_editor();
         }
+    }
+
+    /// MAKE MAP (`ed` on a touchscreen, E, a controller's X). Asked only
+    /// where it is read, after the screen's own actions: the press is taken.
+    fn make_map_pressed(&mut self, ed: crate::input::Ed) -> bool {
+        self.input.touch.pressed(Action::Edit(ed))
+            || self.pressed(Key::E)
+            || self.pad_pressed(Pad::X)
     }
 
     /// A match in play. As in a run, nothing but pause is read while a shot
@@ -639,12 +641,7 @@ impl Game {
             return;
         };
         let (stage, paused) = (vs.stage, vs.paused);
-        let fork = self.pressed(Key::E)
-            || self.pad_pressed(Pad::X)
-            || self
-                .input
-                .touch
-                .pressed(Action::Edit(crate::input::Ed::ForkRound));
+        let fork = crate::input::Ed::ForkRound;
         if paused {
             if self.action_pressed(Action::Confirm) || self.action_pressed(Action::Back) {
                 self.play(Sound::Ui);
@@ -652,7 +649,7 @@ impl Game {
             } else if self.action_pressed(Action::Replay) {
                 self.play(Sound::Ui);
                 self.leave_versus();
-            } else if fork {
+            } else if self.make_map_pressed(fork) {
                 self.play(Sound::Ui);
                 self.fork_this_round();
             }
@@ -685,7 +682,7 @@ impl Game {
                 } else if self.action_pressed(Action::Replay) {
                     self.play(Sound::Ui);
                     self.leave_versus();
-                } else if fork {
+                } else if self.make_map_pressed(fork) {
                     self.play(Sound::Ui);
                     self.fork_this_round();
                 }

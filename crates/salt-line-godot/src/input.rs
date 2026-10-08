@@ -146,13 +146,9 @@ impl Key {
             "M" => Self::M,
             "L" => Self::L,
             "D" => Self::D,
-            "E" => Self::E,
-            "T" => Self::T,
-            "Z" => Self::Z,
-            "Y" => Self::Y,
-            "I" => Self::I,
-            "X" => Self::X,
-            "P" => Self::P,
+            // The map editor's keys (E T Z Y I X P) are read as keys, not
+            // through bindings, so no `bind` line may put an action on
+            // them, where the editor would take its presses first.
             _ => return None,
         })
     }

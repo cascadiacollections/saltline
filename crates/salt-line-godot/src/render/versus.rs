@@ -243,8 +243,8 @@ impl Painter<'_> {
         for ((action, text, c), keyed) in rows.iter().zip(keyed_rows(&labels)) {
             let at = y;
             y = self.menu_row(y, *action, &keyed, text, *c);
-            // On a touchscreen the GROUND row steps back with a `<` beside
-            // it; the row itself steps on.
+            // On a touchscreen the GROUND row has `<` and `>` beside it;
+            // the row itself steps on too.
             if self.plated() && *action == Action::Edit(crate::input::Ed::GroundNext) {
                 let tw = crate::font::small_width(text) as i32;
                 let x = (self.canvas.w - tw) / 2 - 10;
@@ -255,6 +255,14 @@ impl Painter<'_> {
                     15,
                     "<",
                     Action::Edit(crate::input::Ed::GroundPrev),
+                );
+                self.draw_touch_button(
+                    x + tw + 24,
+                    at - 5,
+                    22,
+                    15,
+                    ">",
+                    Action::Edit(crate::input::Ed::GroundNext),
                 );
             }
         }

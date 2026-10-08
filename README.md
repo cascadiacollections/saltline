@@ -239,7 +239,8 @@ behind them all match. A rematch keeps the ground.
 Make your own duel maps (DESIGN §13.11). MAKE MAP is in the top-right
 corner of the local versus pre-match screen (`E` with keys); MAKE MAP OF
 THIS ROUND on a match's pause or result plate starts one from the round on
-screen, keeping both guns, and leaves the match to resume later. A new map
+screen, keeping both guns, and the menu's BACK TO MATCH goes back into the
+match where it was. A new map
 starts BLANK (level ground), from FORK A SEED (type any seed and pick a
 round: a draft labelled FROM SEED DUNE R2), from a map you open, or from a
 code you paste.
