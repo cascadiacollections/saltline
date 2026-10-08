@@ -23,12 +23,15 @@
 //! # The watch bar
 //!
 //! ```text
+//!                            [EXIT]
 //!   ANG 45                                               SCREEN 4
-//!   PWR 60   [EXIT] [PAUSE] [2X] [NEXT SHOT] [NEXT ROUND]
+//!   PWR 60      [PAUSE] [2X] [NEXT SHOT] [NEXT ROUND]
 //! ```
 //!
 //! Bottom centre, where the demo's banner sits: clear of the readouts in
 //! the bottom corners, the draft cards and the duel's plates. On a
+//! touchscreen EXIT is apart from the rest, top centre where a game's II
+//! is, so a tap meant for PAUSE never leaves the replay. On a
 //! touchscreen it is a row of buttons as tall as the aim buttons (18
 //! rows); with keys or a controller a plate saying what each key does. A
 //! replay draws no aim controls of its own, and no prompts.
@@ -71,6 +74,12 @@ impl Painter<'_> {
             let text = match g.history.file.damaged {
                 1 => "1 REPLAY COULD NOT BE READ".to_string(),
                 n => format!("{n} REPLAYS COULD NOT BE READ"),
+            };
+            self.centred(y, &text, dim);
+        } else if g.history.file.newer > 0 {
+            let text = match g.history.file.newer {
+                1 => "1 REPLAY FROM A NEWER VERSION".to_string(),
+                n => format!("{n} REPLAYS FROM A NEWER VERSION"),
             };
             self.centred(y, &text, dim);
         }
@@ -185,8 +194,10 @@ impl Painter<'_> {
         };
         let speed = format!("{rate}X");
         if self.g.input.touch_active {
-            let mut buttons: Vec<(&str, Wb)> =
-                vec![("EXIT", Wb::Exit), (play, Wb::Pause), (&speed, Wb::Speed)];
+            // EXIT on its own, top centre where a game's II is, well away
+            // from PAUSE: a child tapping the bar should not leave by it.
+            self.draw_touch_button((cw - 32) / 2, 3 + ey, 32, 13, "EXIT", Action::Wb(Wb::Exit));
+            let mut buttons: Vec<(&str, Wb)> = vec![(play, Wb::Pause), (&speed, Wb::Speed)];
             if !ended {
                 buttons.push(("NEXT SHOT", Wb::NextShot));
                 buttons.push((next_round, Wb::NextRound));
@@ -391,6 +402,17 @@ mod tests {
             [Wb::Exit, Wb::Pause, Wb::Speed, Wb::NextShot, Wb::NextRound].map(Action::Wb),
             "the bar alone: no aim controls, no II"
         );
+        // EXIT is well away from PAUSE: a child's tap on one is not on the
+        // other.
+        let at = |a: Wb| {
+            buttons
+                .iter()
+                .find(|b| b.action == Action::Wb(a))
+                .unwrap()
+                .rect
+        };
+        let (exit, pause) = (at(Wb::Exit), at(Wb::Pause));
+        assert!(pause.y - (exit.y + exit.h) >= 60, "{exit:?} {pause:?}");
         insta::assert_snapshot!("watch_run_phone", phone.palette_text(&Palette::default()));
 
         let mut g = game(false);

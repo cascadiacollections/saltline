@@ -578,3 +578,70 @@ fn the_won_plates_watch_needs_the_match_won() {
     assert!(!g.watching());
     let _ = Side::Left;
 }
+
+#[test]
+fn a_watch_is_shown_not_played_and_idles_when_paused_or_done() {
+    let (mut g, _, _) = finished(9);
+    // A run in play is active play: GameMode on desktop, the full rate.
+    let mut playing = game();
+    playing.start_run(3, false);
+    assert!(playing.active_play() && !playing.idle());
+
+    press(&mut g, Key::W);
+    assert!(g.watching());
+    // Playing: the full frame rate, but never GameMode.
+    assert!(!g.active_play());
+    assert!(!g.idle());
+    press(&mut g, Key::Enter);
+    assert!(g.watch.as_ref().unwrap().paused);
+    assert!(g.idle(), "paused: the idle frame rate");
+    assert!(!g.active_play());
+    press(&mut g, Key::Enter);
+    for _ in 0..200 {
+        press(&mut g, Key::Right);
+        if ended(&g) {
+            break;
+        }
+    }
+    until(&mut g, 30.0, ended);
+    assert!(g.idle(), "at its end: the idle frame rate");
+    assert!(!g.active_play());
+}
+
+#[test]
+fn mute_and_the_overlay_work_while_watching_and_mute_is_saved_after() {
+    let (mut g, _, _) = finished(9);
+    press(&mut g, Key::W);
+    let mut fx = press(&mut g, Key::M);
+    assert!(g.save.muted);
+    assert!(fx
+        .iter()
+        .any(|e| matches!(e, Effect::Volume(v) if *v <= -80.0)));
+    fx.extend(press(&mut g, Key::F1));
+    assert!(g.debug);
+    // Still watching, and nothing written while it plays.
+    for _ in 0..120 {
+        fx.extend(g.tick(FRAME, &idle()));
+    }
+    assert!(g.watching());
+    assert!(!fx.iter().any(Effect::touches_disk), "{fx:?}");
+    // Once the watch is over, the setting goes to disk as any does.
+    assert!(g.settings.dirty(), "kept pending through the watch");
+    let mut fx = press(&mut g, Key::Escape);
+    fx.extend(until(&mut g, 3.0, |g| !g.settings.dirty()));
+    assert!(
+        fx.contains(&Effect::Store(Store::Settings)),
+        "the mute was written after the watch"
+    );
+}
+
+#[test]
+fn recording_the_same_match_twice_keeps_one() {
+    let (mut g, saved, duel) = on_won_plate();
+    let record = Record::duel(TODAY, &saved, &duel, Ground::Generated).unwrap();
+    g.history.file.push(record);
+    // Leaving the plate would record it again: it is already listed.
+    let fx = press(&mut g, Key::Enter);
+    assert!(history_writes(&fx).is_empty());
+    assert_eq!(g.history.file.records.len(), 1);
+}

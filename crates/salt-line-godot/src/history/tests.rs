@@ -141,7 +141,7 @@ fn every_kind_of_record_round_trips() {
     for r in &records {
         let line = r.to_line();
         assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
-        assert_eq!(Record::parse(&line).as_ref(), Some(r), "{line}");
+        assert_eq!(Record::parse(&line).as_ref(), Ok(r), "{line}");
         assert_eq!(r.version(), Ok(()));
     }
     let mut h = History::default();
@@ -153,33 +153,96 @@ fn every_kind_of_record_round_trips() {
     assert_eq!(back.records, records);
 }
 
+/// A run from an older sim, cheap to make many of: listed, never replayed.
+fn old_run(seed: u64, log_len: usize) -> Record {
+    Record::new(
+        seed,
+        Kind::Run(RunRecord {
+            epoch: SIM_EPOCH - 1,
+            seed,
+            width: 320,
+            daily: false,
+            score: (1, 0, 40),
+            log: format!("v9{}", " 900:600".repeat(log_len)),
+        }),
+    )
+}
+
+/// A match from older duel rules, likewise.
+fn old_duel(seed: u64) -> Record {
+    Record::new(
+        seed,
+        Kind::Duel(DuelRecord {
+            ai: None,
+            ground: Ground::Generated,
+            winner: Side::Left,
+            rounds: [2, 0],
+            line: format!("match 1 {} 1 {seed} 320 1 0 0 0", SIM_EPOCH - 1),
+        }),
+    )
+}
+
 #[test]
-fn the_list_keeps_the_newest_twenty_of_either_kind() {
+fn each_kind_keeps_its_newest_twenty_and_pushes_out_only_its_own() {
     let mut h = History::default();
-    let run = run_record(7);
-    let duel = duel_record(11, None, Ground::Generated);
-    for day in 1..=MAX_RECORDS as u64 + 5 {
-        let base = if day % 2 == 0 { &run } else { &duel };
-        let text = h
-            .push(Record {
-                day,
-                ..base.clone()
-            })
-            .unwrap();
+    // Twenty-five runs, then one match: the five oldest runs went.
+    for seed in 1..=MAX_RUNS as u64 + 5 {
+        let text = h.push(old_run(seed, 3)).unwrap();
         assert_eq!(History::parse(&text), h);
     }
-    assert_eq!(h.records.len(), MAX_RECORDS);
-    // The oldest five went; the newest is listed first.
+    h.push(old_duel(1000)).unwrap();
+    assert_eq!(h.records.iter().filter(|r| r.is_run()).count(), MAX_RUNS);
     assert_eq!(h.records[0].day, 6);
-    assert_eq!(h.newest_first().next().unwrap().day, MAX_RECORDS as u64 + 5);
-    // A hand-made file over the cap keeps its newest twenty too.
+    // Twenty-five matches: every run stays, the oldest matches go.
+    for seed in 1001..=1000 + MAX_MATCHES as u64 + 5 {
+        h.push(old_duel(seed)).unwrap();
+    }
+    let runs = h.records.iter().filter(|r| r.is_run()).count();
+    let matches = h.records.len() - runs;
+    assert_eq!((runs, matches), (MAX_RUNS, MAX_MATCHES));
+    assert!(!h.records.iter().any(|r| r.day <= 1005 && !r.is_run()));
+    // One list, newest first.
+    assert_eq!(
+        h.newest_first().next().unwrap().day,
+        1000 + MAX_MATCHES as u64 + 5
+    );
+    // A hand-made file over the caps keeps the newest of each kind too.
     let mut text = format!("{HEADER} {FORMAT}\n");
-    for day in 1..=30 {
-        text.push_str(&Record { day, ..run.clone() }.to_line());
+    for seed in 1..=30 {
+        text.push_str(&old_run(seed, 3).to_line());
+        text.push_str(&old_duel(100 + seed).to_line());
     }
     let read = History::parse(&text);
     assert_eq!(read.records.len(), MAX_RECORDS);
     assert_eq!(read.records[0].day, 11);
+    assert_eq!(read.damaged, 0, "lines past the cap are not damage");
+}
+
+#[test]
+fn the_same_game_is_never_recorded_twice() {
+    let mut h = History::default();
+    let run = run_record(7);
+    let duel = duel_record(11, None, Ground::Generated);
+    assert!(h.push(run.clone()).is_some());
+    assert!(h.push(duel.clone()).is_some());
+    // Recorded again on another day (a launch, a resumed plate): skipped.
+    assert_eq!(h.push(Record { day: 1, ..run }), None);
+    assert_eq!(h.push(Record { day: 1, ..duel }), None);
+    assert_eq!(h.records.len(), 2);
+}
+
+#[test]
+fn a_written_file_fits_its_limit_by_losing_its_oldest() {
+    let mut h = History::default();
+    // Lines of about 30,000 characters: the limit holds about 17.
+    let mut text = String::new();
+    for seed in 1..=MAX_RUNS as u64 {
+        text = h.push(old_run(seed, 3_700)).unwrap();
+    }
+    assert!(text.len() <= MAX_FILE_CHARS, "{}", text.len());
+    assert!(h.records.len() < MAX_RUNS);
+    assert_eq!(h.newest_first().next().unwrap().day, MAX_RUNS as u64);
+    assert_eq!(History::parse(&text), h);
 }
 
 #[test]
@@ -191,8 +254,8 @@ fn damaged_lines_are_dropped_and_counted_never_the_rest() {
         torn.to_string(),
         "\0\0\0\0".to_string(),
         "banana".to_string(),
-        good.replacen("run 1 ", "run 2 ", 1),
         good.replacen("run 1 ", "walk 1 ", 1),
+        good.replacen("run 1 ", "run 0 ", 1),
         good.replacen(" 320 ", " 0320 ", 1),
         good.replacen(" 320 ", " 9999 ", 1),
         good.replacen(" v2 ", " v1 ", 1),
@@ -200,9 +263,17 @@ fn damaged_lines_are_dropped_and_counted_never_the_rest() {
         duel.replacen(" 2p ", " expert ", 1),
         duel.replacen(" - ", " mesa ", 1),
         duel.replacen("match ", "batch ", 1),
+        // Too long to be honest, however it parses.
+        old_run(1, MAX_LINE_CHARS / 8).to_line(),
+    ];
+    // A newer line format, of a kind this build knows or not, is counted
+    // apart: a newer version's, not damage.
+    let newer = [
+        good.replacen("run 1 ", "run 2 ", 1),
+        "film 7 anything".to_string(),
     ];
     let mut text = format!("{HEADER} {FORMAT}\n{good}");
-    for b in &bad {
+    for b in bad.iter().chain(&newer) {
         text.push_str(b);
         text.push('\n');
     }
@@ -210,19 +281,41 @@ fn damaged_lines_are_dropped_and_counted_never_the_rest() {
     let mut h = History::parse(&text);
     assert_eq!(h.records.len(), 2, "{text}");
     assert_eq!(h.damaged, bad.len());
+    assert_eq!(h.newer, newer.len());
     // The next write leaves them out.
     let written = h.push(run_record(8)).unwrap();
-    assert_eq!(h.damaged, 0);
-    assert_eq!(History::parse(&written).damaged, 0);
-    assert_eq!(History::parse(&written).records.len(), 3);
+    assert_eq!((h.damaged, h.newer), (0, 0));
+    let back = History::parse(&written);
+    assert_eq!((back.damaged, back.newer, back.records.len()), (0, 0, 3));
 }
 
 #[test]
-fn a_file_too_large_or_without_a_header_is_still_read_safely() {
-    let huge = "x".repeat(MAX_FILE_CHARS + 1);
-    let h = History::parse(&huge);
-    assert!(h.records.is_empty());
-    assert_eq!(h.damaged, 1);
+fn a_line_says_whether_it_is_damaged_or_newer() {
+    let good = run_record(7).to_line();
+    assert_eq!(Record::parse("run 1 x"), Err(LineError::Damaged));
+    assert_eq!(
+        Record::parse(&good.replacen("run 1 ", "run 2 ", 1)),
+        Err(LineError::Newer)
+    );
+    assert_eq!(Record::parse("film 3 a new kind"), Err(LineError::Newer));
+    assert_eq!(
+        Record::parse("film 1 an unknown kind"),
+        Err(LineError::Damaged)
+    );
+}
+
+#[test]
+fn a_large_file_or_one_without_a_header_keeps_its_good_lines() {
+    // Junk far past the write limit, around good lines: they are read.
+    let junk = format!("{}\n", "x".repeat(MAX_FILE_CHARS + 1));
+    let text = format!(
+        "{HEADER} {FORMAT}\n{junk}{}{junk}{}",
+        run_record(7).to_line(),
+        duel_record(11, None, Ground::Generated).to_line()
+    );
+    assert!(text.len() > 2 * MAX_FILE_CHARS);
+    let h = History::parse(&text);
+    assert_eq!((h.records.len(), h.damaged), (2, 2));
     // No header: read as this format, as a hand-made file would be.
     let h = History::parse(&run_record(7).to_line());
     assert_eq!(h.records.len(), 1);
@@ -236,19 +329,23 @@ fn a_file_too_large_or_without_a_header_is_still_read_safely() {
 #[test]
 fn a_newer_builds_file_is_read_but_never_written() {
     let text = format!(
-        "{HEADER} {}\n{}future 9 something new\n",
+        "{HEADER} {}\n{}future 9 something new\nbanana\n",
         FORMAT + 1,
         run_record(7).to_line()
     );
     let mut h = History::parse(&text);
     assert!(h.from_the_future);
     assert_eq!(h.records.len(), 1);
-    // Its lines this build cannot read are not counted as damage: they
-    // are not this build's to read, and are never written over.
-    assert_eq!(h.damaged, 0);
+    // Its lines this build cannot read are not counted: they are not this
+    // build's to read, and are never written over.
+    assert_eq!((h.damaged, h.newer), (0, 0));
     assert_eq!(h.push(run_record(8)), None);
     // Kept in memory for the session all the same.
     assert_eq!(h.records.len(), 2);
+    // And nothing being written, nothing counted is forgotten.
+    let mut h = History { damaged: 3, ..h };
+    assert_eq!(h.push(run_record(9)), None);
+    assert_eq!(h.damaged, 3);
 }
 
 #[test]
@@ -276,14 +373,15 @@ fn another_epoch_stays_listed_but_cannot_be_watched() {
     assert!(r.summary().contains("AI EASY"));
     // This build's own epoch with a log it cannot read is damage, not age.
     let line = format!("run 1 20000 {SIM_EPOCH} 42 320 0 3 0 41 v9 @0 Q7 900:600\n");
-    assert_eq!(Record::parse(&line), None);
+    assert_eq!(Record::parse(&line), Err(LineError::Damaged));
 }
 
 #[test]
 fn a_record_is_watched_only_if_it_rebuilds_to_its_own_result() {
     let run = run_record(7);
     match run.check() {
-        Ok(Watchable::Run(replay, score)) => {
+        Ok(Watchable::Run(replay, score, daily)) => {
+            assert!(!daily);
             let rebuilt = replay.reconstruct().unwrap();
             assert_eq!(rebuilt.score(), score);
             assert!(rebuilt.is_over());
@@ -345,15 +443,17 @@ fn rows_say_who_won_against_whom() {
         "{}",
         run.summary()
     );
-    let won = |winner: Side, rounds: [u32; 2], ai, ground| Record {
-        day: 20734,
-        kind: Kind::Duel(DuelRecord {
-            ai,
-            ground,
-            winner,
-            rounds,
-            line: String::new(),
-        }),
+    let won = |winner: Side, rounds: [u32; 2], ai, ground| {
+        Record::new(
+            20734,
+            Kind::Duel(DuelRecord {
+                ai,
+                ground,
+                winner,
+                rounds,
+                line: String::new(),
+            }),
+        )
     };
     let rows: Vec<String> = [
         won(Side::Left, [2, 1], Some(Level::Easy), Ground::Generated),
@@ -400,11 +500,8 @@ proptest! {
         } else {
             "v7 anything goes here".to_string()
         };
-        let r = Record {
-            day,
-            kind: Kind::Run(RunRecord { epoch, seed, width, daily, score, log }),
-        };
-        prop_assert_eq!(Record::parse(&r.to_line()), Some(r));
+        let r = Record::new(day, Kind::Run(RunRecord { epoch, seed, width, daily, score, log }));
+        prop_assert_eq!(Record::parse(&r.to_line()), Ok(r));
     }
 
     /// Any text at all reads without a panic, and what it reads writes

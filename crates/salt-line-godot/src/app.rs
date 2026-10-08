@@ -1131,6 +1131,14 @@ impl Game {
         self.live_play() && (exempt || self.input_quiet < AWAKE_QUIET_LIMIT)
     }
 
+    /// Somebody is playing: [`Game::live_play`], but not the demo or a
+    /// watch, which are shown rather than played, and not the error screen.
+    /// What asks for desktop GameMode (the adapter's `is_active_play`), so
+    /// a watch, paused or not, lets it go.
+    pub fn active_play(&self) -> bool {
+        !self.spectating() && !self.crash.broken && self.live_play()
+    }
+
     /// A run or a versus match on screen and running: `Playing`, or
     /// `Versus` not paused. What holds the screen on and asks for desktop
     /// GameMode (the adapter's `is_active_play`).
@@ -1348,9 +1356,11 @@ impl Game {
     }
 
     /// Menus, overlays and the error screen run at the idle frame rate; so
-    /// does the editor, but for a test shot in flight.
+    /// does the editor, but for a test shot in flight, and a watch paused
+    /// or at its end (`app/watch.rs`): nothing on it moves.
     pub fn idle(&self) -> bool {
-        self.crash.broken
+        self.watch.as_ref().is_some_and(|w| w.paused || w.ended)
+            || self.crash.broken
             || !(matches!(self.mode, Mode::Playing | Mode::Versus)
                 || (self.mode == Mode::Editor && self.editor.testing_in_flight()))
     }

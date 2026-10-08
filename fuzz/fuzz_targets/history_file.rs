@@ -8,7 +8,8 @@
 //! - **A record's check never panics** (`Record::check`, which WATCH runs
 //!   before anything is shown): it replays the line off screen and either
 //!   hands over what to watch or says why not.
-//! - **The cap holds**: never more than `MAX_RECORDS` read.
+//! - **The caps hold**: never more than `MAX_RECORDS` read, whatever the
+//!   size of the file.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -23,10 +24,10 @@ fuzz_target!(|data: &[u8]| {
     assert!(history.records.len() <= MAX_RECORDS);
     let again = History::parse(&history.serialize());
     assert_eq!(again.records, history.records);
-    assert_eq!(again.damaged, 0);
+    assert_eq!((again.damaged, again.newer), (0, 0));
     for record in &history.records {
         let line = record.to_line();
-        assert_eq!(Record::parse(&line).as_ref(), Some(record));
+        assert_eq!(Record::parse(&line).as_ref(), Ok(record));
         let _ = record.version();
         let _ = record.summary();
         // A replay is the slow half: only a few short ones per input.

@@ -167,19 +167,7 @@ impl Game {
     /// Run the current mode's input for this frame. Mute and the F1 overlay
     /// work in every mode, so they are asked first.
     pub(super) fn handle_mode_input(&mut self, delta: f64) {
-        if self.pressed(Key::F1) {
-            self.debug = !self.debug;
-        }
-        if self.action_pressed(Action::Mute) {
-            self.save.muted = !self.save.muted;
-            self.apply_volume();
-            self.settings.touch();
-            self.note(if self.save.muted {
-                "SOUND MUTED".into()
-            } else {
-                "SOUND ON".into()
-            });
-        }
+        self.handle_global_input();
         match self.mode {
             Mode::Title => {
                 if self.action_pressed(Action::TitleMusic) {
@@ -323,6 +311,27 @@ impl Game {
             Mode::VersusSetup => self.handle_versus_setup_input(),
             Mode::Versus => self.handle_versus_input(delta),
             Mode::Editor => self.handle_editor_input(delta),
+        }
+    }
+
+    /// Mute and the F1 overlay, which work in every mode and while a replay
+    /// is watched (`handle_watch_input` asks first too). During a watch the
+    /// mute is kept in memory, the save's line for it pending: settings are
+    /// not written while spectating (`tick_settings`), and the change goes
+    /// to disk once the watch is over, as any settled change does.
+    pub(super) fn handle_global_input(&mut self) {
+        if self.pressed(Key::F1) {
+            self.debug = !self.debug;
+        }
+        if self.action_pressed(Action::Mute) {
+            self.save.muted = !self.save.muted;
+            self.apply_volume();
+            self.settings.touch();
+            self.note(if self.save.muted {
+                "SOUND MUTED".into()
+            } else {
+                "SOUND ON".into()
+            });
         }
     }
 

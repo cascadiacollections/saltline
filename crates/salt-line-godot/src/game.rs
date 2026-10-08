@@ -384,7 +384,7 @@ impl INode2D for SaltLine {
                 (g.play.angle_ticks, g.play.power_ticks),
                 // The demo's run was never continued, whatever the
                 // player's was; its mode name says it is the demo's.
-                g.run_file.resumed && !g.in_demo(),
+                g.run_file.resumed && !g.spectating(),
             )
         });
         #[cfg(feature = "profiling")]
@@ -623,7 +623,7 @@ impl SaltLine {
     /// asks for it; neither the service nor this query enters the sim.
     #[func]
     fn is_active_play(&self) -> bool {
-        !self.g.in_demo() && !self.g.crash.broken && self.g.live_play()
+        self.g.active_play()
     }
 }
 

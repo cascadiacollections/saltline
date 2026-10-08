@@ -65,10 +65,13 @@
 //! starts by itself; a watch is chosen by someone sitting with the phone,
 //! often a child, and the ding of a hit and the fanfare are half of seeing
 //! it again. It plays at the player's own volume, mute included, and a
-//! skip is silent. The screen is held on while a watch plays, as for a demo
-//! chosen from the menu (`DEMO_AWAKE_LIMIT` without input), and let go
-//! while it is paused, as a paused run is. It runs at the full frame rate:
-//! at 4× a 30 fps flight would stutter.
+//! skip is silent, and mute works during it (kept in memory, saved once the
+//! watch is over). The screen is held on while a watch plays, as for a
+//! demo chosen from the menu (`DEMO_AWAKE_LIMIT` without input), and let go
+//! while it is paused, as a paused run is. It runs at the full frame rate
+//! while it plays (at 4× a 30 fps flight would stutter) and at
+//! `frame::IDLE_FPS` paused or at its end (`Game::idle`); being shown, not
+//! played, it never asks for desktop GameMode (`Game::active_play`).
 
 use super::versus::Stage;
 use super::*;
@@ -314,8 +317,12 @@ impl Game {
             - self.input.touch.pressed(Action::Wb(Wb::PagePrev)) as i64;
         if down != 0 || pages != 0 {
             let to = self.history.focus as i64 + down + pages * rows as i64;
-            self.history.focus = to.clamp(0, n as i64 - 1) as usize;
-            self.play(Sound::Ui);
+            let to = to.clamp(0, n as i64 - 1) as usize;
+            // A click only for a move: not at either end of the list.
+            if to != self.history.focus {
+                self.history.focus = to;
+                self.play(Sound::Ui);
+            }
         }
     }
 
@@ -351,10 +358,7 @@ impl Game {
     /// run's result, a won match's plate (the mode is in its stash).
     fn watch_record(&mut self, record: &Record) {
         match record.check() {
-            Ok(show) => {
-                self.play(Sound::Ui);
-                self.start_watch(show);
-            }
+            Ok(show) => self.start_watch(show),
             Err(why) => self.note(why.note().into()),
         }
     }
@@ -368,6 +372,7 @@ impl Game {
         if self.spectating() {
             return;
         }
+        self.play(Sound::Ui);
         self.flush_settings();
         self.status_time = 0.0;
         let stash = Stash {
@@ -415,12 +420,13 @@ impl Game {
         self.play = Play::default();
         self.versus.live = None;
         match show {
-            Watchable::Run(replay, _) => {
+            Watchable::Run(replay, _, daily) => {
                 // A run keeps the width it was played at, letterboxed on
                 // another device (DESIGN §9.2).
                 self.set_run_width(Some(replay.width));
                 let run = RunState::new(replay.run_seed, replay.width);
                 self.play.last_seed = run.run_seed;
+                self.play.daily = daily;
                 self.play.run = Some(run);
                 self.mode = Mode::Playing;
                 self.new_preview();
@@ -480,8 +486,10 @@ impl Game {
     /// The watch's controls (the bar on a touchscreen; keys and a
     /// controller as the bar's hint names them): Back leaves; Confirm or
     /// Fire pauses and plays (AGAIN once it has ended); Up steps the speed;
-    /// Right skips to the next shot and Down to the next round.
+    /// Right skips to the next shot and Down to the next round. Mute and
+    /// F1 are asked first, as in every mode (`handle_global_input`).
     pub(super) fn handle_watch_input(&mut self) {
+        self.handle_global_input();
         let tapped = |g: &Game, b: Wb| g.input.touch.pressed(Action::Wb(b));
         if tapped(self, Wb::Exit) || self.action_pressed(Action::Back) {
             self.play(Sound::Ui);
@@ -536,6 +544,11 @@ impl Game {
             }
         }
         self.watch_drive();
+        // A watch that stopped as it was driven (a diverging shot) has put
+        // the player's game back: that is not to be stepped.
+        if self.watch.is_none() {
+            return;
+        }
         self.step(dt);
         self.step_versus(dt);
     }
@@ -651,7 +664,7 @@ impl Game {
         let Some(w) = self.watch.as_mut() else {
             return;
         };
-        let Watchable::Run(replay, _) = &w.show else {
+        let Watchable::Run(replay, ..) = &w.show else {
             return;
         };
         let next = replay.log.get(w.cursor).copied();
@@ -787,7 +800,7 @@ impl Game {
             return;
         };
         let matched = match &w.show {
-            Watchable::Run(replay, score) => {
+            Watchable::Run(replay, score, _) => {
                 w.cursor == replay.log.len()
                     && self
                         .play

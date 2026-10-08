@@ -24,10 +24,10 @@
 //! ```
 //!
 //! A header naming the file's [`FORMAT`], then one line per finished run or
-//! match, oldest first, at most [`MAX_RECORDS`] of them (one list for both
-//! kinds: see "Why one list"). Each line starts with its kind and its own
-//! [`LINE_FORMAT`], so a line read on its own (a share code, later: DESIGN
-//! §9.6) still says how to read it. Then:
+//! match, oldest first: at most [`MAX_RUNS`] runs and [`MAX_MATCHES`]
+//! matches (see "One list, two caps"). Each line starts with its kind and
+//! its own [`LINE_FORMAT`], so a line read on its own (a share code, later:
+//! DESIGN §9.7) still says how to read it. Then:
 //!
 //! | Field | Meaning |
 //! |---|---|
@@ -60,21 +60,28 @@
 //!
 //! The file is written whole (`durable::write_atomic` through
 //! `save::write`) each time a run or match is added, never appended to, so a
-//! crash leaves the old file or the new one. Reading is total: a line this
-//! build cannot read (torn, hand-edited, NULs where a crash left them) is
-//! dropped and counted ([`History::damaged`]), and the list says so; the
-//! next write leaves it out. A file whose header is from a newer build is
-//! read for what this build understands and never written
-//! ([`History::from_the_future`]), as the save and the slot file are not:
-//! what is finished meanwhile is kept for the session only.
+//! crash leaves the old file or the new one. It is kept under
+//! [`MAX_FILE_CHARS`] by dropping the oldest records as it is written.
 //!
-//! # Why one list
+//! Reading is total and line by line. The header is read first: a file
+//! whose header is from a newer build is read for what this build
+//! understands and never written ([`History::from_the_future`]), as the save
+//! and the slot file are not; what is finished meanwhile is kept for the
+//! session only. Then each line on its own: one this build cannot read
+//! (torn, hand-edited, NULs where a crash left them, or longer than
+//! [`MAX_LINE_CHARS`]) is dropped and counted ([`History::damaged`]), a line
+//! of a newer line format is dropped and counted apart
+//! ([`History::newer`]), and the list says so; the next write leaves them
+//! out. No size of file costs the good lines in it.
 //!
-//! Runs and matches share one list of [`MAX_RECORDS`], newest first, rather
-//! than a cap per kind. It is a family's list of "what did we play
-//! lately", read top down by a child; two lists would mean a choice before
-//! every look. The cost: a long afternoon of matches pushes the last run
-//! off the end. Twenty is a session or two of either.
+//! # One list, two caps
+//!
+//! Runs and matches are shown as one list, newest first: a family's "what
+//! did we play lately", read top down by a child, with no choice to make
+//! before every look. But each kind has its own cap (owner decision,
+//! October 2026), and a new record pushes out the oldest of its own kind,
+//! so an afternoon of matches never costs the last run, nor a long run
+//! session the last match.
 
 use salt_line_sim::layout::{LayoutName, NAME_MAX};
 use salt_line_sim::replay::{decode_log, encode_log, Replay};
@@ -97,12 +104,27 @@ pub const FORMAT: u32 = 1;
 /// Each line's own format, after its kind.
 pub const LINE_FORMAT: u32 = 1;
 
-/// Finished runs and matches kept, both kinds together, oldest dropped
-/// first. A list a family pages through; see "Why one list".
-pub const MAX_RECORDS: usize = 20;
+/// Finished runs kept; a new one pushes out the oldest run.
+pub const MAX_RUNS: usize = 20;
+/// Finished matches kept; a new one pushes out the oldest match.
+pub const MAX_MATCHES: usize = 20;
+/// Both together: the most the list ever shows.
+pub const MAX_RECORDS: usize = MAX_RUNS + MAX_MATCHES;
 
-/// The longest file read back: twenty long runs (a few kilobytes each)
-/// with room to spare. Anything larger is damage, not history.
+/// The longest line read. The longest a line can honestly be is a match on
+/// a map: its layout's code (at most `layout::MAX_CODE_CHARS`, 4,096) and
+/// up to `match_log::MAX_ENTRIES` (2,000) log entries of at most 10
+/// characters, about 24,300 characters with the fields. Runs are shorter:
+/// about 8 characters a shot, a few hundred shots at most. Anything longer
+/// is damage.
+pub const MAX_LINE_CHARS: usize = 32 * 1024;
+
+/// The longest file written: [`History::push`] drops the oldest records
+/// until the text fits. Real lines are a few hundred characters (a run, a
+/// match on generated screens) to about 5,000 (a match on a map's code), so
+/// a full file is about 10–30 KB and never comes near it; forty worst-case
+/// map-match lines would, and lose their oldest few. Reading has no limit
+/// of its own: lines are judged one at a time ([`MAX_LINE_CHARS`]).
 pub const MAX_FILE_CHARS: usize = 512 * 1024;
 
 const HEADER: &str = "history";
@@ -163,6 +185,21 @@ pub struct Record {
     /// Days since the Unix epoch when it finished; 0 if not known.
     pub day: u64,
     pub kind: Kind,
+    /// [`Record::version`]'s answer, worked out once when the record is
+    /// made: a match's needs its line parsed, and the list asks every frame
+    /// it draws.
+    pub(crate) verdict: Result<(), Refused>,
+}
+
+/// Why a line is not read as a record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineError {
+    /// Torn, edited, NULs, too long: not a line of this format.
+    Damaged,
+    /// A line format newer than [`LINE_FORMAT`]: a newer build's, which
+    /// this one cannot read but can say so (a share code from a newer
+    /// version, later).
+    Newer,
 }
 
 /// Why a record cannot be watched.
@@ -200,19 +237,43 @@ impl Refused {
 /// What WATCH plays, once a record has passed [`Record::check`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Watchable {
-    /// A run: its seed, width and log, and the score it must end on.
-    Run(Replay, (u32, i32, u32)),
+    /// A run: its seed, width and log, the score it must end on, and
+    /// whether it was the daily.
+    Run(Replay, (u32, i32, u32), bool),
     /// A match: its line, and who must take it with how many rounds each.
     Duel(SavedMatch, Side, [u32; 2]),
 }
 
 impl Record {
+    /// A record of `kind` on `day`, its verdict worked out.
+    pub fn new(day: u64, kind: Kind) -> Record {
+        let verdict = verdict_of(&kind);
+        Record { day, kind, verdict }
+    }
+
+    /// The same run or match as `other`, whatever day each was recorded:
+    /// the same seed and log, or the same match line. Never recorded twice.
+    pub fn same_game(&self, other: &Record) -> bool {
+        match (&self.kind, &other.kind) {
+            (Kind::Run(a), Kind::Run(b)) => {
+                (a.epoch, a.seed, a.width, &a.log) == (b.epoch, b.seed, b.width, &b.log)
+            }
+            (Kind::Duel(a), Kind::Duel(b)) => a.line == b.line,
+            _ => false,
+        }
+    }
+
+    /// Whether this is a run (else a match), for the caps.
+    pub fn is_run(&self) -> bool {
+        matches!(self.kind, Kind::Run(_))
+    }
+
     /// The finished `run` (one whose log rebuilds it: never a
     /// `--salt-screen` jump), on `day`.
     pub fn run(day: u64, run: &RunState, daily: bool) -> Record {
-        Record {
+        Record::new(
             day,
-            kind: Kind::Run(RunRecord {
+            Kind::Run(RunRecord {
                 epoch: SIM_EPOCH,
                 seed: run.run_seed,
                 width: run.width,
@@ -220,7 +281,7 @@ impl Record {
                 score: run.score(),
                 log: encode_log(&run.log),
             }),
-        }
+        )
     }
 
     /// The won match `duel`, kept as `saved`, on `ground`, on `day`. `None`
@@ -229,33 +290,23 @@ impl Record {
         let versus::Phase::MatchOver(winner) = duel.phase else {
             return None;
         };
-        Some(Record {
+        Some(Record::new(
             day,
-            kind: Kind::Duel(DuelRecord {
+            Kind::Duel(DuelRecord {
                 ai: saved.ai,
                 ground,
                 winner,
                 rounds: duel.rounds,
                 line: saved.to_line().trim_end().to_string(),
             }),
-        })
+        ))
     }
 
     /// Whether this build can watch it: `Ok` for the same epochs, else
-    /// which way it differs. Cheap: nothing is replayed. [`Record::check`]
-    /// is the full test.
+    /// which way it differs. Kept from when the record was made, so free to
+    /// ask every frame. [`Record::check`] is the full test.
     pub fn version(&self) -> Result<(), Refused> {
-        match &self.kind {
-            Kind::Run(r) => match r.epoch.cmp(&SIM_EPOCH) {
-                std::cmp::Ordering::Less => Err(Refused::OlderVersion),
-                std::cmp::Ordering::Greater => Err(Refused::NewerVersion),
-                std::cmp::Ordering::Equal => Ok(()),
-            },
-            Kind::Duel(d) => match SavedMatch::parse(&format!("{}\n", d.line)) {
-                Ok(_) => Ok(()),
-                Err(why) => Err(Refused::of(why)),
-            },
-        }
+        self.verdict
     }
 
     /// Rebuild it off screen and compare the result with the one it
@@ -264,7 +315,8 @@ impl Record {
     /// against the same opponent. Anything else is [`Refused::Mismatch`],
     /// and is never shown.
     pub fn check(&self) -> Result<Watchable, Refused> {
-        self.version()?;
+        // Afresh: the kept verdict is for the list, this is for the screen.
+        verdict_of(&self.kind)?;
         match &self.kind {
             Kind::Run(r) => {
                 let log = decode_log(&r.log).map_err(|_| Refused::Mismatch)?;
@@ -277,7 +329,7 @@ impl Record {
                 if !rebuilt.is_over() || rebuilt.score() != r.score {
                     return Err(Refused::Mismatch);
                 }
-                Ok(Watchable::Run(replay, r.score))
+                Ok(Watchable::Run(replay, r.score, r.daily))
             }
             Kind::Duel(d) => {
                 let saved = SavedMatch::parse(&format!("{}\n", d.line)).map_err(Refused::of)?;
@@ -324,24 +376,27 @@ impl Record {
         }
     }
 
-    /// Read one line of [`Record::to_line`]'s format. `None` for anything
-    /// else: torn, edited, NULs, or a line format this build does not know.
-    pub fn parse(line: &str) -> Option<Record> {
+    /// Read one line of [`Record::to_line`]'s format: torn, edited, NULs
+    /// or too long is [`LineError::Damaged`]; a newer line format, of any
+    /// kind, [`LineError::Newer`].
+    pub fn parse(line: &str) -> Result<Record, LineError> {
         let line = line.trim_end_matches(['\n', '\r']);
-        if line.contains('\0') || line.contains('\n') {
-            return None;
+        if line.len() > MAX_LINE_CHARS || line.contains('\0') || line.contains('\n') {
+            return Err(LineError::Damaged);
         }
         let mut f = line.splitn(3, ' ');
-        let tag = f.next()?;
-        if number::<u32>(f.next())? != LINE_FORMAT {
-            return None;
+        let tag = f.next().ok_or(LineError::Damaged)?;
+        let format: u32 = number(f.next()).ok_or(LineError::Damaged)?;
+        if format > LINE_FORMAT {
+            return Err(LineError::Newer);
         }
-        let rest = f.next()?;
-        match tag {
-            RUN => Self::parse_run(rest),
-            DUEL => Self::parse_duel(rest),
+        let rest = f.next().filter(|_| format == LINE_FORMAT);
+        let record = match (tag, rest) {
+            (RUN, Some(rest)) => Self::parse_run(rest),
+            (DUEL, Some(rest)) => Self::parse_duel(rest),
             _ => None,
-        }
+        };
+        record.ok_or(LineError::Damaged)
     }
 
     fn parse_run(rest: &str) -> Option<Record> {
@@ -363,9 +418,9 @@ impl Record {
         } else if log.trim().is_empty() || log != log.trim() {
             return None;
         }
-        Some(Record {
+        Some(Record::new(
             day,
-            kind: Kind::Run(RunRecord {
+            Kind::Run(RunRecord {
                 epoch,
                 seed,
                 width,
@@ -373,7 +428,7 @@ impl Record {
                 score,
                 log,
             }),
-        })
+        ))
     }
 
     fn parse_duel(rest: &str) -> Option<Record> {
@@ -401,16 +456,16 @@ impl Record {
         };
         let rounds = [number(f.next())?, number(f.next())?];
         let line = f.next()?.to_string();
-        let record = Record {
+        let record = Record::new(
             day,
-            kind: Kind::Duel(DuelRecord {
+            Kind::Duel(DuelRecord {
                 ai,
                 ground,
                 winner,
                 rounds,
                 line,
             }),
-        };
+        );
         // The match line must be one: this build's whole, another's at
         // least another version's (it is read no further).
         match record.version() {
@@ -450,6 +505,22 @@ impl Record {
                 format!("{date}{who}  {won} {}-{}{map}", d.rounds[0], d.rounds[1])
             }
         }
+    }
+}
+
+/// Whether this build can watch a record of `kind`: the same epochs, or
+/// which way they differ. A match's needs its line parsed.
+fn verdict_of(kind: &Kind) -> Result<(), Refused> {
+    match kind {
+        Kind::Run(r) => match r.epoch.cmp(&SIM_EPOCH) {
+            std::cmp::Ordering::Less => Err(Refused::OlderVersion),
+            std::cmp::Ordering::Greater => Err(Refused::NewerVersion),
+            std::cmp::Ordering::Equal => Ok(()),
+        },
+        Kind::Duel(d) => match SavedMatch::parse(&format!("{}\n", d.line)) {
+            Ok(_) => Ok(()),
+            Err(why) => Err(Refused::of(why)),
+        },
     }
 }
 
@@ -501,32 +572,31 @@ fn flag(tok: Option<&str>) -> Option<bool> {
 /// The history file in memory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct History {
-    /// Oldest first, at most [`MAX_RECORDS`].
+    /// Oldest first, at most [`MAX_RUNS`] runs and [`MAX_MATCHES`] matches.
     pub records: Vec<Record>,
     /// Lines that could not be read, and were dropped: the list says so,
     /// and the next write leaves them out.
     pub damaged: usize,
+    /// Lines of a newer line format, dropped the same way but said apart.
+    pub newer: usize,
     /// The header is from a newer build: read for what this build
     /// understands, never written.
     pub from_the_future: bool,
 }
 
 impl History {
-    /// Read the file. Total: any text is a `History`, a line it cannot
-    /// read dropped and counted rather than a reason to lose the rest.
+    /// Read the file. Total: any text is a `History`, and a line it cannot
+    /// read is dropped and counted rather than a reason to lose the rest,
+    /// however large the file.
     pub fn parse(text: &str) -> History {
         let mut out = History::default();
-        if text.len() > MAX_FILE_CHARS {
-            out.damaged = 1;
-            return out;
-        }
         let mut lines = text
             .split('\n')
             .map(|l| l.trim_end_matches('\r'))
             .filter(|l| !l.trim().is_empty())
             .peekable();
-        // The header, if it is there. A file without one is read as this
-        // format (it can only be a hand-made one).
+        // The header first, if it is there. A file without one is read as
+        // this format (it can only be a hand-made one).
         if let Some(first) = lines.peek() {
             let mut f = first.split(' ');
             if f.next() == Some(HEADER) {
@@ -540,17 +610,36 @@ impl History {
         }
         for line in lines {
             match Record::parse(line) {
-                Some(r) => out.records.push(r),
-                // A newer build's line is not damage: it is just not this
-                // build's to read, and this build never writes over it.
-                None if out.from_the_future => {}
-                None => out.damaged += 1,
+                Ok(r) => out.records.push(r),
+                // A newer build's file is never written, so its lines are
+                // not lost: they are only not this build's to read.
+                Err(_) if out.from_the_future => {}
+                Err(LineError::Newer) => out.newer += 1,
+                Err(LineError::Damaged) => out.damaged += 1,
             }
         }
-        // A hand-made file may hold more than the cap: the newest are kept.
-        let over = out.records.len().saturating_sub(MAX_RECORDS);
-        out.records.drain(..over);
+        // A hand-made file may hold more than the caps: the newest of each
+        // kind are kept.
+        out.cap();
         out
+    }
+
+    /// Drop the oldest of each kind past its cap.
+    fn cap(&mut self) {
+        let (mut runs, mut matches) = (0, 0);
+        let mut keep: Vec<bool> = self
+            .records
+            .iter()
+            .rev()
+            .map(|r| {
+                let n = if r.is_run() { &mut runs } else { &mut matches };
+                *n += 1;
+                *n <= if r.is_run() { MAX_RUNS } else { MAX_MATCHES }
+            })
+            .collect();
+        keep.reverse();
+        let mut kept = keep.into_iter();
+        self.records.retain(|_| kept.next().unwrap_or(false));
     }
 
     /// The file's text: the header, then a line per record, oldest first.
@@ -562,17 +651,30 @@ impl History {
         s
     }
 
-    /// Add a finished run or match as the newest, dropping the oldest past
-    /// [`MAX_RECORDS`]. Returns the file's new text, or `None` if the file
-    /// is a newer build's and must not be written: the record is kept in
-    /// memory, for this session.
+    /// Add a finished run or match as the newest, dropping the oldest of
+    /// its kind past its cap, then the oldest of any kind until the file
+    /// fits [`MAX_FILE_CHARS`]. Returns the file's new text, or `None` when
+    /// there is nothing to write: the same game is already listed (it is
+    /// not added twice), or the file is a newer build's and must not be
+    /// written (the record is kept in memory, for this session).
     pub fn push(&mut self, record: Record) -> Option<String> {
+        if self.records.iter().any(|r| r.same_game(&record)) {
+            return None;
+        }
         self.records.push(record);
-        let over = self.records.len().saturating_sub(MAX_RECORDS);
-        self.records.drain(..over);
-        // Written now, the damaged lines are gone from disk too.
+        self.cap();
+        if self.from_the_future {
+            return None;
+        }
+        let mut text = self.serialize();
+        while text.len() > MAX_FILE_CHARS && self.records.len() > 1 {
+            self.records.remove(0);
+            text = self.serialize();
+        }
+        // Written now, the dropped lines are gone from disk too.
         self.damaged = 0;
-        (!self.from_the_future).then(|| self.serialize())
+        self.newer = 0;
+        Some(text)
     }
 
     /// The records newest first, as the list shows them.

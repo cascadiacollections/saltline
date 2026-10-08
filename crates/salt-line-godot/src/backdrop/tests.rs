@@ -193,6 +193,50 @@ fn the_demo_is_the_same_layered() {
     assert!(both.shown > 0);
 }
 
+/// WATCH (DESIGN §9.4): a finished run and a won match played again from
+/// the REPLAYS list on a phone, through the bar's speed and skips to the
+/// end, where the watch idles (a run's end card, a match's plate).
+#[test]
+fn a_watch_is_the_same_layered() {
+    use crate::history::tests::{finished_match, finished_run};
+    use crate::history::{Ground, Record};
+    use crate::input::{Event, Key};
+    let run = finished_run(9, 400, 5);
+    let (saved, duel) = finished_match(31, Some(crate::opponent::Level::Easy));
+    for (i, what) in ["watch run", "watch match"].into_iter().enumerate() {
+        let mut both = Both::new();
+        let mut g = game(PHONE_WINDOW, true);
+        let record = if i == 0 {
+            Record::run(20_000, &run, false)
+        } else {
+            Record::duel(20_000, &saved, &duel, Ground::Generated).unwrap()
+        };
+        g.history.file.push(record);
+        g.open_replays();
+        let key = |k| Intents {
+            events: vec![Event::key(k)],
+            ..intents(PHONE_WINDOW)
+        };
+        g.tick(1.0 / 30.0, &key(Key::Enter));
+        assert!(g.watching(), "{what}");
+        play(&mut both, &mut g, PHONE_WINDOW, 6.0, 30.0, what);
+        g.tick(1.0 / 30.0, &key(Key::Up));
+        play(&mut both, &mut g, PHONE_WINDOW, 4.0, 30.0, what);
+        for _ in 0..60 {
+            g.tick(1.0 / 30.0, &key(Key::Right));
+            both.check(&g, what);
+            if g.watch.as_ref().is_some_and(|w| w.ended) {
+                break;
+            }
+            g.tick(1.0 / 30.0, &intents(PHONE_WINDOW));
+            both.check(&g, what);
+        }
+        play(&mut both, &mut g, PHONE_WINDOW, 8.0, 30.0, what);
+        assert!(g.watch.as_ref().is_some_and(|w| w.ended), "{what}");
+        assert!(both.shown > 0, "{what} has a backdrop");
+    }
+}
+
 /// A duel round's layout (`just layouts fork-duel 42:0`), for the editor.
 const LAYOUT: &str = "SL06G08004W91X4408Y0FT94J88244WS442BBPXEYZXZQVEJCZ7777SYFSW49225Z7WZ7SWSS0VFQFVZEGC2244C01H08G10R24G814CC0M2880186673G604050Q340SCM1332RG4928S0600100HG0R663VZQXZQFEMKKSWZKYFZ74928RSWZWZSYF77SYE8VVYZXZXZEVQDPTP0S77644C469400QKQ";
 
@@ -227,6 +271,7 @@ fn every_mode_is_the_same_layered_and_menus_are_drawn_whole() {
         Mode::VersusSetup,
         Mode::Versus,
         Mode::Editor,
+        Mode::Replays,
     ];
     for mode in modes {
         let mut both = Both::new();
