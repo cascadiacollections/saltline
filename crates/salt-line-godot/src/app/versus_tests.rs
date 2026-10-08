@@ -1362,6 +1362,142 @@ fn title_on_the_pause_plate_asks_again_before_quitting_a_match() {
 }
 
 #[test]
+fn title_on_a_rounds_result_plate_asks_again_between_two_players() {
+    use crate::app::versus::QUIT_CONFIRM;
+    let armed = |g: &Game| vs(g).quit_armed.is_some();
+    let round = || touch_result(false, rules::Phase::RoundOver(Side::Left));
+    // One tap, clean or noisy, only arms TITLE: the plate changed, so the
+    // tap is spent.
+    for noisy in [false, true] {
+        let mut g = round();
+        if noisy {
+            noisy_tap(&mut g, Action::Replay, FRAME);
+        } else {
+            tap(&mut g, Action::Replay, FRAME);
+        }
+        assert_eq!(g.mode, Mode::Versus, "noisy {noisy}");
+        assert_eq!(vs(&g).stage, Stage::Result, "noisy {noisy}");
+        assert!(armed(&g), "noisy {noisy}");
+    }
+    // A finger held on TITLE, then a bounce, cannot quit; a new tap does.
+    let mut g = round();
+    let (x, y) = button_centre(&g, Action::Replay);
+    touch_frame(&mut g, vec![Event::FingerDown { index: 0, x, y }], FRAME);
+    assert!(armed(&g));
+    for _ in 0..10 {
+        touch_frame(&mut g, vec![Event::FingerDown { index: 0, x, y }], FRAME);
+    }
+    touch_frame(&mut g, vec![Event::FingerUp { index: 0 }], FRAME);
+    touch_frame(&mut g, vec![Event::FingerDown { index: 1, x, y }], FRAME);
+    touch_frame(&mut g, vec![Event::FingerUp { index: 1 }], FRAME);
+    assert_eq!(g.mode, Mode::Versus, "a bounce quit");
+    assert!(armed(&g));
+    for _ in 0..30 {
+        touch_frame(&mut g, Vec::new(), FRAME);
+    }
+    tap(&mut g, Action::Replay, FRAME);
+    assert_eq!(g.mode, Mode::Title, "the second tap quits");
+    assert!(g.versus.live.is_none());
+
+    // NEXT ROUND disarms, and deals the round as ever.
+    let mut g = round();
+    tap(&mut g, Action::Replay, FRAME);
+    tap(&mut g, Action::Confirm, FRAME);
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    assert_eq!(vs(&g).duel.round, 1);
+    assert!(!armed(&g), "NEXT ROUND disarms");
+
+    // MAKE MAP disarms: the match is suspended into the editor, not lost.
+    let mut g = round();
+    tap(&mut g, Action::Replay, FRAME);
+    tap(&mut g, Action::Edit(crate::input::Ed::ForkRound), FRAME);
+    assert_eq!(g.mode, Mode::Editor);
+    assert!(g.saved_match.is_some(), "MAKE MAP kept the match");
+
+    // II disarms: the pause plate opens disarmed, its own TITLE asks
+    // twice, and RESUME comes back to a disarmed plate.
+    let mut g = round();
+    tap(&mut g, Action::Replay, FRAME);
+    tap(&mut g, Action::Back, FRAME);
+    assert!(vs(&g).paused);
+    assert!(!armed(&g), "II disarms");
+    tap(&mut g, Action::Confirm, FRAME);
+    assert!(!vs(&g).paused);
+    assert_eq!(vs(&g).stage, Stage::Result);
+    assert!(!armed(&g));
+    tap(&mut g, Action::Replay, FRAME);
+    assert_eq!(g.mode, Mode::Versus, "asks again after a pause");
+
+    // Waiting disarms.
+    let mut g = round();
+    tap(&mut g, Action::Replay, FRAME);
+    let mut waited = 0.0;
+    while waited < QUIT_CONFIRM + 0.2 {
+        touch_frame(&mut g, Vec::new(), FRAME);
+        waited += FRAME;
+    }
+    assert!(!armed(&g), "the timeout disarms");
+    tap(&mut g, Action::Replay, FRAME);
+    assert_eq!(g.mode, Mode::Versus, "asks again after the timeout");
+
+    // Focus going disarms.
+    let mut g = round();
+    tap(&mut g, Action::Replay, FRAME);
+    g.focus_lost(&[]);
+    g.focus_gained();
+    assert!(!armed(&g), "focus loss disarms");
+    for _ in 0..30 {
+        touch_frame(&mut g, Vec::new(), FRAME);
+    }
+    tap(&mut g, Action::Replay, FRAME);
+    assert_eq!(g.mode, Mode::Versus, "asks again after focus loss");
+
+    // The match's own plate, won, still quits on one press, by touch and
+    // by key.
+    let mut g = touch_result(false, rules::Phase::MatchOver(Side::Left));
+    tap(&mut g, Action::Replay, FRAME);
+    assert_eq!(g.mode, Mode::Title, "a won match's TITLE is one tap");
+    let mut g = in_match();
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::MatchOver(Side::Left);
+    live.stage = Stage::Result;
+    press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Title, "a won match's TITLE is one press");
+
+    // With keys: the armed line is drawn, Enter disarms it as NEXT ROUND,
+    // and the pause key disarms it; R twice quits and clears the match.
+    let mut g = in_match();
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::RoundOver(Side::Left);
+    live.stage = Stage::Result;
+    let plate = draw(&g).bytes().to_vec();
+    let fx = press(&mut g, Key::R);
+    assert!(armed(&g));
+    assert!(!fx.contains(&Effect::MatchFile(MatchFile::Discard)));
+    assert!(
+        draw(&g).bytes() != plate.as_slice(),
+        "the armed row is drawn differently"
+    );
+    press(&mut g, Key::Escape);
+    assert!(vs(&g).paused);
+    assert!(!armed(&g), "the pause key disarms");
+    press(&mut g, Key::Escape);
+    assert_eq!(draw(&g).bytes(), plate.as_slice(), "back to TITLE");
+    press(&mut g, Key::R);
+    let fx = press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    assert!(fx.contains(&Effect::MatchFile(MatchFile::Discard)));
+    let mut g = in_match();
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::RoundOver(Side::Left);
+    live.stage = Stage::Result;
+    press(&mut g, Key::R);
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    assert!(!armed(&g), "NEXT ROUND disarms");
+}
+
+#[test]
 fn ai_opponent_takes_only_right_turns_and_resumes_as_ai() {
     let mut g = ai_match(Level::Medium);
     wait(&mut g, AUTO_READY - 0.1);
@@ -1674,11 +1810,13 @@ fn the_round_plate_against_the_ai_does_not_quit_on_title() {
     live.duel.phase = rules::Phase::MatchOver(Side::Left);
     press(&mut g, Key::R);
     assert_eq!(g.mode, Mode::Title);
-    // Between two players TITLE is where it was.
+    // Between two players TITLE is where it was, and asks twice.
     let mut g = in_match();
     let live = g.versus.live.as_mut().unwrap();
     live.duel.phase = rules::Phase::RoundOver(Side::Left);
     live.stage = Stage::Result;
+    press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Versus);
     press(&mut g, Key::R);
     assert_eq!(g.mode, Mode::Title);
 }

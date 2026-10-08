@@ -1391,7 +1391,7 @@ impl Painter<'_> {
         // (DESIGN §13.11); a run's cannot.
         let fork = self.g.mode == Mode::Versus;
         // A match's TITLE asks twice while the match is still to be won
-        // (`app/versus.rs`, "Quitting from the pause plate"): armed, its
+        // (`app/versus.rs`, "Quitting a match"): armed, its
         // row says what the second press does, in UI text.
         let armed = fork
             && self
@@ -1449,10 +1449,11 @@ impl Painter<'_> {
 mod editor;
 mod versus;
 
-/// The versus pause plate's TITLE row once armed, on a touchscreen and
-/// with keys (after the key's name): the second press quits.
-const QUIT_AGAIN_TAP: &str = "TAP AGAIN TO QUIT";
-const QUIT_AGAIN_KEY: &str = "PRESS AGAIN TO QUIT";
+/// The versus TITLE row once armed (the pause plate's, or a round's result
+/// plate's), on a touchscreen and with keys (after the key's name): the
+/// second press quits.
+pub(super) const QUIT_AGAIN_TAP: &str = "TAP AGAIN TO QUIT";
+pub(super) const QUIT_AGAIN_KEY: &str = "PRESS AGAIN TO QUIT";
 
 /// Where the demo's mode card sits: `(x, y, w, h)` in a buffer `buffer_w`
 /// wide: centred, as wide as its longest line plus 8 a side, two lines
@@ -2095,6 +2096,43 @@ mod tests {
         let vs = g.versus.live.as_mut().unwrap();
         vs.ai = None;
         vs.duel.phase = crate::versus::Phase::RoundOver(crate::versus::Side::Right);
+        // Armed, a round's TITLE between two players reads TAP AGAIN TO
+        // QUIT, and its row still fits the plate at 180 rows.
+        let (unarmed, _) = draw(&g);
+        g.versus.live.as_mut().unwrap().quit_armed = Some(0.0);
+        let (armed, buttons) = draw(&g);
+        assert_ne!(armed.bytes(), unarmed.bytes(), "the armed row drew nothing");
+        let vs = g.versus.live.as_ref().unwrap();
+        let (px, top, pw, ph) =
+            versus::result_plate_rect(&g, vs, true, g.display.buffer_w, 180).unwrap();
+        let title = buttons.iter().find(|b| b.action == Action::Replay).unwrap();
+        assert!(
+            title.rect.x > px
+                && title.rect.x + title.rect.w < px + pw
+                && title.rect.y >= top
+                && title.rect.y + title.rect.h <= top + ph,
+            "armed TITLE {:?} off the plate {:?}",
+            title.rect,
+            (px, top, pw, ph)
+        );
+        // With keys or a controller, its line ("R  PRESS AGAIN TO QUIT",
+        // padded like its neighbours) fits the plate too.
+        g.input.touch_active = false;
+        for pad in [false, true] {
+            g.input.controller_active = pad;
+            let labels = [
+                (g.input_label(Action::Confirm), "NEXT ROUND"),
+                (g.input_label(Action::Replay), QUIT_AGAIN_KEY),
+                (versus::map_key(&g), "MAKE MAP OF THIS ROUND"),
+            ];
+            for line in keyed_rows(&labels) {
+                let lw = crate::font::small_width(&line) as i32;
+                assert!(lw <= pw - 8, "pad {pad}: {line:?} is {lw} wide");
+            }
+        }
+        g.input.controller_active = false;
+        g.input.touch_active = true;
+        g.versus.live.as_mut().unwrap().quit_armed = None;
 
         for (i, c) in screens.iter().enumerate() {
             assert!(
