@@ -72,7 +72,9 @@ use crate::custom;
 /// playable duel reaches on both sides, so a fairness sign read from it
 /// would say FAIR of almost anything; counted this far, a lopsided ground
 /// shows. The gate's verdict is the same either way: a gun with fewer
-/// than `MIN_SOLUTIONS` is short of both caps.
+/// than `MIN_SOLUTIONS` is short of both caps. Counting this far costs
+/// about 0.9 ms on a desktop against the gate's 0.1 (NOTES §9), so a drag's
+/// frames count to the gate's cap only ([`quick_verdict`]).
 pub const FAIRNESS_CAP: usize = 64;
 
 /// Snapshots the undo stack keeps (§13.11): a layout is under a kilobyte,
@@ -667,6 +669,20 @@ impl Verdict {
 /// wind it checks: the duel gate for two guns, the run gate for one. About
 /// a tenth of a millisecond (NOTES §9).
 pub fn verdict(layout: &Layout) -> Verdict {
+    verdict_counted(layout, FAIRNESS_CAP)
+}
+
+/// [`verdict`] counting only to the gate's cap: the same problems for a
+/// tenth of the time, but counts too shallow for a fairness sign, which is
+/// left out. What each frame of a drag runs (NOTES §9).
+pub fn quick_verdict(layout: &Layout) -> Verdict {
+    Verdict {
+        fairness: None,
+        ..verdict_counted(layout, salt_line_sim::solver::GATE_CAP)
+    }
+}
+
+fn verdict_counted(layout: &Layout, cap: usize) -> Verdict {
     let mut problems: Vec<(Problem, Severity)> = check_placement(layout)
         .into_iter()
         .map(|p| (p, severity(&p)))
@@ -675,7 +691,7 @@ pub fn verdict(layout: &Layout) -> Verdict {
     let mut counts = Vec::new();
     if !blocked {
         if layout.is_duel() {
-            counts = custom::duel_counts_capped(layout, FAIRNESS_CAP);
+            counts = custom::duel_counts_capped(layout, cap);
             for (wind, c) in &counts {
                 for (gun, &shots) in c.iter().enumerate() {
                     if shots < salt_line_sim::MIN_SOLUTIONS {
@@ -876,8 +892,19 @@ impl Editor {
     }
 
     /// The draft changed: re-check it and bump the revision.
+    /// While a finger drags, each frame is checked with [`quick_verdict`]
+    /// (every problem, in a tenth of the time) and the fairness sign holds
+    /// what it last said; the stroke's end checks it in full.
     fn changed(&mut self) {
-        self.verdict = verdict(&self.draft.layout);
+        if self.stroke.is_some() {
+            let fairness = self.verdict.fairness;
+            self.verdict = quick_verdict(&self.draft.layout);
+            if !self.verdict.counts.is_empty() {
+                self.verdict.fairness = fairness;
+            }
+        } else {
+            self.verdict = verdict(&self.draft.layout);
+        }
         self.rev += 1;
     }
 
@@ -1103,6 +1130,7 @@ impl Editor {
         if stroke.base.layout != self.draft.layout {
             self.push_undo(stroke.base);
             self.group = None;
+            self.verdict = verdict(&self.draft.layout);
         }
     }
 

@@ -9,7 +9,13 @@
 //! cargo run --release -p salt-line-godot --example layouts -- fork-run DUNE:8
 //! cargo run --release -p salt-line-godot --example layouts -- fork-duel 42:0
 //! cargo run --release -p salt-line-godot --example layouts -- check SL…
+//! cargo run --release -p salt-line-godot --example layouts -- editor
 //! ```
+//!
+//! `editor` times what the map editor runs after every edit (DESIGN
+//! §13.11, NOTES §9): the verdict (placement, the duel gate and the
+//! fairness counts) on the bundled maps and on forks of duel rounds, and a
+//! sculpt stroke frame by frame, as a finger drags, the verdict included.
 //!
 //! The report forks `--screens` run screens of each of `--seeds` run seeds
 //! and `--rounds` duel rounds of as many match seeds, all at the layout
@@ -53,6 +59,7 @@ fn main() {
             "{}",
             custom::fork_report(None, args.get(1).map(String::as_str)).unwrap_or_default()
         ),
+        Some("editor") => editor_timings(),
         Some("check") => match custom::read(args.get(1).map_or("", String::as_str)) {
             Ok(l) => println!(
                 "passes: {} columns, {} guns, {} structures, {:?}",
@@ -65,6 +72,62 @@ fn main() {
         },
         _ => report(&args),
     }
+}
+
+/// The median and worst of `samples`, in microseconds.
+fn micros(mut samples: Vec<f64>) -> String {
+    samples.sort_by(f64::total_cmp);
+    let median = samples[samples.len() / 2];
+    let p95 = samples[samples.len() * 95 / 100];
+    let worst = samples[samples.len() - 1];
+    format!(
+        "median {median:.0} µs, 95th {p95:.0} µs, worst {worst:.0} µs over {}",
+        samples.len()
+    )
+}
+
+/// `editor`: what an edit costs the map editor.
+fn editor_timings() {
+    use salt_line_godot::editor::{self, Draft, Editor};
+    let mut maps: Vec<Layout> = custom::bundled::layouts();
+    maps.extend((0..40).map(|s| custom::fork_duel(s, s as u32 % 3)));
+    maps.push(Draft::blank().layout);
+    let mut verdicts = Vec::new();
+    for _ in 0..5 {
+        for l in &maps {
+            let t = Instant::now();
+            let v = editor::verdict(l);
+            verdicts.push(t.elapsed().as_secs_f64() * 1e6);
+            std::hint::black_box(v);
+        }
+    }
+    println!("verdict per edit (fairness counted): {}", micros(verdicts));
+    let mut quick = Vec::new();
+    for _ in 0..5 {
+        for l in &maps {
+            let t = Instant::now();
+            std::hint::black_box(editor::quick_verdict(l));
+            quick.push(t.elapsed().as_secs_f64() * 1e6);
+        }
+    }
+    println!("quick verdict (gate only): {}", micros(quick));
+    // A sculpt stroke: a frame per row of a 30-row drag, each re-checked.
+    let mut frames = Vec::new();
+    for l in &maps {
+        let mut e = Editor::new(Draft {
+            layout: l.clone(),
+            from: None,
+            slot: None,
+        });
+        e.begin_stroke(100.0, 120.0);
+        for y in 0..30 {
+            let t = Instant::now();
+            e.drag_stroke(100.0 + y as f32, 120.0 - y as f32);
+            frames.push(t.elapsed().as_secs_f64() * 1e6);
+        }
+        e.end_stroke();
+    }
+    println!("sculpt frame, quick verdict included: {}", micros(frames));
 }
 
 fn flag(args: &[String], name: &str, default: u32) -> u32 {
