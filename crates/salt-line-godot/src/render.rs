@@ -1416,7 +1416,12 @@ impl Painter<'_> {
         let title = self.g.input_label(Action::Replay);
         self.centred((h - ph) / 2 + 31, &format!("{title}  TITLE"), dim);
         if fork {
-            self.centred((h - ph) / 2 + 41, "E  MAKE MAP OF THIS ROUND", dim);
+            let key = versus::map_key(self.g);
+            self.centred(
+                (h - ph) / 2 + 41,
+                &format!("{key}  MAKE MAP OF THIS ROUND"),
+                dim,
+            );
         }
     }
 }

@@ -259,6 +259,11 @@ fn make_map_opens_the_editor_at_the_layout_width_and_back_out() {
     assert_eq!(g.mode, Mode::Editor);
     node.key(&mut g, Key::Escape);
     assert_eq!(g.mode, Mode::VersusSetup);
+    // With a controller: X, and B back out.
+    node.pad(&mut g, Pad::X);
+    assert_eq!(g.mode, Mode::Editor);
+    node.pad(&mut g, Pad::B);
+    assert_eq!(g.mode, Mode::VersusSetup);
 }
 
 // ---------------------------------------------------------------- editing

@@ -42,6 +42,16 @@ use super::*;
 use crate::app::{VersusCall as Call, VersusStage as Stage};
 use crate::versus::{self, RollWay, Side, Stakes};
 
+/// What MAKE MAP and MAKE MAP OF THIS ROUND are on the device in use: `E`,
+/// or a controller's X.
+pub(super) fn map_key(g: &Game) -> String {
+    if g.input.controller_active {
+        "X".into()
+    } else {
+        "E".into()
+    }
+}
+
 /// Secondary text on versus screens. The game's usual dim, `SKY_LO`, is the
 /// right player's colour here.
 const DIM: usize = slot::ROCK;
@@ -224,7 +234,7 @@ impl Painter<'_> {
             .map(|(action, text, _)| {
                 let label = match action {
                     Action::Edit(crate::input::Ed::GroundNext) => self.g.input_label(Action::Down),
-                    Action::Edit(_) => "E".to_string(),
+                    Action::Edit(_) => map_key(self.g),
                     a => self.g.input_label(*a),
                 };
                 (label, text.as_str())
@@ -802,7 +812,7 @@ impl Painter<'_> {
         let labels: Vec<(String, &str)> = rows
             .iter()
             .map(|&(action, text)| match action {
-                Action::Edit(_) => ("E".to_string(), text),
+                Action::Edit(_) => (map_key(self.g), text),
                 _ => (self.g.input_label(action), text),
             })
             .collect();

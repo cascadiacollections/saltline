@@ -141,7 +141,7 @@ request.
 | 2 | LB (on the title) | LOCAL VERSUS | Local versus, two players on one device (see below) |
 | D | D-pad down (on the title) | DEMO (top-left corner) | Watch the attract demo (see below) |
 | Down | D-pad down (on the pre-match screen) | GROUND row, `<` | Pick the ground for a local versus match: generated, or a map |
-| E | — | MAKE MAP (pre-match, top-right corner) | Open the map editor (see below); on a match's pause or result, make a map of the round |
+| E | X (pre-match, a match's pause or result) | MAKE MAP (pre-match, top-right corner) | Open the map editor (see below); on a match's pause or result, make a map of the round |
 | D | D-pad down (on Controls) | IDLE DEMO | Start the demo by itself after 30 s on the title (on by default) |
 | C | X | COPY SEED | Copy the seed (on the run-over screen) |
 | R | Y | SAME SEED AGAIN | Replay the same seed |

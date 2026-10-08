@@ -605,6 +605,7 @@ impl Game {
             self.play(Sound::Ui);
         }
         if self.pressed(Key::E)
+            || self.pad_pressed(Pad::X)
             || self
                 .input
                 .touch
@@ -639,6 +640,7 @@ impl Game {
         };
         let (stage, paused) = (vs.stage, vs.paused);
         let fork = self.pressed(Key::E)
+            || self.pad_pressed(Pad::X)
             || self
                 .input
                 .touch
