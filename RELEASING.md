@@ -23,7 +23,7 @@ Supported toolchain, pinned and checked in:
 | | |
 |---|---|
 | Rust | `1.98.1` — `rust-toolchain.toml` |
-| Godot | `4.7.2` — `project.godot` `config/features`, the CI export job, and the `api-4-7` feature on the `godot` crate |
+| Godot | `4.7.2` — `project.godot` `config/features`, `GODOT_VERSION` in `.github/workflows/ci.yml` (every export job, and the SBOM), and the `api-4-7` feature on the `godot` crate |
 | Python | 3.10+ with Pillow, managed by `uv`, to regenerate `art/` and the site; `tools/release_version.py` needs only a stock Python 3.9+ |
 
 ## Build it
@@ -66,6 +66,9 @@ step that no amount of CI will cover.
       rather than the exit code, because a Godot-exported Windows binary is
       GUI-subsystem and returns 0 the instant it is started
 - [ ] `.sha256` published next to each artifact
+- [ ] Every download has a signed build provenance attestation, and the game
+      files an SBOM attestation for `SaltLine-sbom.cdx.json` (the `release`
+      job; see "Verifying a download")
 
 **Manual — before tagging**
 
@@ -92,7 +95,8 @@ step that no amount of CI will cover.
 - [ ] Android: install the release APK over the previous release (same key,
       higher versionCode) and confirm the save survives
 - [ ] Windows: run the `.exe`, work through SmartScreen, confirm it runs
-- [ ] Verify the published `.sha256` against the downloaded file
+- [ ] Verify the published `.sha256` against the downloaded file, and its
+      provenance with `gh attestation verify` (see "Verifying a download")
 
 ---
 
@@ -112,9 +116,11 @@ more at the end. What changed in each version lives in
    solvability, lint, the three desktop exports with their smoke launch,
    Windows arm64, Android). The `version` job fails the build if the tag does
    not match the tree, or if CHANGELOG.md has no section for it.
-4. The `release` job then publishes a normal (not pre-) GitHub Release
-   `vX.Y.Z`, marked latest, with the same files as the `dev` prerelease plus
-   `SHA256SUMS`, and that version's CHANGELOG section as its notes.
+4. The `release` job then attests every download (build provenance, and the
+   SBOM; see "Verifying a download") and publishes a normal (not pre-) GitHub
+   Release `vX.Y.Z`, marked latest, with the same files as the `dev`
+   prerelease (`SaltLine-sbom.cdx.json` among them) plus `SHA256SUMS`, and
+   that version's CHANGELOG section as its notes.
 5. Right after, bump `main` to the next version (for example `0.1.1`) with an
    empty `[Unreleased]` section, so dev builds overtake the release on Android
    (see "Android versionCode").
@@ -134,6 +140,79 @@ written on `main` (pull request caches are scoped to `refs/pull/N/merge`), but
 a release should not depend on even that, so tag builds start cold and take
 longer; the macOS job's timeout is raised to 75 minutes on tags to cover that
 and the notarization wait.
+
+### Verifying a download
+
+Every file on a release, and on the `dev` prerelease, has a signed **build
+provenance** attestation (SLSA v1): a statement, signed with a short-lived
+certificate issued to this repository's `ci.yml` run, that a file with this
+SHA-256 was built by that workflow from that commit and ref. The game files
+(the zips and the APK) also have an **SBOM** attestation binding them to
+`SaltLine-sbom.cdx.json`. Both are made by `actions/attest` in the `release`
+and `dev-release` jobs, before anything is published, so a release never goes
+out unattested.
+
+Check a download (needs `gh` signed in with read access to the repository,
+since it is internal):
+
+```sh
+gh attestation verify SaltLine-linux-x86_64.zip \
+  --repo cascadiacollections/saltline \
+  --signer-workflow cascadiacollections/saltline/.github/workflows/ci.yml \
+  --source-ref refs/tags/vX.Y.Z
+```
+
+`--signer-workflow` pins the signer to `ci.yml` rather than any workflow in
+the repository, and `--source-ref` to the tag (`refs/heads/main` for a `dev`
+build). It prints the commit and run the file came from; any other file, or
+one changed after the build, fails. Verifying every file at once is
+`for f in SaltLine-*; do gh attestation verify "$f" --repo cascadiacollections/saltline; done`.
+
+The SBOM attestation is checked the same way, with its predicate type:
+
+```sh
+gh attestation verify SaltLine-android-arm64.apk \
+  --repo cascadiacollections/saltline \
+  --predicate-type https://cyclonedx.org/bom
+```
+
+Add `--format json --jq '.[0].verificationResult.statement.predicate'` to
+print the attested SBOM itself, the same document as the
+`SaltLine-sbom.cdx.json` on the release.
+
+**What the SBOM covers.** `SaltLine-sbom.cdx.json` is CycloneDX 1.5 JSON, made
+by the `sbom` job (pushes to `main` and tags only): `cargo cyclonedx` over the
+GDExtension's Cargo graph, default features (what ships), every target (the
+release spans six), no dev-dependencies, and build-only crates (proc macros,
+codegen) kept but marked `excluded`. Cargo cannot see the two binary
+dependencies, so `tools/release_sbom.py` adds them: the Godot export templates
+at `GODOT_VERSION` (which bundle the engine's own third-party libraries, listed
+in its `COPYRIGHT.txt`, not here) and the godot-xdg-portals revision pinned in
+`tools/build_xdg_portals.sh` (Linux builds only), under one top-level
+"Salt Line" application. The same commit always yields the same SBOM byte for
+byte. To produce it locally:
+
+```sh
+cargo install cargo-cyclonedx   # or: cargo binstall cargo-cyclonedx
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  cargo cyclonedx --format json --spec-version 1.5 --target all -q
+python3 tools/release_sbom.py --cargo-bom crates/salt-line-godot/salt-line-godot.cdx.json \
+  --godot 4.7.2 --commit "$(git rev-parse HEAD)" --out build/SaltLine-sbom.cdx.json
+```
+
+(`cargo cyclonedx` writes a `*.cdx.json` next to each crate's `Cargo.toml`;
+delete them afterwards.)
+
+**Plan requirement.** The repository is internal. Artifact attestations for
+private and internal repositories need **GitHub Enterprise Cloud**, which the
+`cascadiacollections` organization is on; they are signed by GitHub's private
+Sigstore instance rather than the public one, and only people who can read
+the repository can fetch and verify them. (Made public, the repository would
+sign with the public instance instead, on any plan.) If the organization ever
+leaves Enterprise Cloud while the repository is private or internal, the
+attestation steps fail and neither a tag nor a push to `main` publishes
+anything until they are removed, which is deliberate: a release should not
+quietly go out unattested.
 
 ### Version rule
 

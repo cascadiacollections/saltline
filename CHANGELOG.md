@@ -29,6 +29,12 @@ second. See RELEASING.md for the release steps.
 - The attract demo opens each part with a short card naming what is coming:
   ROGUELIKE (topple targets, draft a build) before a run, TWO PLAYERS (one
   phone, take turns) before a duel.
+- Every download on a release, and on the `dev` build, now comes with a signed
+  build provenance attestation, so you can check it was built by this
+  project's CI from the tagged commit (`gh attestation verify`), and with
+  `SaltLine-sbom.cdx.json`, a CycloneDX list of everything inside: every Rust
+  crate, the Godot version and the Linux portal bridge. RELEASING.md,
+  "Verifying a download", shows how.
 - For developers: the cross-platform determinism check now also runs on Android
   (x86_64 emulator) and iOS (arm64 simulator) in CI, and `just android-digest`
   runs it on an attached Android phone as arm64-v8a.

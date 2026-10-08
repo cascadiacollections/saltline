@@ -20,12 +20,19 @@ concurrency:
 # run's own runtime token, not with GITHUB_TOKEN. The two exceptions are the
 # dev-release job (pushes to main, replaces the `dev` prerelease) and the
 # release job (`v*` tags, publishes that version's release); each asks for
-# contents: write for itself.
+# contents: write for itself, plus id-token: write and attestations: write to
+# sign build provenance and the SBOM for what it publishes. No job that runs
+# the engine, a build script or a third-party build action can mint an OIDC
+# token.
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # The Godot engine and export templates every export job installs. One
+  # place, because the SBOM records it too (the engine is a binary dependency
+  # Cargo cannot see).
+  GODOT_VERSION: 4.7.2
 
 # Every rust-cache step sets `lookup-only` on tag builds, so a build that
 # publishes a release starts from nothing cached (zizmor cache-poisoning).
@@ -513,7 +520,7 @@ jobs:
       # v2.3.0 by using a real symlink.
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
-          version: 4.7.2
+          version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
@@ -861,7 +868,7 @@ jobs:
           persist-credentials: false
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
-          version: 4.7.2
+          version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
@@ -986,7 +993,7 @@ jobs:
           persist-credentials: false
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
-          version: 4.7.2
+          version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
@@ -1043,7 +1050,7 @@ jobs:
           persist-credentials: false
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
-          version: 4.7.2
+          version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
@@ -1145,50 +1152,127 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The software bill of materials for a published build: the GDExtension's
+  # whole Cargo dependency tree (cargo-cyclonedx reads Cargo.lock; syft over the
+  # exported binaries would find nothing, since a stripped cdylib carries no
+  # crate list), plus the two binary dependencies Cargo cannot see, the Godot
+  # export templates and the Linux XDG Portals bridge (tools/release_sbom.py).
+  # Default features only, which is what ships; every target, since the
+  # release spans six. Dev-dependencies are left out and build-only crates
+  # (proc macros, codegen) are kept but marked `excluded`. CycloneDX JSON,
+  # uploaded as dist-sbom so the release jobs attach and attest it like any
+  # other download. Pushes only (main and tags): pull requests never publish.
+  sbom:
+    name: sbom
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-cyclonedx
+      # SOURCE_DATE_EPOCH (the commit time) makes the timestamp the commit's,
+      # so the same commit always produces the same SBOM, byte for byte.
+      - name: generate the SBOM
+        run: |
+          set -eu
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          cargo cyclonedx --format json --spec-version 1.5 --target all -q
+          python3 tools/release_sbom.py \
+            --cargo-bom crates/salt-line-godot/salt-line-godot.cdx.json \
+            --godot "$GODOT_VERSION" --commit "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
+            --out dist/SaltLine-sbom.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-sbom
+          path: dist/SaltLine-sbom.cdx.json
+          if-no-files-found: error
+
   # Replaces the `dev` prerelease with this commit's builds, so the latest main
   # is one download away on any device. Only after every check has passed.
+  #
+  # It attests them exactly as `release` does (see there), so every push to
+  # main exercises the signing path a tag depends on, and a dev build can be
+  # verified with `gh attestation verify` too.
   dev-release:
     name: dev release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, determinism, solvability, lint, playable, android, windows-arm64]
+    needs: [version, determinism, solvability, lint, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write      # create the GitHub release and upload its files
+      id-token: write      # OIDC token for the Sigstore signing certificate
+      attestations: write  # store the provenance and SBOM attestations
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist
+      - name: checksums
+        working-directory: dist
+        run: |
+          set -eu
+          sha256sum -- * > SHA256SUMS
+          ls -l
+      - name: attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          sbom-path: dist/SaltLine-sbom.cdx.json
+          subject-path: |
+            dist/*.zip
+            dist/*.apk
       - name: replace the dev prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           cd dist
-          sha256sum -- * > SHA256SUMS
-          ls -l
           short="${GITHUB_SHA::7}"
           gh release delete dev --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
           gh release create dev ./* \
             --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
             --title "Development build ($short)" \
-            --notes "Latest main, built from $short. Unsigned desktop builds and an Android APK, for testing only (see RELEASING.md for how it is signed)."
+            --notes "Latest main, built from $short. Unsigned desktop builds and an Android APK, for testing only (see RELEASING.md for how it is signed, and how to verify its provenance and SBOM attestations)."
 
   # A `vX.Y.Z` tag publishes release vX.Y.Z: the same downloads as the dev
   # build, as a normal (not pre-) release, with that version's CHANGELOG.md
   # section as its notes. Only after every check has passed, including the
   # version gate, which fails when the tag does not match the version in the
   # tree. The tag itself is pushed by a human (RELEASING.md).
+  #
+  # Every download is attested before anything is published: one SLSA build
+  # provenance attestation over all of them (SHA256SUMS and the SBOM included),
+  # naming this workflow, the tag, the commit and the run; and one SBOM
+  # attestation binding SaltLine-sbom.cdx.json to the game files. The builds
+  # come from the export jobs of this same run, so the provenance is the run's;
+  # signing here rather than in each export job keeps the OIDC token away from
+  # Godot, the build scripts and setup-godot. The repository is internal, and
+  # attestations for private and internal repositories need GitHub Enterprise
+  # Cloud, which the organization is on; on any other plan these steps fail
+  # and nothing is published (RELEASING.md, "Verifying a download").
   release:
     name: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version, determinism, solvability, lint, deny, playable, android, windows-arm64]
+    needs: [version, determinism, solvability, lint, deny, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write      # create the GitHub release and upload its files
+      id-token: write      # OIDC token for the Sigstore signing certificate
+      attestations: write  # store the provenance and SBOM attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1202,6 +1286,23 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           path: dist
+      - name: checksums
+        working-directory: dist
+        run: |
+          set -eu
+          sha256sum -- * > SHA256SUMS
+          ls -l
+      - name: attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          sbom-path: dist/SaltLine-sbom.cdx.json
+          subject-path: |
+            dist/*.zip
+            dist/*.apk
       - name: publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1214,11 +1315,9 @@ jobs:
             echo
             echo '---'
             echo
-            echo "Built from ${GITHUB_SHA::7}. Verify downloads against SHA256SUMS; RELEASING.md says which builds are signed."
+            echo "Built from ${GITHUB_SHA::7}. Verify downloads against SHA256SUMS, or their provenance with \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`; SaltLine-sbom.cdx.json lists what is inside. RELEASING.md says which builds are signed."
           } >> "$RUNNER_TEMP/notes.md"
           cd dist
-          sha256sum -- * > SHA256SUMS
-          ls -l
           gh release create "$tag" ./* \
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
             --title "Salt Line $version" \
