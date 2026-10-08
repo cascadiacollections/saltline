@@ -72,6 +72,17 @@
 //! while it plays (at 4× a 30 fps flight would stutter) and at
 //! `frame::IDLE_FPS` paused or at its end (`Game::idle`); being shown, not
 //! played, it never asks for desktop GameMode (`Game::active_play`).
+//!
+//! # Stars
+//!
+//! A replay can be starred to keep it for good (`history`'s "Stars"): on
+//! the list (the star beside a row on a touchscreen, [`Action::Star`] on
+//! the chosen row with keys or a controller) and at a replay's end (STAR,
+//! "keep this one"). The starred are listed first. A star is a write of
+//! the history file: from the list it is asked for at once; at a replay's
+//! end it is set in memory and the write waits, like a mute, until the
+//! watch is over ([`Game::flush_history`]), or until the app is paused or
+//! closed, when it may never run again ([`Game::flush_history_final`]).
 
 use super::versus::Stage;
 use super::*;
@@ -107,8 +118,9 @@ pub const LIST_ROWS_TOUCH: usize = 6;
 pub const LIST_ROWS_KEYS: usize = 10;
 
 /// What a watch frame shows that input or a step can change, for
-/// `FrameState`: paused, the speed, ended, the next entry.
-pub(crate) type Fingerprint = (bool, usize, bool, usize);
+/// `FrameState`: paused, the speed, ended, the next entry; whether it is
+/// starred, and a star refused.
+pub(crate) type Fingerprint = ((bool, usize, bool, usize), (bool, bool));
 
 /// The finished runs and matches, as the history file has them, and where
 /// the REPLAYS list stands.
@@ -120,6 +132,9 @@ pub(crate) struct HistoryState {
     pub(crate) focus: usize,
     /// The run on the result screen, if it was recorded: its WATCH.
     pub(crate) last_run: Option<Record>,
+    /// A star changed while nothing could be written (at a replay's end):
+    /// the file is written once the watch is over, or the app is paused.
+    pub(crate) unsaved: bool,
 }
 
 /// The player's state, moved out whole while a watch runs.
@@ -164,6 +179,11 @@ enum Skip {
 pub(crate) struct Watch {
     /// What is being played back, already checked.
     pub(crate) show: Watchable,
+    /// The record it was checked from: what STAR at its end stars.
+    pub(crate) record: Record,
+    /// STAR at the end was refused: there are `MAX_STARS` already. Said on
+    /// the bar, where a status note is not shown.
+    pub(crate) stars_full: bool,
     /// Index into [`SPEEDS`].
     pub(crate) speed: usize,
     pub(crate) paused: bool,
@@ -291,6 +311,21 @@ impl Game {
             self.mode = Mode::Title;
             return;
         }
+        let starred =
+            (0..rows as u8).find(|&i| self.input.touch.pressed(Action::Wb(Wb::RowStar(i))));
+        if let Some(i) = starred {
+            let index = page * rows + i as usize;
+            if index < n {
+                self.star_listed(index);
+            }
+            return;
+        }
+        if self.action_pressed(Action::Star) {
+            if n > 0 {
+                self.star_listed(self.history.focus);
+            }
+            return;
+        }
         let tapped = (0..rows as u8).find(|&i| self.input.touch.pressed(Action::Wb(Wb::Row(i))));
         if let Some(i) = tapped {
             let index = page * rows + i as usize;
@@ -326,12 +361,86 @@ impl Game {
         }
     }
 
-    /// WATCH the list's row `index`, counted newest first, or say why not.
+    /// WATCH the list's row `index`, counted from the top, or say why not.
     fn watch_listed(&mut self, index: usize) {
-        let Some(record) = self.history.file.newest_first().nth(index).cloned() else {
+        let Some(record) = self.history.file.listed().nth(index).cloned() else {
             return;
         };
         self.watch_record(&record);
+    }
+
+    /// Star or unstar the list's row `index`, and write the file. The
+    /// chosen row follows it to its new place (the starred are listed
+    /// first), so it stays the one marked.
+    fn star_listed(&mut self, index: usize) {
+        let Some(record) = self.history.file.listed().nth(index).cloned() else {
+            return;
+        };
+        let on = !record.starred;
+        match self.history.file.set_star(&record, on) {
+            Ok(text) => {
+                self.play(Sound::Ui);
+                self.note(if on {
+                    "STARRED - THIS ONE STAYS".into()
+                } else {
+                    "STAR TAKEN OFF".into()
+                });
+                if let Some(text) = text {
+                    self.fx.push(Effect::History(text));
+                }
+                if let Some(at) = self
+                    .history
+                    .file
+                    .listed()
+                    .position(|r| r.same_game(&record))
+                {
+                    self.history.focus = at;
+                }
+                self.fx.push(Effect::Redraw);
+            }
+            Err(why) => self.note(why.note()),
+        }
+    }
+
+    /// STAR at a replay's end: set in memory now, written once the watch is
+    /// over (nothing is written while one plays).
+    fn star_watched(&mut self) {
+        let Some(w) = self.watch.as_ref() else {
+            return;
+        };
+        let record = w.record.clone();
+        let on = !self.history.file.is_starred(&record);
+        let result = self.history.file.set_star(&record, on);
+        let full = matches!(result, Err(crate::history::StarError::Full));
+        if let Ok(Some(_)) = result {
+            self.history.unsaved = true;
+        }
+        if let Some(w) = self.watch.as_mut() {
+            w.stars_full = full;
+        }
+        self.play(Sound::Ui);
+        self.fx.push(Effect::Redraw);
+    }
+
+    /// Write a star set at a replay's end, once nothing is being shown.
+    pub(super) fn flush_history(&mut self) {
+        if !self.spectating() {
+            self.flush_history_final();
+        }
+    }
+
+    /// [`Self::flush_history`] for the app being paused or closed, when it
+    /// may never run again: written even while a watch is on screen, as a
+    /// mute is (`flush_settings_final`). Only the history file, which a
+    /// watch changes only by a star. Never from the demo, which stars
+    /// nothing.
+    pub(super) fn flush_history_final(&mut self) {
+        if self.in_demo() || !std::mem::take(&mut self.history.unsaved) {
+            return;
+        }
+        if let Some(text) = self.history.file.written() {
+            self.fx.push(Effect::History(text));
+        }
     }
 
     /// WATCH on a run's result screen: the run just finished.
@@ -358,7 +467,7 @@ impl Game {
     /// run's result, a won match's plate (the mode is in its stash).
     fn watch_record(&mut self, record: &Record) {
         match record.check() {
-            Ok(show) => self.start_watch(show),
+            Ok(show) => self.start_watch(show, record.clone()),
             Err(why) => self.note(why.note().into()),
         }
     }
@@ -368,7 +477,7 @@ impl Game {
     /// Start watching `show`: settings flushed while writes are still
     /// allowed, the player's state set aside, and the run or match put on
     /// screen from its start.
-    fn start_watch(&mut self, show: Watchable) {
+    fn start_watch(&mut self, show: Watchable, record: Record) {
         if self.spectating() {
             return;
         }
@@ -387,6 +496,8 @@ impl Game {
         };
         self.watch = Some(Watch {
             show,
+            record,
+            stars_full: false,
             speed: 0,
             paused: false,
             ended: false,
@@ -414,6 +525,7 @@ impl Game {
         w.wait = 0.0;
         w.cue = None;
         w.pending = None;
+        w.stars_full = false;
         let show = w.show.clone();
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -473,6 +585,8 @@ impl Game {
         self.settle_touch();
         self.apply_buffer_size();
         self.fx.push(Effect::Redraw);
+        // A star set at its end is written now.
+        self.flush_history();
     }
 
     /// What the game did is not what the log says: stop, and say so. Never
@@ -486,8 +600,9 @@ impl Game {
     /// The watch's controls (the bar on a touchscreen; keys and a
     /// controller as the bar's hint names them): Back leaves; Confirm or
     /// Fire pauses and plays (AGAIN once it has ended); Up steps the speed;
-    /// Right skips to the next shot and Down to the next round. Mute and
-    /// F1 are asked first, as in every mode (`handle_global_input`).
+    /// Right skips to the next shot and Down to the next round; at the end,
+    /// Star stars it (STAR on the bar). Mute and F1 are asked first, as in
+    /// every mode (`handle_global_input`).
     pub(super) fn handle_watch_input(&mut self) {
         self.handle_global_input();
         let tapped = |g: &Game, b: Wb| g.input.touch.pressed(Action::Wb(b));
@@ -497,6 +612,10 @@ impl Game {
             return;
         }
         let ended = self.watch.as_ref().is_some_and(|w| w.ended);
+        if ended && (tapped(self, Wb::Star) || self.action_pressed(Action::Star)) {
+            self.star_watched();
+            return;
+        }
         if tapped(self, Wb::Pause)
             || self.action_pressed(Action::Confirm)
             || self.action_pressed(Action::Fire)
@@ -826,10 +945,14 @@ impl Game {
     }
 
     /// What a watch frame shows that input or a step can change, for
-    /// `FrameState`: paused, the speed, ended, the entry reached.
+    /// `FrameState`: paused, the speed, ended, the entry reached, and its
+    /// star.
     pub(super) fn watch_fingerprint(&self) -> Option<Fingerprint> {
-        self.watch
-            .as_ref()
-            .map(|w| (w.paused, w.speed, w.ended, w.cursor))
+        self.watch.as_ref().map(|w| {
+            (
+                (w.paused, w.speed, w.ended, w.cursor),
+                (self.history.file.is_starred(&w.record), w.stars_full),
+            )
+        })
     }
 }

@@ -7,18 +7,26 @@
 //!                         SALT LINE
 //!                    REPLAYS   PAGE 1 / 2
 //!               (a note: why a row cannot be watched)
-//!          ┌──────────────────────────────────────────┐
-//!          │ OCT 8  AI EASY  YOU WON 2-1  MESA        │  a row: tap to watch
-//!          │ OCT 8  RUN  9 SCREENS  SEED 1234567      │
-//!          │ OCT 7  2 PLAYERS  LEFT WON 2-0  OLD      │  dimmed: another version
-//!          └──────────────────────────────────────────┘
+//!       ┌──────────────────────────────────────────┐
+//!       │ OCT 2  RUN  14 SCREENS  SEED 7654321     │   [★]  starred: first
+//!       │ OCT 8  AI EASY  YOU WON 2-1  MESA        │   [☆]  a row: tap to watch
+//!       │ OCT 8  RUN  9 SCREENS  SEED 1234567      │   [☆]  its star: tap to keep
+//!       │ OCT 7  2 PLAYERS  LEFT WON 2-0  OLD      │   [☆]  dimmed: another version
+//!       └──────────────────────────────────────────┘
 //!                   <        BACK        >
 //! ```
 //!
-//! Newest first, a line each, in the words a child can read out (DESIGN
-//! §11.4): when, against whom, who won. A row from another build's sim is
-//! dimmed and says OLD (or NEWER); it stays listed, and choosing it says
-//! why it cannot be watched (§9.3).
+//! The starred first, then the rest, each newest first; a line each, in
+//! the words a child can read out (DESIGN §11.4): when, against whom, who
+//! won. A row from another build's sim is dimmed and says OLD (or NEWER);
+//! it stays listed, and choosing it says why it cannot be watched (§9.3).
+//!
+//! On a touchscreen each row has its own star button, a filled star when
+//! starred and a hollow one when not, in a column of its own to the right
+//! of the rows, apart from them by [`STAR_GAP`], so a child tapping a row to
+//! watch it does not star it, nor the other way about. With keys or a
+//! controller the chosen row is starred by [`Action::Star`], and a starred
+//! row has a star in front of it.
 //!
 //! # The watch bar
 //!
@@ -43,8 +51,66 @@ use crate::input::Wb;
 const BAR_H: i32 = 18;
 /// Pixels between the bar's buttons.
 const BAR_GAP: i32 = 3;
+/// A list row's star button: as wide as a page button, as tall as a row's
+/// plate.
+const STAR_W: i32 = 22;
+const STAR_H: i32 = 13;
+/// Pixels between a row's plate and its star button: about a fingertip at
+/// a phone's scale, so a tap on one is not on the other.
+const STAR_GAP: i32 = 12;
+
+/// The star drawn on buttons and before a starred row, 7 by 7: filled, and
+/// its outline for a star not set.
+const STAR_FILLED: [&str; 7] = [
+    "...#...", "..###..", "#######", ".#####.", "..###..", ".##.##.", ".#...#.",
+];
+const STAR_HOLLOW: [&str; 7] = [
+    "...#...", "..#.#..", "##...##", ".#...#.", "..###..", ".##.##.", ".#...#.",
+];
+/// The star's size.
+pub(super) const STAR_PX: i32 = 7;
+
+/// A list row's words, and whether it can be watched: a row from another
+/// build's sim says OLD or NEWER.
+fn row_text(record: &crate::history::Record) -> (String, bool) {
+    let mut text = record.summary();
+    match record.version() {
+        Ok(()) => (text, true),
+        Err(why) => {
+            text.push_str(match why {
+                crate::history::Refused::NewerVersion => "  NEWER",
+                _ => "  OLD",
+            });
+            (text, false)
+        }
+    }
+}
 
 impl Painter<'_> {
+    /// A star, its top left at `(x, y)`: filled, or hollow.
+    pub(super) fn star_icon(&mut self, x: i32, y: i32, filled: bool, c: crate::palette::Rgba) {
+        let rows = if filled { STAR_FILLED } else { STAR_HOLLOW };
+        for (dy, row) in rows.iter().enumerate() {
+            for (dx, px) in row.bytes().enumerate() {
+                if px == b'#' {
+                    self.canvas.put(x + dx as i32, y + dy as i32, c);
+                }
+            }
+        }
+    }
+
+    /// A touch button showing a star rather than a word.
+    fn star_button(&mut self, x: i32, y: i32, w: i32, h: i32, filled: bool, action: Action) {
+        let pal = self.pal;
+        self.draw_touch_button(x, y, w, h, "", action);
+        let c = if filled || self.lit(action) {
+            pal.get(slot::ALERT)
+        } else {
+            pal.get(slot::UI_FG)
+        };
+        self.star_icon(x + (w - STAR_PX) / 2, y + (h - STAR_PX) / 2, filled, c);
+    }
+
     /// The REPLAYS list (`Mode::Replays`), below the menus' title at `y`.
     pub(super) fn render_replays(&mut self, mut y: i32) {
         let pal = self.pal;
@@ -54,7 +120,7 @@ impl Painter<'_> {
             pal.get(slot::ALERT),
         );
         let g = self.g;
-        let records: Vec<&crate::history::Record> = g.history.file.newest_first().collect();
+        let records: Vec<&crate::history::Record> = g.history.file.listed().collect();
         let rows = g.replay_rows();
         let pages = records.len().div_ceil(rows).max(1);
         let focus = g.history.focus.min(records.len().saturating_sub(1));
@@ -93,20 +159,23 @@ impl Painter<'_> {
             self.centred(y, "TO WATCH IT HERE", dim);
             y += 16;
         } else {
+            // The star buttons' column: right of the page's widest row.
+            let widest = records
+                .iter()
+                .skip(page * rows)
+                .take(rows)
+                .map(|r| crate::font::small_width(&row_text(r).0) as i32 + 20)
+                .max()
+                .unwrap_or(0);
+            let star_x = ((self.canvas.w + widest) / 2 + STAR_GAP)
+                .min(self.canvas.w - STAR_W - 3 - g.display.corner_pad.0);
             for (i, record) in records.iter().enumerate().skip(page * rows).take(rows) {
-                let mut text = record.summary();
-                let c = match record.version() {
-                    Ok(()) => fg,
-                    Err(why) => {
-                        text.push_str(match why {
-                            crate::history::Refused::NewerVersion => "  NEWER",
-                            _ => "  OLD",
-                        });
-                        dim
-                    }
-                };
+                let (text, watchable) = row_text(record);
+                let c = if watchable { fg } else { dim };
                 let row = (i - page * rows) as u8;
                 if plated {
+                    let star = Action::Wb(Wb::RowStar(row));
+                    self.star_button(star_x, y - 5, STAR_W, STAR_H + 2, record.starred, star);
                     y = self.menu_row(y, Action::Wb(Wb::Row(row)), "", &text, c);
                 } else {
                     let (marker, c) = if i == focus {
@@ -114,7 +183,15 @@ impl Painter<'_> {
                     } else {
                         ("   ", c)
                     };
-                    self.centred(y, &format!("{marker}{text}   "), c);
+                    // Room for a star before the text, starred or not, so
+                    // the rows line up.
+                    let line = format!("{marker}   {text}   ");
+                    let x = ((self.canvas.w - crate::font::small_width(&line) as i32) / 2).max(1);
+                    self.canvas.text_small(x, y, &line, c);
+                    if record.starred {
+                        let sx = x + crate::font::small_width(marker) as i32 + 1;
+                        self.star_icon(sx, y - 1, true, alert);
+                    }
                     y += 8;
                 }
             }
@@ -132,21 +209,30 @@ impl Painter<'_> {
         } else {
             y += 4;
             let label = |a| g.input_label(a);
-            let mut hint = format!(
-                "{} / {}  CHOOSE   {}  WATCH",
+            let first = format!(
+                "{} / {}  CHOOSE   {}  WATCH   {}  STAR",
                 label(Action::Up),
                 label(Action::Down),
-                label(Action::Confirm)
+                label(Action::Confirm),
+                label(Action::Star)
             );
+            let mut rest = String::new();
             if pages > 1 {
-                hint.push_str(&format!(
-                    "   {} / {}  PAGE",
+                rest.push_str(&format!(
+                    "{} / {}  PAGE   ",
                     label(Action::Left),
                     label(Action::Right)
                 ));
             }
-            hint.push_str(&format!("   {}  BACK", label(Action::Back)));
-            self.centred(y, &hint, fg);
+            rest.push_str(&format!("{}  BACK", label(Action::Back)));
+            // One line if it fits the narrowest screen, else two.
+            let one = format!("{first}   {rest}");
+            if crate::font::small_width(&one) as i32 <= self.canvas.w - 8 {
+                self.centred(y, &one, fg);
+            } else {
+                self.centred(y, &first, fg);
+                self.centred(y + 8, &rest, fg);
+            }
         }
     }
 
@@ -157,6 +243,8 @@ impl Painter<'_> {
             return;
         };
         let (paused, ended, rate, duel) = (w.paused, w.ended, w.rate(), w.duel());
+        let starred = self.g.history.file.is_starred(&w.record);
+        let stars_full = w.stars_full;
         let pal = self.pal;
         // The secondary tone: `SKY_LO`, but `ROCK` over a duel, where
         // `SKY_LO` is the right player's colour (DESIGN §11.4).
@@ -197,25 +285,56 @@ impl Painter<'_> {
             // EXIT on its own, top centre where a game's II is, well away
             // from PAUSE: a child tapping the bar should not leave by it.
             self.draw_touch_button((cw - 32) / 2, 3 + ey, 32, 13, "EXIT", Action::Wb(Wb::Exit));
+            let star = if starred { "STARRED" } else { "STAR" };
             let mut buttons: Vec<(&str, Wb)> = vec![(play, Wb::Pause), (&speed, Wb::Speed)];
             if !ended {
                 buttons.push(("NEXT SHOT", Wb::NextShot));
                 buttons.push((next_round, Wb::NextRound));
+            } else {
+                buttons.push((star, Wb::Star));
             }
-            let width = |t: &str| (crate::font::small_width(t) as i32 + 10).max(22);
-            let total: i32 = buttons.iter().map(|(t, _)| width(t)).sum::<i32>()
+            // The star's button has its star drawn before the word.
+            let icon = |b: Wb| if b == Wb::Star { STAR_PX + 3 } else { 0 };
+            let width =
+                |t: &str, b: Wb| (crate::font::small_width(t) as i32 + 10 + icon(b)).max(22);
+            let total: i32 = buttons.iter().map(|&(t, b)| width(t, b)).sum::<i32>()
                 + BAR_GAP * (buttons.len() as i32 - 1);
             let mut x = (cw - total) / 2;
             let y = ch - BAR_H - 3 - ey;
             for (text, b) in buttons {
-                let bw = width(text);
-                self.draw_touch_button(x, y, bw, BAR_H, text, Action::Wb(b));
+                let bw = width(text, b);
+                if b == Wb::Star {
+                    self.draw_touch_button(x, y, bw, BAR_H, "", Action::Wb(b));
+                    let c = if starred || self.lit(Action::Wb(b)) {
+                        pal.get(slot::ALERT)
+                    } else {
+                        fg
+                    };
+                    let tw = crate::font::small_width(text) as i32;
+                    let sx = x + (bw - tw - STAR_PX - 3) / 2;
+                    self.star_icon(sx, y + (BAR_H - STAR_PX) / 2, starred, c);
+                    let ty = y + (BAR_H - crate::font::SMALL_H as i32) / 2;
+                    self.canvas.text_small(sx + STAR_PX + 3, ty, text, c);
+                } else {
+                    self.draw_touch_button(x, y, bw, BAR_H, text, Action::Wb(b));
+                }
                 x += bw + BAR_GAP;
+            }
+            if ended && stars_full {
+                let note = crate::history::StarError::Full.note();
+                let tw = crate::font::small_width(&note) as i32 + 12;
+                let ny = y - 15;
+                self.canvas.plate((cw - tw) / 2, ny, tw, 11, pal);
+                self.centred(ny + 3, &note, pal.get(slot::ALERT));
             }
             return;
         }
         let label = |a| self.g.input_label(a);
-        let state = if ended {
+        let state = if ended && stars_full {
+            crate::history::StarError::Full.note()
+        } else if ended && starred {
+            "END OF REPLAY  -  STARRED".to_string()
+        } else if ended {
             "END OF REPLAY".to_string()
         } else if paused {
             "REPLAY  PAUSED".to_string()
@@ -236,7 +355,15 @@ impl Painter<'_> {
             ),
             (
                 if ended {
-                    String::new()
+                    format!(
+                        "{}  {}",
+                        label(Action::Star),
+                        if starred {
+                            "UNSTAR"
+                        } else {
+                            "STAR - KEEP THIS ONE"
+                        }
+                    )
                 } else {
                     format!(
                         "{}  NEXT SHOT   {}  {next_round}",
@@ -346,11 +473,27 @@ mod tests {
         }
     }
 
-    /// The list with keys (the chosen row marked) and on a phone (a plate a
-    /// row, BACK under them), the older version's row dimmed and marked.
+    /// `g` with its run (the middle row by date) starred: listed first.
+    fn star_the_run(g: &mut Game) {
+        let run = g
+            .history
+            .file
+            .records
+            .iter()
+            .find(|r| r.is_run() && r.version().is_ok());
+        let run = run.unwrap().clone();
+        g.history.file.set_star(&run, true).unwrap();
+        assert!(g.history.file.listed().next().unwrap().starred);
+    }
+
+    /// The list with keys (the chosen row marked, a star before the starred
+    /// row, STAR in the hint) and on a phone (a plate a row with its star
+    /// button apart to the right, BACK under them), the starred run first
+    /// and the older version's row dimmed and marked.
     #[test]
     fn the_replays_list_is_pinned() {
         let mut g = game(false);
+        star_the_run(&mut g);
         g.open_replays();
         press(&mut g, Key::Down);
         let (keys, buttons) = draw(&g);
@@ -358,16 +501,90 @@ mod tests {
         insta::assert_snapshot!("replays_keys", keys.palette_text(&Palette::default()));
 
         let mut g = game(true);
+        star_the_run(&mut g);
         g.display.corner_pad = (10, 6);
         g.open_replays();
         let (phone, buttons) = draw(&g);
         laid_out(&g, &buttons);
-        let rows: Vec<Action> = (0..3).map(|i| Action::Wb(Wb::Row(i))).collect();
+        let rows: Vec<Action> = (0..3)
+            .flat_map(|i| [Action::Wb(Wb::RowStar(i)), Action::Wb(Wb::Row(i))])
+            .collect();
         assert_eq!(
             buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
             [rows, vec![Action::Back]].concat()
         );
+        // The stars line up in a column, clear of the widest row.
+        let stars: Vec<_> = buttons
+            .iter()
+            .filter(|b| matches!(b.action, Action::Wb(Wb::RowStar(_))))
+            .collect();
+        assert!(stars.iter().all(|b| b.rect.x == stars[0].rect.x));
+        let widest = buttons
+            .iter()
+            .filter(|b| matches!(b.action, Action::Wb(Wb::Row(_))))
+            .map(|b| b.rect.x + b.rect.w)
+            .max()
+            .unwrap();
+        assert!(stars[0].rect.x - widest >= STAR_GAP);
         insta::assert_snapshot!("replays_phone", phone.palette_text(&Palette::default()));
+    }
+
+    /// A replay played to its end.
+    fn to_the_end(g: &mut Game) {
+        for _ in 0..400 {
+            if g.watch.as_ref().is_some_and(|w| w.ended) {
+                return;
+            }
+            press(g, Key::Right);
+        }
+        for _ in 0..3600 {
+            if g.watch.as_ref().is_some_and(|w| w.ended) {
+                return;
+            }
+            g.tick(1.0 / 60.0, &idle());
+        }
+        panic!("never ended");
+    }
+
+    /// STAR at a replay's end: a phone's bar gains it after AGAIN and the
+    /// speed (STARRED, lit, once set; a plate over the bar when five are
+    /// starred already), and the keys' plate names the key.
+    #[test]
+    fn the_end_of_a_replay_offers_star() {
+        let mut g = game(true);
+        g.display.corner_pad = (10, 6);
+        g.open_replays();
+        press(&mut g, Key::Down);
+        press(&mut g, Key::Enter);
+        assert_eq!(g.mode, Mode::Playing);
+        to_the_end(&mut g);
+        g.input.touch_active = true;
+        let (_, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        assert_eq!(
+            buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
+            [Wb::Exit, Wb::Pause, Wb::Speed, Wb::Star].map(Action::Wb)
+        );
+        press(&mut g, Key::S);
+        g.input.touch_active = true;
+        let (phone, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        insta::assert_snapshot!("watch_end_phone", phone.palette_text(&Palette::default()));
+        if let Some(w) = g.watch.as_mut() {
+            w.stars_full = true;
+        }
+        let (full, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        insta::assert_snapshot!("watch_end_full", full.palette_text(&Palette::default()));
+
+        let mut g = game(false);
+        g.open_replays();
+        press(&mut g, Key::Down);
+        press(&mut g, Key::Enter);
+        to_the_end(&mut g);
+        let (keys, buttons) = draw(&g);
+        assert!(buttons.is_empty());
+        insta::assert_snapshot!("watch_end_keys", keys.palette_text(&Palette::default()));
     }
 
     #[test]
