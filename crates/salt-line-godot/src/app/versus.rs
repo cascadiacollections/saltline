@@ -96,20 +96,23 @@
 //! ([`PlayerHelp`]): ON against the AI and OFF between two players until
 //! they set it, and RIGHT OPPONENT brings back the one for its choice.
 //!
-//! # Quitting from the pause plate
+//! # Quitting a match
 //!
-//! TITLE on the pause plate drops the match on screen and its line on
-//! disk, so while that match is still to be won it asks twice: the first
-//! press arms it (the row reads TAP AGAIN TO QUIT, or the key's PRESS
-//! AGAIN TO QUIT) and only a second press within [`QUIT_CONFIRM`] quits.
-//! RESUME, the pause key, MAKE MAP, focus going and the timeout all disarm
-//! it. A won match's plate, paused, quits on the first press: nothing is
-//! left to lose. Arming changes the versus screen (`Game::versus_screen`),
-//! so the touch that armed it is spent and the second press has to be a
-//! new tap after [`TOUCH_SETTLE`] (see "One touch, one screen"). Paused
-//! over a round's result plate, TITLE sits where NEXT ROUND's target was
-//! (DESIGN §11.4): after an accidental II, a tap meant for NEXT ROUND
-//! lands on TITLE, and only arms it.
+//! TITLE on the pause plate, and on a round's result plate between two
+//! players, drops the match on screen and its line on disk, so while that
+//! match is still to be won it asks twice: the first press arms it (the
+//! row reads TAP AGAIN TO QUIT, or the key's PRESS AGAIN TO QUIT) and only
+//! a second press within [`QUIT_CONFIRM`] quits. On the pause plate
+//! RESUME, the pause key and MAKE MAP disarm it; on the result plate NEXT
+//! ROUND, MAKE MAP and the pause key (which opens the pause plate,
+//! disarmed) do; focus going and the timeout disarm it on either. A won
+//! match's plate, paused or not, quits on the first press: nothing is left
+//! to lose. Arming changes the versus screen (`Game::versus_screen`), so
+//! the touch that armed it is spent and the second press has to be a new
+//! tap after [`TOUCH_SETTLE`] (see "One touch, one screen"). Paused over a
+//! round's result plate, TITLE sits where NEXT ROUND's target was (DESIGN
+//! §11.4): after an accidental II, a tap meant for NEXT ROUND lands on
+//! TITLE, and only arms it.
 
 use super::*;
 use crate::match_log::{self, Entry, SavedMatch};
@@ -187,8 +190,8 @@ pub const AUTO_READY_CUED: f64 = AI_HANDOFF_CUED;
 /// the tap that changed the screen is spent rather than taken again.
 pub const TOUCH_SETTLE: f64 = 0.3;
 
-/// Seconds an armed TITLE on the pause plate waits for its second press
-/// before it disarms (see "Quitting from the pause plate").
+/// Seconds an armed TITLE (the pause plate's, or a round's result plate's)
+/// waits for its second press before it disarms (see "Quitting a match").
 pub const QUIT_CONFIRM: f64 = 3.0;
 
 /// The player's aim help (the left gun's, YOUR AIM HELP against the AI),
@@ -324,9 +327,10 @@ pub(crate) struct VersusPlay {
     pub(crate) score_before: Option<([u32; 2], [u32; 2])>,
     /// Under the pause plate.
     pub(crate) paused: bool,
-    /// The pause plate's TITLE has been pressed once and waits for the
-    /// second press that quits: seconds since it was armed, up to
-    /// [`QUIT_CONFIRM`]. See "Quitting from the pause plate".
+    /// TITLE on the pause plate, or on a round's result plate, has been
+    /// pressed once and waits for the second press that quits: seconds
+    /// since it was armed, up to [`QUIT_CONFIRM`]. Never set on both: the
+    /// pause plate opens and closes disarmed. See "Quitting a match".
     pub(crate) quit_armed: Option<f64>,
     /// When the last shot rolled the guns ([`versus::Match::roll_guns`]):
     /// the screen as the shot left it ([`versus::Roll::landed`]), craters
@@ -871,18 +875,12 @@ impl Game {
                 self.play(Sound::Ui);
                 self.set_versus_paused(false);
             } else if self.action_pressed(Action::Replay) {
-                self.play(Sound::Ui);
-                if won || quit_armed.is_some() {
-                    self.leave_versus();
-                } else {
-                    self.set_quit_armed(Some(0.0));
-                }
+                self.press_versus_title(won, quit_armed);
             } else if self.make_map_pressed(fork) {
                 self.play(Sound::Ui);
                 self.fork_this_round();
-            } else if let Some(t) = quit_armed {
-                let t = t + delta;
-                self.set_quit_armed((t < QUIT_CONFIRM).then_some(t));
+            } else {
+                self.count_quit_armed(quit_armed, delta);
             }
             return;
         }
@@ -911,23 +909,52 @@ impl Game {
             Stage::Aiming => self.handle_versus_aim(delta),
             Stage::Flight => {}
             Stage::Result => {
+                // A round's plate between two players asks twice before its
+                // TITLE drops the match, as the pause plate does; the match's
+                // own plate quits at once. NEXT ROUND (or REMATCH) and MAKE
+                // MAP disarm it, as the pause key does by opening the pause
+                // plate.
                 if self.action_pressed(Action::Confirm) || self.pressed(Key::KpEnter) {
+                    self.set_quit_armed(None);
                     self.play(Sound::Ui);
                     self.after_versus_result();
                 } else if round_title && self.action_pressed(Action::Replay) {
-                    self.play(Sound::Ui);
-                    self.leave_versus();
+                    self.press_versus_title(won, quit_armed);
                 } else if self.make_map_pressed(fork) {
+                    self.set_quit_armed(None);
                     self.play(Sound::Ui);
                     self.fork_this_round();
+                } else {
+                    self.count_quit_armed(quit_armed, delta);
                 }
             }
         }
     }
 
-    /// Arm the pause plate's TITLE (`Some(0.0)`), count it on, or disarm
-    /// it (`None`): see "Quitting from the pause plate". Redrawn when it
-    /// arms or disarms.
+    /// TITLE pressed on the pause plate or a round's result plate: quit if
+    /// nothing is left to lose (`won`) or it was armed already, else arm
+    /// it. See "Quitting a match".
+    fn press_versus_title(&mut self, won: bool, quit_armed: Option<f64>) {
+        self.play(Sound::Ui);
+        if won || quit_armed.is_some() {
+            self.leave_versus();
+        } else {
+            self.set_quit_armed(Some(0.0));
+        }
+    }
+
+    /// An armed TITLE waits `delta` more for its second press, and disarms
+    /// after [`QUIT_CONFIRM`].
+    fn count_quit_armed(&mut self, quit_armed: Option<f64>, delta: f64) {
+        if let Some(t) = quit_armed {
+            let t = t + delta;
+            self.set_quit_armed((t < QUIT_CONFIRM).then_some(t));
+        }
+    }
+
+    /// Arm TITLE (`Some(0.0)`), count it on, or disarm it (`None`), on
+    /// the pause plate or a round's result plate: see "Quitting a match".
+    /// Redrawn when it arms or disarms.
     fn set_quit_armed(&mut self, armed: Option<f64>) {
         if let Some(vs) = self.versus.live.as_mut() {
             if vs.quit_armed.is_some() != armed.is_some() {
@@ -1218,8 +1245,8 @@ impl Game {
     /// auto-ready); between two players it waits for READY already, and the
     /// result plate always waits for a press.
     ///
-    /// A TITLE armed on the pause plate is disarmed: whoever comes back
-    /// asks again.
+    /// A TITLE armed on the pause plate or a round's result plate is
+    /// disarmed: whoever comes back asks again.
     pub(super) fn auto_pause_versus(&mut self) {
         self.set_quit_armed(None);
         let Some(vs) = self.versus.live.as_mut() else {

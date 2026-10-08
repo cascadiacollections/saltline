@@ -1145,6 +1145,8 @@ fn a_quit_match_is_cleared() {
     }
     assert!(disk.match_main.is_some());
     press(&mut g, &mut disk, Key::R);
+    assert!(disk.match_main.is_some(), "one press only arms TITLE");
+    press(&mut g, &mut disk, Key::R);
     assert_eq!(g.mode, Mode::Title);
     assert_eq!(disk.match_main, None);
     // A resumed match, quit again.

@@ -938,9 +938,19 @@ impl Painter<'_> {
         self.draw_score((w - score_w(duel.hits)) / 2, y, duel.hits, duel.rounds);
         y += SCORE_H + 8;
         let next = if over { "REMATCH" } else { "NEXT ROUND" };
+        // A round's TITLE between two players asks twice (`app/versus.rs`,
+        // "Quitting a match"): armed, it says what the second press does,
+        // as the pause plate's does. Under the pause plate it is never
+        // armed here.
+        let armed = !vs.paused && vs.quit_armed.is_some();
+        let title = match (armed, plated) {
+            (false, _) => "TITLE",
+            (true, true) => super::QUIT_AGAIN_TAP,
+            (true, false) => super::QUIT_AGAIN_KEY,
+        };
         let rows: Vec<(Action, &str)> = [
             (Action::Confirm, next),
-            (Action::Replay, "TITLE"),
+            (Action::Replay, title),
             (
                 Action::Edit(crate::input::Ed::ForkRound),
                 "MAKE MAP OF THIS ROUND",
@@ -963,7 +973,11 @@ impl Painter<'_> {
             &rows[..]
         };
         for (&(action, text), keyed) in rows.iter().zip(keyed_rows(&labels)) {
-            let c = if action == Action::Confirm { fg } else { dim };
+            let c = if action == Action::Confirm || (armed && action == Action::Replay) {
+                fg
+            } else {
+                dim
+            };
             y = self.menu_row(if plated { y + 4 } else { y }, action, &keyed, text, c);
         }
         if plated && !self.g.in_demo() {
