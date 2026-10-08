@@ -68,6 +68,7 @@ pub mod input;
 pub mod keypad;
 pub mod layouts_file;
 pub mod match_log;
+pub mod opponent;
 pub mod pads;
 pub mod palette;
 pub mod presentation;

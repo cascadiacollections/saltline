@@ -2060,6 +2060,119 @@ mod tests {
         }
     }
 
+    /// Against the AI nothing says to pass the phone, and the sides are
+    /// YOU and AI, never LEFT or RIGHT, on every plate and callout of a
+    /// whole round: hits, misses, a last shot to tie and the result.
+    #[test]
+    fn an_ai_match_says_you_and_ai_and_never_pass_the_phone() {
+        use crate::versus::{Phase, Side};
+        use versus::{handoff_prompt, hit_line, say, setup_heading, Says};
+        let mut g = game();
+        g.versus.ai = true;
+        g.start_versus();
+        let mut said = vec![setup_heading(true).to_string()];
+        let vs = g.versus.live.as_mut().unwrap();
+        // Hits from both sides to 3-2, a miss, then hits to the end.
+        let mut turn = 0;
+        while !matches!(vs.duel.phase, Phase::MatchOver(_)) && turn < 60 {
+            if let Phase::RoundOver(_) = vs.duel.phase {
+                let winner = match vs.duel.phase {
+                    Phase::RoundOver(w) => w,
+                    _ => unreachable!(),
+                };
+                said.push(say(true, winner, Says::Wins));
+                vs.next_round();
+            }
+            said.extend(handoff_prompt(vs, false).map(str::to_string));
+            for side in Side::BOTH {
+                for what in [Says::Name, Says::Scores, Says::ToAnswer, Says::Wins] {
+                    said.push(say(true, side, what));
+                }
+            }
+            let duel = &vs.duel;
+            let side = duel.to_move;
+            let frame = crate::versus::frame_for(&duel.screen, side);
+            let target = crate::versus::target_in_frame(&duel.screen, side);
+            let shot =
+                crate::versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
+                    .first()
+                    .copied()
+                    .filter(|_| turn % 6 != 5)
+                    .unwrap_or(Shot::new(1800, 0));
+            let report = vs.fire_turn((shot.angle_ticks, shot.power_ticks)).unwrap();
+            if report.hit {
+                said.push(hit_line(vs, report.shooter));
+            }
+            turn += 1;
+        }
+        assert!(said.iter().any(|s| s == "YOU WIN" || s == "AI WINS"));
+        for line in &said {
+            for word in ["PHONE", "PEEK", "LEFT", "RIGHT"] {
+                assert!(!line.contains(word), "{line:?}");
+            }
+        }
+    }
+
+    /// The AI gets no aim help, whatever the right player's row says: its
+    /// preview would draw the shot it solved.
+    #[test]
+    fn the_ai_draws_no_aim_help() {
+        use crate::app::VersusStage;
+        let mut g = game();
+        g.versus.ai = true;
+        g.start_versus();
+        let vs = g.versus.live.as_mut().unwrap();
+        vs.duel.to_move = crate::versus::Side::Right;
+        vs.stage = VersusStage::Aiming;
+        g.versus.help = [false, false];
+        let plain = draw(&g).0;
+        g.versus.help = [false, true];
+        assert_eq!(draw(&g).0.bytes(), plain.bytes());
+        // A human's right gun still gets it.
+        g.versus.live.as_mut().unwrap().ai = None;
+        assert_ne!(draw(&g).0.bytes(), plain.bytes());
+    }
+
+    /// The pre-match screen with RIGHT OPPONENT: AI on a phone: every row
+    /// and the footer fit in the 180 rows, the footer straight under BACK
+    /// and clear of every button.
+    #[test]
+    fn setup_fits_a_phone() {
+        let mut g = Game::new(true, Save::default());
+        g.fit_display(crate::cli::PHONE_WINDOW, (0, 0));
+        g.input.touch_active = true;
+        g.versus.ai = true;
+        g.open_versus_setup();
+        let (c, buttons) = draw(&g);
+        let footer = c.h - 8;
+        for b in &buttons {
+            assert!(
+                b.rect.y + b.rect.h < footer,
+                "{:?} runs into the footer",
+                b.action
+            );
+        }
+        // The footer's line is where a note shows instead: whatever a note
+        // changes is in the footer's five rows, on screen.
+        g.status = "THIS MAP DOES NOT PASS - PICK ANOTHER".into();
+        g.status_time = 1.0;
+        let (noted, _) = draw(&g);
+        let (a, b) = (
+            c.palette_text(&Palette::default()),
+            noted.palette_text(&Palette::default()),
+        );
+        let changed: Vec<i32> = (0..)
+            .zip(a.lines().zip(b.lines()))
+            .filter(|(_, (x, y))| x != y)
+            .map(|(row, _)| row)
+            .collect();
+        assert!(!changed.is_empty());
+        assert!(
+            changed.iter().all(|r| (footer..footer + 5).contains(r)),
+            "{changed:?}"
+        );
+    }
+
     #[test]
     fn overtime_and_rolls_are_called_on_the_handoff_plate() {
         use crate::app::VersusStage;
@@ -2081,10 +2194,7 @@ mod tests {
             cues,
             [("LAST SHOT - HIT TO TIE", versus::side_slot(Side::Right))]
         );
-        assert_eq!(
-            versus::hit_line(&vs.duel, Side::Left),
-            "RIGHT GUN TO ANSWER"
-        );
+        assert_eq!(versus::hit_line(vs, Side::Left), "RIGHT GUN TO ANSWER");
         let last_shot = draw(&g).0;
         assert_ne!(last_shot.bytes(), plain.bytes());
 
@@ -2095,7 +2205,7 @@ mod tests {
         vs.rolled = Some(RollWay::Apart);
         let texts: Vec<&str> = versus::handoff_cues(vs).iter().map(|c| c.0).collect();
         assert_eq!(texts, ["TIED - KEEP GOING", "GUNS ROLLED APART"]);
-        assert_eq!(versus::hit_line(&vs.duel, Side::Right), "TIED - KEEP GOING");
+        assert_eq!(versus::hit_line(vs, Side::Right), "TIED - KEEP GOING");
         vs.rolled = Some(RollWay::Closer);
         let texts: Vec<&str> = versus::handoff_cues(vs).iter().map(|c| c.0).collect();
         assert_eq!(texts, ["TIED - KEEP GOING", "GUNS ROLLED CLOSER"]);
@@ -2124,7 +2234,7 @@ mod tests {
         let vs = g.versus.live.as_mut().unwrap();
         vs.duel.hits = [1, 0];
         vs.duel.to_move = Side::Right;
-        assert_eq!(versus::hit_line(&vs.duel, Side::Left), "LEFT GUN SCORES");
+        assert_eq!(versus::hit_line(vs, Side::Left), "LEFT GUN SCORES");
         assert_eq!(versus::pip_count(vs.duel.hits), N);
     }
 

@@ -73,6 +73,7 @@
 
 use super::versus::Stage;
 use super::*;
+use crate::opponent::{self, near_misses, DEMO_ODDS, LOB};
 use crate::versus;
 use salt_line_sim::rng::mix64;
 
@@ -152,42 +153,6 @@ pub fn card_of(index: u64) -> Card {
 /// Mixed into duel seeds and miss hashes, so the demo's matches are not
 /// any player's.
 const DEMO_SALT: u64 = 0x5A17_D3E0_0DE0_0001;
-/// A high lob that lands short, well clear of any target: the miss when no
-/// near one can be found.
-pub(super) const LOB: (i32, i32) = (1400, 330);
-/// Changes to the solver's aim tried, in turn, for a near miss: (angle,
-/// power) ticks, power first. A flat, fast shot topples a structure over a
-/// wide spread of power, so steeper and flatter barrels follow.
-const NEAR_MISS: [(i32, i32); 16] = [
-    (0, 45),
-    (0, -45),
-    (0, 75),
-    (0, -75),
-    (0, 120),
-    (0, -120),
-    (0, 170),
-    (0, -170),
-    (170, 0),
-    (-170, 0),
-    (240, 0),
-    (-240, 0),
-    (320, 0),
-    (-320, 0),
-    (420, 0),
-    (-420, 0),
-];
-
-/// The near misses to try around `aim`, the opposite way first when `flip`
-/// is -1, so the hash decides between over and short.
-fn near_misses(aim: Shot, flip: i32) -> impl Iterator<Item = Shot> {
-    NEAR_MISS.into_iter().map(move |(da, dp)| {
-        Shot::new(
-            (aim.angle_ticks + flip * da).clamp(0, dmath::MAX_ANGLE_TICKS),
-            (aim.power_ticks + flip * dp).clamp(0, POWER_TICKS_MAX),
-        )
-    })
-}
-
 /// What the demo is playing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Leg {
@@ -727,40 +692,14 @@ impl Game {
     }
 
     /// The duel leg's next shot: one that hits, or two times in five a
-    /// near miss, tried on a copy of the match so it really misses.
+    /// near miss, tried on a copy of the match so it really misses. The
+    /// local AI aims the same way (`crate::opponent`), at odds of its own.
     fn demo_duel_shot(&self, cycle: u64) -> Shot {
-        let lob = Shot::new(LOB.0, LOB.1);
         let Some(vs) = self.versus.live.as_ref() else {
-            return lob;
+            return Shot::new(LOB.0, LOB.1);
         };
-        opponent_shot(&vs.duel, cycle)
+        let duel = &vs.duel;
+        let h = demo_hash(cycle ^ DEMO_SALT, duel.round as u64, duel.turn as u64);
+        opponent::shot(duel, h, DEMO_ODDS)
     }
-}
-
-/// Shared local opponent policy: solve the current field, with deterministic near misses.
-pub(super) fn opponent_shot(duel: &versus::Match, salt: u64) -> Shot {
-    let lob = Shot::new(LOB.0, LOB.1);
-    let side = duel.to_move;
-    let frame = versus::frame_for(&duel.screen, side);
-    let target = versus::target_in_frame(&duel.screen, side);
-    let Some(aim) = versus::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)
-        .first()
-        .copied()
-    else {
-        return lob;
-    };
-    let h = demo_hash(salt ^ DEMO_SALT, duel.round as u64, duel.turn as u64);
-    if h % 5 >= 2 {
-        return aim;
-    }
-    let flip = if (h >> 8) & 1 == 0 { 1 } else { -1 };
-    for shot in near_misses(aim, flip) {
-        let mut trial = duel.clone();
-        if let Some(report) = trial.fire(shot, false) {
-            if !report.hit && !report.self_hit {
-                return shot;
-            }
-        }
-    }
-    lob
 }

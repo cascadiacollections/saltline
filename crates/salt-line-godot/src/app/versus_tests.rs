@@ -950,30 +950,72 @@ fn the_ease_is_drawn_and_aim_help_waits_for_it() {
     assert_ne!(draw(&g).bytes(), home.bytes(), "aim help, once home");
 }
 
-#[test]
-fn ai_opponent_takes_only_right_turns_and_resumes_as_ai() {
+// ------------------------------------------------------------- the AI
+
+use crate::app::versus::{AI_AIM, AI_HANDOFF, AI_HANDOFF_CUED, AUTO_READY};
+use crate::opponent::Level;
+
+/// A match against the AI at `level`, chosen on the pre-match screen with
+/// keys, at the player's first handoff.
+fn ai_match(level: Level) -> Game {
     let mut g = game();
     press(&mut g, Key::Num2);
     press(&mut g, Key::R);
-    assert!(g.versus.ai);
+    while g.versus.level != level {
+        press(&mut g, Key::Right);
+    }
     press(&mut g, Key::Enter);
-    assert!(vs(&g).ai);
-    for _ in 0..120 {
+    assert_eq!(vs(&g).ai, Some(level));
+    g
+}
+
+/// Idle frames for `seconds`.
+fn wait(g: &mut Game, seconds: f64) {
+    for _ in 0..(seconds / FRAME).round() as usize {
         g.tick(FRAME, &idle());
     }
-    assert_eq!(vs(&g).stage, Stage::Handoff);
-    assert_eq!(vs(&g).duel.turn, 0, "the human must ready and fire");
-    take_turn(&mut g, Shot::new(900, 600));
+}
+
+#[test]
+fn the_right_row_steps_the_ai_level_and_keeps_the_right_aim_help() {
+    let mut g = game();
+    press(&mut g, Key::Num2);
+    press(&mut g, Key::Right);
+    assert_eq!(g.versus.help, [false, true]);
+    press(&mut g, Key::R);
+    assert!(g.versus.ai);
+    assert_eq!(g.versus.level, Level::Easy, "EASY by default");
+    for want in [Level::Medium, Level::Hard, Level::Easy] {
+        press(&mut g, Key::Right);
+        assert_eq!(g.versus.level, want);
+    }
+    assert_eq!(g.versus.help, [false, true], "the human's choice keeps");
+    press(&mut g, Key::Left);
+    assert_eq!(g.versus.help, [true, true], "the player's own aim help");
+    press(&mut g, Key::R);
+    press(&mut g, Key::Right);
+    assert_eq!(g.versus.help, [true, false], "a human again");
+}
+
+#[test]
+fn ai_opponent_takes_only_right_turns_and_resumes_as_ai() {
+    let mut g = ai_match(Level::Medium);
+    wait(&mut g, AUTO_READY - 0.1);
+    assert_eq!(vs(&g).stage, Stage::Handoff, "the plate stays a moment");
+    wait(&mut g, 0.2);
+    assert_eq!(vs(&g).stage, Stage::Aiming, "and readies itself");
+    assert_eq!(vs(&g).duel.turn, 0, "the player must still fire");
+    (g.play.angle_ticks, g.play.power_ticks) = (MISS.angle_ticks, MISS.power_ticks);
+    press(&mut g, Key::Space);
+    until(&mut g, |g| vs(g).stage == Stage::Handoff);
     assert_eq!(vs(&g).side(), Side::Right);
     // Player aim/fire input cannot drive the computer's turn.
     press(&mut g, Key::Space);
+    press(&mut g, Key::Enter);
     assert_eq!(vs(&g).duel.turn, 1);
     press(&mut g, Key::Escape);
-    let paused_turn = vs(&g).duel.turn;
-    for _ in 0..120 {
-        g.tick(FRAME, &idle());
-    }
-    assert_eq!(vs(&g).duel.turn, paused_turn);
+    wait(&mut g, 3.0);
+    assert_eq!(vs(&g).duel.turn, 1, "nothing moves under the pause plate");
     press(&mut g, Key::Escape);
     let effects = until(&mut g, |g| vs(g).duel.turn == 2);
     let line = effects
@@ -983,21 +1025,38 @@ fn ai_opponent_takes_only_right_turns_and_resumes_as_ai() {
             _ => None,
         })
         .expect("AI shots are persisted");
+    assert!(line.starts_with("match 3 "), "{line}");
     let saved = crate::match_log::SavedMatch::parse(line).unwrap();
-    assert!(saved.ai);
+    assert_eq!(saved.ai, Some(Level::Medium));
     let mut resumed = game();
     resumed.saved_match = Some(saved);
     resumed.resume_match();
-    assert!(vs(&resumed).ai && resumed.versus.ai);
+    assert_eq!(vs(&resumed).ai, Some(Level::Medium));
+    assert!(resumed.versus.ai);
+    assert_eq!(resumed.versus.level, Level::Medium);
     assert_eq!(vs(&resumed).duel.turn, 2);
     until(&mut g, |g| vs(g).stage == Stage::Handoff);
     assert_eq!(vs(&g).side(), Side::Left);
 }
 
 #[test]
+fn a_human_match_still_writes_its_old_formats() {
+    let mut g = in_match();
+    let fx = take_turn(&mut g, MISS);
+    let line = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::MatchFile(MatchFile::Write(s)) => Some(s),
+            _ => None,
+        })
+        .unwrap();
+    assert!(line.starts_with("match 1 "), "{line}");
+}
+
+#[test]
 fn ai_readies_itself_when_opening_the_next_round() {
     let mut g = in_match();
-    g.versus.live.as_mut().unwrap().ai = true;
+    g.versus.live.as_mut().unwrap().ai = Some(Level::Easy);
     let live = g.versus.live.as_mut().unwrap();
     live.duel.phase = rules::Phase::RoundOver(Side::Left);
     live.stage = Stage::Result;
@@ -1012,6 +1071,7 @@ fn ai_on_custom_ground_survives_suspend_and_resumes_its_turn() {
     let mut g = game();
     g.open_versus_setup();
     g.versus.ai = true;
+    g.versus.level = Level::Hard;
     g.step_ground(1);
     g.start_versus();
     take_turn(&mut g, Shot::new(900, 600));
@@ -1019,7 +1079,8 @@ fn ai_on_custom_ground_survives_suspend_and_resumes_its_turn() {
     let live = g.versus.live.take().unwrap();
     g.suspend_live_match(live);
     let saved = g.saved_match.as_ref().unwrap();
-    assert!(saved.ai && saved.ground.is_some());
+    assert_eq!(saved.ai, Some(Level::Hard));
+    assert!(saved.ground.is_some());
     let line = saved.to_line();
     g.saved_match = Some(crate::match_log::SavedMatch::parse(&line).unwrap());
     g.resume_match();
@@ -1029,4 +1090,209 @@ fn ai_on_custom_ground_survives_suspend_and_resumes_its_turn() {
     until(&mut g, |g| vs(g).stage == Stage::Flight);
     assert_eq!(vs(&g).log.len(), 2);
     assert!(vs(&g).layout.is_some());
+}
+
+/// The AI's plate holds [`AI_HANDOFF`], or [`AI_HANDOFF_CUED`] with a cue
+/// to read; its aim swings and fires at [`AI_AIM`].
+#[test]
+fn the_ai_plate_holds_longer_with_a_cue() {
+    let mut g = ai_match(Level::Easy);
+    press(&mut g, Key::Enter);
+    take_turn_from_aiming(&mut g, MISS);
+    assert!(vs(&g).ai_turn() && !vs(&g).handoff_cued());
+    wait(&mut g, AI_HANDOFF - 0.1);
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    until(&mut g, |g| vs(g).stage == Stage::Aiming);
+    wait(&mut g, AI_AIM - 0.1);
+    assert_eq!(vs(&g).stage, Stage::Aiming, "the aim is shown");
+    wait(&mut g, 0.2);
+    assert_eq!(vs(&g).stage, Stage::Flight);
+
+    // A last shot to tie: the opener 3-2 up, the AI to answer.
+    let mut g = ai_match(Level::Easy);
+    last_shot_for_the_ai(&mut g);
+    assert!(vs(&g).handoff_cued());
+    wait(&mut g, AI_HANDOFF + 0.1);
+    assert_eq!(vs(&g).stage, Stage::Handoff, "the cue is read out");
+    wait(&mut g, AI_HANDOFF_CUED - AI_HANDOFF);
+    assert_eq!(vs(&g).stage, Stage::Aiming);
+}
+
+/// Aim `shot` and fire it from the aiming stage, then wait for the next
+/// plate.
+fn take_turn_from_aiming(g: &mut Game, shot: Shot) {
+    assert_eq!(vs(g).stage, Stage::Aiming);
+    (g.play.angle_ticks, g.play.power_ticks) = (shot.angle_ticks, shot.power_ticks);
+    press(g, Key::Space);
+    until(g, |g| vs(g).stage != Stage::Flight);
+}
+
+/// Hits until the left gun, which opens, is 3-2 up: the AI's last shot.
+fn last_shot_for_the_ai(g: &mut Game) {
+    let live = g.versus.live.as_mut().unwrap();
+    for _ in 0..5 {
+        let duel = &live.duel;
+        let side = duel.to_move;
+        let frame = rules::frame_for(&duel.screen, side);
+        let target = rules::target_in_frame(&duel.screen, side);
+        let shot = rules::shots_at(&frame, target, &duel.loadout, duel.rules.hit_reach, 1)[0];
+        let report = live
+            .fire_turn((shot.angle_ticks, shot.power_ticks))
+            .unwrap();
+        assert!(report.hit);
+    }
+    assert_eq!(live.duel.hits, [3, 2]);
+    assert_eq!(live.duel.stakes(), Some(rules::Stakes::LastShot));
+    assert_eq!(live.side(), Side::Right);
+}
+
+#[test]
+fn the_ai_takes_its_last_shot_under_equal_shots() {
+    for level in Level::ALL {
+        let mut g = ai_match(level);
+        last_shot_for_the_ai(&mut g);
+        until(&mut g, |g| vs(g).stage == Stage::Flight);
+        assert_eq!(vs(&g).log.len(), 6, "{level:?}: the AI's answer");
+        let duel = &vs(&g).duel;
+        // Either it tied, and the round plays on, or the left gun took it.
+        match duel.phase {
+            rules::Phase::Aiming => assert_eq!(duel.hits, [3, 3]),
+            rules::Phase::RoundOver(winner) => assert_eq!(winner, Side::Left),
+            rules::Phase::MatchOver(_) => panic!("one round cannot end the match"),
+        }
+    }
+}
+
+#[test]
+fn auto_ready_and_the_ai_wait_under_pause_and_out_of_focus() {
+    // The player's plate.
+    let mut g = ai_match(Level::Easy);
+    wait(&mut g, 1.0);
+    g.focus_lost(&[]);
+    assert!(vs(&g).paused, "the plate moves on by itself, so it pauses");
+    g.focus_gained();
+    wait(&mut g, 5.0);
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    press(&mut g, Key::Escape);
+    assert!(!vs(&g).paused);
+    // The wait starts afresh for whoever came back to it.
+    wait(&mut g, AUTO_READY - 0.2);
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    wait(&mut g, 0.3);
+    assert_eq!(vs(&g).stage, Stage::Aiming);
+
+    // Out of focus but not paused (a platform that sends no pause): still
+    // nothing moves, the player's plate or the AI's.
+    for ai_turn in [false, true] {
+        let mut g = ai_match(Level::Easy);
+        if ai_turn {
+            press(&mut g, Key::Enter);
+            take_turn_from_aiming(&mut g, MISS);
+        }
+        g.unfocused = true;
+        wait(&mut g, 5.0);
+        assert_eq!(vs(&g).stage, Stage::Handoff, "ai turn {ai_turn}");
+        g.unfocused = false;
+        until(&mut g, |g| vs(g).stage == Stage::Aiming);
+    }
+}
+
+#[test]
+fn ready_skips_the_auto_ready() {
+    let mut g = ai_match(Level::Easy);
+    press(&mut g, Key::Enter);
+    assert_eq!(vs(&g).stage, Stage::Aiming);
+}
+
+#[test]
+fn a_finger_held_through_the_auto_ready_fires_nothing() {
+    let mut g = touch_game(true);
+    tap(&mut g, Action::Versus, FRAME);
+    tap(&mut g, Action::Replay, FRAME);
+    assert!(g.versus.ai);
+    tap(&mut g, Action::Confirm, FRAME);
+    assert_eq!(vs(&g).stage, Stage::Handoff);
+    // A finger down on the open field, held while the plate readies.
+    let (w, h) = (g.display.buffer_w as f32, g.display.buffer_h as f32);
+    touch_frame(
+        &mut g,
+        vec![Event::FingerDown {
+            index: 0,
+            x: w * 0.3,
+            y: h * 0.4,
+        }],
+        FRAME,
+    );
+    while vs(&g).stage == Stage::Handoff {
+        touch_frame(&mut g, Vec::new(), FRAME);
+    }
+    // Pulled back as a drag would be, and let go.
+    touch_frame(
+        &mut g,
+        vec![
+            Event::FingerMoved {
+                index: 0,
+                x: w * 0.1,
+                y: h * 0.7,
+            },
+            Event::FingerUp { index: 0 },
+        ],
+        FRAME,
+    );
+    for _ in 0..30 {
+        touch_frame(&mut g, Vec::new(), FRAME);
+    }
+    assert_eq!(vs(&g).stage, Stage::Aiming);
+    assert_eq!(vs(&g).duel.turn, 0, "the held finger fired nothing");
+}
+
+#[test]
+fn the_ai_moving_on_does_not_eat_a_tap_on_pause() {
+    for into in [Stage::Aiming, Stage::Flight] {
+        let mut g = touch_game(false);
+        tap(&mut g, Action::Versus, FRAME);
+        tap(&mut g, Action::Replay, FRAME);
+        tap(&mut g, Action::Confirm, FRAME);
+        tap(&mut g, Action::Confirm, FRAME);
+        assert_eq!(vs(&g).stage, Stage::Aiming);
+        (g.play.angle_ticks, g.play.power_ticks) = (MISS.angle_ticks, MISS.power_ticks);
+        tap(&mut g, Action::Fire, FRAME);
+        while !(vs(&g).ai_turn() && vs(&g).stage == Stage::Handoff) {
+            touch_frame(&mut g, Vec::new(), FRAME);
+        }
+        let from = if into == Stage::Aiming {
+            Stage::Handoff
+        } else {
+            Stage::Aiming
+        };
+        while vs(&g).stage == from || vs(&g).stage != into {
+            touch_frame(&mut g, Vec::new(), FRAME);
+        }
+        // The very next frame: II, where it was before the AI moved on.
+        tap(&mut g, Action::Back, FRAME);
+        assert!(vs(&g).paused, "into {into:?}");
+    }
+}
+
+#[test]
+fn the_round_plate_against_the_ai_does_not_quit_on_title() {
+    let mut g = ai_match(Level::Easy);
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::RoundOver(Side::Left);
+    live.stage = Stage::Result;
+    press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Versus, "a mashed TITLE keeps the match");
+    assert_eq!(vs(&g).stage, Stage::Result);
+    // The match won, TITLE leaves: there is nothing left to lose.
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::MatchOver(Side::Left);
+    press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Title);
+    // Between two players TITLE is where it was.
+    let mut g = in_match();
+    let live = g.versus.live.as_mut().unwrap();
+    live.duel.phase = rules::Phase::RoundOver(Side::Left);
+    live.stage = Stage::Result;
+    press(&mut g, Key::R);
+    assert_eq!(g.mode, Mode::Title);
 }

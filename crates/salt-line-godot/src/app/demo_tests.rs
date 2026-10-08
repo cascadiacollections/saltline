@@ -8,9 +8,10 @@ use pretty_assertions::assert_eq;
 
 use super::demo::{
     card_of, leg_of, CARD_DUEL, CARD_RUN, DEMO_CARD, DEMO_DUEL_TIME, DEMO_END_HOLD, DEMO_RUNS,
-    DEMO_RUN_SCREENS, DEMO_RUN_TIME, IDLE_DEMO_AFTER, IDLE_DEMO_LIMIT, LOB,
+    DEMO_RUN_SCREENS, DEMO_RUN_TIME, IDLE_DEMO_AFTER, IDLE_DEMO_LIMIT,
 };
 use crate::input::{Event, Intents, Key, Pad};
+use crate::opponent::LOB;
 use crate::resume::Saved;
 use crate::touch::{Button, Rect};
 

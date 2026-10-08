@@ -73,9 +73,27 @@
 //! down is spent until it lifts and new touches are spent for
 //! [`TOUCH_SETTLE`]: one tap acts on one screen only. Keys and pad buttons
 //! are taken per press already and are not held back.
+//!
+//! The AI's own stage changes (its plate to its aim to its shot) are the
+//! exception: nobody touched anything to make them, and the only button on
+//! either side of them is the pause button, in the same place. Settling
+//! there would only swallow a tap on II made just as the AI moved on, so
+//! `Game::tick` lets them pass ([`Game::step_versus_ai`]).
+//!
+//! # Against the AI
+//!
+//! With RIGHT OPPONENT: AI (DESIGN §11.7) the right gun is the computer's
+//! (`crate::opponent`). Its turn runs itself: its plate holds for
+//! [`AI_HANDOFF`] ([`AI_HANDOFF_CUED`] when the plate has a cue to read),
+//! then the barrel swings to its shot over [`AI_SWING`] and fires at
+//! [`AI_AIM`]. The player's plate stays, so the turns still read as turns,
+//! but readies itself after [`AUTO_READY`] (READY skips it). Every one of
+//! these waits stops under the pause plate, and the handoff plates pause
+//! when focus goes, since in an AI match they no longer wait for a tap.
 
 use super::*;
 use crate::match_log::{self, Entry, SavedMatch};
+use crate::opponent::{self, Level};
 use crate::versus::{self, Match, Side};
 
 /// Seconds the HIT or MISS is held on the landed shot before the phone is
@@ -126,6 +144,20 @@ pub enum Call {
     Oops,
 }
 
+/// Seconds the AI's handoff plate is held before it aims.
+pub const AI_HANDOFF: f64 = 1.2;
+/// Seconds the AI's handoff plate is held when it shows a cue (LAST SHOT,
+/// HIT TO WIN, TIED, GUNS ROLLED): long enough to be read out to a child.
+pub const AI_HANDOFF_CUED: f64 = 2.0;
+/// Seconds the AI's barrel and readouts take to swing to its shot.
+pub const AI_SWING: f64 = 0.7;
+/// Seconds from the AI's aim appearing to its shot: the swing, then a hold
+/// on the aim, so it is seen.
+pub const AI_AIM: f64 = 1.0;
+/// Seconds the player's handoff plate waits in an AI match before it
+/// readies by itself. READY (a tap, a key) skips it.
+pub const AUTO_READY: f64 = 1.5;
+
 /// Seconds a versus screen ignores new touches after it appears. Longer
 /// than a tap (about 0.12 s on a phone), so whatever a device reports for
 /// the tap that changed the screen is spent rather than taken again.
@@ -155,8 +187,12 @@ pub(crate) struct VersusState {
     /// landing mark, the last arc and a short preview of the current aim.
     /// Off for both by default.
     pub(crate) help: [bool; 2],
-    /// The right gun is controlled locally by the computer.
+    /// RIGHT OPPONENT: AI on the pre-match screen: the right gun is the
+    /// computer's (DESIGN §11.7). Off by default; kept for a rematch.
     pub(crate) ai: bool,
+    /// The AI's level, as the pre-match screen has it. Kept while the AI
+    /// is off, so turning it back on finds it where it was.
+    pub(crate) level: Level,
     /// ROLLING GUNS OFF on the pre-match screen: the guns stay where they
     /// are all match ([`versus::GUN_SHIFT`] off). On by default, and kept
     /// for a rematch, so the rule can be tried both ways.
@@ -183,8 +219,13 @@ pub(crate) struct VersusPlay {
     /// The match, as the rules have it: already past any shot being shown.
     pub(crate) duel: Match,
     pub(crate) stage: Stage,
-    pub(crate) ai: bool,
+    /// The right gun is the computer's, at this level (DESIGN §11.7).
+    pub(crate) ai: Option<Level>,
+    /// Seconds the current plate or the AI's aim has been up: what the
+    /// AI's pacing and the player's auto-ready count. Zeroed on each stage.
     ai_wait: f64,
+    /// The aim the AI's barrel swings from, and the shot it swings to and
+    /// fires, once chosen for this turn.
     ai_aim: Option<((i32, i32), Shot)>,
     /// The last shot, while it is being played back.
     pub(crate) anim: Option<Anim>,
@@ -239,7 +280,7 @@ impl VersusPlay {
         VersusPlay {
             duel,
             stage: Stage::Handoff,
-            ai: false,
+            ai: None,
             ai_wait: 0.0,
             ai_aim: None,
             anim: None,
@@ -359,8 +400,16 @@ impl VersusPlay {
         self.anim.is_none() && self.ease.is_some_and(|e| e.t.is_some())
     }
 
+    /// The computer has the turn: an AI match, and the right gun to move.
     pub(crate) fn ai_turn(&self) -> bool {
-        self.ai && self.side() == Side::Right
+        self.ai.is_some() && self.side() == Side::Right
+    }
+
+    /// The handoff plate has a cue under the name: what rides on the shot,
+    /// or a roll of the guns. The same test as the renderer's
+    /// `handoff_cues` being non-empty, for the AI's longer hold.
+    pub(crate) fn handoff_cued(&self) -> bool {
+        self.duel.stakes().is_some() || self.rolled.is_some()
     }
 
     /// Whose gun the readouts, the controls and the aim belong to.
@@ -407,6 +456,17 @@ impl VersusPlay {
             .as_ref()
             .map_or(self.duel.screen.wind, |anim| anim.before.wind)
     }
+}
+
+/// What `vs` is kept on disk as, with the aim help `help`: format 1, 2 on
+/// a layout's ground, or 3 against the AI (`match_log`).
+fn saved_line(vs: &VersusPlay, help: [bool; 2]) -> Option<SavedMatch> {
+    let mut saved = match &vs.layout {
+        Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log)?,
+        None => SavedMatch::of(&vs.duel, help, &vs.log),
+    };
+    saved.ai = vs.ai;
+    Some(saved)
 }
 
 impl VersusState {
@@ -475,7 +535,7 @@ impl Game {
     /// Put `duel` on screen at its first handoff, not kept on disk.
     fn start_versus_with(&mut self, duel: Match) {
         let mut vs = VersusPlay::new(duel);
-        vs.ai = self.versus.ai && !self.in_demo();
+        vs.ai = (self.versus.ai && !self.in_demo()).then_some(self.versus.level);
         self.versus.live = Some(vs);
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -518,15 +578,7 @@ impl Game {
         if !vs.kept || self.in_demo() {
             return;
         }
-        let help = self.versus.help;
-        let saved = match &vs.layout {
-            Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log),
-            None => Some(SavedMatch::of(&vs.duel, help, &vs.log)),
-        };
-        self.saved_match = saved.map(|mut saved| {
-            saved.ai = vs.ai;
-            saved
-        });
+        self.saved_match = saved_line(&vs, self.versus.help);
         self.versus.suspended_source = vs.source;
     }
 
@@ -565,12 +617,7 @@ impl Game {
         // Tried once per entry: a failed write is logged by `save::write`,
         // and the next shot tries again.
         vs.saved_len = Some(len);
-        let saved = match &vs.layout {
-            Some(l) => SavedMatch::on_ground(&vs.duel, l, help, &vs.log),
-            None => Some(SavedMatch::of(&vs.duel, help, &vs.log)),
-        };
-        if let Some(mut saved) = saved {
-            saved.ai = vs.ai;
+        if let Some(saved) = saved_line(vs, help) {
             self.fx
                 .push(Effect::MatchFile(MatchFile::Write(saved.to_line())));
         }
@@ -594,7 +641,10 @@ impl Game {
         // What is on disk is this match, as rebuilt.
         vs.saved_len = Some(vs.log.len());
         self.versus.help = saved.help;
-        self.versus.ai = saved.ai;
+        self.versus.ai = saved.ai.is_some();
+        if let Some(level) = saved.ai {
+            self.versus.level = level;
+        }
         // A match on a layout never rolls, whatever was chosen: the
         // choice for the next generated match stays as it was.
         let source = self.versus.suspended_source.take();
@@ -629,9 +679,10 @@ impl Game {
         self.apply_buffer_size();
     }
 
-    /// The pre-match screen: each side's aim help, rolling guns, the
-    /// GROUND row, start, back, and MAKE MAP. Rolling guns is OFF, and
-    /// does not toggle, on a layout's ground (DESIGN §13.9).
+    /// The pre-match screen: the right opponent, each side's aim help (the
+    /// AI's level in the right one's place), rolling guns, the GROUND row,
+    /// start, back, and MAKE MAP. Rolling guns is OFF, and does not toggle,
+    /// on a layout's ground (DESIGN §13.9).
     pub(super) fn handle_versus_setup_input(&mut self) {
         if self.action_pressed(Action::Replay) {
             self.versus.ai = !self.versus.ai;
@@ -656,11 +707,18 @@ impl Game {
             self.play(Sound::Ui);
         }
         for (action, side) in [(Action::Left, Side::Left), (Action::Right, Side::Right)] {
-            if self.action_pressed(action) {
-                let i = side.index();
-                self.versus.help[i] = !self.versus.help[i];
-                self.play(Sound::Ui);
+            if !self.action_pressed(action) {
+                continue;
             }
+            let i = side.index();
+            // The AI needs no aim help: its row steps its level instead,
+            // and the right player's choice waits for a human match.
+            if side == Side::Right && self.versus.ai {
+                self.versus.level = self.versus.level.next();
+            } else {
+                self.versus.help[i] = !self.versus.help[i];
+            }
+            self.play(Sound::Ui);
         }
         // MAKE MAP's keys are asked last, so a binding of a key or button
         // they share wins (presses are taken once).
@@ -692,6 +750,12 @@ impl Game {
             return;
         };
         let (stage, paused, ai_turn) = (vs.stage, vs.paused, vs.ai_turn());
+        // Between rounds of a match against the AI, TITLE is not offered:
+        // a child playing alone mashing the plate (or Y, which toggles the
+        // AI on the pre-match screen) would throw the match away. Leaving
+        // mid-match is the pause plate's QUIT, as it is between turns.
+        let round_title =
+            !(vs.ai.is_some() && matches!(vs.duel.phase, versus::Phase::RoundOver(_)));
         let fork = crate::input::Ed::ForkRound;
         if paused {
             if self.action_pressed(Action::Confirm) || self.action_pressed(Action::Back) {
@@ -734,7 +798,7 @@ impl Game {
                 if self.action_pressed(Action::Confirm) || self.pressed(Key::KpEnter) {
                     self.play(Sound::Ui);
                     self.after_versus_result();
-                } else if self.action_pressed(Action::Replay) {
+                } else if round_title && self.action_pressed(Action::Replay) {
                     self.play(Sound::Ui);
                     self.leave_versus();
                 } else if self.make_map_pressed(fork) {
@@ -748,6 +812,11 @@ impl Game {
     fn set_versus_paused(&mut self, paused: bool) {
         if let Some(vs) = self.versus.live.as_mut() {
             vs.paused = paused;
+            // A plate that moves on by itself starts its wait afresh, so
+            // whoever comes back to it has time to read it.
+            if vs.stage == Stage::Handoff {
+                vs.ai_wait = 0.0;
+            }
         }
         self.fx.push(Effect::Redraw);
     }
@@ -838,47 +907,75 @@ impl Game {
         self.play(Sound::Flight);
     }
 
-    /// Drive only the computer's turn; pause and result plates remain player-controlled.
-    pub(super) fn step_versus_ai(&mut self, delta: f64) {
-        if self.mode != Mode::Versus || self.in_demo() || self.dev.auto {
-            return;
+    /// An AI match's clock: the computer's turn (its plate, its aim, its
+    /// shot) and the player's plate readying itself ([`AUTO_READY`]). True
+    /// if the computer's own turn moved on a stage this frame, which is not
+    /// a screen change a touch must be settled for (see "One touch, one
+    /// screen"); the player's auto-ready is, and returns false.
+    ///
+    /// Nothing moves under the pause plate or while the window is out of
+    /// focus, and nothing here runs in the demo or for the dev autopilot,
+    /// which drive both guns themselves.
+    pub(super) fn step_versus_ai(&mut self, delta: f64) -> bool {
+        if self.mode != Mode::Versus || self.in_demo() || self.dev.auto || self.unfocused {
+            return false;
         }
         let Some(vs) = self.versus.live.as_mut() else {
-            return;
+            return false;
         };
-        if vs.paused || !vs.ai_turn() {
-            return;
+        let Some(level) = vs.ai else {
+            return false;
+        };
+        if vs.paused {
+            return false;
         }
         match vs.stage {
-            Stage::Handoff => {
+            Stage::Handoff if !vs.ai_turn() => {
                 vs.ai_wait += delta;
-                if vs.ai_wait >= 0.6 {
+                if vs.ai_wait >= AUTO_READY {
                     self.begin_versus_turn();
                 }
+                false
             }
-            Stage::Aiming => {
+            Stage::Handoff => {
+                vs.ai_wait += delta;
+                let hold = if vs.handoff_cued() {
+                    AI_HANDOFF_CUED
+                } else {
+                    AI_HANDOFF
+                };
+                if vs.ai_wait < hold {
+                    return false;
+                }
+                self.begin_versus_turn();
+                true
+            }
+            Stage::Aiming if vs.ai_turn() => {
+                // The guns finish rolling before the AI touches its aim.
                 if vs.easing() {
-                    return;
+                    return false;
                 }
                 let (from, shot) = *vs.ai_aim.get_or_insert_with(|| {
                     (
                         (self.play.angle_ticks, self.play.power_ticks),
-                        super::demo::opponent_shot(&vs.duel, vs.duel.seed),
+                        opponent::ai_shot(&vs.duel, level),
                     )
                 });
                 vs.ai_wait += delta;
-                let t = (vs.ai_wait / 0.7).clamp(0.0, 1.0);
+                let t = (vs.ai_wait / AI_SWING).clamp(0.0, 1.0);
                 let e = t * t * (3.0 - 2.0 * t);
                 let lerp = |a: i32, b: i32| a + ((b - a) as f64 * e).round() as i32;
                 (self.play.angle_ticks, self.play.power_ticks) = (
                     lerp(from.0, shot.angle_ticks),
                     lerp(from.1, shot.power_ticks),
                 );
-                if vs.ai_wait >= 1.0 {
-                    self.versus_fire();
+                if vs.ai_wait < AI_AIM {
+                    return false;
                 }
+                self.versus_fire();
+                true
             }
-            Stage::Flight | Stage::Result => {}
+            Stage::Aiming | Stage::Flight | Stage::Result => false,
         }
     }
 
@@ -982,14 +1079,17 @@ impl Game {
     }
 
     /// Focus lost or the app paused: a turn being aimed or watched waits
-    /// under the pause plate. The handoff and result plates already wait.
+    /// under the pause plate. So does the handoff plate in a match against
+    /// the AI, which moves on by itself (the AI's turn, and the player's
+    /// auto-ready); between two players it waits for READY already, and the
+    /// result plate always waits for a press.
     pub(super) fn auto_pause_versus(&mut self) {
         let Some(vs) = self.versus.live.as_mut() else {
             return;
         };
         if self.mode == Mode::Versus
             && (matches!(vs.stage, Stage::Aiming | Stage::Flight)
-                || (vs.ai_turn() && vs.stage == Stage::Handoff))
+                || (vs.ai.is_some() && vs.stage == Stage::Handoff))
         {
             self.input.touch.cancel_drag();
             vs.paused = true;

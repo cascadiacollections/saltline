@@ -45,7 +45,7 @@ fn golden() -> (SavedMatch, Match) {
         width: 320,
         rolling: true,
         help: [true, false],
-        ai: false,
+        ai: None,
         log,
         ground: None,
     };
@@ -310,7 +310,7 @@ proptest! {
             ],
             0..60,
         ),
-        ai in any::<bool>(),
+        ai in prop::option::of(prop::sample::select(crate::opponent::Level::ALL.to_vec())),
         ground in prop::option::of("SL[0-9A-HJKMNP-TV-Z]{1,40}"),
     ) {
         let saved = SavedMatch {
@@ -325,6 +325,15 @@ proptest! {
             ground,
         };
         let line = saved.to_line();
+        // Format 3 only for a match against the AI: a match between two
+        // players keeps the line an older build reads.
+        let format = match (saved.ai, &saved.ground) {
+            (Some(_), _) => AI_FORMAT,
+            (None, Some(_)) => GROUND_FORMAT,
+            (None, None) => FORMAT,
+        };
+        let head = format!("match {format} ");
+        prop_assert!(line.starts_with(&head));
         prop_assert_eq!(SavedMatch::parse(&line), Ok(saved));
         prop_assert!(sound(&line));
     }
