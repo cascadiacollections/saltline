@@ -38,6 +38,14 @@ fn hash(mut x: u64) -> u64 {
 /// A clean second band near the horizon. Terrain paints over the lower part,
 /// so a hill naturally hides the colour, sun and stars.
 pub fn draw(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase, seed: u64, time: f64) {
+    draw_still(canvas, view, pal, phase);
+    draw_stars(canvas, view, pal, phase, seed, time, |_, _| true);
+}
+
+/// The part of [`draw`] that holds still for a whole screen: the fill, the
+/// horizon band and the sun. It depends only on the phase and the buffer's
+/// size, which is what lets `backdrop` keep it in a texture of its own.
+pub fn draw_still(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase) {
     let (base, horizon) = match phase {
         Phase::Day => (slot::SKY_MID, slot::SKY_LO),
         Phase::Dusk => (slot::SKY_HI, slot::SKY_MID),
@@ -68,7 +76,21 @@ pub fn draw(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase, seed:
         };
         canvas.rect(x, horizon_y + 1, 3, 3, pal.get(colour));
     }
+}
 
+/// The part of [`draw`] that moves: the twinkling stars and the shooting
+/// star. Each is put only where `open(x, y)` says the sky shows, so the
+/// layered frame can draw them over the ground texture and still let a hill
+/// hide them, as painting the terrain over them does in [`draw`].
+pub fn draw_stars(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    phase: Phase,
+    seed: u64,
+    time: f64,
+    open: impl Fn(i32, i32) -> bool,
+) {
     if !phase.has_stars() {
         return;
     }
@@ -82,19 +104,28 @@ pub fn draw(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase, seed:
         let x = 24 + (h % star_width as u64) as i32;
         let y = star_top + ((h >> 16) % star_span as u64) as i32;
         let bright = (step + (h >> 32)).is_multiple_of(13);
-        canvas.put(
-            x,
-            y,
-            pal.get(if bright { slot::UI_FG } else { slot::SKY_LO }),
-        );
+        if open(x, y) {
+            canvas.put(
+                x,
+                y,
+                pal.get(if bright { slot::UI_FG } else { slot::SKY_LO }),
+            );
+        }
     }
 
     if phase == Phase::Night {
-        shooting_star(canvas, view, pal, seed, time);
+        shooting_star(canvas, view, pal, seed, time, &open);
     }
 }
 
-fn shooting_star(canvas: &mut Canvas, view: &View, pal: &Palette, seed: u64, time: f64) {
+fn shooting_star(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    seed: u64,
+    time: f64,
+    open: &impl Fn(i32, i32) -> bool,
+) {
     // One short crossing per ~23 seconds. Its start and route depend on the
     // run seed, but its clock is cosmetic and never enters a replay digest.
     let t = (time + (hash(seed) % 23) as f64).max(0.0);
@@ -114,7 +145,10 @@ fn shooting_star(canvas: &mut Canvas, view: &View, pal: &Palette, seed: u64, tim
         } else {
             slot::SKY_MID
         };
-        canvas.put(x - tail * 2, y - tail, pal.get(colour));
+        let (px, py) = (x - tail * 2, y - tail);
+        if open(px, py) {
+            canvas.put(px, py, pal.get(colour));
+        }
     }
 }
 

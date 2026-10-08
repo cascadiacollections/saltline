@@ -65,6 +65,11 @@
 //!   is (`upload`; why, in `strips`). Each texture is updated in place
 //!   without allocating: two byte buffers alternate, so the one being filled
 //!   is never the one the image still holds.
+//! * **Layers.** In play, the sky and the ground are textures of their own
+//!   under the frame's, uploaded only when they change, with the ground
+//!   drawn from its `cam_x`-th column so a camera move costs no upload
+//!   (`backdrop`; `draw`). The frame's canvas is then a transparent
+//!   overlay of everything else.
 
 use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
@@ -79,6 +84,7 @@ use godot::prelude::*;
 use crate::app::{
     Abandoned, Aspect, CrashReport, DraftFile, Effect, Game, MatchFile, RunFile, Sound, Store,
 };
+use crate::backdrop::{self, Shown};
 use crate::cli::DevArgs;
 use crate::crash;
 use crate::durable;
@@ -134,6 +140,13 @@ pub struct SaltLine {
     layers: Layers,
     /// The frame as on screen, to find the strips that changed.
     shadow: Shadow,
+    /// The sky and ground layers on the GPU, and which of the cache's
+    /// versions of each they hold. See `backdrop` and `upload_backdrop`.
+    sky: Option<Layer>,
+    ground: Option<Layer>,
+    backdrop_versions: (u64, u64),
+    /// What `draw` last drew under the overlay, to know when to draw again.
+    backdrop_drawn: Option<Shown>,
     /// Whether this frame needs drawing at all. See `frame::Redraw`.
     redraw: Redraw,
     /// The engine's frame cap as the project set it, restored in play.
@@ -189,6 +202,12 @@ pub struct SaltLine {
     /// ordinary release builds.
     #[cfg(feature = "profiling")]
     profile: ProfileCapture,
+    /// The profiling build's check of the layers on the GPU, and the flat
+    /// frame it is checked against. See `profiling::GpuCheck`.
+    #[cfg(feature = "profiling")]
+    gpu_check: crate::profiling::GpuCheck,
+    #[cfg(feature = "profiling")]
+    check_frame: (Canvas, Cache, Vec<Button>),
 }
 
 #[godot_api]
@@ -203,6 +222,10 @@ impl INode2D for SaltLine {
             strips: Vec::new(),
             layers: Layers::default(),
             shadow: Shadow::default(),
+            sky: None,
+            ground: None,
+            backdrop_versions: (0, 0),
+            backdrop_drawn: None,
             redraw: Redraw::default(),
             project_fps: 0,
             fps_cap: 0,
@@ -226,6 +249,10 @@ impl INode2D for SaltLine {
             phone_window: None,
             #[cfg(feature = "profiling")]
             profile: ProfileCapture::new(),
+            #[cfg(feature = "profiling")]
+            gpu_check: Default::default(),
+            #[cfg(feature = "profiling")]
+            check_frame: (Canvas::new(1, 1), Cache::default(), Vec::new()),
         }
     }
 
@@ -265,6 +292,8 @@ impl INode2D for SaltLine {
         let fx = self.g.fit_display(window, self.cutout);
         self.apply(fx);
         let args = DevArgs::parse(&Self::cmdline_all());
+        // Layered unless asked otherwise; see `backdrop`.
+        self.cache.backdrop.layered = !args.flat;
         #[cfg(feature = "profiling")]
         let args = {
             let mut args = args;
@@ -305,6 +334,19 @@ impl INode2D for SaltLine {
         if crash::panicked() {
             self.broken_frame(delta);
             return;
+        }
+        #[cfg(feature = "profiling")]
+        if self.gpu_check.pending() {
+            // The viewport now holds the last frame drawn.
+            let left = self.base().get_position().x as i32;
+            let image = self
+                .base()
+                .get_viewport()
+                .and_then(|v| v.get_texture())
+                .and_then(|t| t.get_image());
+            if let Some(report) = image.and_then(|i| self.gpu_check.compare(i, left)) {
+                godot_print!("{report}");
+            }
         }
         #[cfg(feature = "profiling")]
         let process_started = std::time::Instant::now();
@@ -362,17 +404,38 @@ impl INode2D for SaltLine {
                 for line in lines {
                     godot_print!("{line}");
                 }
+                self.gpu_check.start();
             }
         }
     }
 
     fn draw(&mut self) {
-        // The frame is one whole-frame texture at the internal resolution,
-        // with the strips that changed since it was last updated drawn over
-        // it (see `strips::Layers`), all blitted 1:1. Godot's viewport stretch
-        // does the only scaling in the game, with nearest filtering set
-        // project-wide. A texture updated in place needs no new draw; this
-        // runs again only when which strips are shown changes.
+        // In play, the sky and then the ground's window go first (see
+        // `backdrop`). The frame is one whole-frame texture at the internal
+        // resolution, with the strips that changed since it was last updated
+        // drawn over it (see `strips::Layers`), all blitted 1:1 at whole-pixel
+        // positions. Godot's viewport stretch does the only scaling in the
+        // game, with nearest filtering set project-wide. A texture updated in
+        // place needs no new draw; this runs again only when which strips are
+        // shown, or where the ground is, changes.
+        if let Some(shown) = self.cache.backdrop.shown() {
+            if let Some(sky) = &self.sky {
+                let tex = sky.texture.clone();
+                self.base_mut().draw_texture(&tex, Vector2::ZERO);
+            }
+            if let Some(ground) = &self.ground {
+                let tex = ground.texture.clone();
+                let h = ground.h as f32;
+                if let Some(win) = backdrop::window(shown.ground_x(), self.canvas.w, ground.w) {
+                    let (dst_x, src_x, w) = (win.dst_x as f32, win.src_x as f32, win.w as f32);
+                    self.base_mut().draw_texture_rect_region(
+                        &tex,
+                        Rect2::new(Vector2::new(dst_x, 0.0), Vector2::new(w, h)),
+                        Rect2::new(Vector2::new(src_x, 0.0), Vector2::new(w, h)),
+                    );
+                }
+            }
+        }
         let layers: Vec<_> = self
             .whole
             .iter()
@@ -1111,6 +1174,15 @@ impl SaltLine {
         #[cfg(feature = "profiling")]
         self.profile.record_render(render_started.elapsed());
         self.upload();
+        #[cfg(feature = "profiling")]
+        if self.gpu_check.running() {
+            let (canvas, cache, buttons) = &mut self.check_frame;
+            canvas.resize(self.canvas.w, self.canvas.h);
+            render::frame(&self.g, &self.art, canvas, buttons, cache);
+            let layered = self.cache.backdrop.shown().is_some();
+            self.gpu_check
+                .expect(canvas.bytes(), canvas.w, canvas.h, layered);
+        }
     }
 
     /// Hand the changed parts of the buffer to the GPU without allocating.
@@ -1121,6 +1193,16 @@ impl SaltLine {
     /// texture is updated in place. Only a change of buffer size makes new
     /// layers.
     fn upload(&mut self) {
+        #[cfg(feature = "profiling")]
+        if !self.profile.should_update_texture() {
+            self.profile.record_texture_update_skipped();
+            return;
+        }
+        #[cfg(feature = "profiling")]
+        let backdrop_started = std::time::Instant::now();
+        let backdrop_uploads = self.upload_backdrop();
+        #[cfg(feature = "profiling")]
+        let backdrop_time = backdrop_started.elapsed();
         let (w, h) = (self.canvas.w, self.canvas.h);
         let bytes = self.canvas.bytes();
         if !self.shadow.fits(w, h) || self.whole.is_none() || self.strips.len() != STRIPS {
@@ -1139,11 +1221,6 @@ impl SaltLine {
             self.shadow.reset(bytes, w, h);
             self.layers.reset();
             self.base_mut().queue_redraw();
-            return;
-        }
-        #[cfg(feature = "profiling")]
-        if !self.profile.should_update_texture() {
-            self.profile.record_texture_update_skipped();
             return;
         }
         #[cfg(feature = "profiling")]
@@ -1169,11 +1246,46 @@ impl SaltLine {
             }
         }
         #[cfg(feature = "profiling")]
-        self.profile
-            .record_texture_update(update_started.elapsed(), changed_n, whole_n);
+        self.profile.record_texture_update(
+            update_started.elapsed() + backdrop_time,
+            changed_n,
+            whole_n,
+            backdrop_uploads.0,
+        );
+        let redraw = redraw || backdrop_uploads.1;
         if redraw {
             self.base_mut().queue_redraw();
         }
+    }
+
+    /// Bring the sky and ground textures up to date with the cache's layers
+    /// (`backdrop`), uploading a layer only when it was drawn again. Returns
+    /// how many were uploaded, and whether `draw` must run again: a layer
+    /// was made anew, or what shows under the overlay moved.
+    fn upload_backdrop(&mut self) -> (u64, bool) {
+        let b = &self.cache.backdrop;
+        let shown = b.shown();
+        let mut redraw = shown != self.backdrop_drawn;
+        self.backdrop_drawn = shown;
+        let mut uploads = 0;
+        if shown.is_some() {
+            let (sky, v) = b.sky();
+            if v != self.backdrop_versions.0 || self.sky.is_none() {
+                self.backdrop_versions.0 = v;
+                redraw |= Layer::keep(&mut self.sky, sky);
+                uploads += 1;
+            }
+            let (ground, v) = b.ground();
+            if v != self.backdrop_versions.1 || self.ground.is_none() {
+                self.backdrop_versions.1 = v;
+                redraw |= Layer::keep(&mut self.ground, ground);
+                uploads += 1;
+            }
+        }
+        if redraw {
+            self.base_mut().queue_redraw();
+        }
+        (uploads, redraw)
     }
 
     /// `--salt-shot <path>` support: save the buffer and quit.
@@ -1196,7 +1308,8 @@ impl SaltLine {
     /// Write the buffer to a PNG at native resolution.
     fn save_canvas(&self, path: &str) {
         let (w, h) = (self.canvas.w, self.canvas.h);
-        let data = self.canvas.to_packed();
+        // The finished frame, the layers under the canvas included.
+        let data = PackedByteArray::from(self.cache.backdrop.composite(&self.canvas).as_slice());
         if let Some(image) =
             Image::create_from_data(w, h, false, godot::classes::image::Format::RGBA8, &data)
         {
@@ -1308,6 +1421,7 @@ fn core_pad(button: JoyButton) -> Option<input::Pad> {
 /// made from it: the whole frame, or one strip of it. See `strips`.
 struct Layer {
     y: i32,
+    w: i32,
     h: i32,
     image: Gd<Image>,
     texture: Gd<ImageTexture>,
@@ -1327,12 +1441,30 @@ impl Layer {
         let texture = ImageTexture::create_from_image(&image)?;
         Some(Self {
             y: y0,
+            w,
             h: y1 - y0,
             image,
             texture,
             bufs,
             flip: 1,
         })
+    }
+
+    /// Make `layer` hold all of `canvas`: updated in place if it is the
+    /// same size, else made anew. True when made anew, as `draw` must then
+    /// draw the new texture.
+    fn keep(layer: &mut Option<Layer>, canvas: &Canvas) -> bool {
+        let (w, h) = (canvas.w, canvas.h);
+        match layer {
+            Some(l) if l.w == w && l.h == h => {
+                l.update(canvas.bytes(), w);
+                false
+            }
+            _ => {
+                *layer = Layer::new(canvas.bytes(), w, 0, h);
+                true
+            }
+        }
     }
 
     /// Send this layer's rows of `frame` to its texture.

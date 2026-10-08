@@ -76,6 +76,11 @@ pub struct DevArgs {
     /// `--salt-phone`: lay the game out as a phone would (touch controls,
     /// the corner pad, [`PHONE_WINDOW`]), for captures on a desktop.
     pub phone: bool,
+    /// `--salt-flat`: draw every frame as one canvas, sky and ground
+    /// included, instead of in layers (`backdrop`). The fallback, should a
+    /// GPU ever composite the layers wrong, and the reference they are
+    /// compared with.
+    pub flat: bool,
     /// `--salt-fork-run <seed>:<screen>`: print the share code of that run
     /// screen forked into a layout, and quit (`custom::fork_report`).
     pub fork_run: Option<String>,
@@ -107,6 +112,7 @@ impl DevArgs {
             editor_page: value(args, "--salt-editor-page"),
             setup: flag(args, "--salt-setup"),
             phone: flag(args, "--salt-phone"),
+            flat: flag(args, "--salt-flat"),
             fork_run: value(args, "--salt-fork-run"),
             fork_duel: value(args, "--salt-fork-duel"),
         }
@@ -179,6 +185,7 @@ mod tests {
                 editor_page: None,
                 setup: false,
                 phone: false,
+                flat: false,
                 fork_run: None,
                 fork_duel: None,
             }

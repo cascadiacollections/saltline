@@ -421,19 +421,19 @@ impl Painter<'_> {
             h: g.display.buffer_h,
         };
 
-        sky::draw(
+        // Where the guns are drawn, mid-ease included, so no tuft shows
+        // through a chassis rolling over it.
+        let guns = Side::BOTH.map(|gun| vs.shown_muzzle(gun).x);
+        self.cache.backdrop.draw(
             self.canvas,
             &view,
             pal,
             sky::Phase::for_screen(0),
             duel.seed ^ duel.round as u64,
             0.0,
+            screen,
+            &guns,
         );
-        raster::draw_terrain(self.canvas, &view, &screen.field, pal);
-        // Where the guns are drawn, mid-ease included, so no tuft shows
-        // through a chassis rolling over it.
-        let guns = Side::BOTH.map(|gun| vs.shown_muzzle(gun).x);
-        raster::draw_ground_detail_around(self.canvas, &view, screen, &guns, pal);
 
         // A marker over each gun in its player's colour; a big one over the
         // gun whose turn it is. Drawn before aim help, whose preview of a
@@ -556,7 +556,8 @@ impl Painter<'_> {
         if let Some(mark) = vs.duel.landing[side.index()] {
             raster::draw_chalk_inked(self.canvas, view, &[mark], &screen.field, ink);
         }
-        raster::draw_last_arc(self.canvas, view, &vs.arcs[side.index()], pal);
+        let under = |x, y| self.cache.backdrop.under(x, y);
+        raster::draw_last_arc_on(self.canvas, view, &vs.arcs[side.index()], pal, under);
 
         let aim = (self.g.play.angle_ticks, self.g.play.power_ticks);
         let (path, upto) = aim_preview(&vs.duel, side, aim);

@@ -313,17 +313,17 @@ impl Painter<'_> {
             h: g.display.buffer_h,
         };
         let screen = crate::editor::screen_of(ed.layout());
-        sky::draw(
+        let guns = Side::BOTH.map(|s| versus::muzzle_of(&screen, s).x);
+        self.cache.backdrop.draw(
             self.canvas,
             &view,
             pal,
             sky::Phase::for_screen(0),
             screen.seed,
             0.0,
+            &screen,
+            &guns,
         );
-        raster::draw_terrain(self.canvas, &view, &screen.field, pal);
-        let guns = Side::BOTH.map(|s| versus::muzzle_of(&screen, s).x);
-        raster::draw_ground_detail_around(self.canvas, &view, &screen, &guns, pal);
         for side in Side::BOTH {
             self.draw_gun(versus::muzzle_of(&screen, side), 600, side, &view);
         }
@@ -618,24 +618,25 @@ impl Painter<'_> {
             h: g.display.buffer_h,
         };
         let screen = t.shown();
-        sky::draw(
+        let guns = Side::BOTH.map(|s| versus::muzzle_of(screen, s).x);
+        self.cache.backdrop.draw(
             self.canvas,
             &view,
             pal,
             sky::Phase::for_screen(0),
             screen.seed,
             0.0,
+            screen,
+            &guns,
         );
-        raster::draw_terrain(self.canvas, &view, &screen.field, pal);
-        let guns = Side::BOTH.map(|s| versus::muzzle_of(screen, s).x);
-        raster::draw_ground_detail_around(self.canvas, &view, screen, &guns, pal);
         let aiming = t.anim.is_none();
         if aiming {
             let ink = self.side_ink(t.side);
             if let Some(mark) = t.landing[t.side.index()] {
                 raster::draw_chalk_inked(self.canvas, &view, &[mark], &screen.field, ink);
             }
-            raster::draw_last_arc(self.canvas, &view, &t.arcs[t.side.index()], pal);
+            let under = |x, y| self.cache.backdrop.under(x, y);
+            raster::draw_last_arc_on(self.canvas, &view, &t.arcs[t.side.index()], pal, under);
         }
         for side in Side::BOTH {
             let m = versus::muzzle_of(screen, side);

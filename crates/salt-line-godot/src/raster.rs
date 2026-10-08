@@ -13,9 +13,12 @@
 //! DESIGN §5.1 fixes the buffer at 180 buffer pixels tall and 320 to 400
 //! wide, by device aspect; Long Lens makes it 216 tall
 //! (`app::LONG_LENS_H`), adding sky rather than scaling. The whole frame,
-//! terrain, sprites, HUD and text alike, is drawn by the CPU into the one
-//! [`Canvas`] at that size, then uploaded (only the strips that changed; see
-//! `strips`) to textures that `game.rs` draws at 1:1. Godot's viewport stretch, with nearest filtering
+//! terrain, sprites, HUD and text alike, is drawn by the CPU at that size,
+//! then uploaded (only the strips that changed; see `strips`) to textures
+//! that `game.rs` draws at 1:1. In play the sky and the ground are drawn into
+//! canvases of their own, kept until they change, and everything else into
+//! a transparent [`Canvas`] over them (`backdrop`); every pixel is still
+//! drawn here, by the CPU. Godot's viewport stretch, with nearest filtering
 //! set project-wide, does the only scaling in the game, so every buffer
 //! pixel lands on the screen as the same whole block.
 //! UI in the same buffer at the same resolution is itself a §5.1 rule.
@@ -157,6 +160,23 @@ impl Canvas {
     /// and its colour is off the palette unless `alpha` is 255.
     #[inline]
     pub fn put_blend(&mut self, x: i32, y: i32, c: Rgba, alpha: u8) {
+        self.put_blend_on(x, y, c, alpha, |_, _| [0, 0, 0, 0]);
+    }
+
+    /// [`Canvas::put_blend`] where a pixel this canvas has not painted
+    /// (transparent) is blended with `under(x, y)` instead: the colour a
+    /// layer beneath shows there. The layered frame (`backdrop`) leaves the
+    /// sky and the ground out of this canvas, so a translucent mark over them
+    /// still needs to know their colour to come out the same.
+    #[inline]
+    pub fn put_blend_on(
+        &mut self,
+        x: i32,
+        y: i32,
+        c: Rgba,
+        alpha: u8,
+        under: impl Fn(i32, i32) -> Rgba,
+    ) {
         if alpha == 255 {
             return self.put(x, y, c);
         }
@@ -164,12 +184,26 @@ impl Canvas {
             return;
         }
         let i = ((y * self.w + x) * 4) as usize;
+        if self.px[i + 3] == 0 {
+            let u = under(x, y);
+            self.px[i..i + 3].copy_from_slice(&u[..3]);
+        }
         let a = alpha as u32;
         for (dst, src) in self.px[i..i + 3].iter_mut().zip(c.iter()) {
             let under = *dst as u32;
             *dst = ((*src as u32 * a + under * (255 - a)) / 255) as u8;
         }
         self.px[i + 3] = 255;
+    }
+
+    /// The pixel at `(x, y)`, transparent if off the buffer or unpainted.
+    #[inline]
+    pub fn get(&self, x: i32, y: i32) -> Rgba {
+        if x < 0 || y < 0 || x >= self.w || y >= self.h {
+            return [0; 4];
+        }
+        let i = ((y * self.w + x) * 4) as usize;
+        [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
     }
 
     pub fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
@@ -601,8 +635,26 @@ pub fn draw_last_arc(
     path: &[salt_line_sim::Vec2],
     pal: &Palette,
 ) {
+    draw_last_arc_on(canvas, view, path, pal, |_, _| [0, 0, 0, 0]);
+}
+
+/// [`draw_last_arc`] over layers beneath this canvas, whose colour at a
+/// pixel is `under(x, y)`: see [`Canvas::put_blend_on`].
+pub fn draw_last_arc_on(
+    canvas: &mut Canvas,
+    view: &View,
+    path: &[salt_line_sim::Vec2],
+    pal: &Palette,
+    under: impl Fn(i32, i32) -> Rgba,
+) {
     for p in path.iter().step_by(4) {
-        canvas.put_blend(view.sx(p.x), view.sy(p.y), pal.get(slot::UI_FG), 110);
+        canvas.put_blend_on(
+            view.sx(p.x),
+            view.sy(p.y),
+            pal.get(slot::UI_FG),
+            110,
+            &under,
+        );
     }
 }
 

@@ -85,6 +85,8 @@ pub struct Capture {
     /// Strips that changed, and whole-frame uploads, summed over frames.
     strips_changed: [u64; 2],
     wholes: [u64; 2],
+    /// Sky and ground layer uploads (`backdrop`), summed over frames.
+    backdrop_uploads: [u64; 2],
     process: [Samples; 2],
     tick: [Samples; 2],
     render: [Samples; 2],
@@ -111,6 +113,7 @@ impl Capture {
             texture_update_skips: [0; 2],
             strips_changed: [0; 2],
             wholes: [0; 2],
+            backdrop_uploads: [0; 2],
             process: pair(),
             tick: pair(),
             render: pair(),
@@ -166,13 +169,21 @@ impl Capture {
 
     /// The strip pass of one frame: comparing each strip with the screen,
     /// `changed` of them differing, and uploading them, or the whole frame
-    /// (`whole` is 1) when too many did.
-    pub fn record_texture_update(&mut self, duration: Duration, changed: u64, whole: u64) {
+    /// (`whole` is 1) when too many did; and `backdrop` sky or ground layer
+    /// uploads.
+    pub fn record_texture_update(
+        &mut self,
+        duration: Duration,
+        changed: u64,
+        whole: u64,
+        backdrop: u64,
+    ) {
         if let Some(mode) = self.frame_mode {
             let i = mode.index();
             self.texture_updates[i] += 1;
             self.strips_changed[i] += changed;
             self.wholes[i] += whole;
+            self.backdrop_uploads[i] += backdrop;
             self.texture_update[i].observe(duration);
         }
     }
@@ -211,7 +222,7 @@ impl Capture {
             format!("updated process: {}", self.process[0].summary()),
             format!("updated core_tick: {}", self.tick[0].summary()),
             format!("updated software_render: {}", self.render[0].summary()),
-            format!("updated strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} (compare + update of changed strips; CPU call time, GPU completion is deferred)", self.texture_update[0].summary(), self.strips_changed[0] as f64 / self.texture_updates[0].max(1) as f64, self.wholes[0]),
+            format!("updated strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} backdrop_uploads={} (compare + update of changed strips and layers; CPU call time, GPU completion is deferred)", self.texture_update[0].summary(), self.strips_changed[0] as f64 / self.texture_updates[0].max(1) as f64, self.wholes[0], self.backdrop_uploads[0]),
             format!(
                 "frozen: frames={} rendered={} texture_updates={} texture_update_skips={}",
                 self.frames[1], self.rendered[1], self.texture_updates[1], self.texture_update_skips[1]
@@ -221,5 +232,88 @@ impl Capture {
             format!("frozen software_render: {}", self.render[1].summary()),
             format!("frozen strip_pass: {} strips_changed_per_pass={:.2} whole_uploads={} (should be n=0)", self.texture_update[1].summary(), self.strips_changed[1] as f64 / self.texture_updates[1].max(1) as f64, self.wholes[1]),
         ])
+    }
+}
+
+/// How many drawn frames the GPU check compares after the capture.
+const GPU_CHECK_FRAMES: u64 = 600;
+
+/// After the timing capture, check the GPU's side of the layered frame
+/// (`backdrop`) on the device itself: each drawn frame is read back from
+/// the viewport and compared, pixel for pixel, with the same frame drawn
+/// flat on the CPU. Readback stalls the GPU, which is why it runs only
+/// once the timings are taken.
+#[derive(Default)]
+pub struct GpuCheck {
+    /// Drawn frames still to compare; 0 when not running.
+    left: u64,
+    /// The flat frame the viewport should show after this frame is drawn,
+    /// its size, and whether it was drawn in layers.
+    expected: Option<(Vec<u8>, i32, i32, bool)>,
+    frames: u64,
+    layered: u64,
+    bad_frames: u64,
+    bad_pixels: u64,
+    sizes: Option<(i32, i32, i32, i32)>,
+}
+
+impl GpuCheck {
+    pub fn start(&mut self) {
+        self.left = GPU_CHECK_FRAMES;
+    }
+
+    /// Whether this frame's flat reference is wanted.
+    pub fn running(&self) -> bool {
+        self.left > 0
+    }
+
+    /// The frame just drawn should look like `flat`, `w` by `h`.
+    pub fn expect(&mut self, flat: &[u8], w: i32, h: i32, layered: bool) {
+        if self.running() {
+            self.expected = Some((flat.to_vec(), w, h, layered));
+        }
+    }
+
+    /// Whether a frame is waiting to be compared with the viewport.
+    pub fn pending(&self) -> bool {
+        self.expected.is_some()
+    }
+
+    /// Compare the last drawn frame with `image`, the viewport read back,
+    /// whose buffer starts `left` pixels in (the letterbox). Returns the
+    /// report when the last frame has been compared.
+    pub fn compare(&mut self, image: Gd<godot::classes::Image>, left: i32) -> Option<String> {
+        let (want, w, h, layered) = self.expected.take()?;
+        let mut image = image;
+        image.convert(godot::classes::image::Format::RGBA8);
+        let (iw, ih) = (image.get_width(), image.get_height());
+        self.sizes = Some((w, h, iw, ih));
+        let got = image.get_data();
+        let got = got.as_slice();
+        let mut bad = 0u64;
+        if ih != h || iw < left + w {
+            bad = (w * h) as u64;
+        } else {
+            for y in 0..h {
+                for x in 0..w {
+                    let a = ((y * iw + x + left) * 4) as usize;
+                    let b = ((y * w + x) * 4) as usize;
+                    if got[a..a + 3] != want[b..b + 3] {
+                        bad += 1;
+                    }
+                }
+            }
+        }
+        self.frames += 1;
+        self.layered += u64::from(layered);
+        self.bad_frames += u64::from(bad > 0);
+        self.bad_pixels += bad;
+        self.left -= 1;
+        (self.left == 0).then(|| {
+            format!(
+                "salt-profile: gpu check frames={} layered={} mismatched_frames={} mismatched_pixels={} buffer_and_viewport={:?}",
+                self.frames, self.layered, self.bad_frames, self.bad_pixels, self.sizes
+            )
+        })
     }
 }
