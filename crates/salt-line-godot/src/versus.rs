@@ -708,8 +708,10 @@ pub struct Ground {
     /// The screen each round starts on, in the shared frame, with no
     /// craters. Its `wind` is ignored; the match sets each turn's.
     pub screen: Screen,
-    /// A wind for every turn, in the shared frame, in place of
-    /// [`turn_wind`]'s draw; `None` draws as usual, by the rules' range.
+    /// A wind for every turn of the first round, in the shared frame, in
+    /// place of [`turn_wind`]'s draw; `None` draws as usual, by the rules'
+    /// range. It blows the other way in every second round
+    /// ([`Match::wind_at`]), so neither side has it behind them all match.
     pub wind: Option<f64>,
 }
 
@@ -821,9 +823,13 @@ impl Match {
     }
 
     /// The wind for turn `turn` of this round, in the shared frame: the
-    /// ground's fixed wind if it has one, else [`turn_wind`]'s draw.
+    /// ground's fixed wind if it has one, turned round in every second
+    /// round (owner decision, October 2026: a fixed wind blows the same way
+    /// for both guns, so it helps one side; flipping it each round gives
+    /// each side a round with it behind them), else [`turn_wind`]'s draw.
     pub fn wind_at(&self, turn: u32) -> f64 {
         match &self.ground {
+            Some(Ground { wind: Some(w), .. }) if self.round % 2 == 1 => -*w,
             Some(Ground { wind: Some(w), .. }) => *w,
             _ => turn_wind(self.seed, self.round, turn, &self.rules),
         }

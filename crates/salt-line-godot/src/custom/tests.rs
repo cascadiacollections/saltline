@@ -221,6 +221,51 @@ fn a_match_on_a_layout_plays_every_round_on_it() {
     }
 }
 
+/// A fixed wind blows the same way for both guns, so it helps one side: it
+/// turns round every second round, so each side has it behind them for a
+/// round (owner decision), and the gate checks it both ways.
+#[test]
+fn a_fixed_wind_turns_round_each_round() {
+    let fixed = Layout {
+        wind: WindSpec::Fixed(1500),
+        ..fork_duel(3, 0)
+    };
+    assert_eq!(duel_winds(&fixed.wind), vec![-1500, 1500]);
+    assert_eq!(duel_winds(&WindSpec::Fixed(-700)), vec![-700, 700]);
+    assert_eq!(duel_winds(&WindSpec::Fixed(0)), vec![0]);
+    assert_eq!(
+        duel_counts(&fixed).iter().map(|c| c.0).collect::<Vec<_>>(),
+        vec![-1500, 1500]
+    );
+    let mut m = layout_match(&fixed, 77, Rules::DEFAULT);
+    let lo = m.loadout.clone();
+    for round in 0..3u32 {
+        let want = if round % 2 == 1 { -1.5 } else { 1.5 };
+        assert_eq!(m.round, round);
+        assert_eq!(m.screen.wind, want, "round {round}, first turn");
+        // The left gun hits each turn, the right misses: the left takes
+        // the round, every turn of it in this round's wind.
+        while m.phase == Phase::Aiming {
+            assert_eq!(m.screen.wind, want, "round {round}");
+            let side = m.to_move;
+            let shot = match side {
+                Side::Left => shots_at(
+                    &frame_for(&m.screen, side),
+                    target_in_frame(&m.screen, side),
+                    &lo,
+                    m.rules.hit_reach,
+                    1,
+                )[0],
+                Side::Right => salt_line_sim::run::shot(900, 100),
+            };
+            m.fire(shot, false);
+        }
+        if !m.next_round() {
+            break;
+        }
+    }
+}
+
 #[test]
 fn a_ground_never_rolls_even_under_rolling_rules() {
     let l = fork_duel(3, 0);

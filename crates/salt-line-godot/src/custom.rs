@@ -89,11 +89,21 @@ pub fn layout_match(layout: &Layout, seed: u64, base: Rules) -> Match {
     Match::on_ground(seed, ground, duel_rules(layout, base))
 }
 
-/// For each wind a duel layout's gate checks (in thousandths, the
-/// layout's frame), the distinct hitting shots each gun has at the other,
-/// left then right, counting up to the gate's cap. The editor's fairness
-/// reading: a side with fewer shots in some wind has the harder ground.
-/// Empty for a layout without two guns.
+/// The winds a duel layout's gate checks, in thousandths, in the layout's
+/// frame: [`WindSpec::extremes`], and for a fixed wind its reverse as well,
+/// since a match on a layout turns a fixed wind round every second round
+/// (`versus::Match::wind_at`).
+pub fn duel_winds(wind: &WindSpec) -> Vec<i32> {
+    match *wind {
+        WindSpec::Fixed(w) if w != 0 => vec![-w.abs(), w.abs()],
+        _ => wind.extremes(),
+    }
+}
+
+/// For each wind a duel layout's gate checks ([`duel_winds`]), the distinct
+/// hitting shots each gun has at the other, left then right, counting up to
+/// the gate's cap. The editor's fairness reading: a side with fewer shots
+/// in some wind has the harder ground. Empty for a layout without two guns.
 pub fn duel_counts(layout: &Layout) -> Vec<(i32, [usize; 2])> {
     if !layout.is_duel() {
         return Vec::new();
@@ -101,9 +111,7 @@ pub fn duel_counts(layout: &Layout) -> Vec<(i32, [usize; 2])> {
     let lo = Loadout::new();
     let reach = Rules::DEFAULT.hit_reach;
     let ground = Screen::from_layout(layout, 0.0);
-    layout
-        .wind
-        .extremes()
+    duel_winds(&layout.wind)
         .into_iter()
         .map(|wind| {
             let mut shared = ground.clone();
