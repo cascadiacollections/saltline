@@ -4,14 +4,30 @@
 
 # Engine glue only runs inside Godot, so no headless test can catch a mutant
 # there. The tool binaries are exercised by CI jobs, not by tests.
+#
+# The renderer (render.rs, render/) is drawing code: it is checked by eye and
+# by the playable job's smoke frame, and its five snapshot tests pin a few
+# whole screens rather than the arithmetic inside them, so about three in
+# four of its mutants were missed (2026-10-05: 173 of 235 in render.rs). It
+# is a third of the game crate's mutants, and a missed mutant is the
+# costliest kind, paying for the whole suite. `cargo mutants -f crates/salt-line-godot/src/render.rs`
+# still checks it by hand.
+#
+# profiling.rs only compiles with `--features profiling`, which the tests do
+# not enable, so every mutant there builds, passes and reads as missed.
 exclude_globs = [
     "crates/salt-line-godot/src/game.rs",
     "crates/salt-line-godot/src/lib.rs",
+    "crates/salt-line-godot/src/profiling.rs",
+    "crates/salt-line-godot/src/render.rs",
+    "crates/salt-line-godot/src/render/**",
     "crates/salt-line-godot/src/save.rs",
     "crates/salt-line-godot/src/sprites.rs",
     "crates/salt-line-sim/src/bin/**",
 ]
 test_tool = "nextest"
+# Optimised tests with debug assertions on; see [profile.mutants] in Cargo.toml.
+profile = "mutants"
 
 # Mutants no test can reasonably catch, each with the reason.
 exclude_re = [

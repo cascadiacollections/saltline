@@ -6,9 +6,9 @@
 //!   parses must survive being written back and read again unchanged.
 //! - **Any log**, built from arbitrary entries (shots anywhere on the dial
 //!   or off it, new rounds where no round was won, shots after the match is
-//!   over), on generated screens or on a layout's ground (format 2): the
-//!   line round-trips, and a log that replays replays to the same match
-//!   twice.
+//!   over), on generated screens or on a layout's ground (format 2), between
+//!   two players or against the AI (format 3): the line round-trips, and a
+//!   log that replays replays to the same match twice.
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -29,6 +29,8 @@ struct Input<'a> {
     log: Vec<Option<(u16, u16)>>,
     /// Play on a forked duel round's ground (format 2), from this seed.
     ground: Option<u8>,
+    /// The right gun is the AI's (format 3), at the level this picks.
+    ai: Option<u8>,
 }
 
 fuzz_target!(|input: Input| {
@@ -45,6 +47,9 @@ fuzz_target!(|input: Input| {
         width: buffer_width((input.width as usize).min(SCREEN_W_MAX * 2)),
         rolling: input.rolling,
         help: input.help,
+        ai: input
+            .ai
+            .map(|l| salt_line_godot::opponent::Level::ALL[l as usize % 3]),
         // A few dozen entries is a long match; replays are the slow half.
         log: input
             .log

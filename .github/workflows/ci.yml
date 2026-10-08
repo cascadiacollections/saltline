@@ -434,6 +434,37 @@ jobs:
           cargo +nightly miri test -p salt-line-sim --lib -- dmath:: rng::
           cargo +nightly miri test -p salt-line-godot --lib -- save_format:: touch:: aim:: icons::
 
+  # The fuzz targets only run in the weekly workflow, so a change that breaks
+  # one (a new field on a type a target builds) would otherwise go unnoticed
+  # until Monday, as would the weekly job's own build command: both rotted
+  # unseen for weeks in 2026-09. This builds every target exactly as the
+  # weekly job does (nightly, AddressSanitizer, the runner's gnu triple) but
+  # as a dev build, which is all a compile check needs, and runs nothing.
+  fuzz-build:
+    name: fuzz targets build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+          key: fuzz
+          workspaces: fuzz -> target
+      # cargo-fuzz arrives as its static musl build and would target musl by
+      # default; see the fuzz job in weekly.yml for why --target is needed.
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-fuzz
+      - name: build every fuzz target
+        working-directory: fuzz
+        run: cargo +nightly fuzz build --dev --target x86_64-unknown-linux-gnu
+
   # Advisories, licences, bans and sources for the whole dependency tree
   # (deny.toml). A new RustSec advisory can turn this red with no change here;
   # that is the point, and the fix is usually a Dependabot bump.

@@ -18,3 +18,13 @@ codegen-units = 1
 # (salt-line-godot `crash`) depend on the game surviving to show them. With
 # `abort` a panic would take the whole process down, report unwritten.
 panic = "unwind"
+
+# cargo-mutants builds and tests with this (.cargo/mutants.toml). The test
+# suite dominates each mutant's time and runs about four times faster at
+# opt-level 1 than unoptimised, for a slightly slower rebuild. Debug
+# assertions and overflow checks stay on, as in `test`, so a mutant that
+# overflows is still caught.
+[profile.mutants]
+inherits = "test"
+opt-level = 1
+debug = "none"
