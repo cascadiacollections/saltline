@@ -76,11 +76,17 @@ use godot::classes::{
 use godot::global::{JoyAxis, JoyButton, Key};
 use godot::prelude::*;
 
-use crate::app::{Abandoned, Aspect, CrashReport, Effect, Game, MatchFile, RunFile, Sound};
+use crate::app::{
+    Abandoned, Aspect, CrashReport, DraftFile, Effect, Game, MatchFile, RunFile, Sound, Store,
+};
 use crate::cli::DevArgs;
 use crate::crash;
+use crate::durable;
 use crate::frame::{self, DisplayPoll, Redraw};
 use crate::input::{self, Event, Intents, Typed};
+use crate::layouts_file::{
+    self, DRAFT_FILES, DRAFT_LOADING_PATH, DRAFT_PATH, LAYOUTS_PATH, LAYOUTS_TEMP_PATH,
+};
 use crate::match_log::{self, MATCH_FILES, MATCH_LOADING_PATH, MATCH_PATH};
 use crate::pads::Pads;
 use crate::palette::Palette;
@@ -237,6 +243,7 @@ impl INode2D for SaltLine {
         self.find_last_crash();
         self.find_saved_run();
         self.find_saved_match();
+        self.find_layouts();
         self.setup_audio();
         self.project_fps = Engine::singleton().get_max_fps();
         self.fps_cap = self.project_fps;
@@ -590,7 +597,19 @@ impl SaltLine {
                 Effect::Clipboard(text) => {
                     DisplayServer::singleton().clipboard_set(&GString::from(text.as_str()));
                 }
+                Effect::ReadClipboard => {
+                    let text = DisplayServer::singleton().clipboard_get().to_string();
+                    let fx = self.g.pasted(&text);
+                    self.apply(fx);
+                }
                 Effect::Quit => self.base().get_tree().quit(),
+                Effect::Store(Store::Layouts { text, why }) => {
+                    // The slot file, written whole and atomically as the
+                    // save is; the outcome goes back to the core at once.
+                    let ok = save::write(LAYOUTS_PATH, LAYOUTS_TEMP_PATH, &text);
+                    let fx = self.g.stored(Store::Layouts { text, why }, ok);
+                    self.apply(fx);
+                }
                 Effect::Store(why) => {
                     // A finished log goes before its score, and the score
                     // only once the log is confirmed gone.
@@ -629,6 +648,29 @@ impl SaltLine {
                     Abandoned::Unreadable(why) => {
                         godot_warn!("salt-line: discarding {RUN_PATH}: {why:?}");
                         Self::discard_run_file();
+                    }
+                },
+                Effect::DraftFile(DraftFile::Write(text)) => {
+                    resume::replace_at(&mut UserFiles, DRAFT_FILES, &text);
+                }
+                Effect::DraftFile(DraftFile::Restore) => {
+                    save::rename(DRAFT_LOADING_PATH, DRAFT_PATH);
+                }
+                Effect::DraftFile(DraftFile::Discard) => {
+                    if !resume::replace_at(&mut UserFiles, DRAFT_FILES, "") {
+                        godot_warn!("salt-line: could not delete or blank {DRAFT_PATH}");
+                    }
+                }
+                Effect::DraftFile(DraftFile::Abandon(why)) => match why {
+                    Abandoned::Interrupted => {
+                        godot_warn!(
+                            "salt-line: discarding {DRAFT_LOADING_PATH}: a read did not finish"
+                        );
+                        resume::drop_set_aside_at(&mut UserFiles, DRAFT_FILES);
+                    }
+                    Abandoned::Unreadable(why) => {
+                        godot_warn!("salt-line: discarding {DRAFT_PATH}: {why:?}");
+                        resume::replace_at(&mut UserFiles, DRAFT_FILES, "");
                     }
                 },
                 Effect::MatchFile(MatchFile::Write(text)) => {
@@ -752,6 +794,27 @@ impl SaltLine {
             return;
         };
         let fx = self.g.saved_match(found);
+        self.apply(fx);
+    }
+
+    /// Hand the core the player's saved layouts (the slot file, or its
+    /// temporary copy if a write died before its rename, chosen as the
+    /// save's is) and the editor's draft, set aside first as the match is.
+    fn find_layouts(&mut self) {
+        let main = save::read(LAYOUTS_PATH);
+        let temp = save::read(LAYOUTS_TEMP_PATH);
+        let text = match durable::pick_by(main.as_deref(), temp.as_deref(), layouts_file::sound) {
+            durable::Pick::Main => main,
+            durable::Pick::Temp => temp,
+            durable::Pick::Empty => None,
+        };
+        self.g.set_layouts(text.as_deref());
+        let Some(found) =
+            resume::take_aside(&mut UserFiles, DRAFT_FILES, layouts_file::draft_sound)
+        else {
+            return;
+        };
+        let fx = self.g.saved_draft(found);
         self.apply(fx);
     }
 
@@ -1147,7 +1210,7 @@ fn title_volume_db(master: f32) -> f32 {
 }
 
 /// The keys the core reads, and the engine's names for them.
-const KEYS: [(input::Key, Key); 26] = [
+const KEYS: [(input::Key, Key); 33] = [
     (input::Key::Left, Key::LEFT),
     (input::Key::Right, Key::RIGHT),
     (input::Key::Up, Key::UP),
@@ -1172,6 +1235,13 @@ const KEYS: [(input::Key, Key); 26] = [
     (input::Key::M, Key::M),
     (input::Key::L, Key::L),
     (input::Key::D, Key::D),
+    (input::Key::E, Key::E),
+    (input::Key::T, Key::T),
+    (input::Key::Z, Key::Z),
+    (input::Key::Y, Key::Y),
+    (input::Key::I, Key::I),
+    (input::Key::X, Key::X),
+    (input::Key::P, Key::P),
     (input::Key::F1, Key::F1),
     (input::Key::Shift, Key::SHIFT),
 ];

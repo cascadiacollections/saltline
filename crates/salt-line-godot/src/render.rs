@@ -111,6 +111,7 @@ pub fn frame(
     match g.mode {
         Mode::Playing | Mode::Paused => p.render_play(),
         Mode::Versus => p.render_versus(),
+        Mode::Editor => p.render_editor(),
         _ => p.render_menu(),
     }
     if g.in_demo() {
@@ -625,15 +626,25 @@ impl Painter<'_> {
     }
 
     /// Menu lines are plates rather than "KEY  TEXT": on a touchscreen, and
-    /// for a controller on the seed keypad, where the focus moves over them.
+    /// for a controller on the seed keypad (seed entry, or the editor's
+    /// FORK A SEED and NAME), where the focus moves over them.
     fn plated(&self) -> bool {
-        self.g.input.touch_active
-            || (self.g.input.controller_active && self.g.mode == Mode::SeedEntry)
+        self.g.input.touch_active || (self.g.input.controller_active && self.on_keypad())
+    }
+
+    /// A page with the seed keypad on it is up.
+    fn on_keypad(&self) -> bool {
+        self.g.mode == Mode::SeedEntry
+            || (self.g.mode == Mode::Editor
+                && matches!(
+                    self.g.editor.page,
+                    crate::app::EditorPage::Seed | crate::app::EditorPage::Name
+                ))
     }
 
     /// The controller's keypad focus is on this action's plate.
     fn focused(&self, action: Action) -> bool {
-        self.g.mode == Mode::SeedEntry
+        self.on_keypad()
             && self.g.input.controller_active
             && !self.g.input.touch_active
             && self.g.input.seed_focus.action() == action
@@ -1376,23 +1387,41 @@ impl Painter<'_> {
         let fg = pal.get(slot::UI_FG);
         let dim = pal.get(slot::SKY_LO);
         let (w, h) = (self.canvas.w, self.canvas.h);
+        // A match's pause can also fork its round into the map editor
+        // (DESIGN §13.11); a run's cannot.
+        let fork = self.g.mode == Mode::Versus;
         if self.g.input.touch_active {
-            let top = (h - 64) / 2;
-            self.canvas.plate((w - 150) / 2, top, 150, 64, pal);
+            let ph = if fork { 80 } else { 64 };
+            let top = (h - ph) / 2;
+            self.canvas.plate((w - 150) / 2, top, 150, ph, pal);
             self.centred(top + 8, "PAUSED", fg);
             let y = self.menu_row(top + 26, Action::Confirm, "", "RESUME", fg);
-            self.menu_row(y, Action::Replay, "", "TITLE", dim);
+            let y = self.menu_row(y, Action::Replay, "", "TITLE", dim);
+            if fork {
+                self.menu_row(
+                    y,
+                    Action::Edit(crate::input::Ed::ForkRound),
+                    "",
+                    "MAKE MAP OF THIS ROUND",
+                    dim,
+                );
+            }
             return;
         }
-        self.canvas.plate((w - 150) / 2, (h - 48) / 2, 150, 48, pal);
-        self.centred((h - 48) / 2 + 8, "PAUSED", fg);
+        let ph = if fork { 58 } else { 48 };
+        self.canvas.plate((w - 150) / 2, (h - ph) / 2, 150, ph, pal);
+        self.centred((h - ph) / 2 + 8, "PAUSED", fg);
         let resume = self.g.input_label(Action::Confirm);
-        self.centred((h - 48) / 2 + 21, &format!("{resume} / BACK  RESUME"), fg);
+        self.centred((h - ph) / 2 + 21, &format!("{resume} / BACK  RESUME"), fg);
         let title = self.g.input_label(Action::Replay);
-        self.centred((h - 48) / 2 + 31, &format!("{title}  TITLE"), dim);
+        self.centred((h - ph) / 2 + 31, &format!("{title}  TITLE"), dim);
+        if fork {
+            self.centred((h - ph) / 2 + 41, "E  MAKE MAP OF THIS ROUND", dim);
+        }
     }
 }
 
+mod editor;
 mod versus;
 
 /// Where the demo's mode card sits: `(x, y, w, h)` in a buffer `buffer_w`
@@ -1948,8 +1977,11 @@ mod tests {
                 Action::Left,
                 Action::Right,
                 Action::Up,
+                Action::Edit(crate::input::Ed::GroundNext),
+                Action::Edit(crate::input::Ed::GroundPrev),
                 Action::Confirm,
-                Action::Back
+                Action::Back,
+                Action::Edit(crate::input::Ed::MakeMap)
             ]
         );
 
@@ -1988,7 +2020,14 @@ mod tests {
         vs.stage = VersusStage::Result;
         let (c, buttons) = draw(&g);
         screens.push(c);
-        assert_eq!(actions(&buttons), [Action::Confirm, Action::Replay]);
+        assert_eq!(
+            actions(&buttons),
+            [
+                Action::Confirm,
+                Action::Replay,
+                Action::Edit(crate::input::Ed::ForkRound)
+            ]
+        );
 
         for (i, c) in screens.iter().enumerate() {
             assert!(

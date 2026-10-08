@@ -89,7 +89,7 @@ impl Game {
         let want_w = self.pick_width();
         // A resumed match, or a match on a layout, keeps its width as a
         // resumed run does.
-        let in_run = matches!(self.mode, Mode::Playing | Mode::Paused)
+        let in_run = matches!(self.mode, Mode::Playing | Mode::Paused | Mode::Editor)
             || (self.mode == Mode::Versus && self.versus.live.is_some());
         if !in_run && self.display.kept_width {
             // A resumed run's width is done with: back to the device's.
@@ -97,6 +97,7 @@ impl Game {
             self.apply_buffer_size();
         } else if self.play.run.is_none()
             && self.versus.live.is_none()
+            && self.mode != Mode::Editor
             && want_w != self.display.buffer_w
         {
             // Not under a versus match either: its screen was generated

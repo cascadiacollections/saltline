@@ -1,0 +1,724 @@
+//! Drawing the map editor (DESIGN §13.11): its pages, the draft with its
+//! verdict, and test fire. Engine-free like the rest of `render`.
+//!
+//! # The editing screen
+//!
+//! ```text
+//!  ┌───────────────────────────────────────────────────────────┐
+//!  │ MENU   ⛔ LEFT GUN NOT ON GROUND            UNDO   REDO    │ row 1
+//!  │ SCULPT SMOOTH STAMP GUNS  WIND  MIRROR TEST                │ row 2
+//!  │ BRUSH  S  M  L                                            │ row 3
+//!  │                         sky                               │
+//!  │ ═╦═                                                  ═╦═  │
+//!  │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ the ground, edited ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+//!  │ RIDGE 4KQ2                                                │
+//!  └───────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! Every control sits in the top 69 rows (63 without a phone's corner
+//! pad), above the world's ceiling (`WORLD_CEIL`, 108, the top 72 rows of
+//! a 180-row buffer is sky whatever the ground does), so no button ever
+//! covers ground a finger means to sculpt, and each is 18 rows tall, as
+//! tall as the aim buttons (§13.11: no smaller). The rest of the screen is
+//! the canvas. The verdict is a symbol and a few words (§13.11): a stop
+//! sign and the first problem that blocks, a warning triangle for one that
+//! only warns, or a flag with READY and the fairness sign.
+
+use super::versus::side_slot;
+use super::*;
+use crate::app::{EditorPage as Page, TestFire, VersusCall as Call};
+use crate::editor::{
+    problem_gun, problem_words, wind_text, Brush, Editor, Fairness, Severity, Stamp, Tool,
+    WindField, WindMode,
+};
+use crate::input::Ed;
+use crate::versus::{self, Side};
+use salt_line_sim::layout::WindSpec;
+
+/// The editing screen's control rows: tall as the aim buttons.
+const ROW_H: i32 = 18;
+
+impl Painter<'_> {
+    /// A frame of the editor, whatever its page.
+    pub(super) fn render_editor(&mut self) {
+        match self.g.editor.page {
+            Page::Edit => self.render_edit(),
+            Page::Test => self.render_test(),
+            Page::Start | Page::Menu => self.render_editor_rows(),
+            Page::Seed | Page::Name => self.render_editor_keypad(),
+            Page::Slots(p) => self.render_editor_slots(p),
+        }
+    }
+
+    /// An editor button: a plate with a label, lit while a finger is on it
+    /// or when `on`.
+    fn ed_button(&mut self, x: i32, y: i32, w: i32, label: &str, ed: Ed, on: bool) {
+        let pal = self.pal;
+        self.canvas.plate(x, y, w, ROW_H, pal);
+        let lit = on || self.g.input.touch.held(Action::Edit(ed));
+        if on {
+            self.canvas
+                .rect_outline(x + 1, y + 1, w - 2, ROW_H - 2, pal.get(slot::ALERT));
+        }
+        let c = pal.get(if lit { slot::ALERT } else { slot::UI_FG });
+        let tx = x + (w - crate::font::small_width(label) as i32) / 2;
+        self.canvas.text_small(tx, y + (ROW_H - 5) / 2, label, c);
+        self.touch_button(Rect::new(x, y, w, ROW_H), Action::Edit(ed));
+    }
+
+    /// The calm menu backdrop, with a heading under the game's title
+    /// lettering. Returns the y for the page's first line.
+    fn editor_backdrop(&mut self, heading: &str) -> i32 {
+        let pal = self.pal;
+        let view = self.g.view();
+        raster::draw_sky(self.canvas, &view, pal);
+        let ey = self.g.display.corner_pad.1;
+        let y = 10 + ey;
+        let w = self.canvas.w;
+        let tracking = 6;
+        let title = "MAP EDITOR";
+        let tx = (w - title.chars().count() as i32 * tracking) / 2;
+        for (i, ch) in title.chars().enumerate() {
+            self.canvas.text_small(
+                tx + i as i32 * tracking,
+                y,
+                &ch.to_string(),
+                pal.get(slot::ALERT),
+            );
+        }
+        self.centred(y + 10, heading, pal.get(slot::SKY_LO));
+        y + 22
+    }
+
+    /// The status line, if a note is up, centred at `y`.
+    fn editor_status(&mut self, y: i32) {
+        if self.g.status_time > 0.0 {
+            let text = self.g.status.clone();
+            let w = crate::font::small_width(&text) as i32 + 8;
+            let x = (self.canvas.w - w) / 2;
+            self.canvas.plate(x, y - 3, w, 11, self.pal);
+            self.centred(y, &text, self.pal.get(slot::ALERT));
+        }
+    }
+
+    /// The UNDO toast, bottom right, if one is up.
+    fn editor_toast(&mut self) {
+        let Some(toast) = self.g.editor.toast.as_ref() else {
+            return;
+        };
+        let text = toast.text.clone();
+        let pal = self.pal;
+        let (ex, ey) = self.g.display.corner_pad;
+        let (w, h) = (self.canvas.w, self.canvas.h);
+        let tw = crate::font::small_width(&text) as i32;
+        let bw = 44;
+        let pw = tw + bw + 14;
+        let (x, y) = (w - pw - 3 - ex, h - ROW_H - 4 - ey);
+        self.canvas.plate(x, y - 1, pw, ROW_H + 2, pal);
+        self.canvas
+            .text_small(x + 5, y + (ROW_H - 5) / 2, &text, pal.get(slot::UI_FG));
+        self.ed_button(x + pw - bw - 1, y, bw, "UNDO", Ed::ToastUndo, false);
+    }
+
+    /// The start page and the menu: rows of plates, by touch or a focus.
+    fn render_editor_rows(&mut self) {
+        let menu = self.g.editor.page == Page::Menu;
+        let heading = if menu {
+            self.g
+                .editor
+                .ed
+                .as_ref()
+                .map_or("MENU".to_string(), crate::app::editor_label)
+        } else {
+            "MAKE A MAP FOR LOCAL VERSUS".to_string()
+        };
+        let mut y = self.editor_backdrop(&heading);
+        let pal = self.pal;
+        let touch = self.g.input.touch_active;
+        let pitch = if touch { 16 } else { 11 };
+        let rows = self.g.editor_rows();
+        let w = self.canvas.w;
+        for (i, (_, text)) in rows.iter().enumerate() {
+            let focused = !touch && self.g.editor.focus == i;
+            let tw = crate::font::small_width(text) as i32;
+            let (x, pw) = ((w - tw) / 2 - 12, tw + 24);
+            if touch {
+                self.canvas.plate(x, y - 4, pw, 13, pal);
+                self.touch_button(Rect::new(x, y - 5, pw, 15), Action::Edit(Ed::Row(i as u8)));
+            }
+            let lit = focused || self.g.input.touch.held(Action::Edit(Ed::Row(i as u8)));
+            if focused {
+                self.canvas
+                    .rect_outline(x, y - 4, pw, 13, pal.get(slot::ALERT));
+            }
+            let c = pal.get(if lit { slot::ALERT } else { slot::UI_FG });
+            self.centred(y, text, c);
+            y += pitch;
+        }
+        if !touch {
+            y += 2;
+            let hint = if self.g.input.controller_active {
+                "UP DOWN  A CHOOSE  B BACK"
+            } else {
+                "UP DOWN  ENTER CHOOSE  ESC BACK"
+            };
+            self.centred(y, hint, pal.get(slot::SKY_LO));
+            y += 10;
+        }
+        self.editor_status(y + 4);
+        self.editor_toast();
+    }
+
+    /// FORK A SEED and NAME: the typed text, the seed keypad, and OK.
+    fn render_editor_keypad(&mut self) {
+        let seed = self.g.editor.page == Page::Seed;
+        let mut y = self.editor_backdrop(if seed {
+            "FORK A SEED: A DUEL TO START FROM"
+        } else {
+            "NAME THIS MAP"
+        });
+        let pal = self.pal;
+        let (fg, dim, alert) = (
+            pal.get(slot::UI_FG),
+            pal.get(slot::SKY_LO),
+            pal.get(slot::ALERT),
+        );
+        let text = self.g.editor.text.clone();
+        self.centred(y, &format!("> {text}"), fg);
+        y += 10;
+        let w = self.canvas.w;
+        if self.plated() {
+            y = self.draw_seed_keypad(y) + 3;
+            if seed {
+                let round = format!("ROUND {}", self.g.editor.round + 1);
+                let tw = crate::font::small_width(&round) as i32;
+                let x = (w - tw) / 2;
+                self.ed_button(x - 30, y, 24, "-", Ed::RoundDown, false);
+                self.canvas.text_small(x, y + 6, &round, alert);
+                self.ed_button(x + tw + 6, y, 24, "+", Ed::RoundUp, false);
+                y += ROW_H + 6;
+            }
+            let ok = if seed { "FORK" } else { "OK" };
+            let y2 = self.menu_row(y + 4, Action::Confirm, "", ok, fg);
+            self.menu_row(y2, Action::Back, "", "BACK", dim);
+        } else {
+            y += 4;
+            if seed {
+                self.centred(
+                    y,
+                    &format!("ROUND {} (TAP + - ON A PHONE)", self.g.editor.round + 1),
+                    alert,
+                );
+                y += 10;
+                self.centred(y, "TYPE A SEED  ENTER FORK  ESC BACK", fg);
+            } else {
+                self.centred(y, "A-Z AND 0-9, UP TO 12  ENTER OK  ESC BACK", fg);
+            }
+        }
+        self.editor_status(self.canvas.h - 14);
+    }
+
+    /// The slot list: to open a map, or to save into a slot.
+    fn render_editor_slots(&mut self, purpose: crate::app::EditorPurpose) {
+        use crate::app::{EditorPurpose as Purpose, EDITOR_ROWS as VISIBLE_ROWS};
+        let open = purpose == Purpose::Open;
+        let mut y = self.editor_backdrop(if open {
+            "OPEN A MAP"
+        } else {
+            "SAVE INTO A SLOT - TAP ONE"
+        });
+        let pal = self.pal;
+        let rows = self.g.slot_rows(purpose);
+        let (top, sel) = (self.g.editor.list_top, self.g.editor.list_sel);
+        let w = self.canvas.w;
+        let (ex, ey) = self.g.display.corner_pad;
+        let (x, pw) = (16 + ex, w - 32 - 2 * ex);
+        for i in 0..VISIBLE_ROWS {
+            let Some(&row) = rows.get(top + i) else { break };
+            let (text, dimmed) = self.g.slot_row_text(row);
+            self.canvas.plate(x, y - 4, pw, 13, pal);
+            let chosen = top + i == sel;
+            if chosen {
+                self.canvas
+                    .rect_outline(x, y - 4, pw, 13, pal.get(slot::ALERT));
+            }
+            let c = pal.get(if dimmed {
+                slot::ROCK
+            } else if chosen {
+                slot::ALERT
+            } else {
+                slot::UI_FG
+            });
+            self.canvas.text_small(x + 6, y, &text, c);
+            self.touch_button(Rect::new(x, y - 5, pw, 15), Action::Edit(Ed::Row(i as u8)));
+            y += 16;
+        }
+        if rows.is_empty() {
+            self.centred(y, "NO MAPS SAVED YET", pal.get(slot::SKY_LO));
+        }
+        let by = self.canvas.h - ROW_H - 4 - ey;
+        let mut bx = 3 + ex;
+        let mut button = |p: &mut Self, label: &str, ed: Ed, bw: i32| {
+            p.ed_button(bx, by, bw, label, ed, false);
+            bx += bw + 3;
+        };
+        if rows.len() > VISIBLE_ROWS {
+            button(self, "<", Ed::PageUp, 24);
+            button(self, ">", Ed::PageDown, 24);
+        }
+        if open {
+            button(self, "OPEN", Ed::Open, 40);
+            button(self, "COPY", Ed::Copy, 40);
+            button(self, "DELETE", Ed::Delete, 48);
+        }
+        button(self, "BACK", Ed::Back, 40);
+        if !self.g.input.touch_active {
+            let hint = if open {
+                "ENTER OPEN  C COPY  X DELETE  ESC BACK"
+            } else {
+                "ENTER SAVE  ESC BACK"
+            };
+            self.centred(by - 9, hint, pal.get(slot::SKY_LO));
+        }
+        self.editor_status(by - 18);
+        self.editor_toast();
+    }
+
+    /// The editing screen. See the module docs.
+    fn render_edit(&mut self) {
+        let g = self.g;
+        let Some(ed) = g.editor.ed.as_ref() else {
+            return;
+        };
+        let pal = self.pal;
+        let view = View {
+            cam_x: 0,
+            w: g.display.buffer_w,
+            h: g.display.buffer_h,
+        };
+        let screen = crate::editor::screen_of(ed.layout());
+        sky::draw(
+            self.canvas,
+            &view,
+            pal,
+            sky::Phase::for_screen(0),
+            screen.seed,
+            0.0,
+        );
+        raster::draw_terrain(self.canvas, &view, &screen.field, pal);
+        let guns = Side::BOTH.map(|s| versus::muzzle_of(&screen, s).x);
+        raster::draw_ground_detail_around(self.canvas, &view, &screen, &guns, pal);
+        for side in Side::BOTH {
+            self.draw_gun(versus::muzzle_of(&screen, side), 600, side, &view);
+        }
+        // A mark over each gun a problem names.
+        let alert = pal.get(slot::ALERT);
+        for (p, _) in &ed.verdict.problems {
+            if let Some(i) = problem_gun(p) {
+                let side = if i == 0 { Side::Left } else { Side::Right };
+                let m = versus::muzzle_of(&screen, side);
+                let (x, y) = (view.sx(m.x) - 3, view.sy(m.y) - 20);
+                self.canvas.icon(
+                    x,
+                    y,
+                    &crate::icons::WARN,
+                    &[alert, pal.get(slot::UI_BG)],
+                    false,
+                );
+            }
+        }
+        if !g.input.touch_active {
+            self.draw_edit_cursor(ed, &screen.field, &view);
+        }
+        self.render_edit_bar(ed);
+        // The draft's name (or where it came from) and its fingerprint.
+        let (ex, ey) = g.display.corner_pad;
+        let label = crate::app::editor_label(ed);
+        let lw = crate::font::small_width(&label) as i32;
+        let h = self.canvas.h;
+        let ly = if g.input.touch_active {
+            h - 12 - ey
+        } else {
+            h - 22 - ey
+        };
+        self.canvas.plate(3 + ex, ly, lw + 8, 11, pal);
+        self.canvas
+            .text_small(7 + ex, ly + 3, &label, pal.get(slot::UI_FG));
+        if !g.input.touch_active {
+            let hint = if g.input.controller_active {
+                "LB RB TOOL  X Y OPTION  PAD MOVE  A APPLY  B MENU"
+            } else {
+                "[ ] TOOL  , . OPTION  ARROWS  ENTER  Z UNDO  I MIRROR  T TEST  ESC MENU"
+            };
+            let hw = crate::font::small_width(hint) as i32;
+            self.canvas.plate(3 + ex, h - 11 - ey, hw + 8, 10, pal);
+            self.canvas
+                .text_small(7 + ex, h - 8 - ey, hint, pal.get(slot::SKY_LO));
+        }
+        self.editor_status(80 + ey);
+        self.editor_toast();
+    }
+
+    /// Where keys and a controller act: a dotted line down to the ground
+    /// at the cursor and ticks at the brush's reach.
+    fn draw_edit_cursor(
+        &mut self,
+        ed: &Editor,
+        field: &salt_line_sim::terrain::Heightfield,
+        view: &View,
+    ) {
+        if matches!(ed.tool, Tool::Guns | Tool::Wind) {
+            return;
+        }
+        let pal = self.pal;
+        let alert = pal.get(slot::ALERT);
+        let c = ed.cursor as usize;
+        let x = view.sx(c as f64);
+        let top = 3 * ROW_H + 12 + self.g.display.corner_pad.1;
+        let ground = view.sy(field.surface(c.min(field.len() - 1)));
+        self.canvas.vline_dotted(x, top, ground - 2, alert, 2);
+        if matches!(ed.tool, Tool::Sculpt | Tool::Smooth) {
+            let r = ed.brush.radius();
+            for dx in [-r, r] {
+                let cx = (c as i32 + dx).clamp(0, field.len() as i32 - 1) as usize;
+                let gy = view.sy(field.surface(cx));
+                self.canvas.vline(x + dx, gy - 4, gy - 2, alert);
+            }
+        }
+    }
+
+    /// The editing screen's three rows of controls, and the verdict.
+    fn render_edit_bar(&mut self, ed: &Editor) {
+        let pal = self.pal;
+        let (ex, ey) = self.g.display.corner_pad;
+        let w = self.canvas.w;
+        let (fg, alert) = (pal.get(slot::UI_FG), pal.get(slot::ALERT));
+        // Row 1: MENU, the verdict, UNDO and REDO.
+        let y1 = 3 + ey;
+        self.ed_button(3 + ex, y1, 36, "MENU", Ed::Menu, false);
+        let (rx, bw) = (w - 3 - ex - 2 * 36 - 3, 36);
+        self.ed_button(rx, y1, bw, "UNDO", Ed::Undo, false);
+        self.ed_button(rx + bw + 3, y1, bw, "REDO", Ed::Redo, false);
+        let (sx, sw) = (3 + ex + 39, rx - 3 - (3 + ex + 39));
+        self.canvas.plate(sx, y1, sw, ROW_H, pal);
+        let v = &ed.verdict;
+        let block = v.problems.iter().find(|(_, s)| *s == Severity::Block);
+        let warn = v.problems.iter().find(|(_, s)| *s == Severity::Warn);
+        let (icon, colors, text, c) = match (block, warn) {
+            (Some((p, _)), _) => {
+                let more = v
+                    .problems
+                    .iter()
+                    .filter(|(_, s)| *s == Severity::Block)
+                    .count();
+                let text = if more > 1 {
+                    format!("{} +{}", problem_words(p), more - 1)
+                } else {
+                    problem_words(p)
+                };
+                (
+                    &crate::icons::STOP,
+                    [alert, pal.get(slot::UI_BG), fg],
+                    text,
+                    alert,
+                )
+            }
+            (None, Some((p, _))) => (
+                &crate::icons::WARN,
+                [alert, pal.get(slot::UI_BG), fg],
+                problem_words(p),
+                alert,
+            ),
+            (None, None) => {
+                let fair = v.fairness.map_or("", Fairness::label);
+                (
+                    &crate::icons::FLAG,
+                    [alert, pal.get(slot::UI_BG), fg],
+                    format!("READY - {fair}"),
+                    fg,
+                )
+            }
+        };
+        self.canvas.icon(sx + 4, y1 + 5, icon, &colors, false);
+        let tw = crate::font::small_width(&text) as i32;
+        let room = sw - 16;
+        // Too long for the plate (a narrow layout of buttons): the words
+        // are cut, never the plate overrun.
+        let text = if tw > room {
+            let n = (room / crate::font::SMALL_ADVANCE as i32).max(0) as usize;
+            text.chars().take(n).collect()
+        } else {
+            text
+        };
+        self.canvas.text_small(sx + 13, y1 + 7, &text, c);
+
+        // Row 2: the tools, MIRROR and TEST.
+        let y2 = y1 + ROW_H + 3;
+        let n = Tool::ALL.len() as i32 + 2;
+        let gap = 2;
+        let tw = (w - 6 - 2 * ex - (n - 1) * gap) / n;
+        let mut x = 3 + ex;
+        for t in Tool::ALL {
+            self.ed_button(x, y2, tw, t.label(), Ed::Tool(t), ed.tool == t);
+            x += tw + gap;
+        }
+        self.ed_button(x, y2, tw, "MIRROR", Ed::Mirror, ed.mirror);
+        x += tw + gap;
+        self.ed_button(x, y2, tw, "TEST", Ed::Test, false);
+
+        // Row 3: the tool's options.
+        let y3 = y2 + ROW_H + 3;
+        let x0 = 3 + ex;
+        match ed.tool {
+            Tool::Sculpt | Tool::Smooth => {
+                self.canvas.plate(x0, y3, 40, ROW_H, pal);
+                self.canvas.text_small(x0 + 7, y3 + 7, "BRUSH", fg);
+                let mut x = x0 + 43;
+                for b in Brush::ALL {
+                    self.ed_button(x, y3, 26, b.label(), Ed::Brush(b), ed.brush == b);
+                    x += 29;
+                }
+                let hint = if ed.tool == Tool::Sculpt {
+                    "DRAG UP OR DOWN"
+                } else {
+                    "DRAG TO SMOOTH"
+                };
+                self.canvas.plate(
+                    x,
+                    y3,
+                    crate::font::small_width(hint) as i32 + 10,
+                    ROW_H,
+                    pal,
+                );
+                self.canvas
+                    .text_small(x + 5, y3 + 7, hint, pal.get(slot::SKY_LO));
+            }
+            Tool::Stamp => {
+                let mut x = x0;
+                for s in Stamp::ALL {
+                    self.ed_button(x, y3, 46, s.label(), Ed::Stamp(s), ed.stamp == s);
+                    x += 49;
+                }
+            }
+            Tool::Guns => {
+                let hint = if ed.mirror {
+                    "DRAG A GUN - THE OTHER MIRRORS IT"
+                } else {
+                    "DRAG A GUN"
+                };
+                self.canvas.plate(
+                    x0,
+                    y3,
+                    crate::font::small_width(hint) as i32 + 10,
+                    ROW_H,
+                    pal,
+                );
+                self.canvas
+                    .text_small(x0 + 5, y3 + 7, hint, pal.get(slot::SKY_LO));
+            }
+            Tool::Wind => self.render_wind_row(ed, x0, y3),
+        }
+    }
+
+    /// WIND's options: CALM, RANGE or FIXED, then the numbers and - +.
+    fn render_wind_row(&mut self, ed: &Editor, x0: i32, y: i32) {
+        let pal = self.pal;
+        let wind = ed.layout().wind;
+        let mode = WindMode::of(&wind);
+        let mut x = x0;
+        for m in WindMode::ALL {
+            self.ed_button(x, y, 38, m.label(), Ed::WindMode(m), mode == m);
+            x += 40;
+        }
+        x += 4;
+        let fields: Vec<(WindField, String)> = match wind {
+            WindSpec::Calm => Vec::new(),
+            WindSpec::Fixed(w) => vec![(WindField::Fixed, wind_text(w))],
+            WindSpec::Range { min, max } => vec![
+                (WindField::Min, format!("MIN {}", wind_text(min))),
+                (WindField::Max, format!("MAX {}", wind_text(max))),
+            ],
+        };
+        if fields.is_empty() {
+            let hint = "NO WIND";
+            self.canvas
+                .plate(x, y, crate::font::small_width(hint) as i32 + 10, ROW_H, pal);
+            self.canvas
+                .text_small(x + 5, y + 7, hint, pal.get(slot::SKY_LO));
+            return;
+        }
+        let one = fields.len() == 1;
+        for (f, text) in &fields {
+            let bw = crate::font::small_width(text) as i32 + 10;
+            self.ed_button(
+                x,
+                y,
+                bw,
+                text,
+                Ed::WindField(*f),
+                !one && ed.wind_field == *f,
+            );
+            x += bw + 3;
+        }
+        self.ed_button(x, y, 24, "-", Ed::WindDown, false);
+        self.ed_button(x + 27, y, 24, "+", Ed::WindUp, false);
+    }
+
+    /// TEST FIRE: the draft's ground, both guns, a shot at a time.
+    fn render_test(&mut self) {
+        let g = self.g;
+        let Some(t) = g.editor.test.as_ref() else {
+            return;
+        };
+        let pal = self.pal;
+        let view = View {
+            cam_x: 0,
+            w: g.display.buffer_w,
+            h: g.display.buffer_h,
+        };
+        let screen = t.shown();
+        sky::draw(
+            self.canvas,
+            &view,
+            pal,
+            sky::Phase::for_screen(0),
+            screen.seed,
+            0.0,
+        );
+        raster::draw_terrain(self.canvas, &view, &screen.field, pal);
+        let guns = Side::BOTH.map(|s| versus::muzzle_of(screen, s).x);
+        raster::draw_ground_detail_around(self.canvas, &view, screen, &guns, pal);
+        let aiming = t.anim.is_none();
+        if aiming {
+            let ink = self.side_ink(t.side);
+            if let Some(mark) = t.landing[t.side.index()] {
+                raster::draw_chalk_inked(self.canvas, &view, &[mark], &screen.field, ink);
+            }
+            raster::draw_last_arc(self.canvas, &view, &t.arcs[t.side.index()], pal);
+        }
+        for side in Side::BOTH {
+            let m = versus::muzzle_of(screen, side);
+            self.draw_gun_marker(view.sx(m.x), view.sy(m.y), side, side == t.side);
+            let aim = if side == t.side {
+                g.play.angle_ticks
+            } else {
+                t.aims[side.index()].0
+            };
+            self.draw_gun(m, aim, side, &view);
+        }
+        if let Some(anim) = t.anim.as_ref() {
+            let ink = self.side_ink(t.side);
+            let upto = (anim.t / DT).floor().max(0.0) as usize;
+            for tr in &anim.traces {
+                if !tr.path.is_empty() {
+                    raster::draw_trajectory_inked(self.canvas, &view, &tr.path, upto, pal, ink);
+                }
+            }
+            let muzzle = anim
+                .traces
+                .first()
+                .map_or(versus::muzzle_of(&anim.before, t.side), |tr| tr.origin);
+            self.draw_anim_effects(anim, muzzle, ink, &view);
+        }
+        self.render_test_hud(t, aiming);
+    }
+
+    fn render_test_hud(&mut self, t: &TestFire, aiming: bool) {
+        let g = self.g;
+        let pal = self.pal;
+        let (ex, ey) = g.display.corner_pad;
+        let (w, h) = (self.canvas.w, self.canvas.h);
+        let fg = pal.get(slot::UI_FG);
+        // Who fires and the wind, each a button; the gate's count; DONE.
+        let y = 3 + ey;
+        let side_label = format!("{} GUN", t.side.name());
+        self.canvas.plate(3 + ex, y, 62, ROW_H, pal);
+        self.canvas
+            .rect_outline(4 + ex, y + 1, 60, ROW_H - 2, pal.get(side_slot(t.side)));
+        let lw = crate::font::small_width(&side_label) as i32;
+        self.canvas.text_small(
+            3 + ex + (62 - lw) / 2,
+            y + 7,
+            &side_label,
+            pal.get(side_slot(t.side)),
+        );
+        self.touch_button(Rect::new(3 + ex, y, 62, ROW_H), Action::Edit(Ed::TestSide));
+        let wind = t.wind();
+        let wind_label = if wind == 0 {
+            "CALM".to_string()
+        } else {
+            format!(
+                "WIND {}{}",
+                wind_text(wind.abs()),
+                if wind < 0 { " <" } else { " >" }
+            )
+        };
+        self.ed_button(68 + ex, y, 70, &wind_label, Ed::TestWind, false);
+        let gate = format!("GATE {}", t.count());
+        let gx = w - 3 - ex - 44 - 3 - 50;
+        self.canvas.plate(gx, y, 50, ROW_H, pal);
+        let ok = t.count() >= salt_line_sim::MIN_SOLUTIONS;
+        self.canvas.text_small(
+            gx + 6,
+            y + 7,
+            &gate,
+            pal.get(if ok { slot::UI_FG } else { slot::ALERT }),
+        );
+        self.ed_button(w - 3 - ex - 44, y, 44, "DONE", Ed::Back, false);
+        if let Some((side, call)) = t.last.filter(|_| t.anim.as_ref().is_some_and(Anim::done)) {
+            let word = match call {
+                Call::Hit => "HIT!",
+                Call::Miss => "MISS",
+                Call::Oops => "OOPS",
+            };
+            let c = if call == Call::Hit {
+                side_slot(side)
+            } else {
+                slot::UI_FG
+            };
+            let pw = crate::font::small_width(word) as i32 * 3 + 12;
+            self.canvas.plate((w - pw) / 2, 28 + ey, pw, 22, pal);
+            self.shout(w / 2, 32 + ey, word, c, 3);
+        }
+        if aiming {
+            let shot = Shot::new(g.play.angle_ticks, g.play.power_ticks).quantized(&Loadout::new());
+            let y = h - 8 - ey;
+            self.canvas
+                .text_small(3 + ex, y, &format!("PWR {}", shot.power_ticks), fg);
+            self.canvas.text_small(
+                3 + ex,
+                y - 7,
+                &format!("ANG {:.1}", shot.angle_degrees()),
+                fg,
+            );
+            if g.input.touch_active {
+                self.draw_test_controls();
+            } else {
+                let hint = if g.input.controller_active {
+                    "LB RB WIND  X Y GUN  A FIRE  B DONE"
+                } else {
+                    "ARROWS AIM  SPACE FIRE  [ ] WIND  , . GUN  ESC DONE"
+                };
+                self.centred(h - 22 - ey, hint, pal.get(slot::SKY_LO));
+            }
+        }
+        self.editor_status(56 + ey);
+    }
+
+    /// The aim buttons along the bottom, as in a match.
+    fn draw_test_controls(&mut self) {
+        let (w, h) = (self.canvas.w, self.canvas.h);
+        let (ex, ey) = self.g.display.corner_pad;
+        let (bw, bh) = (22, 18);
+        let y = h - bh - 3 - ey;
+        if self.g.drag_aiming() {
+            return;
+        }
+        let x0 = 44 + ex;
+        self.draw_touch_button(x0, y, bw, bh, "<", Action::Left);
+        self.draw_touch_button(x0 + bw + 3, y, bw, bh, ">", Action::Right);
+        self.draw_touch_button(x0 + 2 * bw + 12, y, bw, bh, "-", Action::Down);
+        self.draw_touch_button(x0 + 3 * bw + 15, y, bw, bh, "+", Action::Up);
+        self.draw_touch_button(w - 16 - 40 - ex, y, 40, bh, "FIRE", Action::Fire);
+    }
+}

@@ -59,6 +59,9 @@ pub struct DevArgs {
     /// share code (DESIGN §13), at its first handoff. A code that does not
     /// read or pass leaves the title up with a note.
     pub layout: Option<String>,
+    /// `--salt-editor`: open the map editor at once (DESIGN §13.11), on the
+    /// kept draft if there is one, or on `--salt-layout`'s code if given.
+    pub editor: bool,
     /// `--salt-fork-run <seed>:<screen>`: print the share code of that run
     /// screen forked into a layout, and quit (`custom::fork_report`).
     pub fork_run: Option<String>,
@@ -86,6 +89,7 @@ impl DevArgs {
             versus: flag(args, "--salt-versus"),
             demo: flag(args, "--salt-demo"),
             layout: value(args, "--salt-layout"),
+            editor: flag(args, "--salt-editor"),
             fork_run: value(args, "--salt-fork-run"),
             fork_duel: value(args, "--salt-fork-duel"),
         }
@@ -154,6 +158,7 @@ mod tests {
                 versus: false,
                 demo: false,
                 layout: None,
+                editor: false,
                 fork_run: None,
                 fork_duel: None,
             }
