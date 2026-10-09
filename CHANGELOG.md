@@ -12,6 +12,10 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- The level editor and its test-fire now show the biome a layout's seed
+  gives in a versus match (Snow, Forest or Salt). It is derived from the
+  seed, so layout codes are unchanged.
+
 - Biome polish: snow settles on top of standing structures and moss on forest
   ones, impacts throw white powder in snow and dark earth in forest, and
   versus matches take a biome too (their dust stays dark so side colours

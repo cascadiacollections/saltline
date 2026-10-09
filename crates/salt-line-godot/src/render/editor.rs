@@ -319,7 +319,7 @@ impl Painter<'_> {
             &view,
             pal,
             sky::Phase::for_screen(0),
-            crate::biome::Biome::Salt,
+            crate::biome::Biome::for_run(screen.seed, 0, None),
             screen.seed,
             0.0,
             &screen,
@@ -625,7 +625,7 @@ impl Painter<'_> {
             &view,
             pal,
             sky::Phase::for_screen(0),
-            crate::biome::Biome::Salt,
+            crate::biome::Biome::for_run(screen.seed, 0, None),
             screen.seed,
             0.0,
             screen,
@@ -662,7 +662,13 @@ impl Painter<'_> {
                 .traces
                 .first()
                 .map_or(versus::muzzle_of(&anim.before, t.side), |tr| tr.origin);
-            self.draw_anim_effects(anim, muzzle, ink, crate::biome::Biome::Salt, &view);
+            self.draw_anim_effects(
+                anim,
+                muzzle,
+                ink,
+                crate::biome::Biome::for_run(screen.seed, 0, None),
+                &view,
+            );
         }
         self.render_test_hud(t, aiming);
     }
