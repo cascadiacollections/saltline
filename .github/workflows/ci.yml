@@ -75,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.platforms.outputs.playable) }}
+        os: ${{ fromJSON(needs.platforms.outputs.sim) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -526,27 +526,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            preset: Linux
-            output: SaltLine.x86_64
-            zip: SaltLine-linux-x86_64.zip
-          # Linux on ARM (Raspberry Pi 5, Ampere, Asahi, Snapdragon laptops),
-          # built, exported and smoke-launched natively on the arm64 runner:
-          # its own GDExtension, its own portal bridge, the editor's arm64
-          # build. Nothing is cross-compiled or emulated.
-          - os: ubuntu-24.04-arm
-            preset: Linux ARM64
-            output: SaltLine.arm64
-            zip: SaltLine-linux-arm64.zip
-          - os: macos-latest
-            preset: macOS
-            output: SaltLine.app
-            zip: SaltLine-macos.zip
-          - os: windows-latest
-            preset: Windows Desktop
-            output: SaltLine.exe
-            zip: SaltLine-windows-x86_64.zip
+        include: ${{ fromJSON(needs.platforms.outputs.playable) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
