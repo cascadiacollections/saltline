@@ -225,7 +225,7 @@ impl Game {
                     }
                 } else if self.action_pressed(Action::Challenges) {
                     self.play(Sound::Ui);
-                    self.start_challenge(0);
+                    self.start_challenge(self.next_challenge());
                 } else if self.action_pressed(Action::Demo) {
                     // Like versus, the demo never touches the kept run.
                     self.start_demo(DemoStarted::Menu);
@@ -302,7 +302,9 @@ impl Game {
             }
             Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::GameOver => {
-                if self.action_pressed(Action::Copy) {
+                if self.play.challenge.is_some() && self.action_pressed(Action::Copy) {
+                    // A challenge is a fixed layout, not a seed to share.
+                } else if self.action_pressed(Action::Copy) {
                     // Seed sharing: the seed is the whole run, so the
                     // clipboard is the whole share format.
                     let seed = format_seed(self.play.last_seed);
@@ -311,11 +313,17 @@ impl Game {
                 } else if self.action_pressed(Action::Confirm) || self.action_pressed(Action::Back)
                 {
                     self.mode = Mode::Title;
+                } else if self.play.challenge.is_some() && self.action_pressed(Action::Replay) {
+                    // A failed course tries the same one again; a finished
+                    // one starts over.
+                    let failed = self.play.run.as_ref().is_some_and(|r| r.is_over());
+                    let index = self.play.challenge.unwrap_or(0);
+                    self.start_challenge(if failed { index } else { 0 });
                 } else if self.action_pressed(Action::Replay) {
                     let seed = self.play.last_seed;
                     let daily = self.play.daily;
                     self.start_run(seed, daily);
-                } else if self.action_pressed(Action::Watch) {
+                } else if self.play.challenge.is_none() && self.action_pressed(Action::Watch) {
                     // WATCH the run just ended, then back to this screen.
                     self.watch_last_run();
                 }

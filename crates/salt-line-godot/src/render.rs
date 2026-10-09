@@ -335,11 +335,13 @@ impl Painter<'_> {
                 );
                 if !self.plated() {
                     let challenges = self.g.input_label(Action::Challenges);
+                    let total = salt_line_sim::challenge::ALL.len();
+                    let cleared = self.g.save.challenges.len();
                     y = self.menu_row(
                         y,
                         Action::Challenges,
-                        &format!("{challenges}  CHALLENGES"),
-                        "CHALLENGES",
+                        &format!("{challenges}  CHALLENGES {cleared}/{total}"),
+                        &format!("CHALLENGES {cleared}/{total}"),
                         alert,
                     );
                 }
@@ -585,7 +587,24 @@ impl Painter<'_> {
                 };
                 self.centred(y, heading, alert);
                 y += 14;
-                if let Some(run) = self.g.play.run.as_ref() {
+                if let Some(index) = self.g.play.challenge {
+                    let bests = salt_line_sim::challenge::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| match self.g.save.challenge_best(i) {
+                            Some(left) => format!("{} {left}", c.name),
+                            None => format!("{} -", c.name),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("   ");
+                    let name = salt_line_sim::challenge::get(index).map_or("", |c| c.name);
+                    self.centred(y, name, fg);
+                    y += 8;
+                    self.centred(y, &bests, dim);
+                    y += 8;
+                    self.centred(y, "BEST SHELLS LEFT", dim);
+                    y += 14;
+                } else if let Some(run) = self.g.play.run.as_ref() {
                     let (screens, shells, shots) = run.score();
                     let seed = run.run_seed;
                     self.centred(y, &format!("{screens} SCREENS CLEARED"), fg);
@@ -597,15 +616,25 @@ impl Painter<'_> {
                 }
                 // WATCH only for a run kept to watch (not a `--salt-screen`
                 // jump, whose log cannot rebuild it).
-                let rows: Vec<(Action, &str)> = [
-                    (Action::Replay, "SAME SEED AGAIN"),
-                    (Action::Watch, "WATCH"),
-                    (Action::Copy, "COPY SEED"),
-                    (Action::Confirm, "TITLE"),
-                ]
-                .into_iter()
-                .filter(|&(a, _)| a != Action::Watch || self.g.history.last_run.is_some())
-                .collect();
+                let challenge = self.g.play.challenge.is_some();
+                let rows: Vec<(Action, &str)> = if challenge {
+                    let again = if challenge_over {
+                        "RETRY"
+                    } else {
+                        "PLAY AGAIN"
+                    };
+                    vec![(Action::Replay, again), (Action::Confirm, "TITLE")]
+                } else {
+                    [
+                        (Action::Replay, "SAME SEED AGAIN"),
+                        (Action::Watch, "WATCH"),
+                        (Action::Copy, "COPY SEED"),
+                        (Action::Confirm, "TITLE"),
+                    ]
+                    .into_iter()
+                    .filter(|&(a, _)| a != Action::Watch || self.g.history.last_run.is_some())
+                    .collect()
+                };
                 let labels: Vec<(String, &str)> = rows
                     .iter()
                     .map(|&(action, text)| (self.g.input_label(action), text))
