@@ -185,10 +185,9 @@ fn draw_snow(
     let step = (time * 2.0).floor() as u64;
     for i in 0..18 {
         let h = hash(seed ^ 0x534e_4f57 ^ (i as u64).wrapping_mul(0x9e37_79b9));
-        let x = ((h % view.w.max(1) as u64) as i32 + step as i32 * ((i % 3) as i32 - 1))
-            .rem_euclid(view.w);
+        let x = ((h % view.w.max(1) as u64) as i32 + step as i32 * (i % 3 - 1)).rem_euclid(view.w);
         let span = (view.h - 115).max(20);
-        let y = 20 + ((h >> 20) as i32 + step as i32 * (1 + (i % 2) as i32)) % span;
+        let y = 20 + ((h >> 20) as i32 + step as i32 * (1 + i % 2)) % span;
         if open(x, y) {
             canvas.put(
                 x,
