@@ -222,6 +222,31 @@ fn a_pad_can_start_a_run_and_the_prompts_follow_it() {
 }
 
 #[test]
+fn a_phone_remembers_the_controller_across_launches() {
+    let mut g = Game::new(true, Save::default());
+    assert!(g.input.touch_active);
+    tick(&mut g, pads(&[Pad::A]));
+    assert_eq!(g.save.controller, Some(true));
+    let reloaded = Game::new(true, Save::parse(&g.save.serialize()));
+    assert!(reloaded.input.controller_active && !reloaded.input.touch_active);
+
+    let mut g = reloaded;
+    tick(
+        &mut g,
+        Intents {
+            events: vec![Event::FingerDown {
+                index: 0,
+                x: 15.0,
+                y: 15.0,
+            }],
+            ..Intents::default()
+        },
+    );
+    assert_eq!(g.save.controller, Some(false));
+    assert!(Game::new(true, g.save.clone()).input.touch_active);
+}
+
+#[test]
 fn back_pauses_and_back_again_resumes() {
     let mut g = playing(1);
     tick(&mut g, keys(&[Key::Escape]));

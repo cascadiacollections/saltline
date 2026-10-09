@@ -12,6 +12,8 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- The controller is remembered: a phone that was last played with a gamepad
+  starts in controller mode instead of touch, until you touch the screen.
 - `just ios release` and `just ios-project release` build the iOS app with the
   optimised Rust library and Godot release template; the default stays debug.
 - Cosmetic world biomes for play: normal runs now deterministically rotate

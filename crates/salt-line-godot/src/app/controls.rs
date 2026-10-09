@@ -147,6 +147,17 @@ impl Game {
         keyboard + buttons + stick + self.input.touch.repeated(action)
     }
 
+    /// Remember whether the controller was the device in use, so the next
+    /// launch starts there. Written through the settings debounce, and only
+    /// when the answer changes.
+    pub(super) fn sync_input_pref(&mut self) {
+        let now = self.input.controller_active && !self.input.touch_active;
+        if now != self.save.controller.unwrap_or(false) {
+            self.save.controller = Some(now);
+            self.settings.touch();
+        }
+    }
+
     /// What a prompt calls an action on the device in use.
     pub(crate) fn input_label(&self, action: Action) -> String {
         if self.input.touch_active {
