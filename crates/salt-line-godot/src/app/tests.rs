@@ -222,6 +222,17 @@ fn a_pad_can_start_a_run_and_the_prompts_follow_it() {
 }
 
 #[test]
+fn a_challenge_carries_a_hint_arc_and_a_normal_run_leaves_none_behind() {
+    let mut g = game();
+    g.start_challenge(0);
+    assert_eq!(g.play.challenge, Some(0));
+    assert!(!g.play.hint_arc.is_empty());
+    g.start_run(7, false);
+    assert_eq!(g.play.challenge, None);
+    assert!(g.play.hint_arc.is_empty());
+}
+
+#[test]
 fn a_phone_remembers_the_controller_across_launches() {
     let mut g = Game::new(true, Save::default());
     assert!(g.input.touch_active);

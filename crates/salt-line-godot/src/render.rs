@@ -849,6 +849,17 @@ impl Painter<'_> {
             raster::draw_last_arc_on(self.canvas, &view, &self.g.play.last_arc, pal, under);
         }
 
+        // A challenge's hint appears once a shell is spent, so a fresh course
+        // stays clean.
+        if self.g.play.anim.is_none()
+            && !self.g.play.hint_arc.is_empty()
+            && run.shots_on_screen > 0
+            && !run.screen.cleared()
+        {
+            let under = |x, y| self.cache.backdrop.under(x, y);
+            raster::draw_hint_arc_on(self.canvas, &view, &self.g.play.hint_arc, pal, under);
+        }
+
         self.draw_structures(&screen, &view);
         self.draw_player(&screen, &loadout, &view);
 

@@ -676,6 +676,20 @@ pub fn draw_last_arc_on(
     }
 }
 
+/// A challenge's solver hint: a sparser, fainter dotted arc than the last
+/// shot's, so the two read apart when they overlap.
+pub fn draw_hint_arc_on(
+    canvas: &mut Canvas,
+    view: &View,
+    path: &[salt_line_sim::Vec2],
+    pal: &Palette,
+    under: impl Fn(i32, i32) -> Rgba,
+) {
+    for p in path.iter().step_by(7) {
+        canvas.put_blend_on(view.sx(p.x), view.sy(p.y), pal.get(slot::ALERT), 90, &under);
+    }
+}
+
 /// Chalk Marks: the previous shot's landing point stays marked on the terrain.
 pub fn draw_chalk(
     canvas: &mut Canvas,

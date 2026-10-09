@@ -12,6 +12,8 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- Challenge hints: once you spend a shell, a faint dotted ghost arc shows a
+  solving shot. Nothing is drawn on a fresh course.
 - The controller is remembered: a phone that was last played with a gamepad
   starts in controller mode instead of touch, until you touch the screen.
 - `just ios release` and `just ios-project release` build the iOS app with the
@@ -99,6 +101,8 @@ second. See RELEASING.md for the release steps.
 
 ### Fixed
 
+- Starting a normal run after a challenge no longer keeps the challenge's
+  rules (no score, challenge result screen).
 - The Linux download now carries the game's libraries beside the binary.
   The zip used to hold the binary alone, which could not load the game; CI
   now unpacks each Linux zip on its own and launches it from there.

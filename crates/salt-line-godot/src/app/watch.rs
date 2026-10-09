@@ -765,6 +765,8 @@ impl Game {
                 let run = RunState::new(replay.run_seed, replay.width);
                 self.play.last_seed = run.run_seed;
                 self.play.daily = daily;
+                self.play.challenge = None;
+                self.play.hint_arc.clear();
                 self.play.run = Some(run);
                 self.mode = Mode::Playing;
                 self.new_preview();

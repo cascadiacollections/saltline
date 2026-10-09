@@ -871,6 +871,9 @@ pub(crate) struct Play {
     pub(crate) preview_epoch: u32,
     /// The active bundled challenge index, or `None` for a normal run.
     pub(crate) challenge: Option<usize>,
+    /// The solver's ghost arc for the challenge on screen, shown once the
+    /// player has spent a shell. Empty outside challenges.
+    pub(crate) hint_arc: Vec<Vec2>,
 }
 
 impl Default for Play {
@@ -891,6 +894,7 @@ impl Default for Play {
             low_shell_warned: false,
             preview_epoch: 0,
             challenge: None,
+            hint_arc: Vec::new(),
         }
     }
 }
@@ -1835,6 +1839,8 @@ impl Game {
     /// Show one of `gallery`'s runs, as a frame of play with nothing else on
     /// screen.
     pub fn show_gallery_run(&mut self, run: RunState) {
+        self.play.challenge = None;
+        self.play.hint_arc.clear();
         self.play.run = Some(run);
         self.mode = Mode::Playing;
         self.status_time = 0.0;
