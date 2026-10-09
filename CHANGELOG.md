@@ -12,6 +12,10 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- Three more cosmetic biomes: Desert (cactus silhouettes, heat shimmer),
+  Night (moon and stars) and Volcanic (rising embers, glowing caps). Runs
+  pick among six themes from existing run data, so seeds, saves and replays
+  are unchanged; challenges 4-6 use the new ones.
 - Five more challenges (PAIR, TIGHT, GALE, TRIO, STORM): two- and
   three-target layouts and stronger wind, for eight in all. Each is a
   validated, solvable layout.
