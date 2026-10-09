@@ -379,6 +379,8 @@ impl Game {
         self.run_file.run_saved_len = Some(run.log.len());
         self.run_file.run_persist = true;
         self.run_file.resumed = true;
+        self.play.challenge = None;
+        self.play.hint_arc.clear();
         self.play.run = Some(run);
         self.mode = Mode::Playing;
         self.new_preview();

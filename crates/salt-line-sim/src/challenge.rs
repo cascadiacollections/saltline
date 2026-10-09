@@ -8,6 +8,7 @@ use crate::layout::Layout;
 use crate::modifiers::Loadout;
 use crate::run::Screen;
 use crate::solver::{self, Candidate};
+use crate::Vec2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Challenge {
@@ -52,6 +53,23 @@ pub fn hints(challenge: Challenge) -> Vec<Candidate> {
     solver::solve_target(&screen, &Loadout::new(), 0)
 }
 
+/// The first solver hint flown on the untouched layout: the path of its shell,
+/// for drawing as a ghost arc. Empty when the layout has no hint.
+pub fn hint_path(challenge: Challenge) -> Vec<Vec2> {
+    let Some(hint) = hints(challenge).into_iter().next() else {
+        return Vec::new();
+    };
+    let layout = layout(challenge);
+    let mut screen = Screen::from_layout(&layout, layout.wind.draw(challenge.seed));
+    let report = screen.apply_shot(hint.shot, &Loadout::new(), Some(0.0), true);
+    report
+        .traces
+        .into_iter()
+        .next()
+        .map(|t| t.path)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,6 +83,7 @@ mod tests {
             assert!(!layout.structures.is_empty());
             assert!(validate(&layout).is_ok(), "{}", challenge.name);
             assert!(!hints(challenge).is_empty(), "{}", challenge.name);
+            assert!(hint_path(challenge).len() > 10, "{}", challenge.name);
         }
     }
 }

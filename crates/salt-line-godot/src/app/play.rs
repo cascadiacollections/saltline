@@ -47,6 +47,8 @@ impl Game {
         self.play.low_shell_warned = false;
         self.play.last_seed = seed;
         self.retire_last_crash();
+        self.play.challenge = None;
+        self.play.hint_arc.clear();
         self.play.run = Some(state);
         self.mode = Mode::Playing;
         self.apply_buffer_size();
@@ -64,6 +66,7 @@ impl Game {
         self.set_run_width(Some(layout.width()));
         let run = RunState::from_challenge(&challenge, &layout);
         self.play.challenge = Some(index);
+        self.play.hint_arc = salt_line_sim::challenge::hint_path(challenge);
         self.play.angle_ticks = 900;
         self.play.power_ticks = 600;
         self.play.anim = None;
@@ -82,11 +85,7 @@ impl Game {
         self.new_preview();
         self.mode = Mode::Playing;
         self.apply_buffer_size();
-        let hint_count = salt_line_sim::challenge::hints(challenge).len();
-        self.note(format!(
-            "{}  {} SHOTS  HINTS {}",
-            challenge.name, challenge.shots, hint_count
-        ));
+        self.note(format!("{}  {} SHOTS", challenge.name, challenge.shots));
     }
 
     /// Level inspector: drop straight onto a screen index without playing the
@@ -253,6 +252,7 @@ impl Game {
                         let layout = salt_line_sim::challenge::layout(next);
                         self.play.run = Some(RunState::from_challenge(&next, &layout));
                         self.play.challenge = Some(index + 1);
+                        self.play.hint_arc = salt_line_sim::challenge::hint_path(next);
                         self.play.angle_ticks = 900;
                         self.play.power_ticks = 600;
                         self.play.last_arc.clear();
