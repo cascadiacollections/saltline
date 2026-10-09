@@ -14,7 +14,7 @@
 //! run <seed> <screens> <shells> <shots> <daily>
 //! ```
 //!
-//! Optional lines (`touch_aim`, `arc_hint`, `last_arc`, `idle_demo`) appear
+//! Optional lines (`touch_aim`, `arc_hint`, `last_arc`, `idle_demo`, `controller`) appear
 //! only once the player has chosen a value; there is one `bind` line per overridden action and
 //! one `run` line per board entry, best first.
 //!
@@ -189,6 +189,10 @@ pub struct Save {
     /// §12). `None` until the player toggles it in Controls, so a save from
     /// before the demo existed reads as the default, which is on.
     pub idle_demo: Option<bool>,
+    /// The last input device was a controller, so a phone paired with one
+    /// starts in controller mode instead of touch. `None` until a device
+    /// other than the default is used.
+    pub controller: Option<bool>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
@@ -208,6 +212,7 @@ impl Default for Save {
             arc_hint: None,
             last_arc: None,
             idle_demo: None,
+            controller: None,
             from_the_future: false,
         }
     }
@@ -253,6 +258,13 @@ impl Save {
                 Some("arc_hint") => save.arc_hint = it.next().and_then(ArcHint::from_token),
                 Some("last_arc") => {
                     save.last_arc = match it.next() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    }
+                }
+                Some("controller") => {
+                    save.controller = match it.next() {
                         Some("1") => Some(true),
                         Some("0") => Some(false),
                         _ => None,
@@ -341,6 +353,9 @@ impl Save {
         }
         if let Some(on) = self.idle_demo {
             out.push_str(&format!("idle_demo {}\n", on as u8));
+        }
+        if let Some(on) = self.controller {
+            out.push_str(&format!("controller {}\n", on as u8));
         }
         for (action, key, pad) in &self.bindings {
             out.push_str(&format!("bind {action} {key} {pad}\n"));
@@ -617,6 +632,19 @@ mod tests {
     }
 
     #[test]
+    fn the_controller_preference_is_saved_only_once_chosen() {
+        assert!(!Save::default().serialize().contains("controller"));
+        for on in [true, false] {
+            let chosen = Save {
+                controller: Some(on),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&chosen.serialize()).controller, Some(on));
+        }
+        assert_eq!(Save::parse("controller maybe\n").controller, None);
+    }
+
+    #[test]
     fn the_idle_demo_setting_defaults_for_old_saves_and_is_saved_once_toggled() {
         // A save from before the demo has no line: not chosen, so the
         // game's default (on) applies, and nothing new is written for it.
@@ -712,7 +740,7 @@ mod tests {
 
             #[test]
             fn any_line_soup_parses_without_panicking(
-                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
+                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|controller|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
             ) {
                 let _ = Save::parse(&lines.join("\n"));
             }

@@ -1064,6 +1064,10 @@ impl Game {
         };
         g.display.mobile = mobile;
         g.input.touch_active = mobile;
+        if g.save.controller == Some(true) {
+            g.input.controller_active = true;
+            g.input.touch_active = false;
+        }
         // Rounded screen corners (Pixel 10: 138 px radius at 1080 px tall):
         // 10 buffer pixels in from the side and 6 down keeps HUD text and
         // buttons comfortably inside the curve without raising the buttons
@@ -1263,6 +1267,9 @@ impl Game {
         self.persist_run();
         self.persist_match();
         self.persist_draft();
+        if !self.in_demo() && !self.watching() {
+            self.sync_input_pref();
+        }
         self.tick_settings(delta);
         self.watch_input_quiet(delta, input);
         if (demo_before && self.in_demo()) || (watch_before && self.watching()) {
