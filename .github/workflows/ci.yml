@@ -1017,6 +1017,25 @@ jobs:
         run: cargo build -p salt-line-godot
       - name: import assets
         run: bash tools/godot_headless.sh --frame-delay 800 --import
+      # The stripped engine (docs/godot-templates.md): fetched from the
+      # godot-templates release that tools/godot_templates.lock.json pins and
+      # checked against its sha256. A lock written for other build inputs
+      # falls back to the official template with a warning, except on a tag.
+      - name: stripped engine template
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -eu
+          set --
+          if [ "$IS_TAG" = "true" ]; then set -- --require; fi
+          python3 tools/godot_template.py fetch --out "$RUNNER_TEMP/godot-templates" "$@"
+          engine="$RUNNER_TEMP/godot-templates/libgodot.android.template_release.arm64.so"
+          if [ -f "$engine" ]; then
+            python3 tools/godot_template.py package-android "$engine" \
+              --out "$RUNNER_TEMP/godot-templates/android_release.apk"
+            python3 tools/godot_template.py use Android "$RUNNER_TEMP/godot-templates/android_release.apk"
+          fi
       - name: export the APK
         env:
           # Kept out of GITHUB_ENV so the password lives only in this step.
@@ -1222,7 +1241,8 @@ jobs:
   # whole Cargo dependency tree (cargo-cyclonedx reads Cargo.lock; syft over the
   # exported binaries would find nothing, since a stripped cdylib carries no
   # crate list), plus the two binary dependencies Cargo cannot see, the Godot
-  # export templates and the Linux XDG Portals bridge (tools/release_sbom.py).
+  # export templates (and the stripped Android engine when it is pinned) and
+  # the Linux XDG Portals bridge (tools/release_sbom.py).
   # Default features only, which is what ships; every target, since the
   # release spans seven. Dev-dependencies are left out and build-only crates
   # (proc macros, codegen) are kept but marked `excluded`. CycloneDX JSON,

@@ -38,6 +38,12 @@ bash tools/godot_headless.sh --export-release "Linux" build/SaltLine.x86_64
 `--import` is not optional on a clean checkout: without it the export succeeds
 and ships with no art in it.
 
+The Android release APK runs on a Godot engine built from source without the
+parts the game never uses (about half the APK; `docs/godot-templates.md`).
+CI fetches it from the build `tools/godot_templates.lock.json` pins. Locally,
+`just godot-template` builds it and `just android-release` exports and
+installs a release APK on it.
+
 ---
 
 ## Release checklist
@@ -66,6 +72,11 @@ step that no amount of CI will cover.
       and renders a frame** (the smoke job). This waits on the rendered PNG
       rather than the exit code, because a Godot-exported Windows binary is
       GUI-subsystem and returns 0 the instant it is started
+- [ ] The `android` job exported on the stripped engine: its "stripped
+      engine template" step printed the sha256 matching the lock, with no
+      "exporting with the official Godot templates" warning (a tag fails
+      instead, but a dev build may have fallen back; see
+      `docs/godot-templates.md`)
 - [ ] `.sha256` published next to each artifact
 - [ ] Every download has a signed build provenance attestation, and the game
       files an SBOM attestation for `SaltLine-sbom.cdx.json` (the `release`
@@ -95,7 +106,9 @@ step that no amount of CI will cover.
       notarized release), confirm it runs, on Apple silicon **and** on an
       Intel Mac: CI never launches the universal build's x86_64 half
 - [ ] Android: install the release APK over the previous release (same key,
-      higher versionCode) and confirm the save survives
+      higher versionCode) and confirm the save survives; play a run, a
+      versus match, the editor and a replay, with sound, since the engine is
+      stripped (`docs/godot-templates.md`, "Adding something back")
 - [ ] Windows: run the `.exe`, work through SmartScreen, confirm it runs
 - [ ] Verify the published `.sha256` against the downloaded file, and its
       provenance with `gh attestation verify` (see "Verifying a download")

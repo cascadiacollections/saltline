@@ -140,6 +140,35 @@ android: android-apk
     "{{ adb }}" shell am force-stop com.cascadiacollections.saltline
     "{{ adb }}" shell monkey -p com.cascadiacollections.saltline -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 
+# Build Salt Line's stripped Godot engine from source (docs/godot-templates.md) into
+# build/godot-templates: `android` (arm64) or `linux` (x86_64). Needs SCons (or uv) and, for
+# Android, the SDK; the first build takes 5-40 minutes depending on the machine.
+godot-template platform="android":
+    python3 tools/godot_template.py build {{ platform }}
+
+# Release APK at build/SaltLine-release.apk on the stripped engine (run `just godot-template`
+# first), signed with the editor's debug key so it installs over `just android` and keeps the
+# saves. Set GODOT_ANDROID_KEYSTORE_RELEASE_PATH/_USER/_PASSWORD to sign with another key.
+android-release: build (android-lib "release")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    engine=build/godot-templates/libgodot.android.template_release.arm64.so
+    [ -f "$engine" ] || { echo "error: no $engine; run 'just godot-template' first" >&2; exit 1; }
+    python3 tools/godot_template.py package-android "$engine"
+    backup=$(mktemp)
+    cp export_presets.cfg "$backup"
+    trap 'cp "$backup" export_presets.cfg; rm -f "$backup"' EXIT
+    python3 tools/godot_template.py use Android "$PWD/build/godot-templates/android_release.apk"
+    bash tools/godot_headless.sh --frame-delay 800 --import
+    export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="${GODOT_ANDROID_KEYSTORE_RELEASE_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/godot/keystores/debug.keystore}"
+    export GODOT_ANDROID_KEYSTORE_RELEASE_USER="${GODOT_ANDROID_KEYSTORE_RELEASE_USER:-androiddebugkey}"
+    export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="${GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD:-android}"
+    bash tools/godot_headless.sh --export-release "Android" build/SaltLine-release.apk
+    ls -l build/SaltLine-release.apk
+    "{{ adb }}" install -r build/SaltLine-release.apk
+    "{{ adb }}" shell am force-stop com.cascadiacollections.saltline
+    "{{ adb }}" shell monkey -p com.cascadiacollections.saltline -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+
 # Optimized, fixed-seed profiling APK. This separate feature build auto-plays
 # one deterministic run, warms up for 2 seconds, then captures 32 seconds of
 # A-B-B-A texture-update-enabled/frozen phases plus a final timing summary.

@@ -958,3 +958,40 @@ they are never pushed off the list. Where the request left a choice:
   that a record's own line reads back unstarred, and that the header says
   1 exactly when nothing is starred; about 740,000 inputs in 90 s (a dev
   build) locally, no finding.
+
+## 14. Stripped Godot engine (October 2026)
+
+The Android release APK now runs on Godot 4.7.2 built from source without
+3D, physics, navigation, XR, Vulkan, text shaping and every codec the game
+does not load (`docs/godot-templates.md` has the list and how to add
+something back).
+
+- **Measured** (release export, arm64, same commit, same signing):
+  APK 36,685,396 → 18,671,188 B (−49%); `libgodot_android.so` 71,114,944 →
+  23,186,048 B uncompressed, 25,072,330 → 8,439,831 B deflated in the APK;
+  `libsalt_line_godot.so` 5,116,696 → 3,733,136 B (gdext's lazy method
+  tables, below). For reference, the CI release APK before this was about
+  35.0 MB (docs/rendering-footprint.md).
+- **Linux** (local build, not shipped): release template 73,519,416 →
+  17,349,728 B. Not switched: a template built on the CI runner raises the
+  glibc floor from the official 2.28 to the runner's, so it needs an
+  older-glibc build environment first.
+- **gdext.** By default gdext resolves every method of every engine class
+  at load and panics on the first missing one, so the stripped engine
+  needed `lazy-function-tables`: methods are resolved on first call. A
+  call into a removed class now panics when made, not at load; the cost
+  per call is a hash lookup.
+- **Compiled for size** (`optimize=size_extra lto=full`): `size_extra`
+  also stops force-inlining in the engine. The engine's share of a frame
+  is texture uploads and input; the raster is Rust and unaffected.
+- **Checked** on an x86_64 emulator with the same profile (title, a run's
+  shots and pause, the map editor's sculpt, a versus match's handoff,
+  background and resume, an OpenSL player started for the sound, saves
+  kept across screens) and on the Pixel 10 (arm64: installs over the debug
+  build, the engine and its GL Compatibility renderer start on the PowerVR
+  GPU, no errors in logcat).
+- **Rejected: rebuilding the engine in every CI run.** It is built once
+  per set of inputs by its own workflow, published, and pinned by sha256
+  in `tools/godot_templates.lock.json`; until a build is pinned, pull
+  requests and main fall back to the official template with a warning and
+  a tag fails.

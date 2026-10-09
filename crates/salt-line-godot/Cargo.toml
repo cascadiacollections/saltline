@@ -21,7 +21,13 @@ profiling = []
 # bindings build against the newest API the crate knows about, and the
 # resulting extension silently refuses to load on 4.7.2 -- the game boots to an
 # empty scene and hangs. Building down-level still runs on newer engines.
-godot = { version = "0.5", features = ["api-4-7"] }
+#
+# `lazy-function-tables` looks engine methods up on first call instead of all
+# of them when the library loads. The release templates are built without the
+# classes this game never touches (tools/godot_build_profile.json, docs/
+# godot-templates.md); an eager table would panic at startup on the first
+# missing one. The cost is a hash lookup per engine call, a few hundred a frame.
+godot = { version = "0.5", features = ["api-4-7", "lazy-function-tables"] }
 salt-line-sim = { path = "../salt-line-sim" }
 
 [dev-dependencies]
