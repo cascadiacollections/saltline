@@ -127,10 +127,10 @@ F = {
 }
 
 
-def text(buf, s, x, y, c):
+def text(buf, s, x, y, c, font=F):
     cx = x
     for ch in s.upper():
-        g = F.get(ch)
+        g = font.get(ch)
         if g:
             rows = g.split()
             for j, row in enumerate(rows):
@@ -385,6 +385,120 @@ def water_tower(state="intact"):
         b.line(11, 12, 10, 15, rgba("st_dmg"))
         for j in range(28, 33):
             b.set(4 + sx(j), j, rgba("st_dmg"))
+    return b
+
+
+def seasonal_tower(season, state="intact"):
+    """Cosmetic water-tower replacements: same canvases and 9px footing."""
+    if season not in ("halloween", "thanksgiving", "christmas"):
+        raise ValueError(f"unknown season: {season}")
+    if state == "collapsed":
+        b = Buf(17, 8)
+        b.line(1, 6, 6, 4, rgba("st_dmg"))
+        b.line(11, 5, 15, 7, rgba("st_dmg"))
+        b.rect(2, 7, 13, 1, rgba("st_dmg"))
+        if season == "halloween":
+            for x, y, w in ((3, 3, 4), (9, 2, 4), (6, 5, 5)):
+                b.rect(x, y, w, 2, rgba("st"))
+                b.line(x, y, x + w - 2, y, rgba("st_hi"))
+            b.set(10, 1, rgba("hull"))
+            b.set(4, 4, rgba("ui_bg"))
+            b.set(10, 3, rgba("ui_bg"))
+        elif season == "thanksgiving":
+            for x, y in ((2, 3), (5, 2), (12, 3)):
+                b.line(x, y, x + 2, y + 3, rgba("st"))
+                b.set(x, y, rgba("sand"))
+            b.rect(7, 4, 5, 2, rgba("st_dmg"))
+            b.set(8, 4, rgba("st_hi"))
+        else:
+            for x, y in ((3, 3), (7, 2), (10, 4)):
+                b.line(x, y, x + 4, y + 2, rgba("hull_edge"))
+                b.line(x, y, x + 3, y, rgba("hull"))
+            b.set(6, 3, rgba("sand"))
+            b.set(11, 5, rgba("st_hi"))
+        return b
+    if state not in ("intact", "leaning"):
+        raise ValueError(f"unknown state: {state}")
+    b = Buf(17, 34)
+    # Shared industrial trestle preserves the tower's identity and ground seat.
+    for y in range(19, 33):
+        b.set(4, y, rgba("st"))
+        b.set(12, y, rgba("st_dmg"))
+    for top, bottom in ((19, 25), (25, 31)):
+        b.line(4, top, 12, bottom, rgba("st_dmg"))
+        b.line(12, top, 4, bottom, rgba("st"))
+    b.rect(4, 18, 9, 1, rgba("st_dmg"))
+    if season == "halloween":
+        # Ribbed pumpkin shell, short stem, two carved eyes and a toothy grin.
+        for y, half in ((5, 3), (6, 5), *[(j, 6) for j in range(7, 15)],
+                        (15, 5), (16, 4), (17, 2)):
+            b.rect(8 - half, y, half * 2 + 1, 1, rgba("st"))
+            b.set(8 + half, y, rgba("st_dmg"))
+        b.line(7, 3, 8, 4, rgba("hull_hi"))
+        b.line(4, 7, 4, 14, rgba("st_hi"))
+        b.line(11, 6, 12, 15, rgba("st_dmg"))
+        b.set(5, 9, rgba("ui_bg")); b.rect(4, 10, 3, 1, rgba("ui_bg"))
+        b.set(10, 9, rgba("ui_bg")); b.rect(9, 10, 3, 1, rgba("ui_bg"))
+        b.set(8, 12, rgba("ui_bg"))
+        b.line(5, 13, 11, 13, rgba("ui_bg"))
+        b.rect(6, 14, 5, 1, rgba("ui_bg"))
+        b.set(7, 13, rgba("st_hi")); b.set(9, 14, rgba("st_hi"))
+    elif season == "thanksgiving":
+        # Fan of cut-metal feathers and a side-facing turkey head.
+        for x, y in ((2, 9), (3, 6), (5, 4), (8, 3), (11, 4), (13, 6), (14, 9)):
+            b.line(8, 14, x, y, rgba("st_dmg"), 2)
+            b.line(8, 13, x, y, rgba("st"))
+            b.set(x, y, rgba("sand"))
+        b.rect(5, 11, 7, 5, rgba("st_dmg"))
+        b.rect(6, 11, 4, 3, rgba("st"))
+        b.line(7, 12, 9, 12, rgba("st_hi"))
+        b.rect(11, 8, 2, 5, rgba("st"))
+        b.rect(10, 6, 4, 3, rgba("st_hi"))
+        b.set(12, 7, rgba("ui_bg")); b.set(14, 8, rgba("sand"))
+        b.line(13, 9, 13, 11, rgba("st"))
+        b.line(7, 16, 7, 17, rgba("st")); b.line(10, 16, 10, 17, rgba("st"))
+    else:
+        # Scrap-metal evergreen. Pale topper and small rust ornaments, no glow.
+        b.line(8, 4, 8, 17, rgba("hull_edge"))
+        for top, bottom, half in ((5, 8, 3), (8, 12, 5), (12, 16, 6)):
+            for y in range(top, bottom + 1):
+                radius = max(1, half * (y - top + 1) // (bottom - top + 1))
+                b.rect(8 - radius, y, radius * 2 + 1, 1, rgba("hull"))
+                b.set(8 - radius, y, rgba("hull_hi"))
+            b.line(8 - half, bottom, 8 + half, bottom, rgba("hull_edge"))
+        b.line(7, 3, 9, 3, rgba("sand")); b.line(8, 2, 8, 4, rgba("sand"))
+        for x, y in ((7, 7), (10, 10), (5, 13), (11, 15)):
+            b.set(x, y, rgba("st_hi"))
+        b.set(7, 11, rgba("sand")); b.set(9, 14, rgba("sand"))
+    if state == "leaning":
+        leaned = Buf(17, 34)
+        for y in range(34):
+            offset = min(2, max(0, (32 - y) // 9))
+            for x in range(17):
+                c = b.get(x, y)
+                if c[3]:
+                    assert x + offset < 17, (season, x, y)
+                    leaned.set(x + offset, y, c)
+        b = leaned
+        b.line(10, 10, 11, 12, rgba("st_dmg"))
+        b.line(11, 12, 10, 15, rgba("st_dmg"))
+        b.line(4, 28, 4, 32, rgba("st_dmg"))
+    return b
+
+
+def seasonal_sheet():
+    """Labelled native art-review sheet, independent of gameplay."""
+    b = Buf(180, 150, rgba("sky_hi"))
+    labels = {**F, "G": "111 100 101 101 111", "K": "101 101 110 101 101",
+              "V": "101 101 101 101 010"}
+    for row, season in enumerate(("halloween", "thanksgiving", "christmas")):
+        y = row * 50
+        text(b, season.upper(), 3, y + 2, rgba("ui_fg"), labels)
+        for col, state in enumerate(("intact", "leaning", "collapsed")):
+            x = 6 + col * 58
+            text(b, state.upper(), x, y + 10, rgba("sky_lo"), labels)
+            sprite = seasonal_tower(season, state)
+            b.blit(sprite, x + 10, y + 49 - sprite.h)
     return b
 
 
@@ -696,6 +810,11 @@ if __name__ == "__main__":
     water_tower("intact").image().save(f"{SPR}/tower_intact.png")
     water_tower("leaning").image().save(f"{SPR}/tower_leaning.png")
     water_tower("collapsed").image().save(f"{SPR}/tower_collapsed.png")
+    for season in ("halloween", "thanksgiving", "christmas"):
+        for state in ("intact", "leaning", "collapsed"):
+            seasonal_tower(season, state).image().save(f"{SPR}/tower_{season}_{state}.png")
+        check_lean_alignment(season, seasonal_tower(season), seasonal_tower(season, "leaning"))
+    seasonal_sheet().image(4).save(f"{OUT}/seasonal_sheet_4x.png")
     # Every structure now has all three damage states (DESIGN §5.4). The water
     # tower is hand-drawn per state; the rest are sheared and wrecked from
     # their intact silhouette, which keeps the drawings in lockstep with the

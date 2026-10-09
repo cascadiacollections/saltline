@@ -960,6 +960,8 @@ pub(crate) struct Unscored {
 /// The developer flags' state (`cli::DevArgs`).
 #[derive(Default)]
 pub(crate) struct Dev {
+    /// Cosmetic capture override; excluded from saved preferences.
+    pub(crate) season: Option<crate::seasonal::Seasonal>,
     /// `--salt-auto`: fire a solver candidate at the nearest standing target
     /// and take every draft. Lets a build be watched, or captured, without a
     /// hand on the keyboard.
@@ -1623,6 +1625,7 @@ impl Game {
     /// screen, or CONTINUE.
     pub fn start_dev(&mut self, args: &DevArgs, today: u64) -> Vec<Effect> {
         self.today = today;
+        self.dev.season = args.season;
         self.dev.capturing = args.shot.is_some();
         self.dev.auto = args.auto;
         self.dev.auto_miss = args.miss;

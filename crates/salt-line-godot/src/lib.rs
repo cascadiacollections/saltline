@@ -85,6 +85,7 @@ pub mod render;
 pub mod resume;
 pub mod save;
 pub mod save_format;
+pub mod seasonal;
 pub mod sky;
 pub mod sprites;
 pub mod strips;
