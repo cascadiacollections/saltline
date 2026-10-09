@@ -172,31 +172,8 @@ android-release: build (android-lib "release")
 # Optimized, fixed-seed profiling APK. This separate feature build auto-plays
 # one deterministic run, warms up for 2 seconds, then captures 32 seconds of
 # A-B-B-A texture-update-enabled/frozen phases plus a final timing summary.
-android-profile-apk: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    profile_preset_backup="$(mktemp)"
-    cp export_presets.cfg "$profile_preset_backup"
-    restore_profile_preset() { cp "$profile_preset_backup" export_presets.cfg; rm -f "$profile_preset_backup"; }
-    trap restore_profile_preset EXIT
-    python3 - <<'PY'
-    from pathlib import Path
-    path = Path("export_presets.cfg")
-    data = path.read_text()
-    app_id = 'package/unique_name="com.cascadiacollections.saltline"'
-    app_name = 'package/name="Salt Line"'
-    assert data.count(app_id) == 1 and data.count(app_name) == 1
-    path.write_text(data.replace(app_id, 'package/unique_name="com.cascadiacollections.saltline.profile"').replace(app_name, 'package/name="Salt Line Profiler"'))
-    PY
-    rustup target add aarch64-linux-android
-    RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build --release -p salt-line-godot --features profiling \
-        --target aarch64-linux-android \
-        --config 'target.aarch64-linux-android.linker="{{ android_bin }}/aarch64-linux-android24-clang"'
-    "{{ android_bin }}/llvm-strip" --strip-debug target/aarch64-linux-android/release/libsalt_line_godot.so
-    mkdir -p build
-    if [ ! -f build/saltline-profile.keystore ]; then keytool -genkeypair -keystore build/saltline-profile.keystore -storetype PKCS12 -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SaltLine Profiling,O=Local,C=US"; fi
-    bash tools/godot_headless.sh --frame-delay 800 --import
-    GODOT_ANDROID_KEYSTORE_RELEASE_PATH=build/saltline-profile.keystore GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android bash tools/godot_headless.sh --export-release "Android" build/SaltLine-profile.apk
+android-profile-apk engine="pinned":
+    python3 tools/android_profile.py --engine {{ engine }}
 
 # Build, install and launch the profiling APK on the attached device.
 android-profile: android-profile-apk

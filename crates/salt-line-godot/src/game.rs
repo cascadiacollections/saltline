@@ -280,6 +280,21 @@ impl INode2D for SaltLine {
             sprites: Some(Sprites::load_all(SPRITE_DIR)),
             title_background: Sprites::load_one(TITLE_BACKGROUND_PATH),
         };
+        // Before reading or recovering any player files. The validation
+        // games are in memory and never apply their disk effects.
+        if let Some(dir) = DevArgs::parse(&Self::cmdline_all()).validate_engine {
+            let result = crate::engine_validation::run(&self.art, &dir);
+            match &result {
+                Ok(()) => godot_print!("salt-engine-validation: PASS"),
+                Err(why) => godot_error!("salt-engine-validation: FAIL: {why}"),
+            }
+            self.base()
+                .get_tree()
+                .quit_ex()
+                .exit_code(i32::from(result.is_err()))
+                .done();
+            return;
+        }
         self.g = Game::new(mobile, save::load());
         // Versus seeds differ from launch to launch: the wall clock, to the
         // microsecond, read here as the date is.
@@ -1002,7 +1017,7 @@ impl SaltLine {
     }
 
     /// Every argument, whether it arrived before or after `--`.
-    fn cmdline_all() -> Vec<String> {
+    pub(crate) fn cmdline_all() -> Vec<String> {
         let os = Os::singleton();
         let mut joined: Vec<String> = os
             .get_cmdline_user_args()

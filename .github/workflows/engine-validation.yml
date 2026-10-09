@@ -1,0 +1,99 @@
+name: engine-validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/engine-validation.yml'
+      - 'tools/*engine*'
+      - 'tools/godot_*'
+      - 'tools/android_profile.py'
+      - 'tools/test_engine_tools.py'
+      - 'crates/**'
+      - 'art/**'
+      - 'godot/**'
+      - 'addons/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'project.godot'
+      - 'export_presets.cfg'
+      - 'salt_line.gdextension'
+      - 'Justfile'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/godot_build_profile.json'
+      - 'tools/godot_template.py'
+      - '.github/workflows/engine-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.7.2
+  CARGO_TERM_COLOR: always
+
+jobs:
+  replay-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable # rust-toolchain.toml remains authoritative
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: engine-validation
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      - name: tooling tests
+        run: python3 -m unittest discover -s tools -p test_engine_tools.py -v
+      # This is a test-only native template, never a release dependency.
+      # Linux's glibc floor does not affect the Android library we ship.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: engine
+        with:
+          path: build/godot-templates/godot.linuxbsd.template_release.x86_64
+          key: validation-linux-x64-${{ hashFiles('tools/godot_template.py', 'tools/godot_build_profile.json', '.github/workflows/engine-validation.yml') }}
+      - name: build stripped engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config libx11-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libxi-dev libxrandr-dev libasound2-dev libpulse-dev libudev-dev
+          python3 tools/godot_template.py build linux --src "$RUNNER_TEMP/godot-validation" -j "$(nproc)"
+      - name: build and export one pack for both engines
+        run: |
+          set -eu
+          cargo build --release -p salt-line-godot
+          mkdir -p target/debug build/engine-validation
+          cp target/release/libsalt_line_godot.so target/debug/
+          touch build/.gdignore
+          bash tools/godot_headless.sh --import
+          bash tools/godot_headless.sh --export-pack Linux build/engine-validation/game.pck
+          cp target/release/libsalt_line_godot.so build/engine-validation/
+      - name: compare replays, frames and assets
+        run: |
+          set -eu
+          official="$HOME/.local/share/godot/export_templates/$GODOT_VERSION.stable/linux_release.x86_64"
+          stripped="$PWD/build/godot-templates/godot.linuxbsd.template_release.x86_64"
+          chmod +x "$official" "$stripped"
+          python3 tools/engine_validation.py --official "$official" --stripped "$stripped" --pack build/engine-validation/game.pck
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: engine-validation
+          path: build/engine-validation/results/
+          if-no-files-found: warn

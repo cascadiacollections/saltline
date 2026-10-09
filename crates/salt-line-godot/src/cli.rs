@@ -28,6 +28,9 @@ pub const PHONE_WINDOW: (i32, i32) = (2424, 1080);
 /// Every developer flag, parsed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DevArgs {
+    /// `--salt-validate-engine <dir>`: exercise imported assets and fixed
+    /// replay fixtures, write a deterministic report and PNG images, then quit.
+    pub validate_engine: Option<String>,
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
     /// native resolution, and quit. How the pixel output gets checked without
     /// a human at the keyboard.
@@ -94,6 +97,7 @@ impl DevArgs {
     /// after `--`.
     pub fn parse(args: &[String]) -> DevArgs {
         DevArgs {
+            validate_engine: value(args, "--salt-validate-engine"),
             shot: value(args, "--salt-shot"),
             shot_at: value(args, "--salt-shot-at")
                 .and_then(|v| v.parse().ok())
@@ -169,6 +173,7 @@ mod tests {
         assert_eq!(
             a,
             DevArgs {
+                validate_engine: None,
                 shot: None,
                 shot_at: DEFAULT_SHOT_AT,
                 auto: false,

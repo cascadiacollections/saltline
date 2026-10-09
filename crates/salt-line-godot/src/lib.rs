@@ -63,6 +63,7 @@ pub mod custom;
 pub mod durable;
 pub mod editor;
 pub mod engine_classes;
+pub mod engine_validation;
 pub mod font;
 pub mod frame;
 pub mod game;
@@ -103,7 +104,14 @@ unsafe impl ExtensionLibrary for SaltLineExtension {
         // library (`reloadable = true`), which is where a hook left pointing
         // into an unloaded library would bite.
         if stage == InitStage::Scene && !godot::classes::Engine::singleton().is_editor_hint() {
-            crash::install(save::on_disk(crash::REPORT_PATH));
+            // A validation failure belongs in its process log, never in a
+            // player's crash file (OS user-directory overrides vary by host).
+            let validating = cli::DevArgs::parse(&game::SaltLine::cmdline_all())
+                .validate_engine
+                .is_some();
+            if !validating {
+                crash::install(save::on_disk(crash::REPORT_PATH));
+            }
             // Android runs on a stripped engine; a class it lacks fails here,
             // by name, rather than mid-game (engine_classes).
             engine_classes::check();
