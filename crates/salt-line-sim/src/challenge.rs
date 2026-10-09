@@ -18,7 +18,7 @@ pub struct Challenge {
     pub shots: i32,
 }
 
-pub const ALL: [Challenge; 3] = [
+pub const ALL: [Challenge; 8] = [
     Challenge {
         name: "LOB",
         seed: 0x53414c54,
@@ -36,6 +36,36 @@ pub const ALL: [Challenge; 3] = [
         seed: 0x53414c54,
         screen: 9,
         shots: 4,
+    },
+    Challenge {
+        name: "PAIR",
+        seed: 0x53414c54,
+        screen: 13,
+        shots: 5,
+    },
+    Challenge {
+        name: "TIGHT",
+        seed: 0x53414c54,
+        screen: 15,
+        shots: 5,
+    },
+    Challenge {
+        name: "GALE",
+        seed: 0x53414c54,
+        screen: 31,
+        shots: 5,
+    },
+    Challenge {
+        name: "TRIO",
+        seed: 0x53414c54,
+        screen: 26,
+        shots: 6,
+    },
+    Challenge {
+        name: "STORM",
+        seed: 0x53414c54,
+        screen: 36,
+        shots: 6,
     },
 ];
 
