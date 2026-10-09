@@ -12,6 +12,10 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- Cosmetic world biomes for play: normal runs now deterministically rotate
+  between the original salt flats, snow, and forest palettes, while the
+  bundled challenges use stable Snow, Forest, and Salt themes. Biomes change
+  presentation only; terrain, ballistics, seeds, and replays remain intact.
 - A first challenge course: CHALLENGES on the title opens three fixed,
   one-gun layouts with bounded shell budgets and a short HINTS readout.
   Clearing one advances to the next; running out of shells reports a failed

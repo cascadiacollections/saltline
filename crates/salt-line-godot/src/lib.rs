@@ -57,6 +57,7 @@ use godot::prelude::*;
 pub mod aim;
 pub mod app;
 pub mod backdrop;
+pub mod biome;
 pub mod cli;
 pub mod crash;
 pub mod custom;

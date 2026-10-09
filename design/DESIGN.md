@@ -1895,8 +1895,9 @@ run.
 
 ## 13. Layouts, the editor and custom games
 
-**Status: Phase 4 vertical slice built (October 2026); courses and sharing
-remain proposed.** Phase 1 is the data model, forking a generated screen into it,
+**Status: Phase 4 vertical slice built (October 2026); the challenge course is
+playable, cosmetic Snow/Forest biome palettes are in the presentation layer,
+and persistent course scores and sharing remain proposed.** Phase 1 is the data model, forking a generated screen into it,
 the share code, validation, and a dev flag that plays a custom duel on a
 code (`--salt-layout`). Phase 3 is the map editor in the game, the slot
 file, the draft kept on disk, custom duels on the pre-match screen's

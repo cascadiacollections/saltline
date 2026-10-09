@@ -52,6 +52,7 @@ use salt_line_sim::{Vec2, DT};
 
 use crate::app::{Anim, Game, Mode, SHORT_ARC_SECONDS, TOPPLE_TIME};
 use crate::backdrop::Backdrop;
+use crate::biome::Biome;
 use crate::frame::Memo;
 use crate::input::Action;
 use crate::keypad;
@@ -817,11 +818,12 @@ impl Painter<'_> {
         let offers = run.offers.clone();
         let range = screen.range_to_nearest();
         let sappers = loadout.has_flag(flags::SAPPERS_EYE);
+        let world_pal = Biome::for_run(run.run_seed, index, self.g.play.challenge).palette(pal);
 
         self.cache.backdrop.draw(
             self.canvas,
             &view,
-            pal,
+            &world_pal,
             sky::Phase::for_screen(index),
             run.run_seed ^ index as u64,
             self.g.play.sky_time,
@@ -829,10 +831,10 @@ impl Painter<'_> {
             &[screen.muzzle_x],
         );
         if sappers {
-            raster::draw_material_boundaries(self.canvas, &view, &screen.field, pal);
+            raster::draw_material_boundaries(self.canvas, &view, &screen.field, &world_pal);
         }
         if !chalk.is_empty() {
-            raster::draw_chalk(self.canvas, &view, &chalk, &screen.field, pal);
+            raster::draw_chalk(self.canvas, &view, &chalk, &screen.field, &world_pal);
         }
         if loadout.has_flag(flags::PLUMB_LINE) {
             if let Some(a) = apex {
