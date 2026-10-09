@@ -46,6 +46,10 @@ second. See RELEASING.md for the release steps.
   a replay. Starred replays are listed first and don't count toward the
   20 runs and 20 matches; taking a star off gives the replay another 20
   games before it can go (#77).
+- Linux on ARM: `SaltLine-linux-arm64.zip` joins every dev build and
+  release, for a Raspberry Pi 5, an Ampere or Graviton machine or an arm64
+  laptop. It is built, exported and launched on an arm64 runner in CI, with
+  the same GameMode bridge as the x86_64 build.
 - For developers: the cross-platform determinism check now also runs on Android
   (x86_64 emulator) and iOS (arm64 simulator) in CI, and `just android-digest`
   runs it on an attached Android phone as arm64-v8a.
@@ -64,6 +68,12 @@ second. See RELEASING.md for the release steps.
 - A map's fixed wind turns round every pair of turns, so both players shoot
   with it and against it as often (only maps have fixed winds; generated
   duels are unchanged).
+
+### Fixed
+
+- The Linux download now carries the game's libraries beside the binary.
+  The zip used to hold the binary alone, which could not load the game; CI
+  now unpacks each Linux zip on its own and launches it from there.
 
 ## [0.1.0] - 2026-10-04
 

@@ -13,7 +13,7 @@ It is a preview, not a product. Nothing in it is for sale.
 |---|---|
 | Version | `0.1.0-preview` |
 | Shape | Desktop, keyboard and controller, windowed or fullscreen |
-| Platforms | Linux x86_64, macOS (one universal build: Apple silicon and Intel), Windows x86_64 and arm64; Android arm64 (sideload builds, touch controls); iOS arm64 (build and sign locally with `just ios`) |
+| Platforms | Linux x86_64 and arm64, macOS (one universal build: Apple silicon and Intel), Windows x86_64 and arm64; Android arm64 (sideload builds, touch controls); iOS arm64 (build and sign locally with `just ios`) |
 | Monetization | **None.** No paywall and no store code; every screen is playable |
 | Save data | Plain text at `user://salt_line.txt`, format version 2 (reads version 1/versionless) |
 | Distribution | GitHub releases: a rolling `dev` prerelease from `main`, and a release per `vX.Y.Z` tag. Not a store build |
@@ -58,10 +58,11 @@ step that no amount of CI will cover.
 - [ ] Version consistency (`version` job, `just version-check`); on a tag it
       also checks the tag and the CHANGELOG section
 - [ ] Batch solvability: 5,000 screens, zero unsolvable, zero `Flat` fallbacks
-- [ ] Export succeeds for all desktop presets, including Windows ARM64, **and
+- [ ] Export succeeds for all desktop presets, including Linux ARM64 and
+      Windows ARM64, **and
       writes a file** — Godot has
       exited 0 having produced nothing
-- [ ] Each exported artifact, including the Windows ARM64 artifact, **launches
+- [ ] Each exported artifact, including the two ARM64 artifacts, **launches
       and renders a frame** (the smoke job). This waits on the rendered PNG
       rather than the exit code, because a Godot-exported Windows binary is
       GUI-subsystem and returns 0 the instant it is started
@@ -85,7 +86,8 @@ step that no amount of CI will cover.
 **Fresh-machine check** — on a machine that has never had the toolchain:
 
 - [ ] Linux: `chmod +x SaltLine.x86_64 && ./SaltLine.x86_64` on a stock distro
-      with no Godot installed
+      with no Godot installed; `SaltLine.arm64` the same on an arm64 machine
+      (a Raspberry Pi 5 or an Ampere/Graviton box)
 - [ ] Linux: exported build contains the XDG Portals bridge; on a desktop with
       GameMode available, a live run registers and pause/game over releases it.
       On a desktop without that portal, play and saves still work.
@@ -113,9 +115,10 @@ more at the end. What changed in each version lives in
 2. Tag the merge commit and push the tag:
    `git tag -a vX.Y.Z -m "Salt Line X.Y.Z"`, then `git push origin vX.Y.Z`.
 3. CI builds and tests everything (sim on seven platforms, determinism,
-   solvability, lint, the three desktop exports with their smoke launch,
-   Windows arm64, Android). The `version` job fails the build if the tag does
-   not match the tree, or if CHANGELOG.md has no section for it.
+   solvability, lint, the five desktop exports with their smoke launch:
+   Linux x86_64 and arm64, macOS, Windows x86_64 and arm64; and Android).
+   The `version` job fails the build if the tag does not match the tree, or
+   if CHANGELOG.md has no section for it.
 4. The `release` job then attests every download (build provenance, and the
    SBOM; see "Verifying a download") and publishes a normal (not pre-) GitHub
    Release `vX.Y.Z`, marked latest, with the same files as the `dev`
@@ -183,7 +186,7 @@ print the attested SBOM itself, the same document as the
 **What the SBOM covers.** `SaltLine-sbom.cdx.json` is CycloneDX 1.5 JSON, made
 by the `sbom` job (pushes to `main` and tags only): `cargo cyclonedx` over the
 GDExtension's Cargo graph, default features (what ships), every target (the
-release spans six), no dev-dependencies, and build-only crates (proc macros,
+release spans seven), no dev-dependencies, and build-only crates (proc macros,
 codegen) kept but marked `excluded`. Cargo cannot see the two binary
 dependencies, so `tools/release_sbom.py` adds them: the Godot export templates
 at `GODOT_VERSION` (which bundle the engine's own third-party libraries, listed

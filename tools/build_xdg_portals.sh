@@ -23,12 +23,19 @@ fi
 
 mkdir -p "$output_dir"
 cp "$root/tools/xdg_portals_linux.gdextension.in" "$descriptor"
+# Name the libraries the way the upstream build does (and the descriptor
+# expects): Godot's arch names, so aarch64 is `arm64`.
+case "$(uname -m)" in
+    aarch64|arm64) arch=arm64 ;;
+    x86_64) arch=x86_64 ;;
+    *) echo "no XDG Portals build for $(uname -m)" >&2; exit 1 ;;
+esac
 if [ "$#" -eq 0 ]; then
     set -- editor template_debug template_release
 fi
 for target in "$@"; do
     "$source_dir/scripts/build.sh" --target "$target"
-    library="libxdg_portals.linux.${target}.x86_64.so"
+    library="libxdg_portals.linux.${target}.${arch}.so"
     cp "$source_dir/addons/xdg_portals/bin/$library" "$output_dir/$library"
     test -s "$output_dir/$library"
 done

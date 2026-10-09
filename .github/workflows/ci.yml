@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -106,7 +106,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - name: build the determinism check for Android (x86_64)
@@ -162,7 +162,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - name: build the determinism check for the iOS simulator
@@ -287,7 +287,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -329,7 +329,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
           components: rustfmt, clippy
@@ -388,7 +388,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
           components: llvm-tools-preview
@@ -424,7 +424,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: nightly
           components: miri, rust-src
@@ -455,7 +455,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -505,6 +505,15 @@ jobs:
           - os: ubuntu-24.04
             preset: Linux
             output: SaltLine.x86_64
+            zip: SaltLine-linux-x86_64.zip
+          # Linux on ARM (Raspberry Pi 5, Ampere, Asahi, Snapdragon laptops),
+          # built, exported and smoke-launched natively on the arm64 runner:
+          # its own GDExtension, its own portal bridge, the editor's arm64
+          # build. Nothing is cross-compiled or emulated.
+          - os: ubuntu-24.04-arm
+            preset: Linux ARM64
+            output: SaltLine.arm64
+            zip: SaltLine-linux-arm64.zip
           - os: macos-latest
             preset: macOS
             output: SaltLine.app
@@ -523,7 +532,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -536,7 +545,7 @@ jobs:
           path: |
             addons/xdg_portals/bin
             addons/xdg_portals/xdg_portals.gdextension
-          key: xdg-portals-ubuntu-24.04-${{ hashFiles('tools/build_xdg_portals.sh', 'tools/xdg_portals_linux.gdextension.in') }}
+          key: xdg-portals-${{ matrix.os }}-${{ hashFiles('tools/build_xdg_portals.sh', 'tools/xdg_portals_linux.gdextension.in') }}
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: build the Linux desktop portal bridge
         if: runner.os == 'Linux' && steps.portal-cache.outputs.cache-hit != 'true'
@@ -817,6 +826,7 @@ jobs:
           path: |
             build/${{ matrix.output }}
             build/${{ matrix.output }}.sha256
+            build/*.so
       - name: the smoke frame, for eyeballing a failure
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -826,7 +836,9 @@ jobs:
           if-no-files-found: warn
       # One zip per platform for the dev and tagged releases. `ditto` keeps the macOS
       # bundle's symlinks and permissions, and zip keeps the Linux binary's +x;
-      # a plain artifact upload keeps neither.
+      # a plain artifact upload keeps neither. On Linux the export writes the
+      # GDExtension libraries (the game's and the portal bridge's) beside the
+      # binary, and the binary does not start without them, so they go in too.
       - name: package for release
         shell: bash
         run: |
@@ -835,9 +847,63 @@ jobs:
           case "${{ runner.os }}" in
             macOS) ditto -c -k --keepParent "build/${{ matrix.output }}" dist/SaltLine-macos.zip ;;
             Windows) 7z a -tzip dist/SaltLine-windows-x86_64.zip "./build/${{ matrix.output }}" > /dev/null ;;
-            Linux) (cd build && zip -q ../dist/SaltLine-linux-x86_64.zip "${{ matrix.output }}") ;;
+            Linux) (cd build && zip -q "../dist/${{ matrix.zip }}" "${{ matrix.output }}" ./*.so) ;;
           esac
           ls -l dist
+      # The smoke launch above runs from the checkout, where the editor-side
+      # paths (target/release/...) still resolve, so it passed while the Linux
+      # zip shipped the binary alone and could not load its extension. This
+      # unpacks the zip somewhere empty, checks every ELF in it is built for
+      # this runner's architecture (the Linux counterpart of the macOS
+      # `lipo -verify_arch`), and launches it from there.
+      - name: the Linux zip is complete and runs on its own
+        if: runner.os == 'Linux'
+        env:
+          ZIP: ${{ matrix.zip }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -eu
+          case "$RUNNER_ARCH" in
+            ARM64) want=aarch64 ;;
+            X64) want=x86-64 ;;
+            *) echo "unexpected runner arch $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          dir="$RUNNER_TEMP/unpacked"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          unzip -q "dist/$ZIP" -d "$dir"
+          cd "$dir"
+          ls -l
+          for f in "$OUTPUT" libsalt_line_godot.so libxdg_portals.linux.template_release.*.so; do
+            if [ ! -f "$f" ]; then
+              echo "$ZIP is missing $f" >&2
+              exit 1
+            fi
+            desc=$(file -b "$f")
+            echo "$f: $desc"
+            case "$desc" in
+              ELF*"$want"*) ;;
+              *) echo "$f is not an $want ELF" >&2; exit 1 ;;
+            esac
+          done
+          "./$OUTPUT" --headless -- \
+            --salt-seed 20260907 --salt-screen 12 \
+            --salt-shot "$dir/smoke.png" --salt-shot-at 0.5 --salt-require-portals &
+          launcher=$!
+          for _ in $(seq 1 60); do
+            if [ -s smoke.png ]; then break; fi
+            if ! kill -0 "$launcher" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$launcher" 2>/dev/null || true
+          sleep 2
+          kill -9 "$launcher" 2>/dev/null || true
+          wait "$launcher" 2>/dev/null || true
+          if [ ! -s smoke.png ] || [ "$(head -c 4 smoke.png | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+            echo "the unpacked $ZIP never rendered a frame" >&2
+            exit 1
+          fi
+          echo "unpacked $ZIP launched and rendered $(wc -c < smoke.png) bytes"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-${{ matrix.preset }}
@@ -871,7 +937,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -996,7 +1062,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1053,7 +1119,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1158,7 +1224,7 @@ jobs:
   # crate list), plus the two binary dependencies Cargo cannot see, the Godot
   # export templates and the Linux XDG Portals bridge (tools/release_sbom.py).
   # Default features only, which is what ships; every target, since the
-  # release spans six. Dev-dependencies are left out and build-only crates
+  # release spans seven. Dev-dependencies are left out and build-only crates
   # (proc macros, codegen) are kept but marked `excluded`. CycloneDX JSON,
   # uploaded as dist-sbom so the release jobs attach and attest it like any
   # other download. It runs on pull requests too, though they never publish:
@@ -1172,7 +1238,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
