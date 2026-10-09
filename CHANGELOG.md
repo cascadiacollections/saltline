@@ -12,6 +12,9 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- Five more challenges (PAIR, TIGHT, GALE, TRIO, STORM): two- and
+  three-target layouts and stronger wind, for eight in all. Each is a
+  validated, solvable layout.
 - The level editor and its test-fire now show the biome a layout's seed
   gives in a versus match (Snow, Forest or Salt). It is derived from the
   seed, so layout codes are unchanged.
