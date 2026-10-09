@@ -1,0 +1,9 @@
+{
+  "godot": "4.7.2-stable",
+  "commit": "ed1daf0bf001b61586d9930840f2f1394092c079",
+  "key": "a98cc7aa59a13cff",
+  "release": "godot-templates-4.7.2-a98cc7aa59a13cff",
+  "files": {
+    "libgodot.android.template_release.arm64.so": "67495a47a0ef2d2cc713b187eec9a3f0971cc664edb34946c7afcc769acc8fcd"
+  }
+}
