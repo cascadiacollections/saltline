@@ -29,7 +29,7 @@ pub const PHONE_WINDOW: (i32, i32) = (2424, 1080);
 #[derive(Clone, Debug, PartialEq)]
 pub struct DevArgs {
     /// `--salt-validate-engine <dir>`: exercise imported assets and fixed
-    /// replay fixtures, write a deterministic report and PNGs, then quit.
+    /// replay fixtures, write a deterministic report and PNG images, then quit.
     pub validate_engine: Option<String>,
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
     /// native resolution, and quit. How the pixel output gets checked without

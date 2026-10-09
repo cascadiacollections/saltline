@@ -222,7 +222,7 @@ The report includes the final state hash, a hash of software-rendered frames
 sampled once per simulated second and at the end, and sound-event and audio
 length hashes. Samples exercise Godot's image and texture APIs; each fixture's
 final frame is saved as a PNG. Both engines must produce identical reports
-and PNGs. Logs and captures are retained as CI artifacts, including on failure.
+and PNG images. Logs and captures are retained as CI artifacts, including on failure.
 
 After exporting a release pack with its GDExtension beside it:
 
@@ -240,7 +240,7 @@ checks and device play still cover different ground.
 
 Local verification on October 9, 2026: the official and stripped Linux ARM64
 export templates matched over 19,921 replay steps and 336 sampled frames, with
-identical final PNGs and all thirteen audio streams loaded. The report also
+identical final PNG images and all thirteen audio streams loaded. The report also
 matched the Windows ARM64 editor's. An export deliberately missing `fire.wav`
 failed validation and left no successful report. These are headless results,
 not a phone playback or performance measurement.
