@@ -371,6 +371,68 @@ pub fn unframe(prefix: &str, text: &str) -> Result<Vec<u8>, FrameError> {
     Ok(bytes)
 }
 
+/// Characters a copy or a chat app slips into text unseen: zero-width
+/// spaces and joiners, the word joiner, a byte order mark, a soft hyphen.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{00AD}'
+    )
+}
+
+/// Whether `c` can be part of a code as typed or pasted: base32 (the
+/// letters read alike included, any case), a hyphen, or white space (a
+/// chat app wrapping a long code over lines).
+fn in_code(c: char) -> bool {
+    (c.is_ascii_alphanumeric() && !c.eq_ignore_ascii_case(&'U')) || c == '-' || c.is_whitespace()
+}
+
+/// The most trailing words [`candidates`] tries dropping from a run, for
+/// text that goes on after a code ("…7Q thanks!").
+const TRAILING_WORDS: usize = 8;
+/// The most places a prefix is tried at.
+const MAX_STARTS: usize = 8;
+
+/// What might be a code with `prefix` in pasted text: from each place
+/// `prefix` starts a word (any case, at most [`MAX_STARTS`]), the run of
+/// characters a code can hold after it, with invisible characters dropped
+/// and white space taken out; then the same run less up to
+/// [`TRAILING_WORDS`] of its trailing words, for a code with words after
+/// it. Longest first: the first that reads is the code. A run longer than
+/// `limit` is cut there, so a decoder's own length check still sees it.
+pub fn candidates(text: &str, prefix: &str, limit: usize) -> Vec<String> {
+    let text: String = text.chars().filter(|&c| !invisible(c)).collect();
+    let chars: Vec<char> = text.chars().collect();
+    let p: Vec<char> = prefix.chars().collect();
+    let mut out = Vec::new();
+    let mut starts = 0;
+    let mut i = 0;
+    while i + p.len() <= chars.len() && starts < MAX_STARTS {
+        let at_word = i == 0 || !chars[i - 1].is_alphanumeric();
+        let here = chars[i..i + p.len()]
+            .iter()
+            .zip(&p)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if !(at_word && here) {
+            i += 1;
+            continue;
+        }
+        starts += 1;
+        let run: String = chars[i + p.len()..]
+            .iter()
+            .take_while(|&&c| in_code(c))
+            .take(limit + 1)
+            .collect();
+        let words: Vec<&str> = run.split_whitespace().collect();
+        for keep in (words.len().saturating_sub(TRAILING_WORDS).max(1)..=words.len()).rev() {
+            let body: String = words[..keep].concat();
+            out.push(format!("{prefix}{body}"));
+        }
+        i += p.len();
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +542,26 @@ mod tests {
         assert_eq!(best_exp_golomb_k(&[0, 0, 0, 120]).0, 0);
         // 7 bits each but 70, which needs 9: 30 against 32 at k = 5.
         assert_eq!(best_exp_golomb_k(&[40, 50, 60, 70]), (6, 30));
+    }
+
+    #[test]
+    fn candidates_are_found_in_what_a_chat_pastes() {
+        let code = frame("SR", vec![1, 2, 3]);
+        let found = |text: &str| candidates(text, "SR", 100);
+        assert_eq!(found(&code), vec![code.clone()]);
+        // Wrapped, with a zero-width space, a BOM and words round it.
+        let (a, b) = code.split_at(5);
+        let text = format!("\u{FEFF}look at this: {a}\u{200B}\n{b} thanks!");
+        assert!(found(&text).contains(&code), "{:?}", found(&text));
+        assert_eq!(found(&text)[0], format!("{code}thanks"));
+        // Only where the prefix starts a word.
+        assert!(found("XSR123").is_empty());
+        assert_eq!(found("sr12").len(), 1);
+        assert!(found("no code here").is_empty());
+        // Bounded however long.
+        assert!(found(&"SR0 ".repeat(1000)).len() <= MAX_STARTS * (TRAILING_WORDS + 1));
+        let long = format!("SR{}", "0".repeat(500));
+        assert!(found(&long).iter().all(|c| c.len() <= 103));
     }
 
     #[test]

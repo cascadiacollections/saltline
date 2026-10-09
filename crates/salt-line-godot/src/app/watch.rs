@@ -78,7 +78,7 @@
 //! A replay can be starred to keep it for good (`history`'s "Stars"): on
 //! the list (the star beside a row on a touchscreen, [`Action::Star`] on
 //! the chosen row with keys or a controller) and at a replay's end (STAR,
-//! "keep this one"). The starred are listed first. A star is a write of
+//! "never lose it"). The starred are listed first. A star is a write of
 //! the history file: from the list it is asked for at once; at a replay's
 //! end it is set in memory and the write waits, like a mute, until the
 //! watch is over ([`Game::flush_history`]), or until the app is paused or
@@ -90,7 +90,7 @@
 //! COPY CODE puts one on the clipboard, from a row of the list (the copy
 //! button beside its star on a touchscreen, [`Action::Copy`] on the chosen
 //! row with keys or a controller) or at a replay's end. PASTE CODE on the
-//! list (a button under the rows, `P` with keys) reads the clipboard through
+//! list (a plate in the top-right corner, `P` with keys) reads the clipboard through
 //! `Effect::ReadClipboard`, and the text comes back to [`Game::pasted`]. A
 //! code that reads, and rebuilds to its own result (`Record::check`, as for
 //! any row), is watched at once; anything else is a note saying what to do.
@@ -98,10 +98,17 @@
 //! A pasted replay is not added to the list by itself: a code a friend sent
 //! may be one look and no more. KEEP on the bar (`K`) adds it, like a game
 //! just finished: unstarred, never twice (a game already listed shows KEPT
-//! from the start), pushing out the oldest of its kind past the cap. STAR
-//! at its end keeps it too, starred. Both are writes, and nothing is written
-//! while a watch runs, so they wait as a star at a replay's end does
-//! (`HistoryState::unsaved`).
+//! from the start), pushing out the oldest of its kind past the cap. Once
+//! it is kept, STAR at its end stars it; before, STAR is not offered, so a
+//! child sees one "keep" at a time. Both are writes, and nothing is
+//! written while a watch runs, so they wait as a star at a replay's end
+//! does (`HistoryState::unsaved`). Back on the list, the chosen row is the
+//! replay just watched, wherever KEEP or STAR has put it.
+//!
+//! PASTE CODE takes the first `SR…` code that reads anywhere in the
+//! clipboard's text (`Record::from_clipboard`): a code in a chat message,
+//! with words round it, line breaks a chat app put in it, or zero-width
+//! spaces, still plays.
 
 use super::versus::Stage;
 use super::*;
@@ -150,6 +157,9 @@ pub(crate) type Fingerprint = (
 pub const CODE_COPIED: &str = "CODE COPIED - SEND IT TO A FRIEND";
 /// What KEEP says once a pasted replay is in the list.
 pub const KEPT: &str = "KEPT - IT IS IN YOUR REPLAYS";
+/// KEEP when the list is full of starred replays and the one kept is
+/// trimmed straight back out of a file at its size limit.
+pub const LIST_FULL: &str = "LIST IS FULL - TAKE A STAR OFF";
 /// KEEP over a newer build's file, which is never written.
 pub const KEPT_FOR_NOW: &str = "KEPT UNTIL THE GAME CLOSES";
 
@@ -219,6 +229,9 @@ pub(crate) struct Watch {
     pub(crate) star_refused: Option<crate::history::StarError>,
     /// Came from a pasted code: KEEP is offered (see "Share codes").
     pub(crate) pasted: bool,
+    /// The replay is in the list ([`Game::refresh_kept`]): KEPT, and for a
+    /// pasted one, STAR at its end.
+    pub(crate) kept: bool,
     /// What COPY CODE or KEEP last said, on a plate over the bar.
     pub(crate) notice: Option<&'static str>,
     /// Index into [`SPEEDS`].
@@ -353,8 +366,8 @@ impl Game {
             return;
         }
         if self.input.touch.pressed(Action::Wb(Wb::Paste)) || self.pressed(Key::P) {
-            // The text comes back through `pasted`.
-            self.play(Sound::Ui);
+            // The text comes back through `pasted`, which sounds once for
+            // what it finds.
             self.fx.push(Effect::ReadClipboard);
             return;
         }
@@ -519,30 +532,49 @@ impl Game {
     /// PASTE CODE's text, from the clipboard: watched at once if it is a
     /// replay this build can show, else a note saying why not.
     pub(super) fn paste_replay(&mut self, text: &str) {
-        let record = match Record::from_code(text) {
+        let record = match Record::from_clipboard(text) {
             Ok(record) => record,
-            Err(why) => return self.note(why.note().into()),
+            Err(why) => {
+                self.play(Sound::Ui);
+                return self.note(why.note().into());
+            }
         };
         match record.check() {
             Ok(show) => {
+                // Its own Ui sound.
                 self.start_watch(show, record);
                 if let Some(w) = self.watch.as_mut() {
                     w.pasted = true;
                 }
             }
-            Err(why) => self.note(why.note().into()),
+            Err(why) => {
+                self.play(Sound::Ui);
+                self.note(why.note().into());
+            }
         }
     }
 
-    /// Whether the replay being watched is in the list.
+    /// Whether the replay being watched is in the list. Kept on the watch
+    /// ([`Watch::kept`]), so a frame does not search the list for it.
     pub(crate) fn watched_kept(&self) -> bool {
-        self.watch.as_ref().is_some_and(|w| {
-            self.history
-                .file
-                .records
-                .iter()
-                .any(|r| r.same_game(&w.record))
-        })
+        self.watch.as_ref().is_some_and(|w| w.kept)
+    }
+
+    /// Look again for the watched replay in the list: as a watch starts, and
+    /// after KEEP or STAR, the only things that change the list during one.
+    fn refresh_kept(&mut self) {
+        let Some(record) = self.watch.as_ref().map(|w| w.record.clone()) else {
+            return;
+        };
+        let kept = self
+            .history
+            .file
+            .records
+            .iter()
+            .any(|r| r.same_game(&record));
+        if let Some(w) = self.watch.as_mut() {
+            w.kept = kept;
+        }
     }
 
     /// KEEP over a pasted replay: added to the list in memory now, as a
@@ -560,14 +592,18 @@ impl Game {
         if self.watched_kept() {
             return;
         }
+        let too_long = record.to_line().trim_end().len() > crate::history::MAX_LINE_CHARS;
         let written = self.history.file.push(record).is_some();
+        self.refresh_kept();
         // Asked after the push: a write trimmed to its limit may drop the
         // very record kept, if every other one is starred.
-        let said = if !self.watched_kept() {
+        let said = if too_long {
+            "TOO LONG TO KEEP"
+        } else if !self.watched_kept() {
             if written {
                 self.history.unsaved = true;
             }
-            "TOO LONG TO KEEP"
+            LIST_FULL
         } else if written {
             self.history.unsaved = true;
             KEPT
@@ -599,6 +635,7 @@ impl Game {
         if let Some(w) = self.watch.as_mut() {
             w.star_refused = result.err();
         }
+        self.refresh_kept();
         self.play(Sound::Ui);
         self.fx.push(Effect::Redraw);
     }
@@ -683,6 +720,7 @@ impl Game {
             record,
             star_refused: None,
             pasted: false,
+            kept: false,
             notice: None,
             speed: 0,
             paused: false,
@@ -694,6 +732,7 @@ impl Game {
             pending: None,
             stash,
         });
+        self.refresh_kept();
         self.begin_watch_show();
         self.settle_touch();
     }
@@ -767,6 +806,17 @@ impl Game {
         self.display.buffer_w = s.buffer_w;
         self.display.kept_width = s.kept_width;
         self.mode = s.mode;
+        // Back on the list, the chosen row is the replay just watched,
+        // wherever KEEP or STAR has put it (or the list's end, if it was
+        // never listed).
+        let n = self.history.file.records.len();
+        self.history.focus = self
+            .history
+            .file
+            .listed()
+            .position(|r| r.same_game(&w.record))
+            .unwrap_or(self.history.focus)
+            .min(n.saturating_sub(1));
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
         self.settle_touch();
@@ -800,7 +850,9 @@ impl Game {
             return;
         }
         let ended = self.watch.as_ref().is_some_and(|w| w.ended);
-        if ended && (tapped(self, Wb::Star) || self.action_pressed(Action::Star)) {
+        // A pasted replay has one "keep" at a time: KEEP, then STAR.
+        let starrable = self.watch.as_ref().is_some_and(|w| !w.pasted || w.kept);
+        if ended && starrable && (tapped(self, Wb::Star) || self.action_pressed(Action::Star)) {
             self.star_watched();
             return;
         }

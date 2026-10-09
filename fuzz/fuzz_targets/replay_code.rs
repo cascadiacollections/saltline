@@ -5,6 +5,8 @@
 //! - **What reads, shares again as itself.** A record decoded from a code
 //!   encodes (if this build can share it at all) to a code that decodes to
 //!   the same record, and its history line reads back as that record.
+//! - **Searching a clipboard never panics** (`Record::from_clipboard`,
+//!   which PASTE CODE uses), whatever text is round a code.
 //! - **A record's check never panics** (`Record::check`, which WATCH runs
 //!   before a pasted replay is shown).
 //!
@@ -70,6 +72,11 @@ fn base32(bytes: &[u8]) -> String {
 fuzz_target!(|data: &[u8]| {
     if let Ok(text) = std::str::from_utf8(data) {
         check(text);
+        // As PASTE CODE reads a clipboard: a code anywhere in the text.
+        if let Ok(record) = Record::from_clipboard(text) {
+            assert!(!record.starred);
+        }
+        let _ = salt_line_godot::history::code::holds_a_replay_code(text);
     }
     let mut framed = vec![CODE_FORMAT];
     framed.extend_from_slice(&data[..data.len().min(2048)]);

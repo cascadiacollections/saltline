@@ -51,8 +51,9 @@ second. See RELEASING.md for the release steps.
   code on the clipboard to paste into a chat. PASTE CODE on REPLAYS (`P`)
   plays a friend's code at once, and KEEP adds it to your list. A typical
   run of 60 shots is about 350 characters; a three-round match on a map
-  about 340. A code that was damaged on the way, or made by a newer
-  version, says so rather than playing something else.
+  about 340. Paste the whole message: the game finds the code in it,
+  even wrapped over lines. A code that was damaged on the way, or made by
+  a newer version, says so rather than playing something else.
 - Linux on ARM: `SaltLine-linux-arm64.zip` joins every dev build and
   release, for a Raspberry Pi 5, an Ampere or Graviton machine or an arm64
   laptop. It is built, exported and launched on an arm64 runner in CI, with

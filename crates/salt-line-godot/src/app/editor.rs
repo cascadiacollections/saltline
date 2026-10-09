@@ -573,7 +573,10 @@ impl Game {
     }
 
     fn paste(&mut self, text: &str) {
-        match Layout::from_code(text) {
+        match map_in(text) {
+            Err(_) if crate::history::code::holds_a_replay_code(text) => {
+                self.note("THAT IS A REPLAY CODE - PASTE IT IN REPLAYS".into());
+            }
             Err(_) => self.note("NOT A MAP CODE".into()),
             Ok(l) if !l.is_duel() => self.note("ONE-GUN MAPS COME LATER".into()),
             Ok(l) if l.width() != LAYOUT_WIDTH => self.note("MAP IS NOT 320 WIDE".into()),
@@ -592,6 +595,26 @@ impl Game {
             }
         }
     }
+}
+
+/// The map in text pasted from anywhere: the text as a code, or else the
+/// first `SL…` code in it that reads, with words, a chat app's line breaks
+/// or zero-width spaces round it (`codec::candidates`, as a replay code is
+/// found: `Record::from_clipboard`).
+fn map_in(text: &str) -> Result<Layout, salt_line_sim::layout::CodeError> {
+    let first = Layout::from_code(text);
+    if first.is_ok() {
+        return first;
+    }
+    let found = salt_line_sim::codec::candidates(
+        text,
+        salt_line_sim::layout::CODE_PREFIX,
+        salt_line_sim::layout::MAX_CODE_CHARS,
+    );
+    found
+        .iter()
+        .find_map(|c| Layout::from_code(c).ok())
+        .map_or(first, Ok)
 }
 
 // --------------------------------------------------------- in and out

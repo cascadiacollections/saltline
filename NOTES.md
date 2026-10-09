@@ -1051,7 +1051,7 @@ choice:
   a code is one word, like a map's, and the reader drops whitespace, so a
   chat wrapping it over lines does no harm.
 - **Errors a player can act on.** Not a code (`NO REPLAY CODE TO PASTE`), a
-  map's code (`THAT IS A MAP CODE - PASTE IT IN MAKE MAP`), damaged
+  map's code (`THAT IS A MAP CODE - PASTE IT IN VERSUS, MAKE MAP`), damaged
   (prefix right, but base32, the checksum or the body wrong: `COPY IT
   AGAIN`), a newer format byte or a newer map format inside (`UPDATE TO
   WATCH`), too long. Another epoch reads (the format byte, not the epoch,
@@ -1062,17 +1062,31 @@ choice:
 - **Pasted, then watched at once; KEEP to add it.** A friend's code may be
   one look and no more, so nothing is added unless asked. KEEP is on the
   bar all the way through a pasted replay, not just at its end, since a
-  child may leave early; STAR at the end keeps it too, starred. Both go
-  through the stars' pending write: set in memory, written when the watch
-  ends or the app is paused or closed. A game already listed shows KEPT
-  from the start.
+  child may leave early. STAR at the end is offered only once it is kept
+  (owner decision, made for him: one "keep" a child sees at a time), and
+  its hint on any replay now says `STAR - NEVER LOSE IT` rather than
+  `KEEP THIS ONE`. Both go through the stars' pending write: set in
+  memory, written when the watch ends or the app is paused or closed. A
+  game already listed shows KEPT from the start, and back on the list the
+  chosen row is the replay just watched.
+- **Pasted text is searched** for the first `SR…` that reads where `SR`
+  starts a word (`codec::candidates`: zero-width spaces, a BOM and a soft
+  hyphen dropped, line breaks and spaces inside the code allowed, up to 8
+  trailing words tried off, at most 8 starts, the first 64 KiB of the
+  clipboard). A run of fewer than 10 characters after `SR` that does not
+  read is not called damaged ("SRI said…"). The map editor finds an
+  `SL…` the same way and names an `SR…` code (`PASTE IT IN REPLAYS`); a
+  map's code on REPLAYS says `PASTE IT IN VERSUS, MAKE MAP`.
+- **Room to grow.** Kinds 2 and 3 read as a newer version, not damage.
+  The opponent's 2 bits are full: a fourth AI level is a new
+  `CODE_FORMAT`.
 - **Keys.** COPY is the existing `copy` binding (`C`, pad X), read on
   neither the list nor a watch before. PASTE is `P` and KEEP `K`, raw keys
   like the editor's (not bindable). A controller can star a pasted replay
   at its end to keep it; there is no pad KEEP, as a pad has no paste
   either.
-- **Touch.** COPY sits just right of each row's star (22 by 15, 3 pixels
-  apart): narrow because at 320 wide with a cutout's pad the 53-character
+- **Touch.** COPY sits just right of each row's star (22 by 15, 6 pixels
+  apart, widened from 3 after review): narrow because at 320 wide with a cutout's pad the 53-character
   worst-case row leaves no more room (the width test now pins both
   columns). PASTE CODE is a plate in the top-right corner, shown even on an
   empty list. COPY CODE joins the end-of-replay bar after STAR; a copy or a
@@ -1090,9 +1104,10 @@ choice:
   `Record::check` first. The raw-text limit allows twice the code's, for a
   chat's line breaks.
 - **Fuzzing.** `replay_code` decodes raw text and bodies framed with a good
-  checksum; whatever reads must share again as itself, its line read back
-  and its row draw. About 466,000 inputs in 180 s (dev build) locally, no
-  finding.
+  checksum, and searches the raw text as a clipboard; whatever reads must
+  share again as itself, its line read back and its row draw. About
+  276,000 inputs in 180 s (dev build) locally after the clipboard search
+  was added, no finding.
 - **Device.** The branch build was installed on the Pixel 10 with the
   owner's `user://` files backed up (sha256 unchanged after), but the phone
   sat on its secure lock screen, where Godot does not render, so the

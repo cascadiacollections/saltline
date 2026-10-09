@@ -436,6 +436,64 @@ fn a_newer_format_says_so() {
     );
 }
 
+/// The two kinds not yet used are a later build's, never damage: a
+/// player is told to update.
+#[test]
+fn a_kind_from_a_later_build_says_update() {
+    for kind in [2, 3] {
+        let mut b = BitWriter::default();
+        b.put(kind, 2);
+        put_gamma(&mut b, SIM_EPOCH);
+        assert_eq!(
+            Record::from_code(&framed(CODE_FORMAT, b.finish())),
+            Err(ReadError::Newer)
+        );
+    }
+}
+
+/// What a clipboard holds: the first code that reads, whatever is round
+/// it; else the most useful error.
+#[test]
+fn the_clipboard_is_searched_for_a_code() {
+    let r = overtime_on_map(None);
+    let code = r.to_code().unwrap();
+    let (a, b) = code.split_at(30);
+    let (b, c) = b.split_at(40);
+    for text in [
+        code.clone(),
+        format!("\u{FEFF}{code}"),
+        format!("look! {code} :)"),
+        format!("{a}\n{b}\r\n{c}"),
+        format!("{a}\u{200B}{b}\u{2060}{c}"),
+        format!("try this\n\n{a}\n{b}\n{c}\n\nsent from my phone"),
+        format!("SRI said so: {code}"),
+        code.to_ascii_lowercase(),
+    ] {
+        assert_eq!(Record::from_clipboard(&text).as_ref(), Ok(&r), "{text:?}");
+    }
+    let mut cut = code.clone();
+    cut.truncate(code.len() - 3);
+    assert_eq!(
+        Record::from_clipboard(&format!("here: {cut}")),
+        Err(ReadError::Damaged)
+    );
+    assert_eq!(
+        Record::from_clipboard("I said SRI, not Sam"),
+        Err(ReadError::NotACode)
+    );
+    let map = map(12, "MESA").to_code().unwrap();
+    assert_eq!(
+        Record::from_clipboard(&format!("my map: {map}")),
+        Err(ReadError::MapCode)
+    );
+    assert_eq!(Record::from_clipboard(""), Err(ReadError::NotACode));
+    assert!(holds_a_replay_code(&format!("x {code} y")));
+    assert!(!holds_a_replay_code(&map));
+    // A huge paste is looked through only so far, and never panics.
+    let huge = format!("{}{code}", "word ".repeat(MAX_CLIPBOARD_CHARS));
+    assert_eq!(Record::from_clipboard(&huge), Err(ReadError::NotACode));
+}
+
 /// A record from another sim is not shared; one shared from another sim
 /// (a build either side of this one) reads, but cannot be watched.
 #[test]

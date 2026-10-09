@@ -944,9 +944,10 @@ This follows the touch menus and §11.4's "reading it at a glance".
   round's first plate is up; paused, NEXT SHOT steps shot by shot. A run's
   end shows OUT OF SHELLS and the screens cleared; a match's is its won
   plate, without buttons.
-- **STAR at the end** ("keep this one"): at a replay's end the bar gains
+- **STAR at the end** ("never lose it"): at a replay's end the bar gains
   STAR after AGAIN and the speed (STARRED, lit, once set), and the keys'
-  plate says `S  STAR - KEEP THIS ONE` (`S  TAKE STAR OFF` once set). A
+  plate says `S  STAR - NEVER LOSE IT` (`S  TAKE STAR OFF` once set). A
+  pasted replay (§9.7) offers it only once kept. A
   won match watched from its own plate is not recorded until the plate is
   left, so starring it records it now, starred; leaving the plate later
   finds it already listed. Only a player's match kept on disk offers WATCH
@@ -1103,7 +1104,7 @@ spaces, hyphens and, here, line breaks) and checksum as a map's `SL…`
   (what a chat's wrapping adds); the code without its whitespace is held
   to it. The errors are the ones a player can act on:
   not a replay code (`NO REPLAY CODE TO PASTE`), a map's code (`THAT IS A
-  MAP CODE - PASTE IT IN MAKE MAP`), damaged on the way (`REPLAY CODE IS
+  MAP CODE - PASTE IT IN VERSUS, MAKE MAP`), damaged on the way (`REPLAY CODE IS
   DAMAGED - COPY IT AGAIN`: a character that is not base32, cut short, the
   checksum, bytes that are not a record), a newer format byte or a newer
   map format inside (`MADE BY A NEWER VERSION - UPDATE TO WATCH`), too
@@ -1111,15 +1112,20 @@ spaces, hyphens and, here, line breaks) and checksum as a map's `SL…`
   read the bytes, but is refused by the same check as any row (§9.3):
   MADE BY AN OLDER (or NEWER) VERSION - CANNOT WATCH, and it is not added
   to the list. A record from another epoch is not shared at all.
+- **Room to grow.** The 2-bit kind has two values unused (a challenge, a
+  course): a code with either says UPDATE TO WATCH, never damaged. The
+  2-bit opponent field is full (two players, and three AI levels): a fourth
+  level needs a new `CODE_FORMAT`.
 - **Checked before it is shown,** as WATCH checks any record: rebuilt off
   screen (`Record::check`) and refused if it does not reach the result it
   records, then compared shot by shot as it plays.
 
 **Presentation.**
 
-- **COPY CODE.** On a touchscreen, a COPY button just right of each row's
-  star on the REPLAYS list (22 by 15, as the star; at 320 wide with a
-  cutout's pad the widest row leaves no more room), and COPY CODE on the bar
+- **COPY CODE.** On a touchscreen, a COPY button 6 pixels right of each
+  row's star on the REPLAYS list (22 by 15, as the star; at 320 wide with
+  a cutout's pad the widest row leaves no more room; a test pins the gap at
+  every width), and COPY CODE on the bar
   at a replay's end, after STAR. With keys or a controller the `copy`
   binding (`C`, pad X) on the chosen row or at a replay's end. Only a
   record that rebuilds to its own result is copied, so a friend is never
@@ -1131,16 +1137,28 @@ spaces, hyphens and, here, line breaks) and checksum as a map's `SL…`
   new player's list starts); `P` with keys, as in the editor. It reads the
   clipboard through `Effect::ReadClipboard`, and the text comes back to
   `Game::pasted`. Not in seed entry, as first proposed: a replay is watched
-  from REPLAYS, and the keypad has no paste.
+  from REPLAYS, and the keypad has no paste. **The code is found** in
+  whatever the clipboard holds (`Record::from_clipboard`,
+  `codec::candidates`): the first `SR…` that reads where `SR` starts a word,
+  with words round it, line breaks a chat app put in it, zero-width spaces
+  or a byte order mark; the map editor finds an `SL…` the same way. A map's
+  code pasted here says `THAT IS A MAP CODE - PASTE IT IN VERSUS, MAKE MAP`;
+  a replay's pasted in the editor, `THAT IS A REPLAY CODE - PASTE IT IN
+  REPLAYS`.
 - **Watched at once, kept when asked.** A code that reads and checks plays
   straight away. A friend's replay may be one look and no more, so nothing
   is added unless asked: KEEP on the bar, all the way through (a child may
   leave early), or `K`, adds it like a game just finished (unstarred, never
   twice, the oldest of its kind past the cap pushed out), and reads KEPT
-  after, or from the start for a game already listed. STAR at its end keeps
-  it starred. Nothing is written while a watch runs: both are set in memory
+  after, or from the start for a game already listed. Once kept, STAR at
+  its end stars it; before, STAR is not offered, so a child sees one "keep"
+  at a time. Nothing is written while a watch runs: both are set in memory
   and written when the watch ends, or as the app is paused or closed, as a
-  star at a replay's end is (§9.4).
+  star at a replay's end is (§9.4). Back on the list, the chosen row is the
+  replay just watched. In the one case the write's size trim could drop the
+  replay just kept (every other one starred, the file past its limit,
+  possible only for a hand-made file), it says `LIST IS FULL - TAKE A STAR
+  OFF`; `TOO LONG TO KEEP` is only for a line too long to read back.
 - **Not built:** PLAY AGAIN on a code's seed; a QR code.
 
 ### 9.8 Later stages (proposed)

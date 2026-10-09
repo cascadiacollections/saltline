@@ -65,7 +65,7 @@ const STAR_H: i32 = 15;
 /// pad, the widest row (53 characters) leaves no more room.
 const COPY_W: i32 = 22;
 /// Pixels between a row's star and its COPY.
-const COPY_GAP: i32 = 3;
+const COPY_GAP: i32 = 6;
 /// Pixels between a row's plate and its star button: about a fingertip at
 /// a phone's scale, so a tap on one is not on the other. Never less: where
 /// the column would run into the screen's edge (a narrow buffer, a long
@@ -326,7 +326,11 @@ impl Painter<'_> {
                 buttons.push(("NEXT SHOT", Wb::NextShot));
                 buttons.push((next_round, Wb::NextRound));
             } else {
-                buttons.push((star, Wb::Star));
+                // A pasted replay offers STAR once it is kept: one "keep"
+                // at a time.
+                if !pasted || kept {
+                    buttons.push((star, Wb::Star));
+                }
                 buttons.push(("COPY CODE", Wb::Copy));
             }
             // A pasted replay can be kept, all the way through.
@@ -405,17 +409,19 @@ impl Painter<'_> {
                 fg,
             ),
             (
-                if ended {
+                if ended && (!pasted || kept) {
                     format!(
                         "{}  {}   {}  COPY CODE",
                         label(Action::Star),
                         if starred {
                             "TAKE STAR OFF"
                         } else {
-                            "STAR - KEEP THIS ONE"
+                            "STAR - NEVER LOSE IT"
                         },
                         label(Action::Copy)
                     )
+                } else if ended {
+                    format!("{}  COPY CODE", label(Action::Copy))
                 } else {
                     format!(
                         "{}  NEXT SHOT   {}  {next_round}",
@@ -767,6 +773,20 @@ mod tests {
         assert_eq!(
             buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
             [Wb::Exit, Wb::Pause, Wb::Speed, Wb::Star, Wb::Copy, Wb::Keep].map(Action::Wb)
+        );
+
+        // Not kept: no STAR at its end, only KEEP (one "keep" at a time).
+        let mut g = Game::new(true, Save::default());
+        g.fit_display(WINDOW, (0, 0));
+        g.open_replays();
+        g.pasted(&code);
+        to_the_end(&mut g);
+        g.input.touch_active = true;
+        let (_, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        assert_eq!(
+            buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
+            [Wb::Exit, Wb::Pause, Wb::Speed, Wb::Copy, Wb::Keep].map(Action::Wb)
         );
 
         let mut g = Game::new(false, Save::default());

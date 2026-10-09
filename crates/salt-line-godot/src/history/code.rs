@@ -31,14 +31,14 @@
 //!
 //! | Field | Bits |
 //! |---|---|
-//! | kind: 0 a run, 1 a match | 2 |
+//! | kind: 0 a run, 1 a match; 2 and 3 a later build's (UPDATE TO WATCH) | 2 |
 //! | `SIM_EPOCH`, and for a match `MATCH_EPOCH` | gamma each |
 //! | the day it was played (for the list's date) | wide |
 //! | the seed | wide |
 //! | the width | 9 |
 //! | a run: daily; screens, shells (zigzagged), shots | 1; gamma, wide, gamma |
 //! | a match: rolling guns, aim help L, aim help R | 1, 1, 1 |
-//! | a match: opponent, 0 two players, 1–3 the AI's level easiest first | 2 |
+//! | a match: opponent, 0 two players, 1–3 the AI's level easiest first (full: a fourth level is a new format) | 2 |
 //! | a match: ground, 0 generated, 1 a map: its byte count, then its bytes | 1, then gamma and 8 each |
 //! | a match: winner (0 left), rounds L, rounds R | 1, gamma, gamma |
 //! | how many log entries | gamma |
@@ -100,10 +100,15 @@
 //! cannot be watched: its [`Record::version`] says which way it differs.
 //! What reads is then checked as WATCH checks any record, by rebuilding it
 //! off screen ([`Record::check`]), before anything is shown.
+//!
+//! PASTE CODE reads through [`Record::from_clipboard`], which finds the
+//! first code that reads anywhere in the text (`codec::candidates`): in a
+//! chat message, wrapped over lines, with zero-width spaces or a byte
+//! order mark slipped in.
 
 use salt_line_sim::codec::{
-    best_exp_golomb_k, frame, get_exp_golomb, get_gamma, get_wide, put_exp_golomb, put_gamma,
-    put_wide, unframe, unzigzag, zigzag, BitReader, BitWriter, FrameError,
+    best_exp_golomb_k, candidates, frame, get_exp_golomb, get_gamma, get_wide, put_exp_golomb,
+    put_gamma, put_wide, unframe, unzigzag, zigzag, BitReader, BitWriter, FrameError,
 };
 use salt_line_sim::dmath::MAX_ANGLE_TICKS;
 use salt_line_sim::layout::{self, Layout, LAYOUT_FORMAT};
@@ -138,8 +143,10 @@ pub const MAX_RUN_ENTRIES: usize = 8192;
 
 const KIND_RUN: u32 = 0;
 const KIND_DUEL: u32 = 1;
-/// The exp-Golomb parameter of a fuse: its values are a few hundred to a
-/// few thousand tenths, which this codes in 13 to 17 bits.
+// A width is 9 bits.
+const _: () = assert!(SCREEN_W_MAX < 1 << 9);
+/// The exp-Golomb parameter of a fuse, in tenths: 9 bits below 256, 11 to
+/// 17 for the rest up to the 6,000 a 400-wide screen allows.
 const FUSE_K: u32 = 8;
 /// The latest day a code may carry: thousands of years from now. A day is
 /// only shown as a date, but a hostile one must not reach the date's
@@ -199,7 +206,7 @@ impl ReadError {
     pub fn note(self) -> &'static str {
         match self {
             ReadError::NotACode => "NO REPLAY CODE TO PASTE",
-            ReadError::MapCode => "THAT IS A MAP CODE - PASTE IT IN MAKE MAP",
+            ReadError::MapCode => "THAT IS A MAP CODE - PASTE IT IN VERSUS, MAKE MAP",
             ReadError::Damaged => "REPLAY CODE IS DAMAGED - COPY IT AGAIN",
             ReadError::Newer => "MADE BY A NEWER VERSION - UPDATE TO WATCH",
             ReadError::TooLong => "REPLAY CODE IS TOO LONG",
@@ -252,6 +259,64 @@ impl Record {
             _ => Err(ReadError::Damaged),
         }
     }
+}
+
+/// The most of a clipboard [`Record::from_clipboard`] looks through: a
+/// pasted chat log, not a book.
+const MAX_CLIPBOARD_CHARS: usize = 16 * MAX_CODE_CHARS;
+/// Base32 characters after `SR` that make a run look like a code meant to
+/// be one, so a word like "SRI" in a message is not called damaged.
+const LOOKS_LIKE_A_CODE: usize = 10;
+
+impl Record {
+    /// The replay in text pasted from anywhere: the first `SR…` code in it
+    /// that reads, wherever it sits (words round it, a chat app's line
+    /// breaks, zero-width spaces, a byte order mark:
+    /// `codec::candidates`). With none that reads, the most useful error:
+    /// a newer version, too long, or damaged for something that looked
+    /// like a replay code; a map's code; else not a code at all.
+    pub fn from_clipboard(text: &str) -> Result<Record, ReadError> {
+        let end = text
+            .char_indices()
+            .nth(MAX_CLIPBOARD_CHARS)
+            .map_or(text.len(), |(i, _)| i);
+        let text = &text[..end];
+        let rank = |e: ReadError| match e {
+            ReadError::Newer => 3,
+            ReadError::TooLong => 2,
+            ReadError::Damaged => 1,
+            _ => 0,
+        };
+        let mut worst: Option<ReadError> = None;
+        for code in candidates(text, CODE_PREFIX, MAX_CODE_CHARS) {
+            match Record::from_code(&code) {
+                Ok(record) => return Ok(record),
+                Err(ReadError::Damaged) if code.len() < CODE_PREFIX.len() + LOOKS_LIKE_A_CODE => {}
+                Err(e) if worst.is_none_or(|w| rank(e) > rank(w)) => worst = Some(e),
+                Err(_) => {}
+            }
+        }
+        if let Some(e) = worst {
+            return Err(e);
+        }
+        let map = candidates(text, layout::CODE_PREFIX, layout::MAX_CODE_CHARS)
+            .iter()
+            .any(|c| Layout::from_code(c).is_ok());
+        Err(if map {
+            ReadError::MapCode
+        } else {
+            ReadError::NotACode
+        })
+    }
+}
+
+/// Whether text holds a replay code, read or not: for the map editor's
+/// PASTE CODE, to say where it goes.
+pub fn holds_a_replay_code(text: &str) -> bool {
+    !matches!(
+        Record::from_clipboard(text),
+        Err(ReadError::NotACode | ReadError::MapCode)
+    )
 }
 
 /// Whether text that is not a replay code is a map's.
@@ -477,7 +542,10 @@ fn decode(body: &[u8]) -> Result<Record, ReadError> {
     let record = match r.get(2) {
         Some(KIND_RUN) => decode_run(&mut r),
         Some(KIND_DUEL) => decode_duel(&mut r)?,
-        _ => None,
+        // The two kinds not yet used are a later build's (a challenge, a
+        // course): say so, rather than damaged.
+        Some(_) => return Err(ReadError::Newer),
+        None => None,
     }
     .ok_or(ReadError::Damaged)?;
     // Only zero padding may follow, and less than a byte of it.
