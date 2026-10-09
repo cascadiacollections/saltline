@@ -441,12 +441,14 @@ impl Painter<'_> {
         // Where the guns are drawn, mid-ease included, so no tuft shows
         // through a chassis rolling over it.
         let guns = Side::BOTH.map(|gun| vs.shown_muzzle(gun).x);
+        let biome = crate::biome::Biome::for_run(duel.seed, duel.round, None);
+        let world_pal = biome.palette(pal);
         self.cache.backdrop.draw(
             self.canvas,
             &view,
-            pal,
+            &world_pal,
             sky::Phase::for_screen(0),
-            crate::biome::Biome::Salt,
+            biome,
             duel.seed ^ duel.round as u64,
             0.0,
             screen,
@@ -495,7 +497,9 @@ impl Painter<'_> {
                 .traces
                 .first()
                 .map_or(anim.before.muzzle(), |t| t.origin);
-            self.draw_anim_effects(anim, muzzle, ink, &view);
+            // Dust stays dark whatever the biome: the side colours are drawn
+            // over it (`nothing_in_a_side_colour_touches_the_field`).
+            self.draw_anim_effects(anim, muzzle, ink, crate::biome::Biome::Salt, &view);
             if let Some(gun) = vs.hit {
                 self.draw_hit(anim, versus::emplacement_box(screen, gun), ink, &view);
             }
