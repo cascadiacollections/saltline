@@ -54,6 +54,41 @@ impl Game {
         self.note(format!("SEED {}", format_seed(seed)));
     }
 
+    /// Start the bundled one-gun course without touching the saved run.
+    pub(crate) fn start_challenge(&mut self, index: usize) {
+        let Some(challenge) = salt_line_sim::challenge::get(index) else {
+            self.note("NO MORE CHALLENGES".into());
+            return;
+        };
+        let layout = salt_line_sim::challenge::layout(challenge);
+        self.set_run_width(Some(layout.width()));
+        let run = RunState::from_challenge(&challenge, &layout);
+        self.play.challenge = Some(index);
+        self.play.angle_ticks = 900;
+        self.play.power_ticks = 600;
+        self.play.anim = None;
+        self.play.last_arc.clear();
+        self.play.clear_hold = 0.0;
+        self.play.sky_time = 0.0;
+        self.play.cam_x = 0;
+        self.play.cam_target = 0.0;
+        self.play.daily = false;
+        self.play.low_shell_warned = false;
+        self.play.last_seed = run.run_seed;
+        self.play.run = Some(run);
+        self.run_file.run_persist = false;
+        self.run_file.resumable = None;
+        self.retire_last_crash();
+        self.new_preview();
+        self.mode = Mode::Playing;
+        self.apply_buffer_size();
+        let hint_count = salt_line_sim::challenge::hints(challenge).len();
+        self.note(format!(
+            "{}  {} SHOTS  HINTS {}",
+            challenge.name, challenge.shots, hint_count
+        ));
+    }
+
     /// Level inspector: drop straight onto a screen index without playing the
     /// ones before it. DESIGN §2.2 is what makes this possible — each screen
     /// generates from its own seed, so screen 400 costs the same as screen 1.
@@ -213,9 +248,27 @@ impl Game {
                 self.play.clear_hold = 0.0;
                 self.play.cam_target = 0.0;
                 self.play.cam_x = 0;
-                let advanced = self.play.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
-                if advanced {
-                    self.after_screen_change();
+                if let Some(index) = self.play.challenge {
+                    if let Some(next) = salt_line_sim::challenge::get(index + 1) {
+                        let layout = salt_line_sim::challenge::layout(next);
+                        self.play.run = Some(RunState::from_challenge(&next, &layout));
+                        self.play.challenge = Some(index + 1);
+                        self.play.angle_ticks = 900;
+                        self.play.power_ticks = 600;
+                        self.play.last_arc.clear();
+                        self.play.last_seed =
+                            self.play.run.as_ref().map(|r| r.run_seed).unwrap_or(0);
+                        self.new_preview();
+                        self.note(format!("{}  NEXT CHALLENGE", next.name));
+                    } else {
+                        self.play.run.as_mut().map(|r| r.resolve_clear());
+                        self.finish_run();
+                    }
+                } else {
+                    let advanced = self.play.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
+                    if advanced {
+                        self.after_screen_change();
+                    }
                 }
             }
         } else if let Some(run) = self.play.run.as_ref() {
@@ -264,6 +317,12 @@ impl Game {
         // A demo run that ends is not scored, and its result screen is not
         // shown: the demo moves on to its next leg (`demo_step`).
         if self.spectating() {
+            return;
+        }
+        if self.play.challenge.is_some() {
+            self.run_file.run_persist = false;
+            self.mode = Mode::GameOver;
+            self.note("CHALLENGE COURSE COMPLETE".into());
             return;
         }
         // The run file goes before the score is recorded, never after, and

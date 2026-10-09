@@ -1470,7 +1470,7 @@ fn title_volume_db(master: f32) -> f32 {
 }
 
 /// The keys the core reads, and the engine's names for them.
-const KEYS: [(input::Key, Key); 35] = [
+const KEYS: [(input::Key, Key); 36] = [
     (input::Key::Left, Key::LEFT),
     (input::Key::Right, Key::RIGHT),
     (input::Key::Up, Key::UP),
@@ -1495,6 +1495,7 @@ const KEYS: [(input::Key, Key); 35] = [
     (input::Key::M, Key::M),
     (input::Key::L, Key::L),
     (input::Key::D, Key::D),
+    (input::Key::H, Key::H),
     (input::Key::W, Key::W),
     (input::Key::E, Key::E),
     (input::Key::T, Key::T),

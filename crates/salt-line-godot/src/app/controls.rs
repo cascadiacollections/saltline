@@ -212,6 +212,9 @@ impl Game {
                     } else {
                         self.open_versus_setup();
                     }
+                } else if self.action_pressed(Action::Challenges) {
+                    self.play(Sound::Ui);
+                    self.start_challenge(0);
                 } else if self.action_pressed(Action::Demo) {
                     // Like versus, the demo never touches the kept run.
                     self.start_demo(DemoStarted::Menu);

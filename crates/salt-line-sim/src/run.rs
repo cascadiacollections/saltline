@@ -1323,6 +1323,35 @@ impl RunState {
         s
     }
 
+    /// A bounded one-gun challenge built from a checked layout.
+    pub fn from_challenge(
+        challenge: &crate::challenge::Challenge,
+        layout: &crate::layout::Layout,
+    ) -> Self {
+        let loadout = Loadout::new();
+        let screen = Screen::from_layout(layout, layout.wind.draw(challenge.seed));
+        Self {
+            run_seed: layout.digest(),
+            width: layout.width(),
+            shells: challenge.shots,
+            screen,
+            screen_index: 0,
+            screens_cleared: 0,
+            total_shots: 0,
+            shots_on_screen: 0,
+            one_shot_streak: 0,
+            loadout,
+            phase: Phase::Firing,
+            offers: Vec::new(),
+            fuse: 0.0,
+            emplacement_offset: 0.0,
+            log: Vec::new(),
+            chalk: Vec::new(),
+            last_apex: None,
+            wind_revealed: true,
+        }
+    }
+
     /// Score is screens cleared, tiebreak on shells remaining then total shots
     /// (DESIGN §1). Never shown during a run.
     pub fn score(&self) -> (u32, i32, u32) {

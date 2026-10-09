@@ -12,6 +12,10 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- A first challenge course: CHALLENGES on the title opens three fixed,
+  one-gun layouts with bounded shell budgets and a short HINTS readout.
+  Clearing one advances to the next; running out of shells reports a failed
+  course without affecting the normal run history.
 - A map editor for local versus: MAKE MAP on the pre-match screen. Sculpt
   hills and dig chasms with a finger, smooth them, stamp ridges, mesas and
   spires, move the guns, set the wind, name it, test-fire both guns, and

@@ -297,6 +297,10 @@ def barrel(angle_deg, variant="base"):
         length, thick = 9, 5
     elif variant == "auger":
         length, thick = 16, 3
+    elif variant == "ballast":
+        length, thick = 18, 4
+    elif variant == "forced":
+        length, thick = 14, 3
     # Angles only run 0-90 deg (up and to the right), so the pivot sits near
     # the frame's bottom-left corner rather than its centre: that leaves the
     # full 28px for the barrel's length at every angle. Kept in sync with
@@ -311,6 +315,10 @@ def barrel(angle_deg, variant="base"):
     b.line(cx, cy, ex, ey, rgba("hull_edge"), 1)
     if variant == "auger":
         b.rect(ex - 1, ey - 1, 3, 3, rgba("hull_hi"))
+    elif variant == "ballast":
+        b.rect(ex - 1, ey - 1, 3, 2, rgba("hull_hi"))
+    elif variant == "forced":
+        b.set(ex, ey, rgba("hull_edge"))
     # Nothing may touch the frame edge: a pixel there means the drawing ran
     # off it and was clipped (the bug the centred pivot used to cause).
     for i in range(s):
@@ -685,6 +693,8 @@ if __name__ == "__main__":
     # build silhouette (§5.3). Sliced at 28px by the Godot layer.
     for variant, name in (
         ("base", "barrel_strip_5deg"),
+        ("ballast", "barrel_strip_ballast"),
+        ("forced", "barrel_strip_forced_march"),
         ("sabot", "barrel_strip_sabot"),
         ("cluster", "barrel_strip_cluster"),
         ("auger", "barrel_strip_auger"),
