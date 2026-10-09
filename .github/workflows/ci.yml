@@ -826,6 +826,7 @@ jobs:
           path: |
             build/${{ matrix.output }}
             build/${{ matrix.output }}.sha256
+            build/*.so
       - name: the smoke frame, for eyeballing a failure
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -835,7 +836,9 @@ jobs:
           if-no-files-found: warn
       # One zip per platform for the dev and tagged releases. `ditto` keeps the macOS
       # bundle's symlinks and permissions, and zip keeps the Linux binary's +x;
-      # a plain artifact upload keeps neither.
+      # a plain artifact upload keeps neither. On Linux the export writes the
+      # GDExtension libraries (the game's and the portal bridge's) beside the
+      # binary, and the binary does not start without them, so they go in too.
       - name: package for release
         shell: bash
         run: |
@@ -844,9 +847,63 @@ jobs:
           case "${{ runner.os }}" in
             macOS) ditto -c -k --keepParent "build/${{ matrix.output }}" dist/SaltLine-macos.zip ;;
             Windows) 7z a -tzip dist/SaltLine-windows-x86_64.zip "./build/${{ matrix.output }}" > /dev/null ;;
-            Linux) (cd build && zip -q "../dist/${{ matrix.zip }}" "${{ matrix.output }}") ;;
+            Linux) (cd build && zip -q "../dist/${{ matrix.zip }}" "${{ matrix.output }}" ./*.so) ;;
           esac
           ls -l dist
+      # The smoke launch above runs from the checkout, where the editor-side
+      # paths (target/release/...) still resolve, so it passed while the Linux
+      # zip shipped the binary alone and could not load its extension. This
+      # unpacks the zip somewhere empty, checks every ELF in it is built for
+      # this runner's architecture (the Linux counterpart of the macOS
+      # `lipo -verify_arch`), and launches it from there.
+      - name: the Linux zip is complete and runs on its own
+        if: runner.os == 'Linux'
+        env:
+          ZIP: ${{ matrix.zip }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -eu
+          case "$RUNNER_ARCH" in
+            ARM64) want=aarch64 ;;
+            X64) want=x86-64 ;;
+            *) echo "unexpected runner arch $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          dir="$RUNNER_TEMP/unpacked"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          unzip -q "dist/$ZIP" -d "$dir"
+          cd "$dir"
+          ls -l
+          for f in "$OUTPUT" libsalt_line_godot.so libxdg_portals.linux.template_release.*.so; do
+            if [ ! -f "$f" ]; then
+              echo "$ZIP is missing $f" >&2
+              exit 1
+            fi
+            desc=$(file -b "$f")
+            echo "$f: $desc"
+            case "$desc" in
+              ELF*"$want"*) ;;
+              *) echo "$f is not an $want ELF" >&2; exit 1 ;;
+            esac
+          done
+          "./$OUTPUT" --headless -- \
+            --salt-seed 20260907 --salt-screen 12 \
+            --salt-shot "$dir/smoke.png" --salt-shot-at 0.5 --salt-require-portals &
+          launcher=$!
+          for _ in $(seq 1 60); do
+            if [ -s smoke.png ]; then break; fi
+            if ! kill -0 "$launcher" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$launcher" 2>/dev/null || true
+          sleep 2
+          kill -9 "$launcher" 2>/dev/null || true
+          wait "$launcher" 2>/dev/null || true
+          if [ ! -s smoke.png ] || [ "$(head -c 4 smoke.png | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+            echo "the unpacked $ZIP never rendered a frame" >&2
+            exit 1
+          fi
+          echo "unpacked $ZIP launched and rendered $(wc -c < smoke.png) bytes"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-${{ matrix.preset }}

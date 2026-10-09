@@ -115,9 +115,10 @@ more at the end. What changed in each version lives in
 2. Tag the merge commit and push the tag:
    `git tag -a vX.Y.Z -m "Salt Line X.Y.Z"`, then `git push origin vX.Y.Z`.
 3. CI builds and tests everything (sim on seven platforms, determinism,
-   solvability, lint, the four desktop exports (Linux x86_64 and arm64,
-   macOS, Windows x86_64) with their smoke launch, Windows arm64, Android). The `version` job fails the build if the tag does
-   not match the tree, or if CHANGELOG.md has no section for it.
+   solvability, lint, the five desktop exports with their smoke launch:
+   Linux x86_64 and arm64, macOS, Windows x86_64 and arm64; and Android).
+   The `version` job fails the build if the tag does not match the tree, or
+   if CHANGELOG.md has no section for it.
 4. The `release` job then attests every download (build provenance, and the
    SBOM; see "Verifying a download") and publishes a normal (not pre-) GitHub
    Release `vX.Y.Z`, marked latest, with the same files as the `dev`

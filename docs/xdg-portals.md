@@ -5,9 +5,10 @@ Salt Line includes the MIT-licensed `godot-xdg-portals` GDScript facade from
 revision `6e14d9975f3bb0b054d958dddb7afc977fb7256e`. Its license and third-party
 notices are beside the copied addon. The Linux (x86_64 and arm64)
 `.gdextension` descriptor is generated from
-`tools/xdg_portals_linux.gdextension.in` during the native build. Godot 4.7.2 reports an error when a descriptor has no library for the
-current OS, so other platforms carry only the addon's GDScript facade and
-select its null backend without loading a descriptor.
+`tools/xdg_portals_linux.gdextension.in` during the native build. Godot 4.7.2
+reports an error when a descriptor has no library for the current OS, so other
+platforms carry only the addon's GDScript facade and select its null backend
+without loading a descriptor.
 
 `tools/build_xdg_portals.sh` fetches that exact revision and builds the Linux
 editor, debug, and release libraries by default, for the machine's own

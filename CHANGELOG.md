@@ -69,6 +69,12 @@ second. See RELEASING.md for the release steps.
   with it and against it as often (only maps have fixed winds; generated
   duels are unchanged).
 
+### Fixed
+
+- The Linux download now carries the game's libraries beside the binary.
+  The zip used to hold the binary alone, which could not load the game; CI
+  now unpacks each Linux zip on its own and launches it from there.
+
 ## [0.1.0] - 2026-10-04
 
 ### Added
