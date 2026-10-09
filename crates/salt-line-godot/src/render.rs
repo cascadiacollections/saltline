@@ -1008,6 +1008,7 @@ impl Painter<'_> {
             .map(|a| a.collapsed.clone())
             .unwrap_or_default();
         let pal = self.pal;
+        let biome = self.play_biome();
 
         for (i, st) in screen.structures.iter().enumerate() {
             if st.state == StructState::Cleared {
@@ -1051,6 +1052,11 @@ impl Painter<'_> {
                     let x = view.sx(st.x0 as f64) + (footprint - sprite.w) / 2 + lean;
                     let y = view.sy(ground) - sprite.h + Sprites::seat_offset(st.kind);
                     self.canvas.blit(&sprite, x, y);
+                    if state != StructState::Collapsed {
+                        if let Some((colour, depth)) = biome.cap() {
+                            self.canvas.cap_sprite(&sprite, x, y, colour, depth);
+                        }
+                    }
                 }
                 None => {
                     // No art loaded: flat columns, so the screen still plays.
@@ -1120,16 +1126,31 @@ impl Painter<'_> {
             return;
         };
         let ink = raster::Ink::plain(self.pal.get(slot::ALERT));
-        self.draw_anim_effects(anim, anim.before.muzzle(), ink, view);
+        let biome = self.play_biome();
+        self.draw_anim_effects(anim, anim.before.muzzle(), ink, biome, view);
+    }
+
+    /// The biome of the run on screen; the salt flats with none.
+    fn play_biome(&self) -> Biome {
+        self.g.play.run.as_ref().map_or(Biome::Salt, |run| {
+            Biome::for_run(run.run_seed, run.screen_index, self.g.play.challenge)
+        })
     }
 
     /// `draw_shot_effects` for any shot being played back, fired from
     /// `muzzle`: the run's, or a versus match's from either gun. The muzzle
     /// and impact flashes are drawn in `ink` (a run's alert colour, or the
     /// versus shooter's on a dark backing).
-    fn draw_anim_effects(&mut self, anim: &Anim, muzzle: Vec2, ink: raster::Ink, view: &View) {
+    fn draw_anim_effects(
+        &mut self,
+        anim: &Anim,
+        muzzle: Vec2,
+        ink: raster::Ink,
+        biome: Biome,
+        view: &View,
+    ) {
         let alert = self.pal.get(slot::ALERT);
-        let dust = self.pal.get(slot::ST_DMG);
+        let dust = biome.debris(&biome.palette(self.pal));
         if presentation::flash_strength(anim.t, 0.0, presentation::MUZZLE_TIME) > 0.0 {
             let p = muzzle;
             let x = view.sx(p.x);

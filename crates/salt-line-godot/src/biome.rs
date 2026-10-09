@@ -28,6 +28,25 @@ impl Biome {
         }
     }
 
+    /// Snow settles on top of structures and moss grows on them: a colour and
+    /// how many pixels deep it lies, or nothing for the salt flats.
+    pub fn cap(self) -> Option<(Rgba, i32)> {
+        match self {
+            Self::Salt => None,
+            Self::Snow => Some((rgba(238, 244, 247), 2)),
+            Self::Forest => Some((rgba(92, 128, 74), 1)),
+        }
+    }
+
+    /// The colour of an impact's thrown debris.
+    pub fn debris(self, themed: &Palette) -> Rgba {
+        match self {
+            Self::Salt => themed.get(slot::ST_DMG),
+            Self::Snow => themed.get(slot::SAND),
+            Self::Forest => themed.get(slot::ROCK),
+        }
+    }
+
     /// Apply the biome to the world-facing palette roles. UI and hull colours
     /// stay unchanged so menus and existing sprites retain their identity.
     pub fn palette(self, base: &Palette) -> Palette {

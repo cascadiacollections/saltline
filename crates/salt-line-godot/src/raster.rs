@@ -800,6 +800,22 @@ impl Sprite {
 }
 
 impl Canvas {
+    /// Lay `colour` over the top `depth` pixels of every column of a sprite
+    /// drawn at (x, y): snow on a roof, moss on a wall. Only pixels the
+    /// sprite itself covers are touched.
+    pub fn cap_sprite(&mut self, sprite: &Sprite, x: i32, y: i32, colour: Rgba, depth: i32) {
+        for i in 0..sprite.w {
+            let Some(top) = (0..sprite.h).find(|&j| sprite.pixel(i, j).is_some()) else {
+                continue;
+            };
+            for j in top..(top + depth).min(sprite.h) {
+                if sprite.pixel(i, j).is_some() {
+                    self.put(x + i, y + j, colour);
+                }
+            }
+        }
+    }
+
     /// Blit a whole sprite at a whole-pixel position.
     pub fn blit(&mut self, sprite: &Sprite, x: i32, y: i32) {
         self.blit_region(
@@ -863,6 +879,46 @@ mod tests {
     use super::*;
     use salt_line_sim::rng::screen_seed;
     use salt_line_sim::terrain::{self, ShapeParams, Template};
+
+    #[test]
+    fn a_cap_covers_only_the_top_of_the_sprite() {
+        // A 3x3 sprite with a hole in its top-left corner.
+        let mut px = vec![0u8; 3 * 3 * 4];
+        for j in 0..3 {
+            for i in 0..3 {
+                if (i, j) != (0, 0) {
+                    let at = (j * 3 + i) * 4;
+                    px[at..at + 4].copy_from_slice(&[10, 20, 30, 255]);
+                }
+            }
+        }
+        let sprite = Sprite { w: 3, h: 3, px };
+        let mut canvas = Canvas::new(5, 5);
+        canvas.blit(&sprite, 1, 1);
+        let white = [255, 255, 255, 255];
+        canvas.cap_sprite(&sprite, 1, 1, white, 1);
+        let at = |c: &Canvas, x: i32, y: i32| {
+            let i = ((y * c.w + x) * 4) as usize;
+            [
+                c.bytes()[i],
+                c.bytes()[i + 1],
+                c.bytes()[i + 2],
+                c.bytes()[i + 3],
+            ]
+        };
+        assert_eq!(at(&canvas, 1, 1), [0, 0, 0, 0], "the hole stays open");
+        assert_eq!(
+            at(&canvas, 1, 2),
+            white,
+            "the column's first pixel is capped"
+        );
+        assert_eq!(at(&canvas, 2, 1), white);
+        assert_eq!(
+            at(&canvas, 2, 2),
+            [10, 20, 30, 255],
+            "below the cap is untouched"
+        );
+    }
 
     fn field(width: usize) -> Heightfield {
         let p = ShapeParams {

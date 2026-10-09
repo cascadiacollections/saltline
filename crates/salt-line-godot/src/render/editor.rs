@@ -662,7 +662,7 @@ impl Painter<'_> {
                 .traces
                 .first()
                 .map_or(versus::muzzle_of(&anim.before, t.side), |tr| tr.origin);
-            self.draw_anim_effects(anim, muzzle, ink, &view);
+            self.draw_anim_effects(anim, muzzle, ink, crate::biome::Biome::Salt, &view);
         }
         self.render_test_hud(t, aiming);
     }

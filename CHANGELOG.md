@@ -12,6 +12,10 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- Biome polish: snow settles on top of standing structures and moss on forest
+  ones, impacts throw white powder in snow and dark earth in forest, and
+  versus matches take a biome too (their dust stays dark so side colours
+  stay readable).
 - Challenge progress: your most-shells-left result per challenge is saved,
   CHALLENGES on the title shows how many are cleared and starts the first one
   you have not, and the result screen offers RETRY (or PLAY AGAIN) with your
