@@ -15,6 +15,10 @@ both as components and puts one application, Salt Line, at the top:
     Salt Line (application)
       -> salt-line-godot (the Cargo crate, with its whole dependency tree)
       -> Godot export templates (framework, every platform)
+      -> Salt Line's stripped Godot engine (library, Android arm64 only,
+         when tools/godot_templates.lock.json is current and the
+         STRIPPED_ENGINE variable is not "off", which is exactly when CI
+         exports with it: docs/godot-templates.md)
       -> godot-xdg-portals (library, Linux builds only)
 
 It also makes the document reproducible and acceptable to actions/attest:
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import uuid
@@ -64,6 +69,54 @@ def xdg_revision() -> str:
     if not found:
         fail("no `revision=<40 hex>` line in tools/build_xdg_portals.sh")
     return found.group(1)
+
+
+def stripped_engine(godot: str) -> dict | None:
+    """The Android engine library built from source by the godot-templates
+    workflow, when the lock file pins a build for the current inputs (the
+    Android job then exports with it, and fails rather than fall back) and
+    the STRIPPED_ENGINE off switch is not thrown."""
+    if os.environ.get("STRIPPED_ENGINE") == "off":
+        return None
+    sys.path.insert(0, str(ROOT / "tools"))
+    import godot_template  # a sibling script, not a package
+
+    lock = godot_template.read_lock()
+    if lock.get("key") != godot_template.key():
+        return None
+    name = godot_template.output_name("android", "arm64")
+    digest = lock.get("files", {}).get(name)
+    if not digest:
+        return None
+    if godot_template.GODOT_VERSION != godot:
+        fail(f"--godot {godot} but tools/godot_template.py builds {godot_template.GODOT_VERSION}")
+    return {
+        "type": "library",
+        "bom-ref": f"godot-engine-stripped@{lock['key']}",
+        "group": "godotengine",
+        "name": "godot-engine-stripped",
+        "version": f"{godot}-{lock['key']}",
+        "description": (
+            "Godot Engine built from source at the pinned tag without the "
+            "features Salt Line never uses (tools/godot_build_profile.json), "
+            "replacing libgodot_android.so in the official Android template. "
+            "Built and attested by the godot-templates workflow. Godot itself "
+            "is MIT; it bundles third-party code under other licences, listed "
+            "in its COPYRIGHT.txt."
+        ),
+        "scope": "required",
+        "licenses": [{"license": {"id": "MIT"}}],
+        "purl": f"pkg:github/godotengine/godot@{lock['commit']}",
+        "hashes": [{"alg": "SHA-256", "content": digest}],
+        "externalReferences": [
+            {"type": "vcs", "url": "https://github.com/godotengine/godot"},
+            {
+                "type": "distribution",
+                "url": f"https://github.com/{godot_template.REPO}/releases/tag/{lock['release']}",
+            },
+        ],
+        "properties": [{"name": "saltline:platforms", "value": "android-arm64"}],
+    }
 
 
 def build(cargo_bom: dict, godot: str, commit: str | None, repo: str) -> dict:
@@ -126,6 +179,9 @@ def build(cargo_bom: dict, godot: str, commit: str | None, repo: str) -> dict:
         ],
     }
 
+    engine_component = stripped_engine(godot)
+    engine_refs = [engine_component["bom-ref"]] if engine_component else []
+
     app = {
         "type": "application",
         "bom-ref": APP_REF,
@@ -140,11 +196,14 @@ def build(cargo_bom: dict, godot: str, commit: str | None, repo: str) -> dict:
         app["purl"] = f"pkg:github/{repo}@{commit}"
 
     bom["metadata"]["component"] = app
-    bom["components"] = [crate, godot_component, xdg_component] + bom.get(
-        "components", []
+    bom["components"] = (
+        [crate, godot_component]
+        + ([engine_component] if engine_component else [])
+        + [xdg_component]
+        + bom.get("components", [])
     )
     bom.setdefault("dependencies", []).insert(
-        0, {"ref": APP_REF, "dependsOn": [crate_ref, godot_ref, xdg_ref]}
+        0, {"ref": APP_REF, "dependsOn": [crate_ref, godot_ref, *engine_refs, xdg_ref]}
     )
     tools = bom["metadata"].setdefault("tools", [])
     if isinstance(tools, list):

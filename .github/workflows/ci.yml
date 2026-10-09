@@ -1017,6 +1017,35 @@ jobs:
         run: cargo build -p salt-line-godot
       - name: import assets
         run: bash tools/godot_headless.sh --frame-delay 800 --import
+      # The stripped engine (docs/godot-templates.md): fetched from the
+      # godot-templates release that tools/godot_templates.lock.json pins and
+      # checked against its sha256. A lock written for other build inputs
+      # falls back to the official template with a warning, except on a tag,
+      # which fails. The repository variable STRIPPED_ENGINE=off is the off
+      # switch (RELEASING.md): official template everywhere, tags included.
+      - name: stripped engine template
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          STRIPPED_ENGINE: ${{ vars.STRIPPED_ENGINE }}
+        run: |
+          set -eu
+          if [ "$STRIPPED_ENGINE" = "off" ]; then
+            echo "::warning::vars.STRIPPED_ENGINE is off: this APK is exported on the official Godot template"
+            exit 0
+          fi
+          set --
+          if [ "$IS_TAG" = "true" ]; then set -- --require; fi
+          python3 tools/godot_template.py fetch --out "$RUNNER_TEMP/godot-templates" "$@"
+          engine="$RUNNER_TEMP/godot-templates/libgodot.android.template_release.arm64.so"
+          if [ -f "$engine" ]; then
+            python3 tools/godot_template.py package-android "$engine" \
+              --out "$RUNNER_TEMP/godot-templates/android_release.apk"
+            python3 tools/godot_template.py use Android "$RUNNER_TEMP/godot-templates/android_release.apk"
+          elif [ "$IS_TAG" = "true" ]; then
+            echo "::error::a release tag must export on the stripped engine, and none was fetched"
+            exit 1
+          fi
       - name: export the APK
         env:
           # Kept out of GITHUB_ENV so the password lives only in this step.
@@ -1222,7 +1251,8 @@ jobs:
   # whole Cargo dependency tree (cargo-cyclonedx reads Cargo.lock; syft over the
   # exported binaries would find nothing, since a stripped cdylib carries no
   # crate list), plus the two binary dependencies Cargo cannot see, the Godot
-  # export templates and the Linux XDG Portals bridge (tools/release_sbom.py).
+  # export templates (and the stripped Android engine when it is pinned) and
+  # the Linux XDG Portals bridge (tools/release_sbom.py).
   # Default features only, which is what ships; every target, since the
   # release spans seven. Dev-dependencies are left out and build-only crates
   # (proc macros, codegen) are kept but marked `excluded`. CycloneDX JSON,
@@ -1249,6 +1279,9 @@ jobs:
       # SOURCE_DATE_EPOCH (the commit time) makes the timestamp the commit's,
       # so the same commit always produces the same SBOM, byte for byte.
       - name: generate the SBOM
+        env:
+          # The android job's off switch; the SBOM must agree with what shipped.
+          STRIPPED_ENGINE: ${{ vars.STRIPPED_ENGINE }}
         run: |
           set -eu
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)

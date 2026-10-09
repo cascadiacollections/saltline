@@ -22,6 +22,7 @@
 //!
 //! ```text
 //! entry      lib            the GDExtension entry point; installs the crash hook
+//!            engine_classes the engine classes the game needs, checked at startup
 //! adapter    game           the one Godot node: engine events in, effects out
 //! core       app            the game: modes, menus, runs, effects (engine-free)
 //!            input, touch,  keys and pad buttons, on-screen buttons, slingshot
@@ -61,6 +62,7 @@ pub mod crash;
 pub mod custom;
 pub mod durable;
 pub mod editor;
+pub mod engine_classes;
 pub mod font;
 pub mod frame;
 pub mod game;
@@ -102,6 +104,9 @@ unsafe impl ExtensionLibrary for SaltLineExtension {
         // into an unloaded library would bite.
         if stage == InitStage::Scene && !godot::classes::Engine::singleton().is_editor_hint() {
             crash::install(save::on_disk(crash::REPORT_PATH));
+            // Android runs on a stripped engine; a class it lacks fails here,
+            // by name, rather than mid-game (engine_classes).
+            engine_classes::check();
         }
     }
 

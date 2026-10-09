@@ -1,0 +1,156 @@
+name: godot-templates
+
+# Builds Salt Line's stripped Godot export templates from source
+# (docs/godot-templates.md) and publishes them as the prerelease
+# godot-templates-<godot version>-<key>, where the key hashes every input
+# (tools/godot_template.py key). The export jobs in ci.yml download the build
+# tools/godot_templates.lock.json names and check its sha256 there; this
+# workflow never changes what CI ships by itself; a reviewed change to the
+# lock file does.
+#
+# It runs when an input changes on main, or by hand. A hand run on another
+# branch builds (to try a profile) but never publishes. A build is tens of
+# minutes; nothing on a pull request waits for it.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tools/godot_build_profile.json
+      - tools/godot_template.py
+      - .github/workflows/godot-templates.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Read-only by default. Only `publish` writes, and it runs no build code: it
+# signs and uploads what the build jobs produced, so the OIDC token never
+# reaches SCons or Godot's build scripts (the same split as ci.yml's release).
+permissions:
+  contents: read
+
+jobs:
+  key:
+    name: key
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      tag: ${{ steps.key.outputs.tag }}
+      exists: ${{ steps.exists.outputs.exists }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: key
+        id: key
+        run: |
+          set -eu
+          key=$(python3 tools/godot_template.py key)
+          version=$(sed -n 's/^GODOT_VERSION = "\(.*\)"$/\1/p' tools/godot_template.py)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "tag=godot-templates-$version-$key" >> "$GITHUB_OUTPUT"
+      # A published build is never replaced: the lock file pins its hashes.
+      - name: already published?
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.key.outputs.tag }}
+        run: |
+          set -eu
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG is already published; nothing to build"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (${{ matrix.platform }})
+    needs: key
+    if: needs.key.outputs.exists != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux builds too (`godot_template.py build linux`) but is not
+        # shipped yet: docs/godot-templates.md, "Not covered yet".
+        platform: [android]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      # Godot asks for one NDK version and installs it through sdkmanager when
+      # ANDROID_HOME lacks it.
+      - name: build
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+          python3 tools/godot_template.py build "$PLATFORM" --src "$RUNNER_TEMP/godot" -j "$(nproc)"
+          ls -l build/godot-templates
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: godot-template-${{ matrix.platform }}
+          path: build/godot-templates/*
+          if-no-files-found: error
+
+  # Only main publishes: `lock --release` trusts a build only if its
+  # attestation names this workflow on refs/heads/main.
+  publish:
+    name: publish
+    needs: [key, build]
+    if: needs.key.outputs.exists != 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write      # create the release and upload its files
+      id-token: write      # OIDC token for the Sigstore signing certificate
+      attestations: write  # store the provenance attestation
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: godot-template-*
+          merge-multiple: true
+          path: dist
+      - name: checksums
+        working-directory: dist
+        run: |
+          set -eu
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      # An unattested build could never be pinned, so do not publish one.
+      - name: refuse without attestations
+        if: vars.ATTEST == 'off'
+        run: |
+          echo "::error::vars.ATTEST is off; godot-templates are only published attested"
+          exit 1
+      - name: attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: publish the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.key.outputs.tag }}
+        run: |
+          set -eu
+          cd dist
+          gh release create "$TAG" ./* \
+            --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --target "$GITHUB_SHA" \
+            --title "Godot export templates ($TAG)" \
+            --notes "Stripped Godot export templates built from source by the godot-templates workflow at ${GITHUB_SHA::7}. Not a game release. CI uses them only once tools/godot_templates.lock.json pins these hashes (docs/godot-templates.md)."
+          {
+            echo "### Published $TAG"
+            echo
+            echo "Pin it: \`python3 tools/godot_template.py lock --release\` on this commit, then open a pull request with the lock file."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
