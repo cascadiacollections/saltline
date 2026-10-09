@@ -202,6 +202,86 @@ recreates on each push to `main`, so check that flow still works first.
    follow-up pull request pins it. Until then CI exports with the official
    templates, so do not tag a release in between.
 
+## Automated engine comparison
+
+The `engine-validation` workflow builds a native Linux template with the same
+profile, exports one PCK, and runs that pack on both the official and stripped
+engines. The stripped Linux binary is cached by its build inputs and used only
+for testing. This does not change the Linux engine shipped to players.
+
+`--salt-validate-engine <directory>` runs before save-file loading. It checks
+the imported palette, title image, every sprite and all thirteen WAV streams,
+then plays three fixed `SR` fixtures through WATCH: a run with a draft, a
+generated versus match, and a match on a custom map. Each advances by exactly
+1/60 second per step, with a fixed date and window size. The final state must
+match reconstruction of its log; a disk-write request, divergence, missing
+asset or timeout fails. The fixtures are tied to the sim/match epochs and must
+be revisited deliberately when those change.
+
+The report includes the final state hash, a hash of software-rendered frames
+sampled once per simulated second and at the end, and sound-event and audio
+length hashes. Samples exercise Godot's image and texture APIs; each fixture's
+final frame is saved as a PNG. Both engines must produce identical reports
+and PNGs. Logs and captures are retained as CI artifacts, including on failure.
+
+After exporting a release pack with its GDExtension beside it:
+
+```sh
+python3 tools/engine_validation.py \
+  --official /path/to/linux_release.x86_64 \
+  --stripped /path/to/godot.linuxbsd.template_release.x86_64 \
+  --pack build/engine-validation/game.pck
+```
+
+This is resource-loader, replay and software-frame parity. Headless mode uses
+dummy rendering/audio drivers, so it cannot prove GPU composition, audible
+sound, Android lifecycle behavior or input handling. The profiling APK's GPU
+checks and device play still cover different ground.
+
+Local verification on October 9, 2026: the official and stripped Linux ARM64
+export templates matched over 19,921 replay steps and 336 sampled frames, with
+identical final PNGs and all thirteen audio streams loaded. The report also
+matched the Windows ARM64 editor's. An export deliberately missing `fire.wav`
+failed validation and left no successful report. These are headless results,
+not a phone playback or performance measurement.
+
+## Profiling the engine that ships
+
+`just android-profile-apk` now fetches the engine named by the release lock,
+verifies its SHA-256, and exports on it. A cached library is reused only if its
+hash matches. A stale or missing lock fails instead of measuring a stock
+engine accidentally. `just android-profile-apk official` explicitly selects
+the official engine for a baseline. The repository's CI-only
+`STRIPPED_ENGINE=off` switch does not silently change this local selection.
+
+`tools/android_profile.py` can also be run directly through `mise exec`, with
+`--sdk`, `--ndk`, `--java` and `--godot` (or their usual environment variables),
+including on Windows. Install the `aarch64-linux-android` target in the pinned
+Rust toolchain first. It builds the host and Android extensions and restores
+`export_presets.cfg` byte for byte even when exporting fails.
+The export uses a temporary self-contained editor with the requested SDK and
+Java paths, leaving the developer's editor settings untouched.
+
+The profiler keeps its separate `com.cascadiacollections.saltline.profile`
+package and key. After export, the script checks the engine library inside
+the APK, then writes `build/SaltLine-profile.engine.json` with the selected
+engine, source release and verified hash. Keep this metadata with timing
+results so the measured engine is unambiguous.
+
+Pixel 10 verification on October 9, 2026: both the official and pinned
+Android engines passed GPU readback checks for run (600 frames), versus
+(2,400 frames), and night with Long Lens (900 frames). Every checked frame
+matched the newest CPU reference; none matched only an older buffer or
+failed to match. The pinned APK's engine SHA-256 matched the release lock.
+The existing profiler had a different signing key, so these runs used the
+separate `com.cascadiacollections.saltline.profile.validation` package.
+
+One 34-second ABBA capture per engine measured updated-process median/p95
+CPU call times of 553.4/1,979.7 microseconds for official and 547.9/2,052.2
+microseconds for pinned. These single captures do not establish a speed
+improvement and do not measure deferred GPU completion. Local evidence is
+in `build/phone-official-profile.log` and `build/phone-pinned-profile.log`.
+
 ## Not covered yet
 
 - **Desktop.** The script builds a Linux x86_64 template, but the workflow
@@ -216,6 +296,3 @@ recreates on each push to `main`, so check that flow still works first.
   `ubuntu-latest`; a Fedora 44 build needs 2.43). Shipping it would mean
   building in an older-glibc container or with Godot's buildroot SDK, as
   upstream does. That, not size, is why the Linux export is not switched yet.
-- **The profiling APK** (`just android-profile`) still exports on the
-  official template, so its frame timings measure the official engine, not
-  the one players get.
