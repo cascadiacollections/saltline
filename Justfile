@@ -202,9 +202,12 @@ ios-lib profile="debug":
     RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build -p salt-line-godot \
         --target aarch64-apple-ios {{ if profile == "release" { "--release" } else { "" } }}
 
+# Builds the host extension too: Godot loads it while importing the project on a clean checkout.
+# The default debug build is opt-level 1, for development; `release` uses the LTO Rust library
+# and Godot's release template.
+
 # Export the Xcode project to build/ios (open build/ios/SaltLine.xcodeproj to run from Xcode).
-# Build the host extension too: Godot loads it while importing the project on a clean checkout.
-ios-project: build ios-lib
+ios-project profile="debug": build (ios-lib profile)
     #!/usr/bin/env bash
     set -euo pipefail
     team="${IOS_TEAM:-$(sed -n 's/^application\/app_store_team_id="\(.*\)"$/\1/p' export_presets.cfg)}"
@@ -215,7 +218,7 @@ ios-project: build ios-lib
     fi
     rm -rf build/ios && mkdir -p build/ios
     bash tools/godot_headless.sh --frame-delay 800 --import
-    bash tools/godot_headless.sh --export-debug "iOS" build/ios/SaltLine.ipa
+    bash tools/godot_headless.sh --export-{{ profile }} "iOS" build/ios/SaltLine.ipa
     test -d build/ios/SaltLine.xcodeproj
     # Godot 4.7.2 emits empty usage strings even though Salt Line does not use
     # the camera, microphone or photo library. Empty strings make Xcode warn.
@@ -232,8 +235,8 @@ ios-project: build ios-lib
         exit 1
     fi
 
-# Sign, install and launch on the attached iPhone.
-ios: ios-project
+# Sign, install and launch on the attached iPhone. `just ios release` for the optimised build.
+ios profile="debug": (ios-project profile)
     #!/usr/bin/env bash
     set -euo pipefail
     team="${IOS_TEAM:-$(sed -n 's/^application\/app_store_team_id="\(.*\)"$/\1/p' export_presets.cfg)}"
@@ -244,10 +247,10 @@ ios: ios-project
     mkdir -p "$stage/project" "$stage/out"
     rsync -a --exclude out build/ios/ "$stage/project/"
     xattr -cr "$stage"
-    xcodebuild -project "$stage/project/SaltLine.xcodeproj" -configuration Debug -sdk iphoneos \
+    xcodebuild -project "$stage/project/SaltLine.xcodeproj" -configuration {{ if profile == "release" { "Release" } else { "Debug" } }} -sdk iphoneos \
         -allowProvisioningUpdates DEVELOPMENT_TEAM="$team" CODE_SIGN_STYLE=Automatic \
         COMPILER_INDEX_STORE_ENABLE=NO SYMROOT="$stage/out" -quiet build
-    app=$(ls -d "$stage"/out/Debug-iphoneos/*.app | head -1)
+    app=$(ls -d "$stage"/out/{{ if profile == "release" { "Release" } else { "Debug" } }}-iphoneos/*.app | head -1)
     device="${IOS_DEVICE:-}"
     if [ -z "$device" ]; then
         list=$(mktemp)
