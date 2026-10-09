@@ -108,6 +108,9 @@ change to the toolchain or to the sim's arithmetic.
 On a Mac, `just ios` builds the extension for arm64, exports an Xcode project
 to `build/ios`, signs it, then installs and launches it on the attached iPhone
 (set `IOS_DEVICE` to a name or UDID if there is more than one physical iPhone).
+The default is a debug build (Rust at opt-level 1); `just ios release` builds the
+optimised one (LTO, Godot's release template, Xcode's Release configuration),
+which is what to use for performance checks. It is untested on a device so far.
 Signing uses
 Xcode's automatic provisioning, which also registers the phone with your
 account. It needs a paid Apple developer account for installs that last a year.

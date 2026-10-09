@@ -12,6 +12,8 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- `just ios release` and `just ios-project release` build the iOS app with the
+  optimised Rust library and Godot release template; the default stays debug.
 - Cosmetic world biomes for play: normal runs now deterministically rotate
   between the original salt flats, snow, and forest palettes, while the
   bundled challenges use stable Snow, Forest, and Salt themes. Biomes change
