@@ -77,6 +77,11 @@ step that no amount of CI will cover.
       "exporting with the official Godot templates" warning (a tag fails
       instead, but a dev build may have fallen back; see
       `docs/godot-templates.md`)
+- [ ] Each desktop zip, unpacked into an empty directory, holds everything
+      the export wrote (the Linux `.so` files and the Windows
+      `salt_line_godot.dll` beside the binary; the macOS dylib inside the
+      bundle), built for its architecture, and **launches and renders a frame
+      from there**
 - [ ] `.sha256` published next to each artifact
 - [ ] Every download has a signed build provenance attestation, and the game
       files an SBOM attestation for `SaltLine-sbom.cdx.json` (the `release`
@@ -109,7 +114,8 @@ step that no amount of CI will cover.
       higher versionCode) and confirm the save survives; play a run, a
       versus match, the editor and a replay, with sound, since the engine is
       stripped (`docs/godot-templates.md`, "Adding something back")
-- [ ] Windows: run the `.exe`, work through SmartScreen, confirm it runs
+- [ ] Windows: unzip, keep `salt_line_godot.dll` beside the `.exe`, run the
+      `.exe`, work through SmartScreen, confirm it runs
 - [ ] Verify the published `.sha256` against the downloaded file, and its
       provenance with `gh attestation verify` (see "Verifying a download")
 

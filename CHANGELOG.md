@@ -74,6 +74,10 @@ second. See RELEASING.md for the release steps.
 - The Linux download now carries the game's libraries beside the binary.
   The zip used to hold the binary alone, which could not load the game; CI
   now unpacks each Linux zip on its own and launches it from there.
+- The Windows downloads (x64 and ARM64) now carry `salt_line_godot.dll`
+  beside `SaltLine.exe`. The zip used to hold the `.exe` alone, which could
+  not load the game; CI now unpacks each Windows zip, and the macOS one, on
+  its own and launches it from there.
 
 ## [0.1.0] - 2026-10-04
 
