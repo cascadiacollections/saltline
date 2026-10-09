@@ -56,6 +56,8 @@ pub struct Sprites {
     pub tank_ballast: Option<Sprite>,
     pub tank_forced: Option<Sprite>,
     pub barrel_base: Option<Sprite>,
+    pub barrel_ballast: Option<Sprite>,
+    pub barrel_forced: Option<Sprite>,
     pub barrel_sabot: Option<Sprite>,
     pub barrel_cluster: Option<Sprite>,
     pub barrel_auger: Option<Sprite>,
@@ -142,6 +144,8 @@ impl Sprites {
             tank_ballast: load(&p("tank_ballast"), &mut missing),
             tank_forced: load(&p("tank_forced_march"), &mut missing),
             barrel_base: load(&p("barrel_strip_5deg"), &mut missing),
+            barrel_ballast: load(&p("barrel_strip_ballast"), &mut missing),
+            barrel_forced: load(&p("barrel_strip_forced_march"), &mut missing),
             barrel_sabot: load(&p("barrel_strip_sabot"), &mut missing),
             barrel_cluster: load(&p("barrel_strip_cluster"), &mut missing),
             barrel_auger: load(&p("barrel_strip_auger"), &mut missing),
@@ -191,7 +195,11 @@ impl Sprites {
     /// One variant wins, in that order of precedence. A variant whose strip
     /// failed to load falls back to the base barrel.
     pub fn barrel(&self, lo: &Loadout) -> Option<&Sprite> {
-        let pick = if lo.has(Modifier::Sabot) {
+        let pick = if lo.has(Modifier::ForcedMarch) {
+            self.barrel_forced.as_ref()
+        } else if lo.has(Modifier::Ballast) {
+            self.barrel_ballast.as_ref()
+        } else if lo.has(Modifier::Sabot) {
             self.barrel_sabot.as_ref()
         } else if lo.has(Modifier::Cluster) {
             self.barrel_cluster.as_ref()

@@ -869,6 +869,8 @@ pub(crate) struct Play {
     /// Bumped whenever the drag preview must be worked out afresh for a
     /// reason its key cannot see (a new loadout, a new run).
     pub(crate) preview_epoch: u32,
+    /// The active bundled challenge index, or `None` for a normal run.
+    pub(crate) challenge: Option<usize>,
 }
 
 impl Default for Play {
@@ -888,6 +890,7 @@ impl Default for Play {
             last_arc: Vec::new(),
             low_shell_warned: false,
             preview_epoch: 0,
+            challenge: None,
         }
     }
 }

@@ -1895,8 +1895,8 @@ run.
 
 ## 13. Layouts, the editor and custom games
 
-**Status: Phase 3 built (October 2026); challenges, courses and sharing
-proposed.** Phase 1 is the data model, forking a generated screen into it,
+**Status: Phase 4 vertical slice built (October 2026); courses and sharing
+remain proposed.** Phase 1 is the data model, forking a generated screen into it,
 the share code, validation, and a dev flag that plays a custom duel on a
 code (`--salt-layout`). Phase 3 is the map editor in the game, the slot
 file, the draft kept on disk, custom duels on the pre-match screen's
@@ -2489,7 +2489,7 @@ on a keypad.
 |---|---|---|
 | **1 (built)** | data model, forks, share code, validation, `--salt-layout`, `--salt-fork-run`, `--salt-fork-duel`, `just layouts` | forks within 1/32 and the code round trip are tested; the decoder is fuzzed; generation and goldens unchanged; a code plays as a custom duel on desktop at 320 columns, letterboxed in a wider window. There is no phone path for `--salt-layout`: a phone has no command line, so the first phone play is Phase 3's |
 | **3 (built)** | the editor and custom duels in the menus together: SCULPT, SMOOTH, STAMP, GUNS, MIRROR, WIND, NAME, UNDO, TEST FIRE, the draft kept on app kill, slots in the layouts file, the GROUND row on the pre-match screen, a rematch keeps the ground, fork this round and fork from a seed (§13.11), bundled layouts made with the editor's tools, match resume on a layout and pasting a code | a child makes a duel layout and plays it without help, and the owner and his son pick a bundled layout from the pre-match screen, both on the Pixel (to be confirmed by the owner: the PR's test script) |
-| 4 | challenges and courses: one-gun layouts as a mode, PLACE and HINTS (STAMP came with Phase 3) | a course of bundled challenges plays start to finish with a result |
+| **4 (vertical slice)** | three bundled one-gun challenges with bounded shell budgets and HINTS | CHALLENGES opens the course, each challenge clears through the normal play loop, and the course ends with a result |
 | 5 | sharing through the relay | a code sent from one phone plays on another |
 
 The phase that was 2 (custom duels in the menus, alone) is folded into 3: a

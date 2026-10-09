@@ -66,6 +66,7 @@ pub enum Key {
     M,
     L,
     D,
+    H,
     /// WATCH and REPLAYS (DESIGN §9.4).
     W,
     /// The map editor's keys (DESIGN §13.11): E opens it from the
@@ -89,7 +90,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 35] = [
+    pub const ALL: [Key; 36] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -114,6 +115,7 @@ impl Key {
         Self::M,
         Self::L,
         Self::D,
+        Self::H,
         Self::W,
         Self::E,
         Self::T,
@@ -154,6 +156,7 @@ impl Key {
             "M" => Self::M,
             "L" => Self::L,
             "D" => Self::D,
+            "H" => Self::H,
             "W" => Self::W,
             // The map editor's keys (E T Z Y I X P) and the replays' K are
             // read as keys, not through bindings, so no `bind` line may put
@@ -251,6 +254,8 @@ pub enum Action {
     /// The attract demo: started from the title, and IDLE DEMO toggled in
     /// Controls (DESIGN §12).
     Demo,
+    /// The bundled one-gun challenge course.
+    Challenges,
     /// WATCH on a run's result and a won match's plate, and the title's
     /// REPLAYS list (DESIGN §9.4).
     Watch,
@@ -415,6 +420,7 @@ impl Action {
             Self::Watch => "watch",
             Self::Star => "star",
             Self::TitleMusic
+            | Self::Challenges
             | Self::AimMode
             | Self::ArcHint
             | Self::Type(_)
@@ -472,6 +478,7 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         // D for demo. D-pad down is read by neither the title nor Controls,
         // the two screens that ask for this.
         Action::Demo => ("D", "DPAD_DOWN"),
+        Action::Challenges => ("H", "DPAD_UP"),
         // W for watch. D-pad up is read by none of the screens that ask for
         // this: the title, a run's result and a won match's plate.
         Action::Watch => ("W", "DPAD_UP"),

@@ -287,6 +287,7 @@ impl Painter<'_> {
                     // REPLAYS under it: watching, like the demo, and the
                     // phone title has no row to spare (DESIGN §11.6).
                     self.draw_touch_button(3 + ex, 19 + ey, 42, 13, "REPLAYS", Action::Watch);
+                    self.draw_touch_button(3 + ex, 35 + ey, 42, 13, "CHALL", Action::Challenges);
                 }
                 self.centred(y, "ARTILLERY ROGUELIKE", dim);
                 y += 14;
@@ -331,6 +332,16 @@ impl Painter<'_> {
                     seed_text,
                     fg,
                 );
+                if !self.plated() {
+                    let challenges = self.g.input_label(Action::Challenges);
+                    y = self.menu_row(
+                        y,
+                        Action::Challenges,
+                        &format!("{challenges}  CHALLENGES"),
+                        "CHALLENGES",
+                        alert,
+                    );
+                }
                 // Local versus is offered as a row on a touchscreen, the
                 // device it is for. With keys it is the versus binding (2)
                 // alone, so the keyed title stays as it was, unless a match
@@ -557,7 +568,21 @@ impl Painter<'_> {
                 }
             }
             Mode::GameOver => {
-                self.centred(y, "OUT OF SHELLS", alert);
+                let challenge_over = self
+                    .g
+                    .play
+                    .challenge
+                    .is_some_and(|_| self.g.play.run.as_ref().is_some_and(|r| r.is_over()));
+                let heading = if self.g.play.challenge.is_some() {
+                    if challenge_over {
+                        "CHALLENGE FAILED"
+                    } else {
+                        "CHALLENGE COMPLETE"
+                    }
+                } else {
+                    "OUT OF SHELLS"
+                };
+                self.centred(y, heading, alert);
                 y += 14;
                 if let Some(run) = self.g.play.run.as_ref() {
                     let (screens, shells, shots) = run.score();
@@ -1842,6 +1867,7 @@ mod tests {
                 Action::TitleMusic,
                 Action::Demo,
                 Action::Watch,
+                Action::Challenges,
                 Action::Confirm,
                 Action::Seed,
                 Action::Versus,
@@ -1862,6 +1888,7 @@ mod tests {
                 Action::TitleMusic,
                 Action::Demo,
                 Action::Watch,
+                Action::Challenges,
                 Action::Confirm,
                 Action::NewRun,
                 Action::Seed,
@@ -1925,6 +1952,7 @@ mod tests {
                 Action::TitleMusic,
                 Action::Demo,
                 Action::Watch,
+                Action::Challenges,
                 Action::Confirm,
                 Action::NewRun,
                 Action::Seed,
