@@ -60,6 +60,7 @@ pub mod backdrop;
 pub mod biome;
 pub mod cli;
 pub mod crash;
+pub mod credits;
 pub mod custom;
 pub mod durable;
 pub mod editor;

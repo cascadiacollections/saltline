@@ -1648,3 +1648,33 @@ fn every_sound_has_its_player_slot_and_its_file() {
         );
     }
 }
+
+#[test]
+fn credits_return_to_settings_and_pages_redraw() {
+    let mut g = game();
+    tick(&mut g, keys(&[Key::V]));
+    tick(&mut g, keys(&[Key::Enter]));
+    assert_eq!(g.mode, Mode::Credits);
+    let before = g.frame_state();
+    tick(&mut g, keys(&[Key::Right]));
+    assert_eq!(g.credits_page, 1);
+    assert_ne!(before, g.frame_state());
+    tick(&mut g, keys(&[Key::Left]));
+    assert_eq!(g.credits_page, 0);
+    tick(&mut g, keys(&[Key::Left]));
+    assert_eq!(g.credits_page, crate::credits::pages().len() - 1);
+    tick(&mut g, keys(&[Key::Escape]));
+    assert_eq!(g.mode, Mode::Controls);
+}
+
+#[test]
+fn controller_can_open_page_and_leave_credits() {
+    let mut g = game();
+    g.mode = Mode::Controls;
+    tick(&mut g, pads(&[Pad::A]));
+    assert_eq!(g.mode, Mode::Credits);
+    tick(&mut g, pads(&[Pad::DpadRight]));
+    assert_eq!(g.credits_page, 1);
+    tick(&mut g, pads(&[Pad::B]));
+    assert_eq!(g.mode, Mode::Controls);
+}
