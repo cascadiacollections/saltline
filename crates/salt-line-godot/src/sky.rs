@@ -144,6 +144,9 @@ pub fn draw_biome(
         Biome::Salt => draw_dust(canvas, view, pal, seed, time, &open),
         Biome::Snow => draw_snow(canvas, view, pal, seed, time, &open),
         Biome::Forest => draw_forest(canvas, view, pal, seed, &open),
+        Biome::Desert => draw_desert(canvas, view, pal, seed, time, &open),
+        Biome::Night => draw_night(canvas, view, pal, seed, time, &open),
+        Biome::Volcanic => draw_embers(canvas, view, pal, seed, time, &open),
     }
 }
 
@@ -234,6 +237,133 @@ fn draw_forest(
             if open(x, py) {
                 canvas.put(x, py, colour);
             }
+        }
+    }
+}
+
+/// Saguaro silhouettes on the horizon and a few heat-shimmer motes.
+fn draw_desert(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    seed: u64,
+    time: f64,
+    open: &impl Fn(i32, i32) -> bool,
+) {
+    let horizon = view.h - 91;
+    let colour = pal.get(slot::BEDROCK);
+    for i in 0..5 {
+        let h = hash(seed ^ 0x4341_4354 ^ (i as u64).wrapping_mul(0x6a09_e667));
+        let x = 14 + (h % view.w.saturating_sub(28).max(1) as u64) as i32;
+        let height = 10 + ((h >> 12) % 11) as i32;
+        let arm = height / 2;
+        for py in horizon - height..=horizon {
+            for px in [x, x + 1] {
+                if open(px, py) {
+                    canvas.put(px, py, colour);
+                }
+            }
+        }
+        let ay = horizon - arm - (i % 2) * 2;
+        for (from, to) in [(x - 3, x), (x + 1, x + 4)] {
+            for px in from..=to {
+                if open(px, ay) {
+                    canvas.put(px, ay, colour);
+                }
+            }
+            let tip = if to == x { from } else { to };
+            for py in ay - 3..ay {
+                if open(tip, py) {
+                    canvas.put(tip, py, colour);
+                }
+            }
+        }
+    }
+    let step = (time * 2.0).floor() as u64;
+    for i in 0..6 {
+        let h = hash(seed ^ 0x4845_4154 ^ (i as u64).wrapping_mul(0x9e37_79b9));
+        let x = ((h.wrapping_add(step) % view.w.max(1) as u64) as i32).rem_euclid(view.w);
+        let y = horizon - 4 - ((h >> 16) % 14) as i32;
+        if open(x, y) {
+            canvas.put(x, y, pal.get(slot::ST_HI));
+        }
+    }
+}
+
+/// A moon with a dim halo; the stars come from the sky phase.
+fn draw_night(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    seed: u64,
+    time: f64,
+    open: &impl Fn(i32, i32) -> bool,
+) {
+    let h = hash(seed ^ 0x4d4f_4f4e);
+    let cx = 40 + (h % view.w.saturating_sub(80).max(1) as u64) as i32;
+    let cy = 34 + ((h >> 20) % 30) as i32;
+    for dy in -8..=8i32 {
+        for dx in -8..=8i32 {
+            let d = dx * dx + dy * dy;
+            let colour = if d <= 25 {
+                // A crescent: the bite is a second disc offset to the right.
+                let bite = (dx - 3) * (dx - 3) + (dy + 1) * (dy + 1);
+                if bite <= 20 {
+                    continue;
+                }
+                slot::UI_FG
+            } else if d <= 64 && (dx + dy) % 2 == 0 {
+                slot::SKY_LO
+            } else {
+                continue;
+            };
+            if open(cx + dx, cy + dy) {
+                canvas.put(cx + dx, cy + dy, pal.get(colour));
+            }
+        }
+    }
+    let step = (time * 4.0).floor() as u64;
+    for i in 0..22 {
+        let h = hash(seed ^ 0x5354_4152 ^ (i as u64).wrapping_mul(0x9e37_79b9));
+        let x = (h % view.w.max(1) as u64) as i32;
+        let y = 18 + ((h >> 20) % (view.h - 120).max(20) as u64) as i32;
+        let bright = (step + (h >> 40)).is_multiple_of(9);
+        if open(x, y) {
+            canvas.put(
+                x,
+                y,
+                pal.get(if bright { slot::UI_FG } else { slot::SKY_LO }),
+            );
+        }
+    }
+}
+
+/// Embers drifting up from the ground.
+fn draw_embers(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    seed: u64,
+    time: f64,
+    open: &impl Fn(i32, i32) -> bool,
+) {
+    let step = (time * 6.0).floor() as i32;
+    let span = (view.h - 110).max(30);
+    for i in 0..16 {
+        let h = hash(seed ^ 0x454d_4252 ^ (i as u64).wrapping_mul(0x9e37_79b9));
+        let x = ((h % view.w.max(1) as u64) as i32 + (step / 3) * (i % 3 - 1)).rem_euclid(view.w);
+        let rise = (h >> 20) as i32 % span;
+        let y = (view.h - 95 - (rise + step * (1 + i % 3)).rem_euclid(span)).max(0);
+        if open(x, y) {
+            canvas.put(
+                x,
+                y,
+                pal.get(if i % 4 == 0 {
+                    slot::ST_HI
+                } else {
+                    slot::SKY_LO
+                }),
+            );
         }
     }
 }
