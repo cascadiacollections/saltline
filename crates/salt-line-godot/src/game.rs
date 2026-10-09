@@ -286,7 +286,9 @@ impl INode2D for SaltLine {
             let result = crate::engine_validation::run(&self.art, &dir);
             match &result {
                 Ok(()) => godot_print!("salt-engine-validation: PASS"),
-                Err(why) => godot_error!("salt-engine-validation: FAIL: {why}"),
+                Err(why) => {
+                    godot_error!("salt-engine-validation: FAIL: {why}");
+                }
             }
             self.base()
                 .get_tree()
