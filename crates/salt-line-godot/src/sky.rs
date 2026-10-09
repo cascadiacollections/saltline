@@ -1,6 +1,7 @@
 //! Palette-only sky phases. This is presentation, keyed to the screen number;
 //! it never consumes the simulation's random stream or changes a shot.
 
+use crate::biome::Biome;
 use crate::palette::{slot, Palette};
 use crate::raster::{Canvas, View};
 
@@ -37,9 +38,18 @@ fn hash(mut x: u64) -> u64 {
 
 /// A clean second band near the horizon. Terrain paints over the lower part,
 /// so a hill naturally hides the colour, sun and stars.
-pub fn draw(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase, seed: u64, time: f64) {
+pub fn draw(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    phase: Phase,
+    biome: Biome,
+    seed: u64,
+    time: f64,
+) {
     draw_still(canvas, view, pal, phase);
     draw_stars(canvas, view, pal, phase, seed, time, |_, _| true);
+    draw_biome(canvas, view, pal, biome, seed, time, |_, _| true);
 }
 
 /// The part of [`draw`] that holds still for a whole screen: the fill, the
@@ -94,6 +104,7 @@ pub fn draw_stars(
     if !phase.has_stars() {
         return;
     }
+
     let count = if phase == Phase::Night { 14 } else { 5 };
     let star_top = 25;
     let star_span = (view.h - 120).max(30);
@@ -115,6 +126,116 @@ pub fn draw_stars(
 
     if phase == Phase::Night {
         shooting_star(canvas, view, pal, seed, time, &open);
+    }
+}
+
+/// Deterministic environmental details, drawn only where the sky is open so
+/// terrain hides them in both flat and layered rendering.
+pub fn draw_biome(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    biome: Biome,
+    seed: u64,
+    time: f64,
+    open: impl Fn(i32, i32) -> bool,
+) {
+    match biome {
+        Biome::Salt => draw_dust(canvas, view, pal, seed, time, &open),
+        Biome::Snow => draw_snow(canvas, view, pal, seed, time, &open),
+        Biome::Forest => draw_forest(canvas, view, pal, seed, &open),
+    }
+}
+
+fn draw_dust(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    seed: u64,
+    time: f64,
+    open: &impl Fn(i32, i32) -> bool,
+) {
+    let step = (time * 3.0).floor() as u64;
+    for i in 0..10 {
+        let h = hash(seed ^ 0xd0_u64.wrapping_add(i as u64 * 0x517c_c1b7));
+        let x = ((h.wrapping_add(step * 3) % view.w.max(1) as u64) as i32).rem_euclid(view.w);
+        let y = view.h - 105 - ((h >> 16) % 45) as i32;
+        if open(x, y) {
+            canvas.put(
+                x,
+                y,
+                pal.get(if i % 3 == 0 {
+                    slot::ST_HI
+                } else {
+                    slot::SKY_LO
+                }),
+            );
+        }
+    }
+}
+
+fn draw_snow(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    seed: u64,
+    time: f64,
+    open: &impl Fn(i32, i32) -> bool,
+) {
+    let step = (time * 2.0).floor() as u64;
+    for i in 0..18 {
+        let h = hash(seed ^ 0x534e_4f57 ^ (i as u64).wrapping_mul(0x9e37_79b9));
+        let x = ((h % view.w.max(1) as u64) as i32 + step as i32 * ((i % 3) as i32 - 1))
+            .rem_euclid(view.w);
+        let span = (view.h - 115).max(20);
+        let y = 20 + ((h >> 20) as i32 + step as i32 * (1 + (i % 2) as i32)) % span;
+        if open(x, y) {
+            canvas.put(
+                x,
+                y,
+                pal.get(if i % 4 == 0 {
+                    slot::UI_FG
+                } else {
+                    slot::SKY_LO
+                }),
+            );
+        }
+    }
+}
+
+fn draw_forest(
+    canvas: &mut Canvas,
+    view: &View,
+    pal: &Palette,
+    seed: u64,
+    open: &impl Fn(i32, i32) -> bool,
+) {
+    let horizon = view.h - 91;
+    for i in 0..9 {
+        let h = hash(seed ^ 0x5049_4e45 ^ (i as u64).wrapping_mul(0x6a09_e667));
+        let x = 12 + (h % view.w.saturating_sub(24).max(1) as u64) as i32;
+        let height = 12 + ((h >> 12) % 17) as i32;
+        let top = horizon - height;
+        let colour = pal.get(if i % 2 == 0 {
+            slot::BEDROCK
+        } else {
+            slot::ROCK
+        });
+        for row in 0..height {
+            let width = 1 + row * 2 / 3;
+            for dx in -width..=width {
+                let px = x + dx;
+                let py = top + row;
+                if open(px, py) {
+                    canvas.put(px, py, colour);
+                }
+            }
+        }
+        for py in top + height..=horizon {
+            if open(x, py) {
+                canvas.put(x, py, colour);
+            }
+        }
     }
 }
 
@@ -175,10 +296,10 @@ mod tests {
         let pal = Palette::default();
         let mut a = Canvas::new(320, 180);
         let mut b = Canvas::new(320, 180);
-        draw(&mut a, &view, &pal, Phase::Night, 42, 1.0);
-        draw(&mut b, &view, &pal, Phase::Night, 42, 1.0);
+        draw(&mut a, &view, &pal, Phase::Night, Biome::Salt, 42, 1.0);
+        draw(&mut b, &view, &pal, Phase::Night, Biome::Salt, 42, 1.0);
         assert_eq!(a.bytes(), b.bytes());
-        draw(&mut b, &view, &pal, Phase::Night, 42, 2.0);
+        draw(&mut b, &view, &pal, Phase::Night, Biome::Salt, 42, 2.0);
         assert_ne!(a.bytes(), b.bytes());
     }
 }

@@ -825,6 +825,7 @@ impl Painter<'_> {
             &view,
             &world_pal,
             sky::Phase::for_screen(index),
+            Biome::for_run(run.run_seed, index, self.g.play.challenge),
             run.run_seed ^ index as u64,
             self.g.play.sky_time,
             &screen,
