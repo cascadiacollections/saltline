@@ -70,7 +70,8 @@ pub enum Key {
     W,
     /// The map editor's keys (DESIGN §13.11): E opens it from the
     /// pre-match screen and forks the round from a match's plates; T test
-    /// fire, Z undo, Y redo, I mirror, X delete a slot, P paste a code.
+    /// fire, Z undo, Y redo, I mirror, X delete a slot, P paste a code
+    /// (a map's there, and a replay's on the REPLAYS list).
     E,
     T,
     Z,
@@ -78,6 +79,9 @@ pub enum Key {
     I,
     X,
     P,
+    /// KEEP a pasted replay (DESIGN §9.7). Read as a key, like the
+    /// editor's, so not bindable.
+    K,
     /// The debug overlay. Not bindable.
     F1,
     /// Held for coarse aim steps. Not bindable.
@@ -85,7 +89,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 34] = [
+    pub const ALL: [Key; 35] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -118,6 +122,7 @@ impl Key {
         Self::I,
         Self::X,
         Self::P,
+        Self::K,
         Self::F1,
         Self::Shift,
     ];
@@ -150,9 +155,10 @@ impl Key {
             "L" => Self::L,
             "D" => Self::D,
             "W" => Self::W,
-            // The map editor's keys (E T Z Y I X P) are read as keys, not
-            // through bindings, so no `bind` line may put an action on
-            // them, where the editor would take its presses first.
+            // The map editor's keys (E T Z Y I X P) and the replays' K are
+            // read as keys, not through bindings, so no `bind` line may put
+            // an action on them, where those screens would take their
+            // presses first.
             _ => return None,
         })
     }
@@ -286,6 +292,15 @@ pub enum Wb {
     RowStar(u8),
     /// STAR at the end of a replay.
     Star,
+    /// The copy-code button beside a row of the list, by its place on the
+    /// page (DESIGN §9.7).
+    RowCopy(u8),
+    /// The list's PASTE CODE: read a replay code from the clipboard.
+    Paste,
+    /// COPY CODE at the end of a replay.
+    Copy,
+    /// KEEP over a pasted replay: add it to the list.
+    Keep,
 }
 
 /// The map editor's buttons, and the pre-match screen's GROUND row and

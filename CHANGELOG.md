@@ -46,6 +46,13 @@ second. See RELEASING.md for the release steps.
   a replay. Starred replays are listed first and don't count toward the
   20 runs and 20 matches; taking a star off gives the replay another 20
   games before it can go (#77).
+- Share a replay as a code: COPY beside a row of REPLAYS (`C` or X on the
+  chosen row), or COPY CODE at the end of a replay, puts a short `SR…`
+  code on the clipboard to paste into a chat. PASTE CODE on REPLAYS (`P`)
+  plays a friend's code at once, and KEEP adds it to your list. A typical
+  run of 60 shots is about 350 characters; a three-round match on a map
+  about 340. A code that was damaged on the way, or made by a newer
+  version, says so rather than playing something else.
 - Linux on ARM: `SaltLine-linux-arm64.zip` joins every dev build and
   release, for a Raspberry Pi 5, an Ampere or Graviton machine or an arm64
   laptop. It is built, exported and launched on an arm64 runner in CI, with
@@ -58,6 +65,11 @@ second. See RELEASING.md for the release steps.
   layout and shared as a short checked code; `--salt-layout <code>` plays a
   local duel on one, and `--salt-fork-run` / `--salt-fork-duel` print a
   fork's code.
+- For developers: replay codes are a packed binary payload (DESIGN §9.7,
+  `history/code.rs`): a map's ground travels as its layout's bytes, not its
+  `SL…` text, and the base32, CRC-16 and bit packing are now shared with
+  map codes in `salt_line_sim::codec`. A `replay_code` fuzz target joins
+  the weekly job.
 - For developers: `--salt-editor` (with `--salt-editor-page` and
   `--salt-layout`), `--salt-setup` and `--salt-phone` (a Pixel's layout on a
   desktop, for headless captures); `just layouts editor` times the editor's

@@ -35,6 +35,7 @@
 //! build was written against, which is no longer in the repository.
 
 pub mod ballistics; // M1 — integration, collision
+pub mod codec; // bits, base32 and CRC for share codes (DESIGN §13.7, §9.7)
 pub mod dmath; // platform-stable trig, so the sim never calls libm
 pub mod layout; // DESIGN §13 — a screen as editable, shareable data
 pub mod modifiers; // M3 — pool, draft, loadout deltas

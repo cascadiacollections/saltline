@@ -551,7 +551,13 @@ impl Game {
     /// back). A layout that reads but does not pass is loaded anyway, its
     /// problems shown, to be fixed; text that is not a duel layout of the
     /// layout width is refused with a note.
+    ///
+    /// On the REPLAYS list it is a replay code instead (`app/watch.rs`).
     pub fn pasted(&mut self, text: &str) -> Vec<Effect> {
+        if self.mode == Mode::Replays && !self.spectating() {
+            self.paste_replay(text);
+            return self.take_effects();
+        }
         if self.mode != Mode::Editor || self.spectating() {
             return self.take_effects();
         }

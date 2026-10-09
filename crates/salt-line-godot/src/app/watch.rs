@@ -83,9 +83,29 @@
 //! end it is set in memory and the write waits, like a mute, until the
 //! watch is over ([`Game::flush_history`]), or until the app is paused or
 //! closed, when it may never run again ([`Game::flush_history_final`]).
+//!
+//! # Share codes
+//!
+//! A replay travels as a code (`SR…`, `history/code.rs`, DESIGN §9.7):
+//! COPY CODE puts one on the clipboard, from a row of the list (the copy
+//! button beside its star on a touchscreen, [`Action::Copy`] on the chosen
+//! row with keys or a controller) or at a replay's end. PASTE CODE on the
+//! list (a button under the rows, `P` with keys) reads the clipboard through
+//! `Effect::ReadClipboard`, and the text comes back to [`Game::pasted`]. A
+//! code that reads, and rebuilds to its own result (`Record::check`, as for
+//! any row), is watched at once; anything else is a note saying what to do.
+//!
+//! A pasted replay is not added to the list by itself: a code a friend sent
+//! may be one look and no more. KEEP on the bar (`K`) adds it, like a game
+//! just finished: unstarred, never twice (a game already listed shows KEPT
+//! from the start), pushing out the oldest of its kind past the cap. STAR
+//! at its end keeps it too, starred. Both are writes, and nothing is written
+//! while a watch runs, so they wait as a star at a replay's end does
+//! (`HistoryState::unsaved`).
 
 use super::versus::Stage;
 use super::*;
+use crate::history::code::ShareError;
 use crate::history::{Record, Watchable};
 use crate::input::Wb;
 use crate::match_log::Entry as MatchEntry;
@@ -123,7 +143,15 @@ pub const LIST_ROWS_KEYS: usize = 10;
 pub(crate) type Fingerprint = (
     (bool, usize, bool, usize),
     (bool, Option<crate::history::StarError>),
+    (bool, Option<&'static str>),
 );
+
+/// What a copied code's note says. Words a child can read out.
+pub const CODE_COPIED: &str = "CODE COPIED - SEND IT TO A FRIEND";
+/// What KEEP says once a pasted replay is in the list.
+pub const KEPT: &str = "KEPT - IT IS IN YOUR REPLAYS";
+/// KEEP over a newer build's file, which is never written.
+pub const KEPT_FOR_NOW: &str = "KEPT UNTIL THE GAME CLOSES";
 
 /// The finished runs and matches, as the history file has them, and where
 /// the REPLAYS list stands.
@@ -135,8 +163,9 @@ pub(crate) struct HistoryState {
     pub(crate) focus: usize,
     /// The run on the result screen, if it was recorded: its WATCH.
     pub(crate) last_run: Option<Record>,
-    /// A star changed while nothing could be written (at a replay's end):
-    /// the file is written once the watch is over, or the app is paused.
+    /// A star changed, or a pasted replay kept, while nothing could be
+    /// written (during a watch): the file is written once the watch is
+    /// over, or the app is paused.
     pub(crate) unsaved: bool,
 }
 
@@ -188,6 +217,10 @@ pub(crate) struct Watch {
     /// too long to keep). Said on the bar, where a status note is not
     /// shown.
     pub(crate) star_refused: Option<crate::history::StarError>,
+    /// Came from a pasted code: KEEP is offered (see "Share codes").
+    pub(crate) pasted: bool,
+    /// What COPY CODE or KEEP last said, on a plate over the bar.
+    pub(crate) notice: Option<&'static str>,
     /// Index into [`SPEEDS`].
     pub(crate) speed: usize,
     pub(crate) paused: bool,
@@ -308,7 +341,8 @@ impl Game {
 
     /// The list: a row (or Confirm on the chosen one) watches it, Up and
     /// Down choose, Left and Right (and the page buttons) turn a page, Back
-    /// goes to the title.
+    /// goes to the title. A row's copy button (Copy on the chosen one)
+    /// copies its code; PASTE CODE (`P`) reads one from the clipboard.
     pub(super) fn handle_replays_input(&mut self, delta: f64) {
         let n = self.history.file.records.len();
         let rows = self.replay_rows();
@@ -316,6 +350,22 @@ impl Game {
         if self.action_pressed(Action::Back) {
             self.play(Sound::Ui);
             self.mode = Mode::Title;
+            return;
+        }
+        if self.input.touch.pressed(Action::Wb(Wb::Paste)) || self.pressed(Key::P) {
+            // The text comes back through `pasted`.
+            self.play(Sound::Ui);
+            self.fx.push(Effect::ReadClipboard);
+            return;
+        }
+        let copied =
+            (0..rows as u8).find(|&i| self.input.touch.pressed(Action::Wb(Wb::RowCopy(i))));
+        if let Some(i) = copied {
+            self.copy_listed(page * rows + i as usize);
+            return;
+        }
+        if self.action_pressed(Action::Copy) {
+            self.copy_listed(self.history.focus);
             return;
         }
         let starred =
@@ -422,6 +472,118 @@ impl Game {
         }
     }
 
+    // ------------------------------------------------------------- codes
+
+    /// Put `record`'s code on the clipboard, or say why it has none.
+    /// Only a record that rebuilds to its own result (`Record::check`, as
+    /// WATCH asks), so a friend is never sent one their game will refuse.
+    fn copy_code(&mut self, record: &Record) -> Result<(), ShareError> {
+        match record.check() {
+            Ok(_) => {}
+            Err(crate::history::Refused::Mismatch) => return Err(ShareError::Unencodable),
+            Err(why) => return Err(ShareError::Version(why)),
+        }
+        let code = record.to_code()?;
+        self.fx.push(Effect::Clipboard(code));
+        self.play(Sound::Ui);
+        Ok(())
+    }
+
+    /// COPY CODE on the list's row `index`, counted from the top.
+    fn copy_listed(&mut self, index: usize) {
+        let Some(record) = self.history.file.listed().nth(index).cloned() else {
+            return;
+        };
+        match self.copy_code(&record) {
+            Ok(()) => self.note(CODE_COPIED.into()),
+            Err(why) => self.note(why.note().into()),
+        }
+    }
+
+    /// COPY CODE at a replay's end. Said on the bar, where a status note is
+    /// not shown.
+    fn copy_watched(&mut self) {
+        let Some(record) = self.watch.as_ref().map(|w| w.record.clone()) else {
+            return;
+        };
+        let said = match self.copy_code(&record) {
+            Ok(()) => CODE_COPIED,
+            Err(why) => why.note(),
+        };
+        if let Some(w) = self.watch.as_mut() {
+            w.notice = Some(said);
+        }
+        self.fx.push(Effect::Redraw);
+    }
+
+    /// PASTE CODE's text, from the clipboard: watched at once if it is a
+    /// replay this build can show, else a note saying why not.
+    pub(super) fn paste_replay(&mut self, text: &str) {
+        let record = match Record::from_code(text) {
+            Ok(record) => record,
+            Err(why) => return self.note(why.note().into()),
+        };
+        match record.check() {
+            Ok(show) => {
+                self.start_watch(show, record);
+                if let Some(w) = self.watch.as_mut() {
+                    w.pasted = true;
+                }
+            }
+            Err(why) => self.note(why.note().into()),
+        }
+    }
+
+    /// Whether the replay being watched is in the list.
+    pub(crate) fn watched_kept(&self) -> bool {
+        self.watch.as_ref().is_some_and(|w| {
+            self.history
+                .file
+                .records
+                .iter()
+                .any(|r| r.same_game(&w.record))
+        })
+    }
+
+    /// KEEP over a pasted replay: added to the list in memory now, as a
+    /// game just finished is, and written once the watch is over (nothing
+    /// is written while one plays).
+    fn keep_watched(&mut self) {
+        let Some(record) = self
+            .watch
+            .as_ref()
+            .filter(|w| w.pasted)
+            .map(|w| w.record.clone())
+        else {
+            return;
+        };
+        if self.watched_kept() {
+            return;
+        }
+        let written = self.history.file.push(record).is_some();
+        // Asked after the push: a write trimmed to its limit may drop the
+        // very record kept, if every other one is starred.
+        let said = if !self.watched_kept() {
+            if written {
+                self.history.unsaved = true;
+            }
+            "TOO LONG TO KEEP"
+        } else if written {
+            self.history.unsaved = true;
+            KEPT
+        } else if self.history.file.from_the_future {
+            KEPT_FOR_NOW
+        } else {
+            // Already listed: never added twice.
+            KEPT
+        };
+        if let Some(w) = self.watch.as_mut() {
+            w.notice = Some(said);
+        }
+        self.play(Sound::Ui);
+        self.fx.push(Effect::Redraw);
+    }
+
     /// STAR at a replay's end: set in memory now, written once the watch is
     /// over (nothing is written while one plays).
     fn star_watched(&mut self) {
@@ -451,8 +613,8 @@ impl Game {
     /// [`Self::flush_history`] for the app being paused or closed, when it
     /// may never run again: written even while a watch is on screen, as a
     /// mute is (`flush_settings_final`). Only the history file, which a
-    /// watch changes only by a star. Never from the demo, which stars
-    /// nothing.
+    /// watch changes only by a star or by KEEP. Never from the demo, which
+    /// does neither.
     pub(super) fn flush_history_final(&mut self) {
         if self.in_demo() || !std::mem::take(&mut self.history.unsaved) {
             return;
@@ -520,6 +682,8 @@ impl Game {
             show,
             record,
             star_refused: None,
+            pasted: false,
+            notice: None,
             speed: 0,
             paused: false,
             ended: false,
@@ -548,6 +712,7 @@ impl Game {
         w.cue = None;
         w.pending = None;
         w.star_refused = None;
+        w.notice = None;
         let show = w.show.clone();
         self.input.touch.cancel_drag();
         self.input.drag_from = None;
@@ -607,7 +772,7 @@ impl Game {
         self.settle_touch();
         self.apply_buffer_size();
         self.fx.push(Effect::Redraw);
-        // A star set at its end is written now.
+        // A star set at its end, or a pasted replay kept, is written now.
         self.flush_history();
     }
 
@@ -623,7 +788,8 @@ impl Game {
     /// controller as the bar's hint names them): Back leaves; Confirm or
     /// Fire pauses and plays (AGAIN once it has ended); Up steps the speed;
     /// Right skips to the next shot and Down to the next round; at the end,
-    /// Star stars it (STAR on the bar). Mute and F1 are asked first, as in
+    /// Star stars it (STAR on the bar) and Copy copies its code (COPY CODE);
+    /// over a pasted replay, `K` keeps it (KEEP). Mute and F1 are asked first, as in
     /// every mode (`handle_global_input`).
     pub(super) fn handle_watch_input(&mut self) {
         self.handle_global_input();
@@ -636,6 +802,15 @@ impl Game {
         let ended = self.watch.as_ref().is_some_and(|w| w.ended);
         if ended && (tapped(self, Wb::Star) || self.action_pressed(Action::Star)) {
             self.star_watched();
+            return;
+        }
+        if ended && (tapped(self, Wb::Copy) || self.action_pressed(Action::Copy)) {
+            self.copy_watched();
+            return;
+        }
+        let pasted = self.watch.as_ref().is_some_and(|w| w.pasted);
+        if pasted && (tapped(self, Wb::Keep) || self.pressed(Key::K)) {
+            self.keep_watched();
             return;
         }
         if tapped(self, Wb::Pause)
@@ -974,6 +1149,7 @@ impl Game {
             (
                 (w.paused, w.speed, w.ended, w.cursor),
                 (self.history.file.is_starred(&w.record), w.star_refused),
+                (self.watched_kept(), w.notice),
             )
         })
     }

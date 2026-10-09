@@ -369,6 +369,20 @@ longer play out the same way; one that does not rebuild to the result it
 records is never shown at all. The list lives in `user://history.txt`, one
 plain line per run or match.
 
+A replay can be shared as a code, `SR` and a few hundred letters and
+digits, to paste into a chat. On a touchscreen tap COPY to the right of a
+row's star, or COPY CODE at the end of a replay; with keys or a controller
+choose the row and press `C` or X. Whoever gets it copies it and taps
+PASTE CODE in the top corner of REPLAYS (`P` with keys), and the replay
+plays at once; KEEP on the bar (`K`) adds it to their list, like a game they
+finished, and STAR at its end keeps it starred. Nothing is added unless you
+ask. A star stays with you: a code never carries it. A code that was cut
+short or garbled on the way says `REPLAY CODE IS DAMAGED - COPY IT AGAIN`;
+one from a newer version of the game says to update; one from a build whose
+simulation has changed cannot be watched, as in the list. A typical run of
+60 shots is about 350 characters, a three-round match on a map about 340
+(most of it the map); codes over 4,096 characters are not made or read.
+
 ## Tools
 
 Everything here runs headless. None of it needs a human at the keyboard.

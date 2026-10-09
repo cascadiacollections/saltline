@@ -113,8 +113,8 @@
 //! | `RecheckDisplay` | [`Game::tick`], on entering Title or GameOver | `frame::DisplayPoll::invalidate` | no | no |
 //! | `Buffer { w, h, letterbox }` | launch, a run started or continued, a draft taken, a screen change, a versus match started or left, a change of window size or cutout | resize the canvas, set the window's content scale size, offset the node | no | no |
 //! | `Aspect` | a run started or continued, leaving a resumed run | set the window's content scale aspect | no | no |
-//! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT, the editor's COPY CODE | `DisplayServer::clipboard_set` | no | no |
-//! | `ReadClipboard` | the editor's PASTE CODE (`app/editor.rs`) | `DisplayServer::clipboard_get`, handed to [`Game::pasted`], whose effects are applied at once | no (the text comes back through `pasted`) | no |
+//! | `Clipboard(text)` | COPY SEED, COPY LAST CRASH REPORT, the error screen's COPY REPORT, the editor's COPY CODE, a replay's COPY CODE (on the REPLAYS list and at a replay's end, `app/watch.rs`) | `DisplayServer::clipboard_set` | no | no |
+//! | `ReadClipboard` | the editor's PASTE CODE (`app/editor.rs`), the REPLAYS list's PASTE CODE (`app/watch.rs`) | `DisplayServer::clipboard_get`, handed to [`Game::pasted`], whose effects are applied at once | no (the text comes back through `pasted`) | no |
 //! | `Quit` | back on the title or the error screen | `SceneTree::quit` | no | no |
 //! | `Store(Learned)` | an onboarding step done for the first time | `save::store`, then [`Game::stored`] | yes, ignored | yes |
 //! | `Store(Settings)` | settings once they settle (`durable::Debounce`) or on leaving Controls; at once on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
@@ -133,7 +133,7 @@
 //! | `MatchFile(Discard)` | a kept match left: its result plate left after the win (REMATCH or TITLE), or quit; a saved match that no longer rebuilds | `resume::replace_at` with `""`: delete every match file, or blank `match.txt` | no | yes |
 //! | `MatchFile(Abandon)` | [`Game::saved_match`], for a match this build must not replay | log why; `Unreadable` then as `Discard`; `Interrupted` deletes `match-loading.txt` and `match.txt.new`, never `match.txt` (`resume::drop_set_aside_at`) | no | yes |
 //! | `CrashReport(Retire)` | the report copied, or a run started | rename the report to the old report | no | yes |
-//! | `History(text)` | a kept run finished (`finish_run`), a kept match left once won (`drop_live_match`), a star set on the REPLAYS list; a star set at a replay's end once the watch is over, or as the app is paused or closed (`app/watch.rs`); never otherwise while the demo or a watch runs | `save::write` of `user://history.txt` by way of `history.txt.new` | no | yes |
+//! | `History(text)` | a kept run finished (`finish_run`), a kept match left once won (`drop_live_match`), a star set on the REPLAYS list; a star set at a replay's end, or a pasted replay kept, once the watch is over, or as the app is paused or closed (`app/watch.rs`); never otherwise while the demo or a watch runs | `save::write` of `user://history.txt` by way of `history.txt.new` | no | yes |
 //! | `ScreenAwake(on)` | [`Game::take_effects`], whenever [`Game::screen_awake_wanted`] changes: live play or a versus match not paused, a menu-started demo, each until its quiet limit | `DisplayServer::screen_set_keep_on` | no | no |
 //!
 //! # Scoring at most once
@@ -527,7 +527,8 @@ pub enum Effect {
     },
     /// How the window fits the buffer.
     Aspect(Aspect),
-    /// Put this text on the system clipboard: a seed, or a crash report.
+    /// Put this text on the system clipboard: a seed, a crash report, or a
+    /// map's or a replay's code.
     Clipboard(String),
     /// Leave the game.
     Quit,
@@ -541,7 +542,7 @@ pub enum Effect {
     /// Something to do with the map editor's draft kept on disk.
     DraftFile(DraftFile),
     /// Read the system clipboard and hand its text to [`Game::pasted`]
-    /// (PASTE CODE in the editor).
+    /// (PASTE CODE in the editor and on the REPLAYS list).
     ReadClipboard,
     /// Something to do with last session's crash report.
     CrashReport(CrashReport),
