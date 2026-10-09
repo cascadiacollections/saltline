@@ -480,7 +480,10 @@ pixels to different bytes. Compare pixels, not file hashes, before committing
 the churn.
 
 All five silhouettes now have all three damage states. The water tower is drawn
-per state by hand; the derrick, mast, silo and pylon are sheared about their own
+per state by hand, with a riveted tank, open trestle and recognisable fallen
+tank in its wreck. Its leaning crown stays inside the original 17px canvas,
+and both standing states keep the original footing. The derrick, mast, silo
+and pylon are sheared about their own
 footing and wrecked from the intact drawing, so the states cannot drift away
 from the geometry they came from.
 
@@ -488,6 +491,22 @@ Replace all of it with hand-drawn work before any public release, but keep the
 dimensions and the palette fixed — they are the contract. Still open: no barrel
 strip for the Ballast or Forced March chassis, so those builds read from the
 hull alone.
+
+The title background uses a separate authored painting in
+`art/source/title_salt_flat.png`; `.gdignore` keeps this full-size source out
+of the game export. It was created with the built-in ImageGen tool, then
+sampled with nearest-neighbour filtering to 320×180 and mapped to the existing
+palette without dithering. Regenerate it with ImageMagick 7:
+
+```sh
+bash tools/build_title_art.sh
+```
+
+Art direction: a quiet navy sky over a bleached salt flat, a muted olive
+emplacement at lower left, a rust water tower at lower right and distant low
+mesas. Keep the centre clear for the existing menu, use hard pixel edges and
+the existing palette, and omit lettering, UI, explosions and projectile arcs.
+The title painting is decorative; it never supplies terrain or collision data.
 
 ## The marketing page
 

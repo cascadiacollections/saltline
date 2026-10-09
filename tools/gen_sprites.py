@@ -328,35 +328,61 @@ def barrel(angle_deg, variant="base"):
 
 
 def water_tower(state="intact"):
+    """Riveted tank and open trestle, with the original canvas and footing.
+
+    The damaged tank shifts only two pixels: the old shear pushed its crown
+    outside the 17px canvas. Both trestles still meet the same ground row.
+    """
     w, h = 17, 34
     b = Buf(w, h)
     if state == "collapsed":
-        return rubble(17, 8)
-    lean = 0
-    if state == "leaning":
-        lean = 1
-    def sx(j):   # shear offset grows toward the top
-        return int(lean * (h - j) / 3.5)
-    # legs (9px footprint)
+        b = Buf(17, 8)
+        # Fallen cylindrical tank, torn rim and bent trestle. Same rubble
+        # canvas as before, but recognisably the wreck of this structure.
+        b.line(1, 6, 6, 4, rgba("st_dmg"))
+        b.line(11, 5, 15, 7, rgba("st_dmg"))
+        b.rect(5, 2, 8, 4, rgba("st"))
+        b.rect(6, 1, 6, 1, rgba("st_hi"))
+        b.rect(5, 5, 8, 2, rgba("st_dmg"))
+        b.line(6, 2, 6, 4, rgba("st_hi"))
+        b.line(12, 2, 12, 5, rgba("st_dmg"))
+        b.set(10, 1, T)
+        b.set(13, 3, rgba("st"))
+        b.rect(2, 7, 13, 1, rgba("st_dmg"))
+        return b
+    if state not in ("intact", "leaning"):
+        raise ValueError(f"unknown tower state: {state}")
+
+    def sx(j):
+        return min(2, (32 - j) // 9) if state == "leaning" else 0
+
+    # Nine-pixel footprint and ground row are presentation contracts.
     for j in range(18, 33):
         b.set(4 + sx(j), j, rgba("st"))
-        b.set(12 + sx(j), j, rgba("st"))
-    for j in (22, 27):
-        b.line(4 + sx(j), j, 12 + sx(j), j + 3, rgba("st_dmg"))
-        b.line(12 + sx(j), j, 4 + sx(j), j + 3, rgba("st_dmg"))
-    # bulb
-    for j in range(6, 18):
-        t = (j - 6) / 11.0
-        rad = int(8 - abs(t - 0.35) * 6)
-        o = sx(j)
-        b.rect(8 - rad + o, j, rad * 2 + 1, 1, rgba("st"))
-    b.rect(5 + sx(8), 8, 4, 1, rgba("st_hi"))
-    b.rect(4 + sx(10), 10, 3, 4, rgba("st_hi"))
-    # cap
-    b.rect(6 + sx(5), 5, 5, 1, rgba("st"))
+        b.set(12 + sx(j), j, rgba("st_dmg"))
+    for top, bottom in ((19, 25), (25, 31)):
+        b.line(4 + sx(top), top, 12 + sx(bottom), bottom, rgba("st_dmg"))
+        b.line(12 + sx(top), top, 4 + sx(bottom), bottom, rgba("st"))
+    b.line(4 + sx(19), 19, 12 + sx(19), 19, rgba("st_dmg"))
+    # Rounded cap and tapered sump; coherent left light, dark right rim.
+    for j, half in ((5, 3), (6, 5), *[(y, 6) for y in range(7, 16)],
+                    (16, 5), (17, 3), (18, 2)):
+        left, right = 8 - half + sx(j), 8 + half + sx(j)
+        b.rect(left, j, right - left + 1, 1, rgba("st"))
+        b.set(right, j, rgba("st_dmg"))
+        if 7 <= j <= 15:
+            b.set(left + 1, j, rgba("st_hi"))
+    b.line(5 + sx(6), 6, 11 + sx(6), 6, rgba("st_hi"))
+    for j in (9, 14):
+        b.line(2 + sx(j), j, 14 + sx(j), j, rgba("st_dmg"))
+        for i in (4, 8, 12):
+            b.set(i + sx(j), j, rgba("st_hi"))
+    b.rect(7 + sx(4), 4, 3, 1, rgba("st_dmg"))
     b.set(8 + sx(3), 3, rgba("st_hi"))
-    b.set(8 + sx(4), 4, rgba("st"))
     if state == "leaning":
+        # Split tank seam and buckled left support, without moving the feet.
+        b.line(10, 10, 11, 12, rgba("st_dmg"))
+        b.line(11, 12, 10, 15, rgba("st_dmg"))
         for j in range(28, 33):
             b.set(4 + sx(j), j, rgba("st_dmg"))
     return b

@@ -243,12 +243,24 @@ impl Painter<'_> {
         let view = self.g.view();
         // A calm sky behind the menus, with the same dither as the game.
         raster::draw_sky(self.canvas, &view, pal);
-        // Title art is authored at the native 320x180. Wider phone buffers
-        // reveal the normal sky at the sides rather than scaling the pixels.
+        // Keep the native title art centred. Extend its edge colours into
+        // wider phone margins so the horizon meets the painting seamlessly.
         if matches!(self.g.mode, Mode::Title) {
             if let Some(background) = self.title_background {
                 let x = (self.canvas.w - background.w) / 2;
                 let y = (self.canvas.h - background.h) / 2;
+                if x > 0 {
+                    let right = x + background.w;
+                    for row in 0..background.h {
+                        if let Some(c) = background.pixel(0, row) {
+                            self.canvas.rect(0, y + row, x, 1, c);
+                        }
+                        if let Some(c) = background.pixel(background.w - 1, row) {
+                            self.canvas
+                                .rect(right, y + row, self.canvas.w - right, 1, c);
+                        }
+                    }
+                }
                 self.canvas.blit(background, x, y);
             }
         }
