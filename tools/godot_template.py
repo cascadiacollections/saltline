@@ -4,18 +4,20 @@ the parts of the engine this game never uses (docs/godot-templates.md).
 Standard library only and Python 3.9+, like release_version.py.
 
     godot_template.py key
-        Print the cache key: a hash of everything that decides what the build
-        produces (Godot tag and commit, the build profile, the SCons flags,
-        this file's build recipe). The release holding a build is named
-        godot-templates-<version>-<key>.
+        Print the key: a hash of everything that decides what the build
+        produces (Godot tag and commit, the SCons version, the build profile,
+        the published platforms' SCons flags, and the source of this file's
+        build and packaging functions). The release holding a build is
+        named godot-templates-<version>-<key>.
 
     godot_template.py build {android,linux} [--arch A] [--src DIR] [--out DIR] [-j N]
         Fetch the pinned Godot source (a shallow clone of the tag, checked
         against the pinned commit) and build one release template into --out
-        (default build/godot-templates). Takes 10-40 minutes and needs SCons
-        (`uvx scons` is used when `scons` is not on PATH); Android also needs
+        (default build/godot-templates). Runs the pinned SCons through uv
+        (`uvx --from scons==SCONS_VERSION scons`); Android also needs
         ANDROID_HOME with the NDK Godot asks for (Godot installs it with
-        sdkmanager when missing).
+        sdkmanager when missing). An Android build took 3 minutes on 16
+        cores; expect tens of minutes on a 4-core CI runner (not measured).
 
     godot_template.py fetch [--out DIR] [--require]
         Download the build tools/godot_templates.lock.json names (gh CLI) and
@@ -24,13 +26,16 @@ Standard library only and Python 3.9+, like release_version.py.
         another key (the profile or flags changed and nobody has rebuilt yet),
         or missing, this prints a warning and exits 0 with no files, so the
         export falls back to the official templates; --require makes that
-        fail too (CI passes it on release tags).
+        fail too, and also fails a lock that names no Android engine (CI
+        passes it on release tags).
 
     godot_template.py package-android ENGINE_SO [--official APK] [--out APK]
         Make an Android release template: the official android_release.apk
         with its arm64 engine library replaced by ENGINE_SO and the ABIs
         Salt Line does not ship removed. The Java side is the official one
-        of the same Godot tag, so only the native library differs.
+        of the same Godot tag, so only the native library differs. Fails
+        unless ENGINE_SO was built by the same compiler as the official
+        engine (the ELF .comment), since both share libc++_shared.so.
 
     godot_template.py use PRESET TEMPLATE
         Point PRESET's custom_template/release in export_presets.cfg at
@@ -40,14 +45,17 @@ Standard library only and Python 3.9+, like release_version.py.
     godot_template.py lock [--dir DIR | --release]
         Rewrite tools/godot_templates.lock.json for the current key from the
         files in DIR (default build/godot-templates), or with --release from
-        the files the godot-templates workflow published for this key (check
-        its attestation first: docs/godot-templates.md).
+        the files the godot-templates workflow published for this key, after
+        `gh attestation verify` proves each was built by that workflow on
+        main. A local lock (--dir) is for trying things out, never for a
+        pull request.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -73,6 +81,12 @@ GODOT_TAG = f"{GODOT_VERSION}-stable"
 # quietly building something else.
 GODOT_COMMIT = "ed1daf0bf001b61586d9930840f2f1394092c079"
 GODOT_GIT = "https://github.com/godotengine/godot.git"
+# SCons, pinned: a different SCons can build different bytes. Run through uv.
+SCONS_VERSION = "4.11.1"
+SCONS = ["uvx", "--from", f"scons=={SCONS_VERSION}", "scons"]
+# Who may have built a release this lock trusts (lock --release).
+SIGNER_WORKFLOW = f"{REPO}/.github/workflows/godot-templates.yml"
+SIGNER_REF = "refs/heads/main"
 
 # SCons arguments shared by every platform. The build profile holds the
 # feature switches (what is left out); these are how it is compiled.
@@ -95,10 +109,6 @@ DEFAULT_ARCH = {"android": "arm64", "linux": "x86_64"}
 # What the godot-templates workflow builds and CI ships. Linux builds locally
 # but is not published (docs/godot-templates.md, "Not covered yet").
 PUBLISHED = ["android"]
-# Bump when the recipe in this file changes in a way the flags do not show
-# (packaging, output names), so the key moves with it.
-RECIPE = 1
-
 # Android ABIs in the official template that Salt Line does not ship
 # (export_presets.cfg, Android: arm64-v8a only).
 ANDROID_ABI = "arm64-v8a"
@@ -142,7 +152,10 @@ def key() -> str:
             "bump both together (docs/godot-templates.md, 'Bumping Godot')"
         )
     h = hashlib.sha256()
-    h.update(f"{GODOT_TAG}\n{GODOT_COMMIT}\nrecipe {RECIPE}\n".encode())
+    h.update(f"{GODOT_TAG}\n{GODOT_COMMIT}\nscons {SCONS_VERSION}\n".encode())
+    # The code that builds and packages, so a change to it moves the key.
+    for fn in RECIPE:
+        h.update(inspect.getsource(fn).encode())
     for platform in PUBLISHED:
         h.update(f"{platform}: {' '.join(scons_args(platform, DEFAULT_ARCH[platform]))}\n".encode())
     # Canonical JSON, so reformatting the profile does not force a rebuild.
@@ -177,11 +190,31 @@ def fetch_source(src: Path) -> None:
         fail(f"{src} has local changes to tracked files:\n{dirty}")
 
 
+def check_profile(src: Path) -> None:
+    """Godot applies a build profile's options without checking their names,
+    so an option renamed or removed in a new Godot would be silently ignored.
+    Fail instead when this source tree does not know one."""
+    profile = json.loads(PROFILE.read_text(encoding="utf-8"))
+    known = (src / "SConstruct").read_text(encoding="utf-8")
+    for detect in (src / "platform").glob("*/detect.py"):
+        known += detect.read_text(encoding="utf-8")
+    unknown = []
+    for option in profile.get("disabled_build_options", {}):
+        m = re.fullmatch(r"module_(\w+)_enabled", option)
+        if m:
+            if not (src / "modules" / m.group(1) / "config.py").is_file():
+                unknown.append(option)
+        elif f'"{option}"' not in known:
+            unknown.append(option)
+    if unknown:
+        fail(f"{PROFILE.name} sets options Godot {GODOT_TAG} does not have: {', '.join(unknown)}")
+
+
 def build(platform: str, arch: str | None, src: Path, out: Path, jobs: int) -> None:
     arch = arch or DEFAULT_ARCH[platform]
     fetch_source(src)
-    scons = ["scons"] if shutil.which("scons") else ["uvx", "scons"]
-    run([*scons, f"-j{jobs}", *scons_args(platform, arch), f"build_profile={PROFILE}"], cwd=src)
+    check_profile(src)
+    run([*SCONS, f"-j{jobs}", *scons_args(platform, arch), f"build_profile={PROFILE}"], cwd=src)
     built = src / "bin" / output_name(platform, arch)
     if platform == "android":
         # Android builds move the library into the Gradle project's libs.
@@ -206,10 +239,51 @@ def official_templates() -> Path:
     return base / "export_templates" / f"{GODOT_VERSION}.stable"
 
 
+def elf_comment(data: bytes) -> list[str]:
+    """The strings in an ELF64 little-endian file's .comment section: the
+    compiler and linker versions that built it."""
+    if data[:6] != b"\x7fELF\x02\x01":
+        fail("not a 64-bit little-endian ELF file")
+    shoff = int.from_bytes(data[0x28:0x30], "little")
+    shentsize = int.from_bytes(data[0x3A:0x3C], "little")
+    shnum = int.from_bytes(data[0x3C:0x3E], "little")
+    shstrndx = int.from_bytes(data[0x3E:0x40], "little")
+
+    def section(i: int) -> tuple[int, int, int]:
+        base = shoff + i * shentsize
+        name = int.from_bytes(data[base : base + 4], "little")
+        off = int.from_bytes(data[base + 0x18 : base + 0x20], "little")
+        size = int.from_bytes(data[base + 0x20 : base + 0x28], "little")
+        return name, off, size
+
+    _, stroff, _ = section(shstrndx)
+    for i in range(shnum):
+        name, off, size = section(i)
+        end = data.index(b"\0", stroff + name)
+        if data[stroff + name : end] == b".comment":
+            return [x.decode("utf-8", "replace") for x in data[off : off + size].split(b"\0") if x]
+    return []
+
+
+def check_compiler(engine: bytes, official: bytes) -> None:
+    """The stripped engine and the official one must come from the same
+    compiler: they load the same libc++_shared.so from the template."""
+    ours, theirs = elf_comment(engine), elf_comment(official)
+    if not ours or not theirs or ours[0] != theirs[0]:
+        fail(
+            "the engine was not built by the compiler the official template was "
+            f"(ours: {ours[:1]}, official: {theirs[:1]}); build with the NDK Godot "
+            "asks for (platform/android/detect.py, get_ndk_version)"
+        )
+    print(f"compiler matches the official engine: {ours[0]}")
+
+
 def package_android(engine: Path, official: Path, out: Path) -> None:
     if not official.is_file():
         fail(f"official Android template not found at {official} (install Godot's export templates)")
     lib = f"lib/{ANDROID_ABI}/libgodot_android.so"
+    with zipfile.ZipFile(official) as src:
+        check_compiler(engine.read_bytes(), src.read(lib))
     out.parent.mkdir(parents=True, exist_ok=True)
     replaced = False
     with zipfile.ZipFile(official) as src, zipfile.ZipFile(out, "w") as dst:
@@ -285,8 +359,18 @@ def lock_from_release() -> None:
         print("+ " + " ".join(cmd), flush=True)
         if subprocess.run(cmd, check=False).returncode != 0:
             fail(f"no release {release_tag(k)}; run the godot-templates workflow first")
-        if not any((Path(tmp) / n).is_file() for n in names):
+        found = [Path(tmp) / n for n in names if (Path(tmp) / n).is_file()]
+        if not found:
             fail(f"{release_tag(k)} holds none of {names}")
+        for f in found:
+            # Built by the godot-templates workflow, from main, in this repo.
+            cmd = [
+                "gh", "attestation", "verify", str(f), "--repo", REPO,
+                "--signer-workflow", SIGNER_WORKFLOW, "--source-ref", SIGNER_REF,
+            ]
+            print("+ " + " ".join(cmd), flush=True)
+            if subprocess.run(cmd, check=False).returncode != 0:
+                fail(f"{f.name} in {release_tag(k)} has no valid attestation from {SIGNER_WORKFLOW} on {SIGNER_REF}")
         write_lock(Path(tmp))
 
 
@@ -324,6 +408,9 @@ def fetch(out: Path, require: bool) -> None:
             f"tools/godot_templates.lock.json is for key {lock.get('key')}, the build inputs are {k} "
             "(run the godot-templates workflow, then `godot_template.py lock --release`)"
         )
+    engine = output_name("android", DEFAULT_ARCH["android"])
+    if require and engine not in lock.get("files", {}):
+        fail(f"tools/godot_templates.lock.json pins no {engine}")
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         names = list(lock["files"])
@@ -339,6 +426,10 @@ def fetch(out: Path, require: bool) -> None:
                 fail(f"{n} from {lock['release']} has sha256 {digest}, the lock says {lock['files'][n]}")
             shutil.move(str(got), out / n)
             print(f"{out / n}  sha256 {digest}  (matches the lock)")
+
+
+# What `key` hashes the source of. Defined after them; read at call time.
+RECIPE = (output_name, scons_args, fetch_source, check_profile, build, elf_comment, check_compiler, package_android)
 
 
 def main() -> None:

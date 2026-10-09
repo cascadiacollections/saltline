@@ -16,8 +16,9 @@ both as components and puts one application, Salt Line, at the top:
       -> salt-line-godot (the Cargo crate, with its whole dependency tree)
       -> Godot export templates (framework, every platform)
       -> Salt Line's stripped Godot engine (library, Android arm64 only,
-         when tools/godot_templates.lock.json is current, which is exactly
-         when CI exports with it: docs/godot-templates.md)
+         when tools/godot_templates.lock.json is current and the
+         STRIPPED_ENGINE variable is not "off", which is exactly when CI
+         exports with it: docs/godot-templates.md)
       -> godot-xdg-portals (library, Linux builds only)
 
 It also makes the document reproducible and acceptable to actions/attest:
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import uuid
@@ -72,7 +74,10 @@ def xdg_revision() -> str:
 def stripped_engine(godot: str) -> dict | None:
     """The Android engine library built from source by the godot-templates
     workflow, when the lock file pins a build for the current inputs (the
-    Android job then exports with it, and fails rather than fall back)."""
+    Android job then exports with it, and fails rather than fall back) and
+    the STRIPPED_ENGINE off switch is not thrown."""
+    if os.environ.get("STRIPPED_ENGINE") == "off":
+        return None
     sys.path.insert(0, str(ROOT / "tools"))
     import godot_template  # a sibling script, not a package
 
@@ -95,7 +100,9 @@ def stripped_engine(godot: str) -> dict | None:
             "Godot Engine built from source at the pinned tag without the "
             "features Salt Line never uses (tools/godot_build_profile.json), "
             "replacing libgodot_android.so in the official Android template. "
-            "Built and attested by the godot-templates workflow."
+            "Built and attested by the godot-templates workflow. Godot itself "
+            "is MIT; it bundles third-party code under other licences, listed "
+            "in its COPYRIGHT.txt."
         ),
         "scope": "required",
         "licenses": [{"license": {"id": "MIT"}}],

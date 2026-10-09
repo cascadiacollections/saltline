@@ -9,7 +9,6 @@
 		"disable_navigation_2d": true,
 		"disable_navigation_3d": true,
 		"disable_xr": true,
-		"deprecated": false,
 		"vulkan": false,
 		"d3d12": false,
 		"metal": false,

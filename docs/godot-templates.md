@@ -20,6 +20,14 @@ only `lib/arm64-v8a/libgodot_android.so` is replaced.
 The APK figure also includes a smaller GDExtension: with gdext's lazy method
 tables (below) `libsalt_line_godot.so` fell from 5.1 MB to 3.7 MB.
 
+On the phone the saving is larger than the download. The template's
+manifest sets `extractNativeLibs="true"`, so Android unpacks every library
+next to the APK at install: about 36.7 + 71.1 + 5.1 + 1.4 = 114 MB installed
+on the official template against 18.7 + 23.2 + 3.7 + 1.4 = 47 MB on the
+stripped one (APK plus the unpacked `libgodot_android.so`,
+`libsalt_line_godot.so` and `libc++_shared.so`; computed from the files, not
+read off a phone).
+
 ## What is left out, and why it is safe
 
 `tools/godot_build_profile.json` is a Godot build profile: the SCons options
@@ -37,11 +45,29 @@ optimize=size_extra debug_symbols=no`.
 | `ogg`, `vorbis`, `mp3`, `theora`, `interactive_music` | Every sound is a WAV (`AudioStreamWAV` is core). |
 | `gltf`, `fbx`, `csg`, `gridmap`, `meshoptimizer`, `xatlas_unwrap`, `vhacd`, `lightmapper_rd`, `raycast`, `noise`, `visual_shader`, `navigation_*`, `godot_physics_*`, `jolt_physics`, `openxr`, `mobile_vr`, `webxr`, `camera` | 3D, physics, XR and editor-side tooling. |
 | `enet`, `multiplayer`, `webrtc`, `websocket`, `upnp`, `jsonrpc`, `mbedtls`, `regex`, `zip`, `minizip` | No networking, no TLS, no regex, no zip packs. Core's own hashing still builds its few mbedtls files. |
-| `objectdb_profiler`, `mono`, `accesskit`, `deprecated` | Debugging, C#, screen readers (the game is a picture), compatibility shims. |
+| `objectdb_profiler`, `mono`, `accesskit` | Debugging, C#, screen readers (the game is a picture). |
 
 Kept: GDScript (`godot/platform_services.gd` and the XDG Portals addon's
 autoload run on every platform), WebP, and everything in core and the 2D
 scene tree.
+
+Also kept, deliberately: `deprecated` (the engine's compatibility code).
+SConstruct reads that option before it applies a build profile, so a profile
+cannot turn it off; a build with `"deprecated": false` in the profile came out
+byte for byte identical to one without it. Turning it off would take a
+command-line flag; it stays on, so engine APIs Godot marks deprecated still
+exist for gdext and GDScript.
+
+That rebuild also shows the build is reproducible on one machine: the same
+inputs gave the same bytes.
+
+Godot applies a profile's options without checking their names: an option a
+future Godot renames would be silently ignored. `godot_template.py build`
+checks every option in the profile against the source tree it is about to
+build (SConstruct, the platforms' `detect.py`, the `modules/` directory) and
+refuses an unknown one. The `deprecated` case above is the other trap: an
+option SConstruct reads before the profile is applied. When bumping Godot,
+compare the engine library's size or hash with and without a changed option.
 
 ### gdext and missing classes
 
@@ -49,29 +75,38 @@ godot-rust (gdext) normally looks up every engine method of every class it
 generated bindings for when the library loads, and panics on the first one the
 engine does not have. With `disable_3d` that is the first 3D class.
 `crates/salt-line-godot/Cargo.toml` therefore enables gdext's
-`lazy-function-tables`: a method is looked up on its first call. The costs: a
-hash lookup per engine call (a few hundred a frame; nothing measurable next to
-the raster) and that a call into a removed class panics when it is made rather
-than at startup. That is why adding engine API to the game needs the check
-below.
+`lazy-function-tables`: a method is looked up on its first call. The costs:
+each engine call borrows a `RefCell` around the table and does a hash lookup
+(a few hundred calls a frame; nothing measurable next to the raster); the
+table is not thread-safe, so no engine call may ever be made off the main
+thread; and a call into a removed class would panic only when made.
+
+That last one is covered at startup instead. `src/engine_classes.rs` lists
+every engine class the game uses, and the library checks them all with
+`ClassDB.class_exists` when it loads, failing at once with the missing names.
+A unit test reads every `godot::classes::` path in the crate and fails if one
+names a class that is not on the list, so a new engine dependency shows up in
+review, next to the code that needs it.
 
 ## Adding something back
 
 When the game starts using an engine class or format it did not use before
 (a new node type, an OGG file, a `Label`, physics, a TLS request):
 
-1. Find what provides it: a module under `modules/` in the Godot source, or
+1. Add the class to `REQUIRED` in `crates/salt-line-godot/src/engine_classes.rs`
+   (the unit test insists, for anything imported from `godot::classes`).
+2. Find what provides it: a module under `modules/` in the Godot source, or
    one of the `disable_*` switches (the class's source directory tells you:
    `scene/3d`, `scene/gui` advanced controls, `servers/physics_2d`, ...).
-2. Delete that line from `tools/godot_build_profile.json` (or set it to
-   `true` for a module). The profile is canonicalised before hashing, so
-   formatting does not matter, but any real change gives a new key.
-3. `just godot-template` and `just android-release` to try it on a phone.
-4. Publish and pin the new build (below).
+3. Delete that line from `tools/godot_build_profile.json` (or set it to
+   `true`). The profile is canonicalised before hashing, so formatting does
+   not matter, but any real change gives a new key.
+4. `just godot-template` and `just android-release` to try it on a phone.
+5. Publish and pin the new build (below).
 
-A class the engine does not have shows up as a gdext panic (`Failed to load
-class method ...`) in `adb logcat` the moment the code path runs, or, from
-GDScript, a parse error naming the class.
+A class the engine does not have stops the game at startup with
+`this Godot engine build lacks classes Salt Line uses: ...` in `adb logcat`,
+or, from GDScript, a parse error naming the class.
 
 ## Building it
 
@@ -83,10 +118,13 @@ just android-release           # release APK on it, installed over `just android
 
 `tools/godot_template.py build` clones the pinned tag into
 `~/.cache/salt-line/godot-<tag>` (checking the commit it resolves to) and runs
-SCons there (`uvx scons` if `scons` is not on PATH). Android needs
-`ANDROID_HOME`; Godot installs the NDK version it wants with `sdkmanager`
-when it is missing. On a 16-core machine an Android build takes about 3
-minutes; a 4-core CI runner takes far longer.
+the pinned SCons there through uv (`uvx --from scons==4.11.1 scons`). Android
+needs `ANDROID_HOME`; Godot installs the NDK version it wants with
+`sdkmanager` when it is missing. `package-android` refuses an engine built by
+a different compiler than the official template's (it shares that
+template's `libc++_shared.so`). An Android build took 3 minutes on a 16-core
+machine; expect tens of minutes on a 4-core CI runner (not measured yet; the
+workflow allows 90).
 
 ## How CI uses it
 
@@ -94,36 +132,59 @@ Building the engine on every pull request would add tens of minutes per
 platform, so it is built once per set of inputs and pinned:
 
 1. **Key.** `godot_template.py key` hashes the Godot tag and commit, the
-   build profile, the published platforms' SCons flags and a recipe version. Any change to what
-   would be built changes the key.
+   build profile, the published platforms' SCons flags, the pinned SCons
+   version, and the source of the script's build and packaging functions.
+   Any change to what would be built changes the key.
 2. **Build and publish.** `.github/workflows/godot-templates.yml` runs when
    one of those inputs changes on `main`, or by hand. If no
    `godot-templates-<version>-<key>` release exists yet, it builds Android
-   arm64 in a job with read-only tokens, then a separate job
-   (the only one with write, OIDC and attestation permissions, and no build
-   code) attests the files' provenance and publishes them as that prerelease.
-   A published key is never rebuilt or overwritten.
-3. **Pin.** `python3 tools/godot_template.py lock --release` writes
-   `tools/godot_templates.lock.json`: the release and the sha256 of each file.
-   Check the attestation first:
-   `gh attestation verify --repo cascadiacollections/saltline <file>`.
-   The lock change goes through a pull request like any other.
+   arm64 in a job with a read-only token. Only on `main`, a separate job (the
+   only one with write, OIDC and attestation permissions, and no build code)
+   attests the file's provenance and publishes it as that prerelease. It
+   refuses to publish when the `ATTEST` variable is `off`, since an
+   unattested build could never be pinned. A published key is never rebuilt
+   or overwritten by the workflow.
+3. **Try it, then pin it.** Before the lock pull request:
+   - `python3 tools/godot_template.py lock --release` downloads the published
+     file, runs `gh attestation verify` on it (signer
+     `cascadiacollections/saltline/.github/workflows/godot-templates.yml`,
+     source ref `refs/heads/main`), refuses it if that fails, and writes
+     `tools/godot_templates.lock.json` (the release and the file's sha256).
+   - `python3 tools/godot_template.py fetch` puts that very file in
+     `build/godot-templates/`; `just android-release` packages it, exports a
+     release APK and installs it on the phone.
+   - On the phone: play a run, a versus match, the map editor and a replay,
+     with sound, and pause and resume the app.
+   - Then open the pull request with the lock file.
 4. **Use.** The `android` job in `ci.yml` runs `godot_template.py fetch`: it
-   downloads the pinned files and checks their sha256 against the lock, then
+   downloads the pinned file and checks its sha256 against the lock, then
    puts the engine into the official template it already installed and points
    the Android preset at the result (in CI's throwaway checkout; the committed
    presets never name a custom template).
 
 When the lock does not match the current key (the profile changed and the new
 build is not pinned yet), pull requests and `main` export with the official
-template and a warning; a release tag fails instead. When the lock does match,
-a download failure or a hash mismatch always fails the job. The SBOM lists the
-stripped engine, with its hash, exactly when the lock matches, which is exactly
-when the Android job uses it.
+template and a warning; a release tag fails instead, as it does if the lock
+names no Android engine. When the lock does match, a download failure or a
+hash mismatch always fails the job.
+
+**Off switch.** Setting the repository variable `STRIPPED_ENGINE` to `off`
+(Settings > Secrets and variables > Actions > Variables) makes the `android`
+job export on the official template everywhere, tags included, with a
+warning in every run. Use it if the stripped engine turns out to break
+something on players' phones and a fixed build is not ready.
+
+The SBOM lists the stripped engine, with its hash, exactly when the lock
+matches and the switch is not off, which is exactly when the Android job
+uses it.
 
 The lock file is what decides what ships. The release can be deleted or
 replaced by anyone with write access, but a replaced file does not match the
-pinned hash.
+pinned hash. **Owner option:** turning on GitHub's immutable releases for the
+repository (Settings > General > Releases) would also stop a published
+`godot-templates-*` release from being changed at all; it applies to every
+release in the repository, including `dev`, which the CI deletes and
+recreates on each push to `main`, so check that flow still works first.
 
 ## Bumping Godot
 
@@ -132,7 +193,10 @@ pinned hash.
    `-stable` tag points at (`git ls-remote https://github.com/godotengine/godot
    refs/tags/<version>-stable`). `key` fails while the two versions disagree.
 2. New modules default to enabled; check the new version's `modules/` list
-   and `SConstruct` options for anything worth adding to the profile.
+   and `SConstruct` options for anything worth adding to the profile. `build`
+   refuses profile options the new source does not know (a renamed one would
+   otherwise be ignored without a word), but cannot catch an option the new
+   SConstruct reads before applying the profile (see `deprecated` above).
 3. Build and test locally (`just godot-template`, `just android-release`),
    then merge; the workflow publishes the build for the new key, and a
    follow-up pull request pins it. Until then CI exports with the official
@@ -153,4 +217,5 @@ pinned hash.
   building in an older-glibc container or with Godot's buildroot SDK, as
   upstream does. That, not size, is why the Linux export is not switched yet.
 - **The profiling APK** (`just android-profile`) still exports on the
-  official template.
+  official template, so its frame timings measure the official engine, not
+  the one players get.

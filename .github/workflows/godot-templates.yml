@@ -8,7 +8,8 @@ name: godot-templates
 # workflow never changes what CI ships by itself; a reviewed change to the
 # lock file does.
 #
-# It runs only when an input changes on main, or by hand. A build is tens of
+# It runs when an input changes on main, or by hand. A hand run on another
+# branch builds (to try a profile) but never publishes. A build is tens of
 # minutes; nothing on a pull request waits for it.
 on:
   workflow_dispatch:
@@ -99,10 +100,12 @@ jobs:
           path: build/godot-templates/*
           if-no-files-found: error
 
+  # Only main publishes: `lock --release` trusts a build only if its
+  # attestation names this workflow on refs/heads/main.
   publish:
     name: publish
     needs: [key, build]
-    if: needs.key.outputs.exists != 'true'
+    if: needs.key.outputs.exists != 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -121,8 +124,13 @@ jobs:
           set -eu
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
+      # An unattested build could never be pinned, so do not publish one.
+      - name: refuse without attestations
+        if: vars.ATTEST == 'off'
+        run: |
+          echo "::error::vars.ATTEST is off; godot-templates are only published attested"
+          exit 1
       - name: attest build provenance
-        if: vars.ATTEST != 'off'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*

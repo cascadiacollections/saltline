@@ -232,7 +232,16 @@ unattested. Turning them off is one visible act instead of a workflow edit:
 set the repository variable `ATTEST` to `off` (Settings → Secrets and
 variables → Actions → Variables, or `gh variable set ATTEST --body off`), and
 the four attest steps are skipped while everything else publishes as before.
-Delete the variable to turn them back on.
+Delete the variable to turn them back on. The godot-templates workflow is the
+exception: with `ATTEST` off it refuses to publish, because an engine build
+can only be pinned once its attestation verifies.
+
+**`STRIPPED_ENGINE` off switch.** The Android APK runs on a stripped Godot
+engine (`docs/godot-templates.md`). If that engine breaks something on
+players' phones, set the repository variable `STRIPPED_ENGINE` to `off`
+(`gh variable set STRIPPED_ENGINE --body off`): the `android` job exports on
+the official template on every run, tags included, with a warning, and the
+SBOM leaves the stripped engine out to match. Delete the variable to go back.
 
 ### Version rule
 

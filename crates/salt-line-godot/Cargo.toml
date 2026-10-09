@@ -23,10 +23,18 @@ profiling = []
 # empty scene and hangs. Building down-level still runs on newer engines.
 #
 # `lazy-function-tables` looks engine methods up on first call instead of all
-# of them when the library loads. The release templates are built without the
-# classes this game never touches (tools/godot_build_profile.json, docs/
-# godot-templates.md); an eager table would panic at startup on the first
-# missing one. The cost is a hash lookup per engine call, a few hundred a frame.
+# of them when the library loads. The Android release runs on an engine built
+# without the classes this game never touches (tools/godot_build_profile.json,
+# docs/godot-templates.md); an eager table would panic at startup on the first
+# missing one. Two costs:
+#   - Each engine call borrows a RefCell around the table and does a hash
+#     lookup (a few hundred calls a frame; nothing measurable next to the
+#     raster).
+#   - The table is not thread-safe: no engine call may ever be made off the
+#     main thread (gdext documents it as incompatible with
+#     `experimental-threads`).
+# `engine_classes::check` still fails at startup, by name, if the engine lacks
+# a class the game uses.
 godot = { version = "0.5", features = ["api-4-7", "lazy-function-tables"] }
 salt-line-sim = { path = "../salt-line-sim" }
 

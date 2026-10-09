@@ -990,6 +990,20 @@ something back).
   kept across screens) and on the Pixel 10 (arm64: installs over the debug
   build, the engine and its GL Compatibility renderer start on the PowerVR
   GPU, no errors in logcat).
+- **On the phone** the saving is bigger: the template sets
+  `extractNativeLibs="true"`, so libraries are unpacked at install; about
+  114 MB installed on the official template against 47 MB (computed from
+  the files: APK plus unpacked libraries).
+- **`deprecated` stays on.** SConstruct reads it before applying a build
+  profile, so `"deprecated": false` in the profile did nothing: the build
+  with it was byte for byte the build without it (which also shows the
+  build is reproducible on one machine). The profile no longer pretends.
+- **Guards.** The library checks at startup that every engine class it uses
+  exists (`engine_classes`, with a test that the list covers every
+  `godot::classes` import); `package-android` refuses an engine built by
+  another compiler than the official template's; `build` refuses profile
+  options the Godot source does not know; `STRIPPED_ENGINE=off` puts the
+  official template back without a code change.
 - **Rejected: rebuilding the engine in every CI run.** It is built once
   per set of inputs by its own workflow, published, and pinned by sha256
   in `tools/godot_templates.lock.json`; until a build is pinned, pull

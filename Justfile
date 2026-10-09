@@ -141,8 +141,8 @@ android: android-apk
     "{{ adb }}" shell monkey -p com.cascadiacollections.saltline -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 
 # Build Salt Line's stripped Godot engine from source (docs/godot-templates.md) into
-# build/godot-templates: `android` (arm64) or `linux` (x86_64). Needs SCons (or uv) and, for
-# Android, the SDK; the first build takes 5-40 minutes depending on the machine.
+# build/godot-templates: `android` (arm64) or `linux` (x86_64). Needs uv (it runs the pinned
+# SCons) and, for Android, the SDK. 3 minutes on 16 cores; tens on a small machine.
 godot-template platform="android":
     python3 tools/godot_template.py build {{ platform }}
 

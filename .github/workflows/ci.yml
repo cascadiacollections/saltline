@@ -1020,13 +1020,20 @@ jobs:
       # The stripped engine (docs/godot-templates.md): fetched from the
       # godot-templates release that tools/godot_templates.lock.json pins and
       # checked against its sha256. A lock written for other build inputs
-      # falls back to the official template with a warning, except on a tag.
+      # falls back to the official template with a warning, except on a tag,
+      # which fails. The repository variable STRIPPED_ENGINE=off is the off
+      # switch (RELEASING.md): official template everywhere, tags included.
       - name: stripped engine template
         env:
           GH_TOKEN: ${{ github.token }}
           IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          STRIPPED_ENGINE: ${{ vars.STRIPPED_ENGINE }}
         run: |
           set -eu
+          if [ "$STRIPPED_ENGINE" = "off" ]; then
+            echo "::warning::vars.STRIPPED_ENGINE is off: this APK is exported on the official Godot template"
+            exit 0
+          fi
           set --
           if [ "$IS_TAG" = "true" ]; then set -- --require; fi
           python3 tools/godot_template.py fetch --out "$RUNNER_TEMP/godot-templates" "$@"
@@ -1035,6 +1042,9 @@ jobs:
             python3 tools/godot_template.py package-android "$engine" \
               --out "$RUNNER_TEMP/godot-templates/android_release.apk"
             python3 tools/godot_template.py use Android "$RUNNER_TEMP/godot-templates/android_release.apk"
+          elif [ "$IS_TAG" = "true" ]; then
+            echo "::error::a release tag must export on the stripped engine, and none was fetched"
+            exit 1
           fi
       - name: export the APK
         env:
@@ -1269,6 +1279,9 @@ jobs:
       # SOURCE_DATE_EPOCH (the commit time) makes the timestamp the commit's,
       # so the same commit always produces the same SBOM, byte for byte.
       - name: generate the SBOM
+        env:
+          # The android job's off switch; the SBOM must agree with what shipped.
+          STRIPPED_ENGINE: ${{ vars.STRIPPED_ENGINE }}
         run: |
           set -eu
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
