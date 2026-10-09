@@ -152,6 +152,7 @@ macOS packaging checks.
 | W | D-pad up (run over, match won) | WATCH | Watch the run or match just finished |
 | S | Y (REPLAYS list, a replay's end) | the star beside a row; STAR at a replay's end | Star a replay to keep it for good, or take its star off (see below) |
 | D | D-pad down (on Controls) | IDLE DEMO | Start the demo by itself after 30 s on the title (on by default) |
+| U | RB (on Controls) | SEASONAL | Cycle automatic, off, Halloween, Thanksgiving and Christmas target art |
 | C | X | COPY SEED | Copy the seed (on the run-over screen) |
 | R | Y | SAME SEED AGAIN | Replay the same seed |
 | V | Back/Select | CONTROLS / AUDIO | Controls and audio screen |
@@ -510,6 +511,32 @@ emplacement at lower left, a rust water tower at lower right and distant low
 mesas. Keep the centre clear for the existing menu, use hard pixel edges and
 the existing palette, and omit lettering, UI, explosions and projectile arcs.
 The title painting is decorative; it never supplies terrain or collision data.
+
+### Seasonal targets
+
+CONTROLS / AUDIO offers **SEASONAL: AUTO / OFF / HALLOWEEN / THANKSGIVING /
+CHRISTMAS**. Auto uses the presentation clock's UTC month: October for the
+jack-o'-lantern, November for a turkey made from metal, December for the
+scrap-metal holiday tree, and ordinary targets in other months. Any season
+can be chosen year-round, or turned off. The preference is saved as an optional
+`seasonal` line; older saves default to Auto.
+
+These are water-tower skins, including intact, leaning and collapsed frames.
+They keep the original 17×34 standing canvas, 17×8 wreck canvas and nine-pixel
+footing. Geometry, health, support, ballistics and replay logs are unchanged.
+Missing holiday frames fall back to ordinary tower art. The native generator
+also writes `art/seasonal_sheet_4x.png` for visual review.
+
+```sh
+# A cosmetic override for a screenshot, without changing the saved choice.
+godot --headless --path . -- --salt-seed 1 --salt-season halloween \
+    --salt-shot /tmp/halloween.png
+
+# Same generated terrain, all four looks and all three damage states,
+# plus keyboard and touch settings screens. Create the output folder first.
+mkdir -p /tmp/salt-seasons
+godot --headless --path . -- --salt-season-gallery /tmp/salt-seasons
+```
 
 ## The marketing page
 

@@ -247,6 +247,7 @@ pub enum Action {
     /// The title screen's dedicated music toggle.
     TitleMusic,
     LastArc,
+    Seasonal,
     Seed,
     NewRun,
     /// The title's way into a local versus match.
@@ -362,7 +363,7 @@ pub enum Ed {
 impl Action {
     /// Every action a `bind` line can name, in the order the save file and
     /// the Controls screen know them.
-    pub const BINDABLE: [Action; 25] = [
+    pub const BINDABLE: [Action; 26] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -382,6 +383,7 @@ impl Action {
         Self::Controls,
         Self::Mute,
         Self::LastArc,
+        Self::Seasonal,
         Self::Seed,
         Self::NewRun,
         Self::Versus,
@@ -413,6 +415,7 @@ impl Action {
             Self::Controls => "controls",
             Self::Mute => "mute",
             Self::LastArc => "last_arc",
+            Self::Seasonal => "seasonal",
             Self::Seed => "seed",
             Self::NewRun => "new_run",
             Self::Versus => "versus",
@@ -469,6 +472,7 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         Action::Controls => ("V", "BACK"),
         Action::Mute => ("M", "START"),
         Action::LastArc => ("L", "X"),
+        Action::Seasonal => ("U", "RB"),
         Action::Seed => ("S", "Y"),
         // Only offered over a saved run, where confirm is CONTINUE and
         // pad Y is already seed entry.
@@ -767,6 +771,7 @@ mod tests {
                 "controls",
                 "mute",
                 "last_arc",
+                "seasonal",
                 "seed",
                 "new_run",
                 "versus",

@@ -196,6 +196,8 @@ pub struct Save {
     /// Bundled challenges cleared: (index, most shells left over). At most
     /// one entry per index, in index order.
     pub challenges: Vec<(u8, u8)>,
+    /// Cosmetic target skins. Missing or malformed settings use Auto.
+    pub seasonal: Option<crate::seasonal::Seasonal>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
@@ -245,6 +247,7 @@ impl Default for Save {
             idle_demo: None,
             controller: None,
             challenges: Vec::new(),
+            seasonal: None,
             from_the_future: false,
         }
     }
@@ -286,6 +289,9 @@ impl Save {
                 }
                 Some("muted") => save.muted = it.next() == Some("1"),
                 Some("title_music") => save.title_music = it.next() != Some("0"),
+                Some("seasonal") => {
+                    save.seasonal = it.next().and_then(crate::seasonal::Seasonal::from_token)
+                }
                 Some("touch_aim") => save.touch_aim = it.next().and_then(TouchAim::from_token),
                 Some("arc_hint") => save.arc_hint = it.next().and_then(ArcHint::from_token),
                 Some("last_arc") => {
@@ -398,6 +404,9 @@ impl Save {
         }
         for (index, left) in &self.challenges {
             out.push_str(&format!("challenge {index} {left}\n"));
+        }
+        if let Some(season) = self.seasonal {
+            out.push_str(&format!("seasonal {}\n", season.token()));
         }
         for (action, key, pad) in &self.bindings {
             out.push_str(&format!("bind {action} {key} {pad}\n"));
@@ -633,6 +642,27 @@ mod tests {
         assert_eq!(s.learned, 37);
         assert_eq!(s.bindings, vec![("fire".into(), "F".into(), "X".into())]);
         assert_eq!(Save::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn seasonal_preferences_round_trip_without_changing_old_saves() {
+        use crate::seasonal::Seasonal;
+        assert_eq!(Save::parse("seasonal nonsense\n").seasonal, None);
+        assert_eq!(Save::parse("seasonal\n").seasonal, None);
+        assert!(!Save::default().serialize().contains("seasonal"));
+        for season in [
+            Seasonal::Auto,
+            Seasonal::Off,
+            Seasonal::Halloween,
+            Seasonal::Thanksgiving,
+            Seasonal::Christmas,
+        ] {
+            let save = Save {
+                seasonal: Some(season),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&save.serialize()).seasonal, Some(season));
+        }
     }
 
     #[test]

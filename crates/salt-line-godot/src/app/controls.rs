@@ -280,6 +280,11 @@ impl Game {
                     self.settings.touch();
                     self.play(Sound::Ui);
                 }
+                if self.action_pressed(Action::Seasonal) {
+                    self.save.seasonal = Some(self.save.seasonal.unwrap_or_default().next());
+                    self.settings.touch();
+                    self.play(Sound::Ui);
+                }
                 if self.action_pressed(Action::Replay) {
                     self.save.bindings.clear();
                     self.settings.touch();

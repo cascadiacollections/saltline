@@ -1383,6 +1383,55 @@ fn touch_settings_cycle_and_are_written_on_leaving() {
 }
 
 #[test]
+fn seasonal_controls_change_only_cosmetics_and_persist_on_exit() {
+    use crate::seasonal::Seasonal;
+    let mut g = game();
+    g.start_run(42, false);
+    let before = Saved::of(g.play.run.as_ref().unwrap(), false).to_line();
+    g.mode = Mode::Controls;
+    tick(&mut g, keys(&[Key::U]));
+    assert_eq!(g.save.seasonal, Some(Seasonal::Off));
+    tick(&mut g, idle());
+    tick(
+        &mut g,
+        Intents {
+            pads: vec![Pad::RightShoulder],
+            ..idle()
+        },
+    );
+    assert_eq!(g.save.seasonal, Some(Seasonal::Halloween));
+    g.set_buttons(&[button(Action::Seasonal)]);
+    g.events(&[Event::FingerDown {
+        index: 0,
+        x: 5.0,
+        y: 5.0,
+    }]);
+    g.events(&[Event::FingerUp { index: 0 }]);
+    tick(&mut g, idle());
+    assert_eq!(g.save.seasonal, Some(Seasonal::Thanksgiving));
+    let after = Saved::of(g.play.run.as_ref().unwrap(), false).to_line();
+    assert_eq!(before, after, "skins must not change the replay log");
+    let fx = tick(&mut g, keys(&[Key::Escape]));
+    assert_eq!(count(&fx, is_settings), 1);
+    let back = Save::parse(&g.save.serialize());
+    assert_eq!(back.seasonal, Some(Seasonal::Thanksgiving));
+}
+
+#[test]
+fn capture_season_does_not_overwrite_saved_choice() {
+    use crate::seasonal::Seasonal;
+    let mut g = game();
+    g.save.seasonal = Some(Seasonal::Off);
+    let args = DevArgs::parse(&["--salt-season=christmas".into()]);
+    g.start_dev(&args, TODAY);
+    assert_eq!(g.dev.season, Some(Seasonal::Christmas));
+    assert_eq!(
+        Save::parse(&g.save.serialize()).seasonal,
+        Some(Seasonal::Off)
+    );
+}
+
+#[test]
 fn the_touch_keypad_types_a_seed() {
     let mut g = game();
     g.open_seed_entry();

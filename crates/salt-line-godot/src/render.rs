@@ -464,7 +464,21 @@ impl Painter<'_> {
                 self.draw_touch_button(tx + tw + 6, y - 6, 20, 17, "+", Action::Right);
                 y += 20;
                 let mute = if self.g.save.muted { "UNMUTE" } else { "MUTE" };
-                y = self.menu_row(y, Action::Mute, "", mute, fg);
+                self.draw_touch_button(w / 4 - 30, y - 4, 60, 13, mute, Action::Mute);
+                let season = format!(
+                    "SEASONAL: {}",
+                    self.g.save.seasonal.unwrap_or_default().label()
+                );
+                let sw = crate::font::small_width(&season) as i32 + 20;
+                self.draw_touch_button(
+                    3 * w / 4 - sw / 2,
+                    y - 4,
+                    sw,
+                    13,
+                    &season,
+                    Action::Seasonal,
+                );
+                y += 16;
                 let last = if self.g.last_arc_on() {
                     "LAST ARC: ON"
                 } else {
@@ -546,6 +560,13 @@ impl Painter<'_> {
                 let on = if self.g.idle_demo_on() { "ON" } else { "OFF" };
                 let toggle = format!("{}  IDLE DEMO: {on}", self.g.input_label(Action::Demo));
                 self.centred(y, &toggle, fg);
+                y += 7;
+                let season = format!(
+                    "{}  SEASONAL: {}",
+                    self.g.input_label(Action::Seasonal),
+                    self.g.save.seasonal.unwrap_or_default().label()
+                );
+                self.centred(y, &season, fg);
                 y += 9;
                 self.centred(y, "EDIT bind LINES IN salt_line.txt TO REMAP", dim);
                 y += 7;
@@ -1034,7 +1055,14 @@ impl Painter<'_> {
             }
             let (sprite, faithful) = match self.sprites {
                 Some(s) => {
-                    let (spr, faithful) = s.structure(st.kind, state);
+                    let season = self
+                        .g
+                        .dev
+                        .season
+                        .or(self.g.save.seasonal)
+                        .unwrap_or_default()
+                        .resolve(self.g.today);
+                    let (spr, faithful) = s.seasonal_structure(st.kind, state, season);
                     (spr.cloned(), faithful)
                 }
                 None => (None, false),
@@ -1974,6 +2002,51 @@ mod tests {
                 Action::Copy
             ]
         );
+    }
+
+    #[test]
+    fn seasonal_touch_settings_keep_all_buttons_on_screen() {
+        for width in [320, 400] {
+            let mut g = game();
+            g.mode = Mode::Controls;
+            g.input.touch_active = true;
+            g.display.buffer_w = width;
+            g.save.touch_aim = Some(TouchAim::Drag);
+            g.save.seasonal = Some(crate::seasonal::Seasonal::Thanksgiving);
+            let (canvas, buttons) = draw(&g);
+            assert!(actions(&buttons).contains(&Action::Seasonal));
+            assert!(actions(&buttons).contains(&Action::Back));
+            for button in &buttons {
+                assert!(
+                    button.rect.x >= 0 && button.rect.y >= 0,
+                    "{:?}",
+                    button.action
+                );
+                assert!(
+                    button.rect.x + button.rect.w <= canvas.w,
+                    "{:?}",
+                    button.action
+                );
+                assert!(
+                    button.rect.y + button.rect.h <= canvas.h,
+                    "{:?}",
+                    button.action
+                );
+            }
+            for (i, a) in buttons.iter().enumerate() {
+                for b in &buttons[i + 1..] {
+                    assert!(
+                        a.rect.x + a.rect.w <= b.rect.x
+                            || b.rect.x + b.rect.w <= a.rect.x
+                            || a.rect.y + a.rect.h <= b.rect.y
+                            || b.rect.y + b.rect.h <= a.rect.y,
+                        "overlapping {:?} and {:?}",
+                        a.action,
+                        b.action
+                    );
+                }
+            }
+        }
     }
 
     /// A suspended versus match (DESIGN §11.6).

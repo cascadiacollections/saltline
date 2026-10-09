@@ -51,6 +51,7 @@ pub const BARREL_PIVOT: (i32, i32) = (3, 24);
 ///
 /// Fields are `None` when their PNG failed to load; the renderer copes.
 /// Structure fields follow the three damage states of DESIGN §5.4.
+#[derive(Default)]
 pub struct Sprites {
     pub tank_base: Option<Sprite>,
     pub tank_ballast: Option<Sprite>,
@@ -64,6 +65,8 @@ pub struct Sprites {
     pub tower_intact: Option<Sprite>,
     pub tower_leaning: Option<Sprite>,
     pub tower_collapsed: Option<Sprite>,
+    /// Holiday × damage state; missing art falls back to the normal tower.
+    pub seasonal_towers: [[Option<Sprite>; 3]; 3],
     pub derrick: Option<Sprite>,
     pub derrick_leaning: Option<Sprite>,
     pub derrick_collapsed: Option<Sprite>,
@@ -152,6 +155,10 @@ impl Sprites {
             tower_intact: load(&p("tower_intact"), &mut missing),
             tower_leaning: load(&p("tower_leaning"), &mut missing),
             tower_collapsed: load(&p("tower_collapsed"), &mut missing),
+            seasonal_towers: ["halloween", "thanksgiving", "christmas"].map(|season| {
+                ["intact", "leaning", "collapsed"]
+                    .map(|state| load(&p(&format!("tower_{season}_{state}")), &mut missing))
+            }),
             derrick: load(&p("derrick"), &mut missing),
             derrick_leaning: load(&p("derrick_leaning"), &mut missing),
             derrick_collapsed: load(&p("derrick_collapsed"), &mut missing),
@@ -271,6 +278,30 @@ impl Sprites {
         }
     }
 
+    pub fn seasonal_structure(
+        &self,
+        kind: StructureKind,
+        state: StructState,
+        season: crate::seasonal::Seasonal,
+    ) -> (Option<&Sprite>, bool) {
+        if kind == StructureKind::WaterTower {
+            if let Some(index) = season.index() {
+                let frame = match state {
+                    StructState::Intact => Some(0),
+                    StructState::Leaning => Some(1),
+                    StructState::Collapsed => Some(2),
+                    StructState::Cleared => None,
+                };
+                if let Some(sprite) =
+                    frame.and_then(|frame| self.seasonal_towers[index][frame].as_ref())
+                {
+                    return (Some(sprite), true);
+                }
+            }
+        }
+        self.structure(kind, state)
+    }
+
     fn intact(&self, kind: StructureKind) -> Option<&Sprite> {
         match kind {
             StructureKind::WaterTower => self.tower_intact.as_ref(),
@@ -279,5 +310,78 @@ impl Sprites {
             StructureKind::Silo => self.silo.as_ref(),
             StructureKind::Pylon => self.pylon.as_ref(),
         }
+    }
+}
+
+#[cfg(test)]
+mod seasonal_tests {
+    use super::*;
+    use crate::seasonal::Seasonal;
+
+    fn marker(value: u8) -> Sprite {
+        Sprite {
+            w: 1,
+            h: 1,
+            px: vec![value, 0, 0, 255],
+        }
+    }
+
+    #[test]
+    fn seasonal_selection_falls_back_per_frame_and_never_draws_cleared_targets() {
+        let mut sprites = Sprites {
+            tower_intact: Some(marker(1)),
+            tower_leaning: Some(marker(2)),
+            tower_collapsed: Some(marker(3)),
+            silo: Some(marker(4)),
+            ..Sprites::default()
+        };
+        for season in [
+            Seasonal::Halloween,
+            Seasonal::Thanksgiving,
+            Seasonal::Christmas,
+        ] {
+            let index = season.index().unwrap();
+            for (frame, state) in [
+                StructState::Intact,
+                StructState::Leaning,
+                StructState::Collapsed,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (fallback, faithful) =
+                    sprites.seasonal_structure(StructureKind::WaterTower, state, season);
+                assert!(faithful);
+                assert_eq!(fallback.unwrap().px[0], frame as u8 + 1);
+                sprites.seasonal_towers[index][frame] = Some(marker(10 + frame as u8));
+                let (holiday, faithful) =
+                    sprites.seasonal_structure(StructureKind::WaterTower, state, season);
+                assert!(faithful);
+                assert_eq!(holiday.unwrap().px[0], 10 + frame as u8);
+            }
+            let (cleared, faithful) =
+                sprites.seasonal_structure(StructureKind::WaterTower, StructState::Cleared, season);
+            assert!(cleared.is_none() && faithful);
+            assert_eq!(
+                sprites
+                    .seasonal_structure(StructureKind::Silo, StructState::Intact, season)
+                    .0
+                    .unwrap()
+                    .px[0],
+                4
+            );
+        }
+        assert_eq!(
+            sprites
+                .seasonal_structure(
+                    StructureKind::WaterTower,
+                    StructState::Intact,
+                    Seasonal::Off
+                )
+                .0
+                .unwrap()
+                .px[0],
+            1
+        );
     }
 }

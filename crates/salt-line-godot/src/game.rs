@@ -333,6 +333,12 @@ impl INode2D for SaltLine {
             );
             args
         };
+        self.g.today = Self::today();
+        self.g.dev.season = args.season;
+        if let Some(dir) = args.seasonal_gallery.as_deref() {
+            self.seasonal_gallery(dir);
+            return;
+        }
         if let Some(dir) = args.gallery.as_deref() {
             self.gallery(dir);
             return;
@@ -1053,6 +1059,74 @@ impl SaltLine {
                 &mut self.cache,
             );
             self.save_canvas(&format!("{dir}/{name}.png"));
+        }
+        self.base().get_tree().quit();
+    }
+
+    fn seasonal_gallery(&mut self, dir: &str) {
+        use crate::seasonal::Seasonal;
+        use salt_line_sim::run::{RunState, StructState, StructureKind};
+        // Same generated screen in every image; only the visible state and
+        // cosmetic preference vary. This review scene is never saved.
+        let width = self.g.display.buffer_w as usize;
+        let run = (0..6000)
+            .map(|seed| RunState::new(seed, width))
+            .find(|run| {
+                run.screen
+                    .structures
+                    .iter()
+                    .any(|s| s.kind == StructureKind::WaterTower)
+            });
+        let Some(run) = run else {
+            godot_warn!("salt-line: no water tower found for seasonal gallery");
+            self.base().get_tree().quit();
+            return;
+        };
+        for season in [
+            Seasonal::Off,
+            Seasonal::Halloween,
+            Seasonal::Thanksgiving,
+            Seasonal::Christmas,
+        ] {
+            self.g.dev.season = Some(season);
+            for (name, state) in [
+                ("intact", StructState::Intact),
+                ("leaning", StructState::Leaning),
+                ("collapsed", StructState::Collapsed),
+            ] {
+                let mut frame = run.clone();
+                for structure in &mut frame.screen.structures {
+                    if structure.kind == StructureKind::WaterTower {
+                        structure.state = state;
+                    }
+                }
+                self.g.show_gallery_run(frame);
+                render::play(
+                    &self.g,
+                    &self.art,
+                    &mut self.canvas,
+                    &mut self.touch_buttons,
+                    &mut self.cache,
+                );
+                self.save_canvas(&format!("{dir}/{}_{}.png", season.token(), name));
+            }
+        }
+        self.g.dev.season = None;
+        self.g.mode = crate::app::Mode::Controls;
+        for touch in [false, true] {
+            self.g.input.touch_active = touch;
+            self.g.save.touch_aim = Some(crate::save_format::TouchAim::Drag);
+            render::frame(
+                &self.g,
+                &self.art,
+                &mut self.canvas,
+                &mut self.touch_buttons,
+                &mut self.cache,
+            );
+            self.save_canvas(&format!(
+                "{dir}/controls_{}.png",
+                if touch { "touch" } else { "keys" }
+            ));
         }
         self.base().get_tree().quit();
     }

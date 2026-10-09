@@ -31,6 +31,10 @@ pub struct DevArgs {
     /// `--salt-validate-engine <dir>`: exercise imported assets and fixed
     /// replay fixtures, write a deterministic report and PNG images, then quit.
     pub validate_engine: Option<String>,
+    /// Cosmetic override for captures. Never persisted by the developer flag.
+    pub season: Option<crate::seasonal::Seasonal>,
+    /// Review each seasonal water-tower damage state in the game renderer.
+    pub seasonal_gallery: Option<String>,
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
     /// native resolution, and quit. How the pixel output gets checked without
     /// a human at the keyboard.
@@ -98,6 +102,9 @@ impl DevArgs {
     pub fn parse(args: &[String]) -> DevArgs {
         DevArgs {
             validate_engine: value(args, "--salt-validate-engine"),
+            season: value(args, "--salt-season")
+                .and_then(|s| crate::seasonal::Seasonal::from_token(&s)),
+            seasonal_gallery: value(args, "--salt-season-gallery"),
             shot: value(args, "--salt-shot"),
             shot_at: value(args, "--salt-shot-at")
                 .and_then(|v| v.parse().ok())
@@ -174,6 +181,8 @@ mod tests {
             a,
             DevArgs {
                 validate_engine: None,
+                season: None,
+                seasonal_gallery: None,
                 shot: None,
                 shot_at: DEFAULT_SHOT_AT,
                 auto: false,
