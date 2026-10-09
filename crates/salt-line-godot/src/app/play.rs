@@ -233,6 +233,7 @@ impl Game {
                 let cleared = self.play.run.as_ref().map(|r| r.phase) == Some(Phase::Cleared);
                 if cleared {
                     self.play.clear_hold = CLEAR_HOLD;
+                    self.record_challenge_clear();
                 } else if self.play.run.as_ref().map(|r| r.is_over()) == Some(true) {
                     self.finish_run();
                 }
@@ -313,6 +314,26 @@ impl Game {
 
     /// The run is over: score it, keep it to watch again, and show the
     /// result.
+    /// Where CHALLENGES begins: the first course not yet cleared, or the
+    /// first again once all are.
+    pub(crate) fn next_challenge(&self) -> usize {
+        (0..salt_line_sim::challenge::ALL.len())
+            .find(|&i| self.save.challenge_best(i).is_none())
+            .unwrap_or(0)
+    }
+
+    /// Keep the shells left over from a cleared challenge if they beat the
+    /// last time.
+    pub(super) fn record_challenge_clear(&mut self) {
+        let (Some(index), Some(run)) = (self.play.challenge, self.play.run.as_ref()) else {
+            return;
+        };
+        let left = run.shells.clamp(0, i32::from(u8::MAX)) as u8;
+        if self.save.record_challenge(index as u8, left) {
+            self.settings.touch();
+        }
+    }
+
     pub(crate) fn finish_run(&mut self) {
         // A demo run that ends is not scored, and its result screen is not
         // shown: the demo moves on to its next leg (`demo_step`).

@@ -12,6 +12,10 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- Challenge progress: your fewest-shells-spent result per challenge is saved,
+  CHALLENGES on the title shows how many are cleared and starts the first one
+  you have not, and the result screen offers RETRY (or PLAY AGAIN) with your
+  bests instead of the run-only rows.
 - Challenge hints: once you spend a shell, a faint dotted ghost arc shows a
   solving shot. Nothing is drawn on a fresh course.
 - The controller is remembered: a phone that was last played with a gamepad

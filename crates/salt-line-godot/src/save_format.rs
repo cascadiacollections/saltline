@@ -193,10 +193,41 @@ pub struct Save {
     /// starts in controller mode instead of touch. `None` until a device
     /// other than the default is used.
     pub controller: Option<bool>,
+    /// Bundled challenges cleared: (index, most shells left over). At most
+    /// one entry per index, in index order.
+    pub challenges: Vec<(u8, u8)>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
     pub from_the_future: bool,
+}
+
+impl Save {
+    /// Most shells left over in a cleared run of challenge `index`, or `None`
+    /// if it has not been cleared.
+    pub fn challenge_best(&self, index: usize) -> Option<u8> {
+        self.challenges
+            .iter()
+            .find(|(i, _)| usize::from(*i) == index)
+            .map(|&(_, left)| left)
+    }
+
+    /// Note a cleared challenge. Returns whether the save changed (a first
+    /// clear or a better result).
+    pub fn record_challenge(&mut self, index: u8, left: u8) -> bool {
+        match self.challenges.iter_mut().find(|(i, _)| *i == index) {
+            Some((_, best)) if *best >= left => false,
+            Some((_, best)) => {
+                *best = left;
+                true
+            }
+            None => {
+                self.challenges.push((index, left));
+                self.challenges.sort_unstable();
+                true
+            }
+        }
+    }
 }
 
 impl Default for Save {
@@ -213,6 +244,7 @@ impl Default for Save {
             last_arc: None,
             idle_demo: None,
             controller: None,
+            challenges: Vec::new(),
             from_the_future: false,
         }
     }
@@ -261,6 +293,13 @@ impl Save {
                         Some("1") => Some(true),
                         Some("0") => Some(false),
                         _ => None,
+                    }
+                }
+                Some("challenge") => {
+                    let index = it.next().and_then(|s| s.parse::<u8>().ok());
+                    let left = it.next().and_then(|s| s.parse::<u8>().ok());
+                    if let (Some(index), Some(left)) = (index, left) {
+                        save.record_challenge(index, left);
                     }
                 }
                 Some("controller") => {
@@ -356,6 +395,9 @@ impl Save {
         }
         if let Some(on) = self.controller {
             out.push_str(&format!("controller {}\n", on as u8));
+        }
+        for (index, left) in &self.challenges {
+            out.push_str(&format!("challenge {index} {left}\n"));
         }
         for (action, key, pad) in &self.bindings {
             out.push_str(&format!("bind {action} {key} {pad}\n"));
@@ -632,6 +674,24 @@ mod tests {
     }
 
     #[test]
+    fn challenge_bests_keep_the_best_and_round_trip() {
+        let mut save = Save::default();
+        assert!(!save.serialize().contains("challenge"));
+        assert!(save.record_challenge(2, 1));
+        assert!(save.record_challenge(0, 3));
+        assert!(!save.record_challenge(0, 2), "worse");
+        assert!(save.record_challenge(2, 2), "better");
+        assert_eq!(save.challenge_best(0), Some(3));
+        assert_eq!(save.challenge_best(1), None);
+        assert_eq!(save.challenge_best(2), Some(2));
+        assert_eq!(Save::parse(&save.serialize()), save);
+        let junk = Save::parse(
+            "challenge x 1\nchallenge 1\nchallenge 1 999\nchallenge 1 2\nchallenge 1 1\n",
+        );
+        assert_eq!(junk.challenges, vec![(1, 2)]);
+    }
+
+    #[test]
     fn the_controller_preference_is_saved_only_once_chosen() {
         assert!(!Save::default().serialize().contains("controller"));
         for on in [true, false] {
@@ -740,7 +800,7 @@ mod tests {
 
             #[test]
             fn any_line_soup_parses_without_panicking(
-                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|controller|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
+                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|controller|challenge|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
             ) {
                 let _ = Save::parse(&lines.join("\n"));
             }

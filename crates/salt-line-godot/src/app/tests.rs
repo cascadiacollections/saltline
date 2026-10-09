@@ -233,6 +233,42 @@ fn a_challenge_carries_a_hint_arc_and_a_normal_run_leaves_none_behind() {
 }
 
 #[test]
+fn challenges_begin_at_the_first_uncleared_and_keep_the_best() {
+    let mut g = game();
+    assert_eq!(g.next_challenge(), 0);
+    g.start_challenge(0);
+    g.play.run.as_mut().unwrap().shells = 2;
+    g.record_challenge_clear();
+    assert_eq!(g.save.challenge_best(0), Some(2));
+    assert_eq!(g.next_challenge(), 1);
+    g.play.run.as_mut().unwrap().shells = 1;
+    g.record_challenge_clear();
+    assert_eq!(
+        g.save.challenge_best(0),
+        Some(2),
+        "a worse clear keeps the best"
+    );
+    for i in 1..salt_line_sim::challenge::ALL.len() {
+        g.save.record_challenge(i as u8, 1);
+    }
+    assert_eq!(g.next_challenge(), 0, "all cleared starts over");
+}
+
+#[test]
+fn a_failed_challenge_retries_itself_not_a_seeded_run() {
+    let mut g = game();
+    g.start_challenge(1);
+    g.play.run.as_mut().unwrap().phase =
+        salt_line_sim::run::Phase::Over(salt_line_sim::run::RunOver::OutOfShells);
+    g.finish_run();
+    assert_eq!(g.mode, Mode::GameOver);
+    tick(&mut g, keys(&[Key::R]));
+    assert_eq!(g.mode, Mode::Playing);
+    assert_eq!(g.play.challenge, Some(1));
+    assert_eq!(g.play.run.as_ref().unwrap().shells, 4);
+}
+
+#[test]
 fn a_phone_remembers_the_controller_across_launches() {
     let mut g = Game::new(true, Save::default());
     assert!(g.input.touch_active);
