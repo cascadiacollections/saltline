@@ -126,8 +126,11 @@ It also needs:
 
 If the command-line signing step fails, `just ios-project` stops after the
 export. Open `build/ios/SaltLine.xcodeproj`, pick your team under Signing &
-Capabilities and press Run. CI builds the same project unsigned on every pull
-request.
+Capabilities and press Run. CI builds the same project unsigned on main and on
+pull requests that change Apple packaging, dependencies, or build automation.
+Gameplay-only pull requests run Linux and Windows checks; the full macOS and
+iOS checks run after merge. Release tags retain full platform determinism and
+macOS packaging checks.
 
 ## Controls
 

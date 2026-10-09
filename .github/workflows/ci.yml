@@ -41,22 +41,41 @@ env:
 # worth even that. Tag builds are cold and slower, and clean.
 
 jobs:
+  # Apple runners cost substantially more than Linux. Exercise every platform
+  # on main/tags, but reserve pre-merge Apple builds for platform/build changes.
+  # Gameplay-only PRs still run Linux/Windows; main catches Apple regressions.
+  platforms:
+    name: select platform coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      apple: ${{ steps.plan.outputs.apple }}
+      sim: ${{ steps.plan.outputs.sim }}
+      playable: ${{ steps.plan.outputs.playable }}
+      digests: ${{ steps.plan.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/ci_platforms.py
+
   # The sim crate must build and test with no engine present, on every
   # platform we ship to.
   sim:
+    needs: platforms
     name: sim (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # The arm64 runners are here because arm64 is shipped (Android,
-        # Windows on ARM, Apple silicon via macos-latest), so its digest has to
-        # join the comparison below. Hosted arm64 runners are not offered to
-        # private and internal repositories on every plan; if a label is not
-        # available to this repo its job sits queued rather than failing. If
-        # that happens, drop the label here and the count in `determinism`.
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
+        include: ${{ fromJSON(needs.platforms.outputs.playable) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -155,6 +174,8 @@ jobs:
   # device build (aarch64-apple-ios) compiles to, against the simulator's copy
   # of the iOS libraries; a device run needs signing, which CI does not have.
   sim-ios:
+    needs: platforms
+    if: needs.platforms.outputs.apple == 'true'
     name: sim (ios arm64 simulator)
     runs-on: macos-latest
     timeout-minutes: 20
@@ -211,7 +232,8 @@ jobs:
   # determinism leak — do not paper over it with tolerances.
   determinism:
     name: determinism across platforms
-    needs: [sim, sim-android, sim-ios]
+    needs: [platforms, sim, sim-android, sim-ios]
+    if: ${{ !cancelled() && needs.platforms.result == 'success' && needs.sim.result == 'success' && needs.sim-android.result == 'success' && (needs.sim-ios.result == 'success' || (needs.platforms.outputs.apple == 'false' && needs.sim-ios.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -220,6 +242,8 @@ jobs:
           pattern: digest-*
           merge-multiple: true
       - name: compare digests
+        env:
+          EXPECTED_DIGESTS: ${{ needs.platforms.outputs.digests }}
         run: |
           set -eu
           ls -l
@@ -236,7 +260,7 @@ jobs:
           done
           # One per `sim` matrix entry plus Android and iOS; keep in step
           # with those jobs.
-          expected=7
+          expected=$EXPECTED_DIGESTS
           if [ "$found" -ne "$expected" ]; then
             echo "expected $expected platform digests, got $found" >&2
             exit 1
@@ -489,6 +513,7 @@ jobs:
           arguments: --all-features
 
   playable:
+    needs: platforms
     name: playable (${{ matrix.os }})
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
@@ -1134,8 +1159,9 @@ jobs:
   # builds the app unsigned. That still proves the export and the link, which is
   # everything `just ios` does before signing.
   ios:
+    needs: platforms
     name: ios (arm64, unsigned)
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: needs.platforms.outputs.apple == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
