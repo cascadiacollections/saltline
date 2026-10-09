@@ -329,6 +329,7 @@ fn a_rolling_gun_redraws_the_ground_only_when_a_tuft_changes() {
                 &view,
                 &pal,
                 sky::Phase::Day,
+                crate::biome::Biome::Salt,
                 1,
                 0.0,
                 screen,
@@ -341,6 +342,7 @@ fn a_rolling_gun_redraws_the_ground_only_when_a_tuft_changes() {
                 &view,
                 &pal,
                 sky::Phase::Day,
+                crate::biome::Biome::Salt,
                 1,
                 0.0,
                 screen,
@@ -395,12 +397,32 @@ fn every_camera_over_every_ground_is_the_same_layered() {
                 let view = View { cam_x, w, h: 180 };
                 let phase = sky::Phase::for_screen(cam_x.unsigned_abs() % 12);
                 let mut flat = Canvas::new(w, 180);
-                Backdrop::default().draw(&mut flat, &view, &pal, phase, 5, 1.0, screen, &guns);
+                Backdrop::default().draw(
+                    &mut flat,
+                    &view,
+                    &pal,
+                    phase,
+                    crate::biome::Biome::Salt,
+                    5,
+                    1.0,
+                    screen,
+                    &guns,
+                );
                 raster::draw_last_arc_on(&mut flat, &view, &arc, &pal, |_, _| [0; 4]);
 
                 let mut overlay = Canvas::new(w, 180);
                 backdrop.begin_frame();
-                backdrop.draw(&mut overlay, &view, &pal, phase, 5, 1.0, screen, &guns);
+                backdrop.draw(
+                    &mut overlay,
+                    &view,
+                    &pal,
+                    phase,
+                    crate::biome::Biome::Salt,
+                    5,
+                    1.0,
+                    screen,
+                    &guns,
+                );
                 patched += backdrop.patches.len();
                 raster::draw_last_arc_on(&mut overlay, &view, &arc, &pal, |x, y| {
                     backdrop.under(x, y)
@@ -434,7 +456,17 @@ fn layers_are_redrawn_only_when_their_inputs_change() {
             h: 180,
         };
         b.begin_frame();
-        b.draw(&mut c, &view, &pal, phase, 1, 0.0, screen, &guns);
+        b.draw(
+            &mut c,
+            &view,
+            &pal,
+            phase,
+            crate::biome::Biome::Salt,
+            1,
+            0.0,
+            screen,
+            &guns,
+        );
         (b.sky().1, b.ground().1)
     };
     let first = draw(&mut b, &screen, 0, sky::Phase::Day);

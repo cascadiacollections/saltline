@@ -127,6 +127,7 @@
 
 use salt_line_sim::run::Screen;
 
+use crate::biome::Biome;
 use crate::palette::{Palette, Rgba};
 use crate::raster::{self, Canvas, View};
 use crate::sky;
@@ -191,6 +192,7 @@ impl<K> Default for Kept<K> {
 #[derive(PartialEq)]
 struct SkyKey {
     phase: sky::Phase,
+    biome: Biome,
     w: i32,
     h: i32,
     pal: [Rgba; 16],
@@ -379,19 +381,20 @@ impl Backdrop {
         view: &View,
         pal: &Palette,
         phase: sky::Phase,
+        biome: Biome,
         seed: u64,
         time: f64,
         screen: &Screen,
         guns: &[f64],
     ) {
         if !self.layered {
-            sky::draw(canvas, view, pal, phase, seed, time);
+            sky::draw(canvas, view, pal, phase, biome, seed, time);
             raster::draw_terrain(canvas, view, &screen.field, pal);
             raster::draw_ground_detail_around(canvas, view, screen, guns, pal);
             return;
         }
         canvas.clear();
-        self.keep_sky(view, pal, phase);
+        self.keep_sky(view, pal, phase, biome);
         self.keep_ground(screen, guns, view.h, pal);
         self.shown = Some(Shown {
             cam_x: view.cam_x,
@@ -408,11 +411,15 @@ impl Backdrop {
         sky::draw_stars(canvas, view, pal, phase, seed, time, |x, y| {
             self.ground_at(x, y).is_none()
         });
+        sky::draw_biome(canvas, view, pal, biome, seed, time, |x, y| {
+            self.ground_at(x, y).is_none()
+        });
     }
 
-    fn keep_sky(&mut self, view: &View, pal: &Palette, phase: sky::Phase) {
+    fn keep_sky(&mut self, view: &View, pal: &Palette, phase: sky::Phase, biome: Biome) {
         let key = SkyKey {
             phase,
+            biome,
             w: view.w,
             h: view.h,
             pal: pal.colours,

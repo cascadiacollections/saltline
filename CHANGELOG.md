@@ -16,6 +16,9 @@ second. See RELEASING.md for the release steps.
   between the original salt flats, snow, and forest palettes, while the
   bundled challenges use stable Snow, Forest, and Salt themes. Biomes change
   presentation only; terrain, ballistics, seeds, and replays remain intact.
+- Biome atmosphere: Forest adds deterministic pine silhouettes, Snow adds
+  drifting flakes, and Salt adds moving dust motes. These effects are
+  presentation-only and remain hidden behind terrain.
 - A first challenge course: CHALLENGES on the title opens three fixed,
   one-gun layouts with bounded shell budgets and a short HINTS readout.
   Clearing one advances to the next; running out of shells reports a failed

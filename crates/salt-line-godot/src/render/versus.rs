@@ -446,6 +446,7 @@ impl Painter<'_> {
             &view,
             pal,
             sky::Phase::for_screen(0),
+            crate::biome::Biome::Salt,
             duel.seed ^ duel.round as u64,
             0.0,
             screen,
