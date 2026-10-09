@@ -719,10 +719,10 @@ The levers, in order: chance per screen, tier shares, payouts, depths.
 
 ## 9. Run history and replay versioning
 
-**Status: stage 1 built** (October 2026): finished runs and matches kept
-on the device, listed, and watched again (§9.1–§9.5), and a few starred
-to keep for good (§9.1, §9.4). Sharing them
-(stage 2) and turning them into GIFs (stage 3) are proposed (§9.7).
+**Status: stages 1 and 2 built** (October 2026): finished runs and matches
+kept on the device, listed, and watched again (§9.1–§9.5), a few starred
+to keep for good (§9.1, §9.4), and shared as `SR…` codes (§9.7). Turning
+them into GIFs (stage 3) is proposed (§9.8).
 
 **Owner decision (October 2026):** history and WATCH on the device, for
 both single-player runs and versus matches (between two players and
@@ -766,7 +766,9 @@ file's, plain text the player owns (README, "Nothing for sale").
   we play lately", read top down by a child, with no choice to make first. The
   same game is never recorded twice (the same seed and log, or the same
   match line). The proposed 500 plus every run on the board waits for PLAY
-  AGAIN and sharing (§9.7), when old runs are worth more than a look.
+  AGAIN, when old runs are worth more than a look. A replay pasted from a
+  share code (§9.7) is added only if the player keeps it, and then as any
+  game finished.
 - **Stars (owner decision, October 2026).** Up to five records
   (`history::MAX_STARS`, of both kinds together) can be starred. A starred
   record is exempt from the caps, which count the unstarred only, so it is
@@ -942,9 +944,10 @@ This follows the touch menus and §11.4's "reading it at a glance".
   round's first plate is up; paused, NEXT SHOT steps shot by shot. A run's
   end shows OUT OF SHELLS and the screens cleared; a match's is its won
   plate, without buttons.
-- **STAR at the end** ("keep this one"): at a replay's end the bar gains
+- **STAR at the end** ("never lose it"): at a replay's end the bar gains
   STAR after AGAIN and the speed (STARRED, lit, once set), and the keys'
-  plate says `S  STAR - KEEP THIS ONE` (`S  TAKE STAR OFF` once set). A
+  plate says `S  STAR - NEVER LOSE IT` (`S  TAKE STAR OFF` once set). A
+  pasted replay (§9.7) offers it only once kept. A
   won match watched from its own plate is not recorded until the plate is
   left, so starring it records it now, starred; leaving the plate later
   finds it already listed. Only a player's match kept on disk offers WATCH
@@ -970,8 +973,8 @@ This follows the touch menus and §11.4's "reading it at a glance".
   plays (a 4× flight at 30 fps stutters), `frame::IDLE_FPS` while paused or
   at its end. A watch is shown, not played: it never asks for desktop
   GameMode (`Game::active_play`).
-- **Not built:** PLAY AGAIN (a new run on the same seed and width) and COPY
-  (the run line), which go with stage 2.
+- **Not built:** PLAY AGAIN (a new run on the same seed and width). COPY is
+  a share code (§9.7).
 
 ### 9.5 Testing (built)
 
@@ -1009,6 +1012,22 @@ This follows the touch menus and §11.4's "reading it at a glance".
   53-character row), the watch bar on both, a replay's end with STAR on both and the
   five-stars plate, the phone title's REPLAYS plate and the won plate's
   WATCH row.
+- **Share codes** (`history/code/tests.rs`, §9.7): every kind of record
+  there and back to the same record and line (runs daily or not at every
+  width, matches between two players and against each AI level, generated
+  ground with rolling guns, maps named and not, overtime, three rounds),
+  the payload pinned by a snapshot and a run packed by hand from the
+  documented table, every single-character change caught, cut and run-on
+  codes, a newer format and a newer map format inside, another epoch read
+  but refused, too long to share, a size table held under budgets, and
+  property round trips for any run log and any match. In `app/watch_tests.rs`:
+  COPY on the list and at a replay's end, no code for an older row, PASTE
+  watching at once, KEEP written only after the watch (or as the app is
+  paused), a game already listed not kept twice, STAR keeping a pasted one,
+  every paste error said and nothing started, touch COPY and PASTE, and a
+  pasted match on a map played to its recorded state. Render snapshots:
+  the list's COPY column and PASTE CODE, the end bar's COPY CODE, a pasted
+  replay's KEPT. A fuzz target (`replay_code`) runs in the weekly workflow.
 - **Golden runs:** `crates/salt-line-sim/tests/golden_runs.txt` holds a few
   recorded runs across bands and loadouts, each with its final `state_hash`.
   CI asserts they still reproduce. It's the regression corpus for §9.3, and it
@@ -1038,26 +1057,112 @@ This follows the touch menus and §11.4's "reading it at a glance".
   width, letterboxed if the device's differs. A local versus match is kept
   and resumed the same way, in a file of its own (§11.6).
 
-### 9.7 Later stages (proposed)
+### 9.7 Share codes (built)
 
-- **Stage 2: share codes.** A history record carried as a code, `SR…`, the
-  way a layout travels as `SL…` (§13.7): COPY on a row, paste in seed entry
-  to import it, PLAY AGAIN on its seed. Not the stored line re-encoded:
-  base32 of the text would make a match on a map about 1,000–6,500
-  characters, the map's `SL…` text inside it encoded a second time. The
-  code needs a packed binary payload of its own (the kind, the line format
-  and the epochs, the seed and options as integers, the shots as packed
-  ticks) that embeds the map's layout bytes rather than its `SL` text,
-  with its own size limit, checked before anything is decoded. The stored
-  line stays the source: it already says what it is and how to read it
-  (its kind and line format first, its epochs inside), and
-  `history::Record::parse` already tells a newer line format
-  (`LineError::Newer`) from damage, so a code from a newer build can say
-  MADE BY A NEWER VERSION rather than "could not be read". An imported
-  record from another epoch imports as a seed, or a match's result, only.
-  A star is the player's and stays home: it is not in the line, so it is
-  not in the code, and an imported record arrives unstarred.
-  Open: whether a match's code should drop its aim help.
+**Status: built** (October 2026), stage 2. `crates/salt-line-godot/src/history/code.rs`;
+the base32, CRC-16 and bit packing are shared with map codes in
+`salt_line_sim::codec`.
+
+A history record travels as a code, `SR` and then Crockford base32 of a
+format byte (`history::code::CODE_FORMAT`), a bit-packed record and a
+CRC-16: the same alphabet, forgiveness (case, `O`/`0`, `I`/`L`/`1`,
+spaces, hyphens and, here, line breaks) and checksum as a map's `SL…`
+(§13.7).
+
+- **Not the stored line re-encoded.** Base32 of the line's text would cost
+  1.6 characters per character, and a match on a map would carry its map's
+  `SL…` text encoded a second time. The payload packs the record itself: the
+  kind, the epochs (`SIM_EPOCH`, and `MATCH_EPOCH` for a match), the day,
+  the seed, the width, a run's daily flag and result, a match's rolling
+  guns, aim help, opponent, ground, winner and rounds, then the log. A map's
+  ground is its layout's bytes (`Layout::to_bytes`, what its `SL…` code
+  holds), not its text. The full table is in `history/code.rs`.
+- **The log** is each shot's angle and power as a change from a guess
+  (the shot before in a run, the same side's last shot in a match),
+  zigzagged and exp-Golomb coded with a parameter chosen per code; a run's
+  screen moves, draft picks, fuse and Enfilade changes are prefix-coded
+  entries between the shots, in `encode_log`'s order. Exp-Golomb rather
+  than Rice because a new screen's first shot is a jump: Rice's escape costs
+  42 bits there, exp-Golomb about 15.
+- **The stored line stays the source.** Decoding builds the same `Record`
+  whose line is the sender's, byte for byte, so a pasted game already in
+  the list is recognised as the same game. The star is the player's, not in
+  the line, so not in the code: a pasted replay arrives unstarred. Aim help
+  stays in a match's code (two bits): it is what the players saw, landing
+  marks and arcs.
+- **Size.** Measured (NOTES §15): a 60-shot run about 350 characters, a
+  match on generated screens about 110, a three-round match on a map with
+  overtime about 340, most of it the map: half the line's length or less.
+  **Limit: 4,096 characters** (`MAX_CODE_CHARS`), checked before anything
+  is decoded; a record whose code would be longer is not offered (`TOO
+  LONG TO SHARE`). That is about 600 shots of a run. A test holds typical
+  games under budgets well inside it.
+- **Reading is total.** Any text is a record or an error, never a panic,
+  every count is checked against its bound before it is used, every sum
+  is checked, a day past 2^32 is damage (the list's date would overflow),
+  and a read past the end is an error. The raw text may be twice the limit
+  (what a chat's wrapping adds); the code without its whitespace is held
+  to it. The errors are the ones a player can act on:
+  not a replay code (`NO REPLAY CODE TO PASTE`), a map's code (`THAT IS A
+  MAP CODE - PASTE IT IN VERSUS, MAKE MAP`), damaged on the way (`REPLAY CODE IS
+  DAMAGED - COPY IT AGAIN`: a character that is not base32, cut short, the
+  checksum, bytes that are not a record), a newer format byte or a newer
+  map format inside (`MADE BY A NEWER VERSION - UPDATE TO WATCH`), too
+  long. A code from another epoch reads, since the format byte says how to
+  read the bytes, but is refused by the same check as any row (§9.3):
+  MADE BY AN OLDER (or NEWER) VERSION - CANNOT WATCH, and it is not added
+  to the list. A record from another epoch is not shared at all.
+- **Room to grow.** The 2-bit kind has two values unused (a challenge, a
+  course): a code with either says UPDATE TO WATCH, never damaged. The
+  2-bit opponent field is full (two players, and three AI levels): a fourth
+  level needs a new `CODE_FORMAT`.
+- **Checked before it is shown,** as WATCH checks any record: rebuilt off
+  screen (`Record::check`) and refused if it does not reach the result it
+  records, then compared shot by shot as it plays.
+
+**Presentation.**
+
+- **COPY CODE.** On a touchscreen, a COPY button 6 pixels right of each
+  row's star on the REPLAYS list (22 by 15, as the star; at 320 wide with
+  a cutout's pad the widest row leaves no more room; a test pins the gap at
+  every width), and COPY CODE on the bar
+  at a replay's end, after STAR. With keys or a controller the `copy`
+  binding (`C`, pad X) on the chosen row or at a replay's end. Only a
+  record that rebuilds to its own result is copied, so a friend is never
+  sent one their game will refuse. It says
+  `CODE COPIED - SEND IT TO A FRIEND`, on the list's status line or on a
+  plate over the bar.
+- **PASTE CODE** on the REPLAYS list: a plate in the top-right corner, apart
+  from the rows and there on an empty list too (a friend's code is how a
+  new player's list starts); `P` with keys, as in the editor. It reads the
+  clipboard through `Effect::ReadClipboard`, and the text comes back to
+  `Game::pasted`. Not in seed entry, as first proposed: a replay is watched
+  from REPLAYS, and the keypad has no paste. **The code is found** in
+  whatever the clipboard holds (`Record::from_clipboard`,
+  `codec::candidates`): the first `SR…` that reads where `SR` starts a word,
+  with words round it, line breaks a chat app put in it, zero-width spaces
+  or a byte order mark; the map editor finds an `SL…` the same way. A map's
+  code pasted here says `THAT IS A MAP CODE - PASTE IT IN VERSUS, MAKE MAP`;
+  a replay's pasted in the editor, `THAT IS A REPLAY CODE - PASTE IT IN
+  REPLAYS`.
+- **Watched at once, kept when asked.** A code that reads and checks plays
+  straight away. A friend's replay may be one look and no more, so nothing
+  is added unless asked: KEEP on the bar, all the way through (a child may
+  leave early), or `K`, adds it like a game just finished (unstarred, never
+  twice, the oldest of its kind past the cap pushed out), and reads KEPT
+  after, or from the start for a game already listed. Once kept, STAR at
+  its end stars it; before, STAR is not offered, so a child sees one "keep"
+  at a time. Nothing is written while a watch runs: both are set in memory
+  and written when the watch ends, or as the app is paused or closed, as a
+  star at a replay's end is (§9.4). Back on the list, the chosen row is the
+  replay just watched. In the one case the write's size trim could drop the
+  replay just kept (every other one starred, the file past its limit,
+  possible only for a hand-made file), it says `LIST IS FULL - TAKE A STAR
+  OFF`; `TOO LONG TO KEEP` is only for a line too long to read back.
+- **Not built:** PLAY AGAIN on a code's seed; a QR code.
+
+### 9.8 Later stages (proposed)
+
 - **Stage 3: GIFs.** A short GIF of a shot or a round, rendered off screen
   from a replay by the same `render::frame` the game draws with (the buffer
   is already the native pixels, in sixteen colours), for sharing outside
@@ -2113,6 +2218,10 @@ field is in `layout/code.rs`.
 - **CRC-16** catches every single mistyped character (a test tries them all)
   and all but one in 65,536 other errors. A layout that passes the checksum
   still goes through validation before it is played.
+
+The pieces (base32, the CRC, the bit packing and the number codes) are in
+`salt_line_sim::codec`, shared with replay codes (§9.7), which carry a
+map as `Layout::to_bytes`, the bytes inside its code.
 
 **Size budget: 400 characters for any fork.** Measured over 4,000 run forks
 and 300 duel forks: a median of 206 (runs) and 194 (duels), a worst case of

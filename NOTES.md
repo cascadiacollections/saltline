@@ -1009,3 +1009,106 @@ something back).
   in `tools/godot_templates.lock.json`; until a build is pinned, pull
   requests and main fall back to the official template with a warning and
   a tag fails.
+
+## 15. Replay share codes (DESIGN §9.7, stage 2)
+
+The owner said yes to sharing replays as codes. Where the brief left a
+choice:
+
+- **A packed record, not the line re-encoded.** Base32 of the history line
+  costs 1.6 characters per character of text and, for a match on a map,
+  encodes the map's `SL…` code a second time. The payload packs the record
+  field by field and carries the map as `Layout::to_bytes` (the bytes
+  inside its `SL…` code). Decoding builds the same `Record`, whose line is
+  the sender's byte for byte, so dedup (`Record::same_game`) works on a
+  pasted copy of a game already listed.
+- **Shots as changes from a guess, exp-Golomb.** The guess is the shot
+  before in a run (a player walks the aim in) and the shot two before in a
+  match (turns alternate, so it is the same side's). Rice, as for map
+  ground, spent 42 bits on every first shot at a new screen (an escape);
+  exp-Golomb with a per-code parameter spends about 15, and the same as
+  Rice on the small changes. A run's fuse is coded as its value, not a
+  change: each screen sets it afresh, so the change says nothing more.
+- **Measured** (`history::code::tests::typical_games_stay_well_under_the_limit`,
+  `--nocapture` prints it):
+
+  | game | shots | line chars | code chars | budget |
+  |---|---:|---:|---:|---:|
+  | short run (first 12 shots of a played run) | 12 | 166 | 89 | 120 |
+  | 60-shot run (first 60 of the same) | 60 | 718 | 346 | 400 |
+  | long run (a whole played run) | 101 | 1,198 | 583 | 1,200 |
+  | match on generated screens, vs AI EASY | 18 | 212 | 113 | 200 |
+  | match on a map, 3 rounds, overtime | 23 | 474 | 340 | 600 |
+
+  "Played" is a bot that walks each target in with two near misses, the
+  aim moved a little each time and the fuse reset per target, so it costs
+  more than most real runs. About 5.8 characters a shot in a run, half the
+  line's 12; a map adds about 230.
+- **Limit: 4,096 characters**, checked before anything is decoded, and a
+  record whose code would be longer is not offered (`TOO LONG TO SHARE`).
+  About 600 shots of a run; every game a family plays fits many times over,
+  and chat apps take a few thousand characters in one message. Not chunked:
+  a code is one word, like a map's, and the reader drops whitespace, so a
+  chat wrapping it over lines does no harm.
+- **Errors a player can act on.** Not a code (`NO REPLAY CODE TO PASTE`), a
+  map's code (`THAT IS A MAP CODE - PASTE IT IN VERSUS, MAKE MAP`), damaged
+  (prefix right, but base32, the checksum or the body wrong: `COPY IT
+  AGAIN`), a newer format byte or a newer map format inside (`UPDATE TO
+  WATCH`), too long. Another epoch reads (the format byte, not the epoch,
+  says how to read the bytes) but `Record::check` refuses it with the
+  list's own OLDER/NEWER note; it is not added to the list, since an
+  unwatchable row from someone else's game helps no one. A record from
+  another epoch is not shared at all (`CANNOT SHARE`).
+- **Pasted, then watched at once; KEEP to add it.** A friend's code may be
+  one look and no more, so nothing is added unless asked. KEEP is on the
+  bar all the way through a pasted replay, not just at its end, since a
+  child may leave early. STAR at the end is offered only once it is kept
+  (owner decision, made for him: one "keep" a child sees at a time), and
+  its hint on any replay now says `STAR - NEVER LOSE IT` rather than
+  `KEEP THIS ONE`. Both go through the stars' pending write: set in
+  memory, written when the watch ends or the app is paused or closed. A
+  game already listed shows KEPT from the start, and back on the list the
+  chosen row is the replay just watched.
+- **Pasted text is searched** for the first `SR…` that reads where `SR`
+  starts a word (`codec::candidates`: zero-width spaces, a BOM and a soft
+  hyphen dropped, line breaks and spaces inside the code allowed, up to 8
+  trailing words tried off, at most 8 starts, the first 64 KiB of the
+  clipboard). A run of fewer than 10 characters after `SR` that does not
+  read is not called damaged ("SRI said…"). The map editor finds an
+  `SL…` the same way and names an `SR…` code (`PASTE IT IN REPLAYS`); a
+  map's code on REPLAYS says `PASTE IT IN VERSUS, MAKE MAP`.
+- **Room to grow.** Kinds 2 and 3 read as a newer version, not damage.
+  The opponent's 2 bits are full: a fourth AI level is a new
+  `CODE_FORMAT`.
+- **Keys.** COPY is the existing `copy` binding (`C`, pad X), read on
+  neither the list nor a watch before. PASTE is `P` and KEEP `K`, raw keys
+  like the editor's (not bindable). A controller can star a pasted replay
+  at its end to keep it; there is no pad KEEP, as a pad has no paste
+  either.
+- **Touch.** COPY sits just right of each row's star (22 by 15, 6 pixels
+  apart, widened from 3 after review): narrow because at 320 wide with a cutout's pad the 53-character
+  worst-case row leaves no more room (the width test now pins both
+  columns). PASTE CODE is a plate in the top-right corner, shown even on an
+  empty list. COPY CODE joins the end-of-replay bar after STAR; a copy or a
+  keep says so on the plate above the bar, as the stars' refusals do.
+- **Codec shared with map codes.** Base32, CRC-16, the bit writer and
+  reader and the number codes moved from `layout/code.rs` to
+  `salt_line_sim::codec`; map codes are byte-identical (the pinned share
+  code, the bundled maps and the `layout_code` fuzz target, 340,000 inputs
+  in 90 s, all unchanged).
+- **Review fixes before the PR.** A hostile offset change could overflow
+  an `i64` add (a panic in debug and fuzz builds), and a hostile day the
+  list's date arithmetic; both are now checked, and a day past 2^32 is
+  damage. KEEP decides its note after the write, which could trim the
+  record just kept from a file full of starred ones. COPY runs
+  `Record::check` first. The raw-text limit allows twice the code's, for a
+  chat's line breaks.
+- **Fuzzing.** `replay_code` decodes raw text and bodies framed with a good
+  checksum, and searches the raw text as a clipboard; whatever reads must
+  share again as itself, its line read back and its row draw. About
+  276,000 inputs in 180 s (dev build) locally after the clipboard search
+  was added, no finding.
+- **Device.** The branch build was installed on the Pixel 10 with the
+  owner's `user://` files backed up (sha256 unchanged after), but the phone
+  sat on its secure lock screen, where Godot does not render, so the
+  COPY, PASTE, watch clipboard round trip on the device is still to do.

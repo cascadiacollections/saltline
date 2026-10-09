@@ -4,14 +4,14 @@
 //! # The list
 //!
 //! ```text
-//!                         SALT LINE
+//!                         SALT LINE                     [PASTE CODE]
 //!                    REPLAYS   PAGE 1 / 2
 //!               (a note: why a row cannot be watched)
 //!       ┌──────────────────────────────────────────┐
-//!       │ OCT 2  RUN  14 SCREENS  SEED 7654321     │   [★]  starred: first
-//!       │ OCT 8  AI EASY  YOU WON 2-1  MESA        │   [☆]  a row: tap to watch
-//!       │ OCT 8  RUN  9 SCREENS  SEED 1234567      │   [☆]  its star: tap to keep
-//!       │ OCT 7  2 PLAYERS  LEFT WON 2-0  OLD      │   [☆]  dimmed: another version
+//!       │ OCT 2  RUN  14 SCREENS  SEED 7654321     │   [★] [COPY]  starred: first
+//!       │ OCT 8  AI EASY  YOU WON 2-1  MESA        │   [☆] [COPY]  a row: tap to watch
+//!       │ OCT 8  RUN  9 SCREENS  SEED 1234567      │   [☆] [COPY]  its star: tap to keep
+//!       │ OCT 7  2 PLAYERS  LEFT WON 2-0  OLD      │   [☆] [COPY]  dimmed: another version
 //!       └──────────────────────────────────────────┘
 //!                   <        BACK        >
 //! ```
@@ -27,6 +27,11 @@
 //! watch it does not star it, nor the other way about. With keys or a
 //! controller the chosen row is starred by [`Action::Star`], and a starred
 //! row has a star in front of it.
+//!
+//! Beside each star, COPY puts the row's replay code on the clipboard
+//! (DESIGN §9.7; [`Action::Copy`] on the chosen row with keys). PASTE CODE
+//! sits in the top-right corner, apart from the rows, and is there with an
+//! empty list too: a friend's code is how a new player's list starts.
 //!
 //! # The watch bar
 //!
@@ -55,6 +60,12 @@ const BAR_GAP: i32 = 3;
 /// as a row's touch target (15, a little more than its 13-row plate).
 const STAR_W: i32 = 22;
 const STAR_H: i32 = 15;
+/// A row's COPY button, just right of its star: the star's size, the
+/// word just fitting. As narrow as it can be: at 320 wide, with a cutout's
+/// pad, the widest row (53 characters) leaves no more room.
+const COPY_W: i32 = 22;
+/// Pixels between a row's star and its COPY.
+const COPY_GAP: i32 = 6;
 /// Pixels between a row's plate and its star button: about a fingertip at
 /// a phone's scale, so a tap on one is not on the other. Never less: where
 /// the column would run into the screen's edge (a narrow buffer, a long
@@ -170,7 +181,8 @@ impl Painter<'_> {
                 .max()
                 .unwrap_or(0);
             let want = (self.canvas.w + widest) / 2 + STAR_GAP;
-            let star_x = want.min(self.canvas.w - STAR_W - 3 - g.display.corner_pad.0);
+            let column = STAR_W + COPY_GAP + COPY_W;
+            let star_x = want.min(self.canvas.w - column - 3 - g.display.corner_pad.0);
             // The rows move left by what the column could not.
             let shift = want - star_x;
             for (i, record) in records.iter().enumerate().skip(page * rows).take(rows) {
@@ -180,6 +192,9 @@ impl Painter<'_> {
                 if plated {
                     let star = Action::Wb(Wb::RowStar(row));
                     self.star_button(star_x, y - 5, STAR_W, STAR_H, record.starred, star);
+                    let copy = Action::Wb(Wb::RowCopy(row));
+                    let copy_x = star_x + STAR_W + COPY_GAP;
+                    self.draw_touch_button(copy_x, y - 5, COPY_W, STAR_H, "COPY", copy);
                     y = self.menu_row_at(y, Action::Wb(Wb::Row(row)), &text, c, -shift);
                 } else {
                     let (marker, c) = if i == focus {
@@ -204,6 +219,12 @@ impl Painter<'_> {
             y += (rows - shown) as i32 * if plated { 16 } else { 8 };
         }
         if plated {
+            // PASTE CODE in the top-right corner, clear of the rows.
+            let label = "PASTE CODE";
+            let pw = crate::font::small_width(label) as i32 + 10;
+            let (pad_x, pad_y) = g.display.corner_pad;
+            let px = self.canvas.w - pw - 3 - pad_x;
+            self.draw_touch_button(px, 3 + pad_y, pw, 13, label, Action::Wb(Wb::Paste));
             if pages > 1 {
                 let w = self.canvas.w;
                 self.draw_touch_button(w / 2 - 64, y - 4, 22, 13, "<", Action::Wb(Wb::PagePrev));
@@ -220,6 +241,8 @@ impl Painter<'_> {
                 label(Action::Confirm),
                 label(Action::Star)
             );
+            // PASTE is a key (`P`), as in the editor: not bindable.
+            let codes = format!("{}  COPY CODE   P  PASTE CODE", label(Action::Copy));
             let mut rest = String::new();
             if pages > 1 {
                 rest.push_str(&format!(
@@ -237,6 +260,12 @@ impl Painter<'_> {
                 self.centred(y, &first, fg);
                 self.centred(y + 8, &rest, fg);
             }
+            let codes_y = y + if crate::font::small_width(&one) as i32 <= self.canvas.w - 8 {
+                8
+            } else {
+                16
+            };
+            self.centred(codes_y, &codes, fg);
         }
     }
 
@@ -249,6 +278,8 @@ impl Painter<'_> {
         let (paused, ended, rate, duel) = (w.paused, w.ended, w.rate(), w.duel());
         let starred = self.g.history.file.is_starred(&w.record);
         let refused = w.star_refused;
+        let (pasted, notice) = (w.pasted, w.notice);
+        let kept = self.g.watched_kept();
         let pal = self.pal;
         // The secondary tone: `SKY_LO`, but `ROCK` over a duel, where
         // `SKY_LO` is the right player's colour (DESIGN §11.4).
@@ -295,7 +326,16 @@ impl Painter<'_> {
                 buttons.push(("NEXT SHOT", Wb::NextShot));
                 buttons.push((next_round, Wb::NextRound));
             } else {
-                buttons.push((star, Wb::Star));
+                // A pasted replay offers STAR once it is kept: one "keep"
+                // at a time.
+                if !pasted || kept {
+                    buttons.push((star, Wb::Star));
+                }
+                buttons.push(("COPY CODE", Wb::Copy));
+            }
+            // A pasted replay can be kept, all the way through.
+            if pasted {
+                buttons.push((if kept { "KEPT" } else { "KEEP" }, Wb::Keep));
             }
             // The star's button has its star drawn before the word.
             let icon = |b: Wb| if b == Wb::Star { STAR_PX + 3 } else { 0 };
@@ -319,13 +359,22 @@ impl Painter<'_> {
                     self.star_icon(sx, y + (BAR_H - STAR_PX) / 2, starred, c);
                     let ty = y + (BAR_H - crate::font::SMALL_H as i32) / 2;
                     self.canvas.text_small(sx + STAR_PX + 3, ty, text, c);
+                } else if b == Wb::Keep && kept {
+                    // KEPT is lit, as STARRED is.
+                    self.draw_touch_button(x, y, bw, BAR_H, "", Action::Wb(b));
+                    let ty = y + (BAR_H - crate::font::SMALL_H as i32) / 2;
+                    let tx = x + (bw - crate::font::small_width(text) as i32) / 2;
+                    self.canvas.text_small(tx, ty, text, pal.get(slot::ALERT));
                 } else {
                     self.draw_touch_button(x, y, bw, BAR_H, text, Action::Wb(b));
                 }
                 x += bw + BAR_GAP;
             }
-            if let Some(why) = refused.filter(|_| ended) {
-                let note = why.note();
+            let said = refused
+                .filter(|_| ended)
+                .map(|why| why.note())
+                .or(notice.map(str::to_string));
+            if let Some(note) = said {
                 let tw = crate::font::small_width(&note) as i32 + 12;
                 let ny = y - 15;
                 self.canvas.plate((cw - tw) / 2, ny, tw, 11, pal);
@@ -336,6 +385,8 @@ impl Painter<'_> {
         let label = |a| self.g.input_label(a);
         let state = if let Some(why) = refused.filter(|_| ended) {
             why.note()
+        } else if let Some(notice) = notice {
+            notice.to_string()
         } else if ended && starred {
             "END OF REPLAY  -  STARRED".to_string()
         } else if ended {
@@ -345,7 +396,7 @@ impl Painter<'_> {
         } else {
             format!("REPLAY  {speed}")
         };
-        let lines = [
+        let mut lines = vec![
             (state, fg),
             (
                 format!(
@@ -358,16 +409,19 @@ impl Painter<'_> {
                 fg,
             ),
             (
-                if ended {
+                if ended && (!pasted || kept) {
                     format!(
-                        "{}  {}",
+                        "{}  {}   {}  COPY CODE",
                         label(Action::Star),
                         if starred {
                             "TAKE STAR OFF"
                         } else {
-                            "STAR - KEEP THIS ONE"
-                        }
+                            "STAR - NEVER LOSE IT"
+                        },
+                        label(Action::Copy)
                     )
+                } else if ended {
+                    format!("{}  COPY CODE", label(Action::Copy))
                 } else {
                     format!(
                         "{}  NEXT SHOT   {}  {next_round}",
@@ -378,13 +432,22 @@ impl Painter<'_> {
                 dim,
             ),
         ];
+        if pasted {
+            // `K` is a key, like the editor's: not bindable.
+            let keep = if kept {
+                "KEPT - IN YOUR REPLAYS"
+            } else {
+                "K  KEEP - ADD TO YOUR REPLAYS"
+            };
+            lines.push((keep.to_string(), dim));
+        }
         let pw = lines
             .iter()
             .map(|(l, _)| crate::font::small_width(l) as i32)
             .max()
             .unwrap_or(0)
             + 12;
-        let ph = 3 * 8 + 3;
+        let ph = lines.len() as i32 * 8 + 3;
         let (px, py) = ((cw - pw) / 2, ch - ph - 2 - ey);
         self.canvas.plate(px, py, pw, ph, pal);
         for (i, (text, c)) in lines.iter().enumerate() {
@@ -512,11 +575,11 @@ mod tests {
         let (phone, buttons) = draw(&g);
         laid_out(&g, &buttons);
         let rows: Vec<Action> = (0..3)
-            .flat_map(|i| [Action::Wb(Wb::RowStar(i)), Action::Wb(Wb::Row(i))])
+            .flat_map(|i| [Wb::RowStar(i), Wb::RowCopy(i), Wb::Row(i)].map(Action::Wb))
             .collect();
         assert_eq!(
             buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
-            [rows, vec![Action::Back]].concat()
+            [rows, vec![Action::Wb(Wb::Paste), Action::Back]].concat()
         );
         // The stars line up in a column, clear of the widest row.
         let stars: Vec<_> = buttons
@@ -588,13 +651,15 @@ mod tests {
                     .max()
                     .unwrap();
                 let star = rect(Wb::RowStar(0));
+                let copy = rect(Wb::RowCopy(0));
                 assert!(
                     star.x - widest >= STAR_GAP,
                     "w {} pad {pad}",
                     g.display.buffer_w
                 );
+                assert_eq!(copy.x, star.x + star.w + COPY_GAP);
                 assert!(
-                    star.x + star.w <= g.display.buffer_w - pad,
+                    copy.x + copy.w <= g.display.buffer_w - pad,
                     "w {} pad {pad}",
                     g.display.buffer_w
                 );
@@ -642,7 +707,7 @@ mod tests {
         laid_out(&g, &buttons);
         assert_eq!(
             buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
-            [Wb::Exit, Wb::Pause, Wb::Speed, Wb::Star].map(Action::Wb)
+            [Wb::Exit, Wb::Pause, Wb::Speed, Wb::Star, Wb::Copy].map(Action::Wb)
         );
         press(&mut g, Key::S);
         g.input.touch_active = true;
@@ -666,15 +731,85 @@ mod tests {
         insta::assert_snapshot!("watch_end_keys", keys.palette_text(&Palette::default()));
     }
 
+    /// A pasted replay: KEEP on a phone's bar all the way through (KEPT,
+    /// lit, once kept, with the note on a plate), and the keys' plate
+    /// naming `K`; COPY CODE at its end.
+    #[test]
+    fn a_pasted_replay_offers_keep() {
+        let code = {
+            let g = game(false);
+            let code = g.history.file.listed().nth(1).unwrap().to_code().unwrap();
+            code
+        };
+        let mut g = Game::new(true, Save::default());
+        g.fit_display(WINDOW, (0, 0));
+        g.display.corner_pad = (10, 6);
+        g.open_replays();
+        let fx = g.pasted(&code);
+        assert!(g.watching(), "{fx:?}");
+        let (_, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        assert_eq!(
+            buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
+            [
+                Wb::Exit,
+                Wb::Pause,
+                Wb::Speed,
+                Wb::NextShot,
+                Wb::NextRound,
+                Wb::Keep
+            ]
+            .map(Action::Wb)
+        );
+        press(&mut g, Key::K);
+        g.input.touch_active = true;
+        let (kept, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        insta::assert_snapshot!("pasted_kept_phone", kept.palette_text(&Palette::default()));
+        to_the_end(&mut g);
+        g.input.touch_active = true;
+        let (_, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        assert_eq!(
+            buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
+            [Wb::Exit, Wb::Pause, Wb::Speed, Wb::Star, Wb::Copy, Wb::Keep].map(Action::Wb)
+        );
+
+        // Not kept: no STAR at its end, only KEEP (one "keep" at a time).
+        let mut g = Game::new(true, Save::default());
+        g.fit_display(WINDOW, (0, 0));
+        g.open_replays();
+        g.pasted(&code);
+        to_the_end(&mut g);
+        g.input.touch_active = true;
+        let (_, buttons) = draw(&g);
+        laid_out(&g, &buttons);
+        assert_eq!(
+            buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
+            [Wb::Exit, Wb::Pause, Wb::Speed, Wb::Copy, Wb::Keep].map(Action::Wb)
+        );
+
+        let mut g = Game::new(false, Save::default());
+        g.fit_display(WINDOW, (0, 0));
+        g.open_replays();
+        g.pasted(&code);
+        assert!(g.watching());
+        to_the_end(&mut g);
+        let (keys, buttons) = draw(&g);
+        assert!(buttons.is_empty());
+        insta::assert_snapshot!("pasted_end_keys", keys.palette_text(&Palette::default()));
+    }
+
     #[test]
     fn an_empty_list_says_how_to_fill_it() {
         let mut g = Game::new(true, Save::default());
         g.fit_display(WINDOW, (0, 0));
         g.open_replays();
         let (_, buttons) = draw(&g);
+        // PASTE CODE even so: a friend's code is how a list can start.
         assert_eq!(
             buttons.iter().map(|b| b.action).collect::<Vec<_>>(),
-            [Action::Back]
+            [Action::Wb(Wb::Paste), Action::Back]
         );
     }
 

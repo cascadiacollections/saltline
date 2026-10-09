@@ -67,3 +67,10 @@ path = "fuzz_targets/history_file.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "replay_code"
+path = "fuzz_targets/replay_code.rs"
+test = false
+doc = false
+bench = false

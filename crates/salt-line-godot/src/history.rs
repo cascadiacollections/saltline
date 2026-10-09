@@ -31,8 +31,9 @@
 //! matches that are not starred, and [`MAX_STARS`] starred ones (see "One
 //! list, two caps"). A starred record has a line saying `star` just before
 //! its own. Each record's line starts with its kind and its own
-//! [`LINE_FORMAT`], so a line read on its own (a share code, later: DESIGN
-//! §9.7) still says how to read it. Then:
+//! [`LINE_FORMAT`], so a line read on its own still says how to read it.
+//! (A share code, [`code`], DESIGN §9.7, packs the record rather than
+//! carrying this text, and decodes to the same line.) Then:
 //!
 //! | Field | Meaning |
 //! |---|---|
@@ -111,7 +112,8 @@
 //!
 //! The star is the player's own, not part of the game: it is kept on a line
 //! of its own before the record's (`star`), never inside it, so the record
-//! line a share code will carry (DESIGN §9.7) is the same starred or not.
+//! line a share code carries ([`code`], DESIGN §9.7) is the same starred or
+//! not, and a pasted replay arrives unstarred.
 //!
 //! **Older builds.** A build of [`FORMAT_PLAIN`] reads a `star` line as
 //! damage and drops it, and would drop the starred records past the caps on
@@ -620,7 +622,9 @@ pub fn date(day: u64) -> Option<String> {
     if day == 0 {
         return None;
     }
-    let z = day as i64 + 719_468;
+    // Checked: a day from a pasted code is bounded, but the list must not
+    // panic on any line a hand could write either.
+    let z = i64::try_from(day).ok()?.checked_add(719_468)?;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -881,6 +885,8 @@ pub fn sound(text: &str) -> bool {
             .find(|l| !l.trim().is_empty())
             .is_some_and(|l| l.split(' ').next() == Some(HEADER))
 }
+
+pub mod code;
 
 #[cfg(test)]
 pub(crate) mod tests;

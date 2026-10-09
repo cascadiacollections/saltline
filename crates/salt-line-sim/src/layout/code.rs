@@ -39,7 +39,7 @@
 //! value's high part in unary, then its low `k` bits as they are. The
 //! encoder tries every `k` and keeps the shortest. A zero costs `1 + k`
 //! bits, so a flat stretch at `k = 0` costs one bit a column. A value
-//! whose unary part would pass [`ESCAPE`] ones is written raw instead, so
+//! whose unary part would pass `codec::ESCAPE` ones is written raw instead, so
 //! no value costs more than 42 bits and the decoder never loops on a long
 //! run of ones.
 //!
@@ -59,6 +59,10 @@
 //! target holds it to that).
 
 use super::{Layout, LayoutName, Placed, WindSpec, NAME_MAX};
+use crate::codec::{
+    best_k, frame, get_rice, put_rice, unframe, unzigzag, zigzag, Base32Error, BitReader,
+    BitWriter, FrameError,
+};
 use crate::run::StructureKind;
 use crate::SCREEN_W_MAX;
 
@@ -76,18 +80,12 @@ pub const LAYOUT_FORMAT: u8 = 1;
 /// hyphens and still bounds the work.
 pub const MAX_CODE_CHARS: usize = 4096;
 
-/// Ones in a row that mean "raw value follows" rather than a unary count.
-const ESCAPE: u32 = 24;
-/// Bits in a raw (escaped) zigzagged second difference. Heights are `u16`,
-/// so a second difference is within ±2·65535 and zigzags below 2^18.
-const RAW_BITS: u32 = 18;
+// Rice values (`codec::put_rice`) escape to 18 raw bits: heights are
+// `u16`, so a second difference is within ±2·65535 and zigzags below 2^18.
 /// Bits for a wind strength: up to 8191 thousandths.
 const WIND_BITS: u32 = 13;
 /// Bits for a column number: up to 511.
 const COLUMN_BITS: u32 = 9;
-
-/// Crockford's base32 alphabet.
-const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /// Why a code could not be written or read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,13 +118,28 @@ impl Layout {
     /// the format holds (see [`CodeError::Unencodable`]); anything that
     /// passes placement checks fits.
     pub fn to_code(&self) -> Result<String, CodeError> {
+        Ok(frame(CODE_PREFIX, self.to_bytes()?))
+    }
+
+    /// The layout as the bytes inside its code: the format byte and the
+    /// packed body, without the prefix, base32 or checksum. A replay code
+    /// (DESIGN §9.7) carries a map's ground as these. Fails as
+    /// [`Layout::to_code`] does.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, CodeError> {
         let mut bytes = vec![LAYOUT_FORMAT];
         bytes.extend(encode_body(self).ok_or(CodeError::Unencodable)?);
-        let crc = crc16(&bytes);
-        bytes.extend(crc.to_be_bytes());
-        let mut out = String::from(CODE_PREFIX);
-        out.push_str(&base32(&bytes));
-        Ok(out)
+        Ok(bytes)
+    }
+
+    /// The layout [`Layout::to_bytes`] wrote: [`CodeError::Format`] for
+    /// another format byte, [`CodeError::Malformed`] for anything else that
+    /// is not one. Total, like [`Layout::from_code`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Layout, CodeError> {
+        match bytes.split_first() {
+            None => Err(CodeError::Malformed),
+            Some((&LAYOUT_FORMAT, body)) => decode_body(body).ok_or(CodeError::Malformed),
+            Some((&format, _)) => Err(CodeError::Format(format)),
+        }
     }
 
     /// The layout a share code holds. Total: any text is a layout or an
@@ -136,24 +149,14 @@ impl Layout {
         if text.len() > MAX_CODE_CHARS {
             return Err(CodeError::TooLong);
         }
-        let text = text.trim();
-        let body = text
-            .get(..CODE_PREFIX.len())
-            .filter(|p| p.eq_ignore_ascii_case(CODE_PREFIX))
-            .map(|_| &text[CODE_PREFIX.len()..])
-            .ok_or(CodeError::Prefix)?;
-        let bytes = unbase32(body)?;
-        if bytes.len() < 3 {
-            return Err(CodeError::Malformed);
-        }
-        let (data, crc) = bytes.split_at(bytes.len() - 2);
-        if crc16(data).to_be_bytes() != [crc[0], crc[1]] {
-            return Err(CodeError::Checksum);
-        }
-        if data[0] != LAYOUT_FORMAT {
-            return Err(CodeError::Format(data[0]));
-        }
-        decode_body(&data[1..]).ok_or(CodeError::Malformed)
+        let bytes = unframe(CODE_PREFIX, text).map_err(|e| match e {
+            FrameError::Prefix => CodeError::Prefix,
+            FrameError::Base32(Base32Error::Character) => CodeError::Character,
+            FrameError::Base32(Base32Error::Padding) => CodeError::Padding,
+            FrameError::Short => CodeError::Malformed,
+            FrameError::Checksum => CodeError::Checksum,
+        })?;
+        Layout::from_bytes(&bytes)
     }
 }
 
@@ -211,14 +214,6 @@ fn encode_body(l: &Layout) -> Option<Vec<u8>> {
     b.put(l.heights[0] as u32, 16);
     put_residuals(&mut b, &second_differences(&l.heights));
     Some(b.finish())
-}
-
-/// The Rice parameter that spends fewest bits on `values`, and the bits.
-fn best_k(values: &[u32]) -> (u32, u32) {
-    (0..16)
-        .map(|k| (k, values.iter().map(|&z| rice_len(z, k)).sum::<u32>()))
-        .min_by_key(|&(_, bits)| bits)
-        .unwrap_or((0, 0))
 }
 
 /// The residuals as zero runs and the values between them, the way
@@ -362,209 +357,10 @@ fn second_differences(h: &[u16]) -> Vec<u32> {
     out
 }
 
-/// 0, −1, 1, −2, 2 … as 0, 1, 2, 3, 4 …. Inputs are within ±2·65535.
-fn zigzag(v: i64) -> u32 {
-    ((v << 1) ^ (v >> 63)) as u32
-}
-
-fn unzigzag(z: u32) -> i64 {
-    let z = z as i64;
-    (z >> 1) ^ -(z & 1)
-}
-
-/// Bits [`put_rice`] spends on `z` at parameter `k`.
-fn rice_len(z: u32, k: u32) -> u32 {
-    let q = z >> k;
-    if q < ESCAPE {
-        q + 1 + k
-    } else {
-        ESCAPE + RAW_BITS
-    }
-}
-
-fn put_rice(b: &mut BitWriter, z: u32, k: u32) {
-    let q = z >> k;
-    if q < ESCAPE {
-        for _ in 0..q {
-            b.put(1, 1);
-        }
-        b.put(0, 1);
-        b.put(z & ((1 << k) - 1), k);
-    } else {
-        for _ in 0..ESCAPE {
-            b.put(1, 1);
-        }
-        b.put(z, RAW_BITS);
-    }
-}
-
-fn get_rice(r: &mut BitReader, k: u32) -> Option<u32> {
-    let mut q = 0;
-    while q < ESCAPE {
-        if r.get(1)? == 0 {
-            return Some((q << k) | r.get(k)?);
-        }
-        q += 1;
-    }
-    r.get(RAW_BITS)
-}
-
-// ------------------------------------------------------------------ bits
-
-/// Packs bits most significant first.
-#[derive(Default)]
-struct BitWriter {
-    bytes: Vec<u8>,
-    used: u32,
-}
-
-impl BitWriter {
-    /// The low `n` bits of `v`, `n <= 32`.
-    fn put(&mut self, v: u32, n: u32) {
-        for i in (0..n).rev() {
-            if self.used == 0 {
-                self.bytes.push(0);
-            }
-            let bit = ((v >> i) & 1) as u8;
-            if let Some(last) = self.bytes.last_mut() {
-                *last |= bit << (7 - self.used);
-            }
-            self.used = (self.used + 1) % 8;
-        }
-    }
-
-    fn finish(self) -> Vec<u8> {
-        self.bytes
-    }
-}
-
-struct BitReader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> BitReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        BitReader { bytes, pos: 0 }
-    }
-
-    /// The next `n` bits as a number, `n <= 32`; `None` past the end.
-    fn get(&mut self, n: u32) -> Option<u32> {
-        let mut v: u32 = 0;
-        for _ in 0..n {
-            let byte = self.bytes.get(self.pos / 8)?;
-            let bit = (byte >> (7 - self.pos % 8)) & 1;
-            v = (v << 1) | bit as u32;
-            self.pos += 1;
-        }
-        Some(v)
-    }
-
-    /// Whether what is left is under a byte of zero bits.
-    fn rest_is_padding(&mut self) -> bool {
-        let left = self.bytes.len() * 8 - self.pos;
-        left < 8 && self.get(left as u32) == Some(0)
-    }
-}
-
-// ---------------------------------------------------------------- base32
-
-fn base32(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 8 / 5 + 1);
-    let mut acc: u32 = 0;
-    let mut bits = 0;
-    for &b in bytes {
-        acc = (acc << 8) | b as u32;
-        bits += 8;
-        while bits >= 5 {
-            bits -= 5;
-            out.push(ALPHABET[((acc >> bits) & 31) as usize] as char);
-        }
-    }
-    if bits > 0 {
-        out.push(ALPHABET[((acc << (5 - bits)) & 31) as usize] as char);
-    }
-    out
-}
-
-/// Base32 back to bytes. Case-insensitive; `O` reads as `0`, `I` and `L`
-/// as `1`; spaces and hyphens are skipped. The bits left over past the last
-/// whole byte must be zero, so every byte string has one spelling (bar
-/// case, the characters read alike and separators).
-fn unbase32(text: &str) -> Result<Vec<u8>, CodeError> {
-    let mut out = Vec::with_capacity(text.len() * 5 / 8);
-    let mut acc: u32 = 0;
-    let mut bits = 0;
-    for c in text.bytes() {
-        let c = match c.to_ascii_uppercase() {
-            b' ' | b'-' => continue,
-            b'O' => b'0',
-            b'I' | b'L' => b'1',
-            c => c,
-        };
-        let v = ALPHABET
-            .iter()
-            .position(|&a| a == c)
-            .ok_or(CodeError::Character)? as u32;
-        acc = ((acc << 5) | v) & 0xFFF;
-        bits += 5;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    if bits < 5 && acc & ((1 << bits) - 1) == 0 {
-        Ok(out)
-    } else {
-        Err(CodeError::Padding)
-    }
-}
-
-/// CRC-16/CCITT-FALSE (polynomial 0x1021, initial 0xFFFF): catches every
-/// single and double character error and all but one in 65,536 others.
-fn crc16(bytes: &[u8]) -> u16 {
-    let mut crc: u16 = 0xFFFF;
-    for &b in bytes {
-        crc ^= (b as u16) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 {
-                (crc << 1) ^ 0x1021
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn crc16_is_the_ccitt_false_check_value() {
-        assert_eq!(crc16(b"123456789"), 0x29B1);
-    }
-
-    #[test]
-    fn base32_round_trips_and_reads_similar_characters() {
-        for len in 0..12 {
-            let bytes: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
-            let text = base32(&bytes);
-            assert_eq!(unbase32(&text), Ok(bytes.clone()));
-            assert_eq!(unbase32(&text.to_ascii_lowercase()), Ok(bytes));
-        }
-        assert_eq!(unbase32("O0"), unbase32("00"));
-        assert_eq!(unbase32("il00"), unbase32("1100"));
-        assert_eq!(unbase32("00-0 0"), unbase32("0000"));
-        assert_eq!(unbase32("U"), Err(CodeError::Character));
-        assert_eq!(unbase32("01"), Err(CodeError::Padding));
-        assert_eq!(
-            unbase32("000"),
-            Err(CodeError::Padding),
-            "a stray character"
-        );
-    }
+    use crate::codec::{base32, crc16};
 
     #[test]
     fn another_format_is_named_not_guessed() {
@@ -576,33 +372,10 @@ mod tests {
             Layout::from_code(&code),
             Err(CodeError::Format(LAYOUT_FORMAT + 1))
         );
-    }
-
-    #[test]
-    fn zigzag_folds_the_sign_in() {
-        for (v, z) in [(0, 0), (-1, 1), (1, 2), (-2, 3), (131_070, 262_140)] {
-            assert_eq!(zigzag(v), z);
-            assert_eq!(unzigzag(z), v);
-        }
-    }
-
-    #[test]
-    fn an_escaped_value_reads_back() {
-        for k in [0, 3, 15] {
-            // Every real value is under 2^18 (see RAW_BITS).
-            for z in [
-                0,
-                1,
-                23,
-                (24 << k).min((1 << RAW_BITS) - 1),
-                (1 << RAW_BITS) - 1,
-            ] {
-                let mut b = BitWriter::default();
-                put_rice(&mut b, z, k);
-                assert!(b.bytes.len() as u32 * 8 >= rice_len(z, k));
-                let bytes = b.finish();
-                assert_eq!(get_rice(&mut BitReader::new(&bytes), k), Some(z));
-            }
-        }
+        assert_eq!(
+            Layout::from_bytes(&[LAYOUT_FORMAT + 1]),
+            Err(CodeError::Format(LAYOUT_FORMAT + 1))
+        );
+        assert_eq!(Layout::from_bytes(&[]), Err(CodeError::Malformed));
     }
 }

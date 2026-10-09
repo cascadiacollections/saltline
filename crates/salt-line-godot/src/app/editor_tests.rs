@@ -907,6 +907,23 @@ fn copy_and_paste_a_code() {
     node.clipboard = Layout::from_run_screen(1, 0).to_code().unwrap();
     node.row(&mut g, RowAct::Paste);
     assert_eq!(g.status, "ONE-GUN MAPS COME LATER");
+    // A replay's code: said where it goes.
+    let run = crate::history::tests::finished_run(9, 320, 3);
+    let replay = crate::history::Record::run(1, &run, false)
+        .to_code()
+        .unwrap();
+    node.clipboard = format!("watch this {replay}");
+    node.row(&mut g, RowAct::Paste);
+    assert_eq!(g.status, "THAT IS A REPLAY CODE - PASTE IT IN REPLAYS");
+    assert_eq!(layout(&g), &made);
+    // A map's code in a chat message: words round it, wrapped, a
+    // zero-width space and a byte order mark.
+    let code = made.to_code().unwrap();
+    let (a, b) = code.split_at(code.len() / 2);
+    node.clipboard = format!("\u{FEFF}my map!\n{a}\u{200B}\n{b} enjoy");
+    node.row(&mut g, RowAct::Paste);
+    assert_eq!(g.status, "MAP PASTED");
+    assert_eq!(layout(&g), &made);
 }
 
 /// A code that reads but does not pass is loaded with its problems shown,

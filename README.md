@@ -350,7 +350,7 @@ A few favourites can be starred so they are never pushed off the list: up
 to five, of runs and matches together. On a touchscreen tap the star to the
 right of a row (the row itself still watches it); with keys or a controller
 choose the row and press `S` or Y. The end of a replay offers STAR too
-("keep this one"). Starred replays are listed first, and do not count
+(`STAR - NEVER LOSE IT`). Starred replays are listed first, and do not count
 toward the 20 runs and 20 matches; with five starred, starring another says
 `5 STARS - TAKE ONE OFF FIRST`. Taking a star off counts as adding the
 replay again: it moves to just below the starred, keeps its own date, and
@@ -368,6 +368,23 @@ in the list, dimmed and marked OLD, but cannot be watched, since it would no
 longer play out the same way; one that does not rebuild to the result it
 records is never shown at all. The list lives in `user://history.txt`, one
 plain line per run or match.
+
+A replay can be shared as a code, `SR` and a few hundred letters and
+digits, to paste into a chat. On a touchscreen tap COPY to the right of a
+row's star, or COPY CODE at the end of a replay; with keys or a controller
+choose the row and press `C` or X. Whoever gets it copies it and taps
+PASTE CODE in the top corner of REPLAYS (`P` with keys), and the replay
+plays at once; KEEP on the bar (`K`) adds it to their list, like a game they
+finished, and once it is kept STAR at its end stars it. Nothing is added
+unless you ask. The code can be pasted as it arrives, in the middle of a
+message, wrapped over lines: the game finds it. A map's code pasted there
+says to paste it in VERSUS, MAKE MAP, and a replay's code pasted in the
+map editor says to paste it in REPLAYS. A star stays with you: a code never carries it. A code that was cut
+short or garbled on the way says `REPLAY CODE IS DAMAGED - COPY IT AGAIN`;
+one from a newer version of the game says to update; one from a build whose
+simulation has changed cannot be watched, as in the list. A typical run of
+60 shots is about 350 characters, a three-round match on a map about 340
+(most of it the map); codes over 4,096 characters are not made or read.
 
 ## Tools
 

@@ -7,6 +7,7 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 use crate::app::versus::Stage;
+use crate::app::watch::{CODE_COPIED, KEPT, LIST_FULL};
 use crate::history::tests::{finished_match, finished_run};
 use crate::history::{Ground, Kind, Record};
 use crate::input::{Event, Intents, Key, Wb};
@@ -986,4 +987,322 @@ fn a_match_not_kept_on_disk_offers_no_watch_and_so_no_star() {
     g.watch_live_match();
     assert!(!g.watching());
     assert!(g.history.file.records.is_empty());
+}
+
+// ------------------------------------------------------------- codes
+
+fn clipboard(fx: &[Effect]) -> Vec<String> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::Clipboard(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The code of a finished run on `seed`, as another player's game copies
+/// it, and that record.
+fn friends_code(seed: u64) -> (String, Record) {
+    let (g, _, _) = finished(seed);
+    let record = g.history.last_run.unwrap();
+    (record.to_code().unwrap(), record)
+}
+
+/// PASTE CODE as the node does it: the list asks for the clipboard, and
+/// its text comes back through `pasted`.
+fn paste(g: &mut Game, text: &str) -> Vec<Effect> {
+    let mut fx = press(g, Key::P);
+    assert!(fx.contains(&Effect::ReadClipboard), "{fx:?}");
+    fx.extend(g.pasted(text));
+    fx
+}
+
+#[test]
+fn copy_code_on_the_list_puts_the_chosen_rows_code_on_the_clipboard() {
+    let (mut g, _, _) = finished(9);
+    let record = g.history.last_run.clone().unwrap();
+    press(&mut g, Key::Enter);
+    press(&mut g, Key::W);
+    let fx = press(&mut g, Key::C);
+    let copied = clipboard(&fx);
+    assert_eq!(copied.len(), 1);
+    assert_eq!(Record::from_code(&copied[0]), Ok(record));
+    assert_eq!(g.status, CODE_COPIED);
+    assert!(!fx.iter().any(Effect::touches_disk));
+}
+
+#[test]
+fn an_older_versions_row_has_no_code_to_copy() {
+    let mut g = game();
+    g.set_history(Some(&format!(
+        "history 1\nrun 1 20000 {} 42 320 0 3 0 41 v9 @0 Q7 900:600\n",
+        salt_line_sim::SIM_EPOCH - 1
+    )));
+    press(&mut g, Key::W);
+    let fx = press(&mut g, Key::C);
+    assert!(clipboard(&fx).is_empty());
+    assert_eq!(g.status, "MADE BY AN OLDER VERSION - CANNOT SHARE");
+}
+
+#[test]
+fn a_pasted_code_is_watched_at_once_and_kept_only_when_asked() {
+    let (code, record) = friends_code(9);
+    let mut g = game();
+    press(&mut g, Key::W);
+    assert_eq!(g.mode, Mode::Replays);
+    let fx = paste(&mut g, &code);
+    assert!(g.watching());
+    assert!(g.watch.as_ref().unwrap().pasted);
+    assert!(!fx.iter().any(Effect::touches_disk));
+    assert!(!g.watched_kept());
+    // Left without KEEP: nothing is added.
+    let fx = press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Replays);
+    assert!(history_writes(&fx).is_empty());
+    assert!(g.history.file.records.is_empty());
+
+    // KEEP: in memory now, written once the watch is over.
+    paste(&mut g, &code);
+    let fx = press(&mut g, Key::K);
+    assert!(g.watched_kept());
+    assert!(
+        history_writes(&fx).is_empty(),
+        "nothing written while watching"
+    );
+    assert_eq!(g.watch.as_ref().unwrap().notice, Some(KEPT));
+    let fx = until(&mut g, 600.0, ended);
+    assert!(!fx.iter().any(Effect::touches_disk));
+    let fx = press(&mut g, Key::Escape);
+    let writes = history_writes(&fx);
+    assert_eq!(writes.len(), 1);
+    let file = crate::history::History::parse(&writes[0]);
+    assert_eq!(file.records, vec![record.clone()], "unstarred, as finished");
+
+    // Pasted again: already listed, KEPT from the start, never twice.
+    paste(&mut g, &code);
+    assert!(g.watched_kept());
+    let mut fx = press(&mut g, Key::K);
+    fx.extend(press(&mut g, Key::Escape));
+    assert!(history_writes(&fx).is_empty());
+    assert_eq!(g.history.file.records.len(), 1);
+}
+
+#[test]
+fn a_kept_paste_is_written_if_the_app_is_paused_mid_watch() {
+    let (code, record) = friends_code(9);
+    let mut g = game();
+    press(&mut g, Key::W);
+    paste(&mut g, &code);
+    press(&mut g, Key::K);
+    let fx = g.app_paused(&[]);
+    let writes = history_writes(&fx);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        crate::history::History::parse(&writes[0]).records,
+        vec![record]
+    );
+}
+
+/// A pasted replay shows one "keep" at a time: STAR is not offered (nor
+/// taken) until KEEP has put it in the list.
+#[test]
+fn a_pasted_replay_is_starred_only_once_kept() {
+    let (code, _) = friends_code(9);
+    let mut g = game();
+    press(&mut g, Key::W);
+    paste(&mut g, &code);
+    to_the_end(&mut g);
+    press(&mut g, Key::S);
+    assert!(!g.watched_kept(), "STAR before KEEP does nothing");
+    assert_eq!(g.history.file.stars(), 0);
+    press(&mut g, Key::K);
+    press(&mut g, Key::S);
+    assert!(g.watched_kept());
+    let fx = press(&mut g, Key::Escape);
+    let writes = history_writes(&fx);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(crate::history::History::parse(&writes[0]).stars(), 1);
+}
+
+/// Back on the list after KEEP or STAR, the chosen row is the replay just
+/// watched, wherever it now sits.
+#[test]
+fn the_list_comes_back_on_the_replay_just_kept_or_starred() {
+    let (code, kept) = friends_code(9);
+    let mut g = game();
+    // Three older runs listed; the chosen row the last of them.
+    for seed in [11, 12, 13] {
+        let (other, _, _) = finished(seed);
+        g.history.file.push(other.history.last_run.unwrap());
+    }
+    press(&mut g, Key::W);
+    press(&mut g, Key::Down);
+    press(&mut g, Key::Down);
+    assert_eq!(g.history.focus, 2);
+    paste(&mut g, &code);
+    press(&mut g, Key::K);
+    press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Replays);
+    let at = g.history.file.listed().position(|r| r.same_game(&kept));
+    assert_eq!(at, Some(0), "the newest");
+    assert_eq!(g.history.focus, 0);
+    // Starred from the end of a watch of the last row: it moves to the top.
+    press(&mut g, Key::Down);
+    press(&mut g, Key::Down);
+    press(&mut g, Key::Down);
+    let last = g.history.file.listed().nth(3).unwrap().clone();
+    press(&mut g, Key::Enter);
+    to_the_end(&mut g);
+    press(&mut g, Key::S);
+    press(&mut g, Key::Escape);
+    assert_eq!(
+        g.history.file.listed().next().unwrap().same_game(&last),
+        true
+    );
+    assert_eq!(g.history.focus, 0);
+    // A pasted replay left unkept: the list's own row, clamped.
+    g.history.focus = 3;
+    paste(&mut g, &friends_code(21).0);
+    press(&mut g, Key::Escape);
+    assert_eq!(g.history.focus, 3);
+}
+
+/// KEEP when every other replay is starred and the file is past its
+/// limit: the one kept is trimmed straight back out, and the bar says the
+/// list is full, not that it is too long.
+#[test]
+fn keep_in_a_full_list_says_so() {
+    let (code, _) = friends_code(9);
+    let mut g = game();
+    // Five starred runs that fill the file past its limit: longer than a
+    // line may be read back, so only a hand could have made them, which is
+    // the only way the trim reaches a record just kept.
+    let (base, _, _) = finished(11);
+    let base = base.history.last_run.unwrap();
+    let pad = crate::history::MAX_FILE_CHARS / 5;
+    for seed in 0..5u64 {
+        let mut r = base.clone();
+        if let Kind::Run(k) = &mut r.kind {
+            k.seed = 100 + seed;
+            k.epoch = salt_line_sim::SIM_EPOCH - 1;
+            k.log = format!("v9 {}", "9".repeat(pad));
+        }
+        let mut r = Record::new(r.day, r.kind);
+        r.starred = true;
+        g.history.file.records.push(r);
+    }
+    press(&mut g, Key::W);
+    paste(&mut g, &code);
+    press(&mut g, Key::K);
+    assert!(!g.watched_kept());
+    assert_eq!(g.watch.as_ref().unwrap().notice, Some(LIST_FULL));
+}
+#[test]
+fn copy_code_at_a_replays_end_copies_it() {
+    let (mut g, _, _) = finished(9);
+    let record = g.history.last_run.clone().unwrap();
+    press(&mut g, Key::W);
+    // Not before the end: C is not on the bar.
+    assert!(clipboard(&press(&mut g, Key::C)).is_empty());
+    to_the_end(&mut g);
+    let fx = press(&mut g, Key::C);
+    let copied = clipboard(&fx);
+    assert_eq!(copied.len(), 1);
+    assert_eq!(Record::from_code(&copied[0]), Ok(record));
+    assert_eq!(g.watch.as_ref().unwrap().notice, Some(CODE_COPIED));
+    assert!(!fx.iter().any(Effect::touches_disk));
+}
+
+/// Whatever is on the clipboard, PASTE CODE says what it is in words a
+/// child can read out, and starts nothing it cannot show.
+#[test]
+fn a_paste_that_is_not_a_replay_says_why() {
+    let (code, _) = friends_code(9);
+    let mut cut = code.clone();
+    cut.pop();
+    let map = crate::custom::fork_duel(3, 0).to_code().unwrap();
+    let cases = [
+        ("", crate::history::code::ReadError::NotACode.note()),
+        ("hello", crate::history::code::ReadError::NotACode.note()),
+        (
+            map.as_str(),
+            crate::history::code::ReadError::MapCode.note(),
+        ),
+        (
+            cut.as_str(),
+            crate::history::code::ReadError::Damaged.note(),
+        ),
+    ];
+    for (text, note) in cases {
+        let mut g = game();
+        press(&mut g, Key::W);
+        let fx = paste(&mut g, text);
+        assert!(!g.watching(), "{text}");
+        assert_eq!(g.status, note);
+        assert!(!fx.iter().any(Effect::touches_disk));
+    }
+    // A code in a chat message: words round it, wrapped, a zero-width
+    // space and a byte order mark in it.
+    let (a, b) = code.split_at(code.len() / 2);
+    let message = format!("\u{FEFF}watch this one!\n{a}\u{200B}\n{b}\nso good");
+    let mut g = game();
+    press(&mut g, Key::W);
+    paste(&mut g, &message);
+    assert!(g.watching(), "{}", g.status);
+    // A paste that arrives anywhere but the list starts nothing.
+    let mut g = game();
+    g.pasted(&code);
+    assert!(!g.watching());
+}
+
+#[test]
+fn a_touchscreen_copies_a_row_and_pastes_from_its_corner() {
+    let mut g = Game::new(true, Save::default());
+    g.fit_display(WINDOW, (0, 0));
+    let (_, run, _) = finished(9);
+    let record = Record::run(TODAY, &run, false);
+    g.history.file.push(record.clone());
+    touch_frame(&mut g, Vec::new());
+    tap(&mut g, Action::Watch);
+    let fx = tap(&mut g, Action::Wb(Wb::RowCopy(0)));
+    let copied = clipboard(&fx);
+    assert_eq!(copied.len(), 1);
+    assert!(!g.watching(), "a tap on COPY does not watch the row");
+    let fx = tap(&mut g, Action::Wb(Wb::Paste));
+    assert!(fx.contains(&Effect::ReadClipboard));
+    g.pasted(&copied[0]);
+    assert!(g.watching());
+    // Already listed: KEEP says KEPT and writes nothing.
+    touch_frame(&mut g, Vec::new());
+    let fx = tap(&mut g, Action::Wb(Wb::Keep));
+    assert!(history_writes(&fx).is_empty());
+    tap(&mut g, Action::Wb(Wb::Exit));
+    assert_eq!(g.mode, Mode::Replays);
+}
+
+#[test]
+fn a_pasted_match_on_a_map_plays_through_to_its_recorded_end() {
+    let layout = crate::custom::fork_duel(12, 0);
+    let (saved, duel) =
+        crate::history::tests::finished_match_on(12, Some(Level::Hard), Some(&layout));
+    let record = Record::duel(
+        TODAY,
+        &saved,
+        &duel,
+        Ground::Map(layout.name.as_str().to_string()),
+    )
+    .unwrap();
+    let mut g = game();
+    press(&mut g, Key::W);
+    paste(&mut g, &record.to_code().unwrap());
+    assert!(g.watching());
+    assert_eq!(g.mode, Mode::Versus);
+    until(&mut g, 900.0, ended);
+    let vs = g.versus.live.as_ref().unwrap();
+    assert_eq!(
+        crate::match_log::state_hash(&vs.duel),
+        crate::match_log::state_hash(&duel)
+    );
+    press(&mut g, Key::Escape);
+    assert_eq!(g.mode, Mode::Replays);
 }
