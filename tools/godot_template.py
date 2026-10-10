@@ -54,6 +54,7 @@ Standard library only and Python 3.9+, like release_version.py.
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import inspect
 import json
@@ -64,6 +65,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import NoReturn
 
@@ -343,6 +345,68 @@ def set_preset_template(preset: str, template: str) -> None:
     print(f"{preset}: custom_template/release={template}")
 
 
+def prepare_android(debug: bool = False) -> None:
+    """Install the official Gradle project and apply Salt Line's tracked overlays.
+
+    Gradle ignores custom_template/release APKs. Carry their native engine
+    into the official AAR instead, keeping the Java runtime and libc++ paired.
+    """
+    source = official_templates() / "android_source.zip"
+    directory = ROOT / "android" / "build"
+    if not source.is_file():
+        fail(f"missing {source}; install Godot's export templates")
+    directory.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(source) as archive:
+        for info in archive.infolist():
+            dest = (directory / info.filename).resolve()
+            if not dest.is_relative_to(directory.resolve()):
+                fail("Android source template contains an unsafe path")
+        archive.extractall(directory)
+    (directory / ".gdignore").touch()
+    (directory.parent / ".build_version").write_text(f"{GODOT_VERSION}.stable\n")
+    (directory / "gradlew").chmod(0o755)
+
+    android = "http://schemas.android.com/apk/res/android"
+    ET.register_namespace("android", android)
+    ET.register_namespace("tools", "http://schemas.android.com/tools")
+    manifest = directory / "src" / "main" / "AndroidManifest.xml"
+    tree = ET.parse(manifest)
+    application = tree.getroot().find("application")
+    overlay = ET.parse(ROOT / "android" / "AndroidManifest.xml").getroot().find("application")
+    if application is None or overlay is None:
+        fail("Android manifest has no application")
+    application.attrib.update(overlay.attrib)
+    application.extend(overlay)
+    tree.write(manifest, encoding="utf-8", xml_declaration=True)
+    shutil.copytree(ROOT / "android" / "res", directory / "res", dirs_exist_ok=True)
+
+    # Restore the AAR from the official source zip on every invocation, so a
+    # switch back to the stock template cannot silently retain a stripped .so.
+    presets = configparser.ConfigParser(interpolation=None, strict=False)
+    presets.read(ROOT / "export_presets.cfg")
+    section = next(s for s in presets.sections() if presets.get(s, "name", fallback="") == '"Android"')
+    variant = "debug" if debug else "release"
+    custom = presets.get(f"{section}.options", f"custom_template/{variant}", fallback="").strip('"')
+    if custom:
+        aar = directory / "libs" / variant / f"godot-lib.template_{variant}.aar"
+        with zipfile.ZipFile(custom) as apk, zipfile.ZipFile(aar) as original:
+            native = apk.read(f"lib/{ANDROID_ABI}/libgodot_android.so")
+            entry = f"jni/{ANDROID_ABI}/libgodot_android.so"
+            check_compiler(native, original.read(entry))
+            with tempfile.NamedTemporaryFile(dir=directory, suffix=".aar", delete=False) as temp:
+                staged = Path(temp.name)
+            try:
+                with zipfile.ZipFile(staged, "w") as output:
+                    for info in original.infolist():
+                        output.writestr(info, native if info.filename == entry else original.read(info))
+                # Close the input before replacing it (also works on Windows).
+            except BaseException:
+                staged.unlink(missing_ok=True)
+                raise
+        staged.replace(aar)
+    print(f"Android Gradle source prepared: {directory}")
+
+
 def read_lock() -> dict:
     try:
         return json.loads(LOCK.read_text(encoding="utf-8"))
@@ -443,6 +507,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("key")
+    a = sub.add_parser("prepare-android")
+    a.add_argument("--debug", action="store_true")
     b = sub.add_parser("build")
     b.add_argument("platform", choices=sorted(PLATFORM_FLAGS))
     b.add_argument("--arch")
@@ -467,6 +533,8 @@ def main() -> None:
 
     if args.cmd == "key":
         print(key())
+    elif args.cmd == "prepare-android":
+        prepare_android(args.debug)
     elif args.cmd == "build":
         build(args.platform, args.arch, args.src.resolve(), args.out.resolve(), args.jobs)
     elif args.cmd == "fetch":

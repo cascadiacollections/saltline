@@ -16,6 +16,30 @@ func _ready() -> void:
 		get_tree().quit(1)
 		return
 	DesktopServices.capabilities_changed.connect(_on_capabilities_changed)
+	_refresh_android_game_mode()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_RESUMED:
+		_refresh_android_game_mode()
+
+
+func _refresh_android_game_mode() -> void:
+	if OS.get_name() != "Android" or not is_instance_valid(game):
+		return
+	var mode := 1
+	var runtime = Engine.get_singleton("AndroidRuntime")
+	if runtime:
+		var version = JavaClassWrapper.wrap("android.os.Build$VERSION")
+		if JavaClassWrapper.get_exception() == null and version and version.SDK_INT >= 31:
+			var context = runtime.getApplicationContext()
+			if JavaClassWrapper.get_exception() == null and context:
+				var manager = context.getSystemService("game")
+				if JavaClassWrapper.get_exception() == null and manager:
+					var queried = manager.getGameMode()
+					if JavaClassWrapper.get_exception() == null:
+						mode = queried
+	game.set_android_game_mode(mode, DisplayServer.screen_get_refresh_rate())
 
 
 func _process(_delta: float) -> void:
