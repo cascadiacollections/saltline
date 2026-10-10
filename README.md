@@ -725,3 +725,8 @@ The default Iron & Chalk icon ships on every platform. Regenerate its native
 For a seasonal export, pass `--variant halloween`, `--variant thanksgiving`,
 or `--variant christmas`, then import and export normally. Restore the default
 before committing. Original PNG images remain in `art/app-icons/`.
+
+On Linux, register the local development build with
+`uv run python tools/install_linux_launcher.py`, then open **Salt Line** from
+the application launcher. GNOME and Wayland use this desktop entry to associate
+the running game with its icon. Run the installer again after moving the checkout.
