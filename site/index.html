@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Salt Line — artillery roguelike, alpha</title>
-<meta name="description" content="Aim through the wind, break the terrain, and make every shell count in Salt Line, a free single-player artillery roguelike. Play the alpha on Android, Windows, macOS, or Linux.">
+<meta name="description" content="Aim through the wind, break the terrain, and make every shell count in Salt Line, a free artillery roguelike with solo runs, local duels, and a map editor. Play the alpha on Android, Windows, macOS, or Linux.">
 <!-- The placeholder below is rewritten to the live Pages base URL at deploy
      time (.github/workflows/pages.yml); it only affects link previews. -->
 <link rel="canonical" href="__SITE_URL__">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Salt Line — artillery roguelike, alpha">
-<meta property="og:description" content="Aim through the wind, break the terrain, and make every shell count. A free single-player artillery roguelike for Android, Windows, macOS, and Linux.">
+<meta property="og:description" content="Aim through the wind, break the terrain, and make every shell count. Free solo runs, local duels, and custom maps for Android, Windows, macOS, and Linux.">
 <meta property="og:url" content="__SITE_URL__">
 <meta property="og:image" content="__SITE_URL__assets/og.png">
 <meta property="og:image:width" content="1200">
@@ -32,6 +32,7 @@
   <nav aria-label="Sections">
     <a href="#download">Download</a>
     <a href="#what">What it is</a>
+    <a href="#play">Ways to play</a>
     <a href="#media">Media</a>
     <a href="#modifiers">Modifiers</a>
     <a href="#build">Build it</a>
@@ -48,11 +49,11 @@
   </div>
 
   <div class="hero-copy">
-    <p class="kicker"><span class="blink">▌</span> ALPHA 0.1 &nbsp;·&nbsp; FREE &nbsp;·&nbsp; SOURCE INCLUDED</p>
+    <p class="kicker"><span class="blink">▌</span> ALPHA 0.1 &nbsp;·&nbsp; FREE &nbsp;·&nbsp; MIT LICENSED</p>
     <h1>Salt&nbsp;Line</h1>
     <p class="tagline">Aim through the wind. Bring down structures and leave the
-      terrain broken behind you. Every shell counts in this single-player
-      artillery roguelike, with a new modifier draft every four screens.</p>
+      terrain broken behind you. Make every shell count in a solo roguelike run,
+      challenge a friend on the same device, or duel the AI on a map you made.</p>
 
     <ul class="badges" aria-label="At a glance">
       <li>Deterministic sim</li>
@@ -67,8 +68,8 @@
       <a class="btn ghost" href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Read the design doc</a>
     </div>
 
-    <p class="fineprint">Android · Windows · macOS · Linux &nbsp;—&nbsp; rolling dev builds to
-      sideload today, a proper release when the alpha stops moving.</p>
+    <p class="fineprint">Android · Windows · macOS · Linux &nbsp;—&nbsp; rolling dev builds, a proper release when the alpha stops moving.
+      Downloads and source currently require access to the GitHub repository.</p>
   </div>
 </section>
 
@@ -113,8 +114,8 @@
       What it doesn't borrow is the tooling. Underneath the dithered sky is a
       dependency-free Rust simulation with a proof obligation attached to every
       screen it shows you.</p>
-    <p class="note">This is an <strong>alpha</strong>. Things move, saves are just
-      seeds, and the art is honest programmer art awaiting a hand-drawn pass.</p>
+    <p class="note">This is an <strong>alpha</strong>. Things move, runs save as seeds and shot logs,
+      and the art is programmer art awaiting a hand-drawn pass.</p>
   </div>
 </section>
 
@@ -123,7 +124,8 @@
   <h2 id="dl-h">Download a dev build</h2>
   <p class="small">Rebuilt from <code>main</code> on every merge, so expect the odd rough edge.
     Desktop builds are unsigned; macOS and Windows may show a security warning.
-    Android is a sideloaded APK.</p>
+    Android is a sideloaded APK. GitHub sign-in and repository access are currently
+    required for these downloads; there is no public store release.</p>
   <div class="cards dl">
     <article class="card" data-platform="android">
       <h3>Android <span class="arch">arm64</span></h3>
@@ -165,6 +167,39 @@
     <a href="https://github.com/cascadiacollections/saltline/releases/tag/dev">all dev build files</a></p>
 </section>
 
+<!-- ------------------------------------------------------------- play -->
+<section id="play" aria-labelledby="play-h">
+  <h2 id="play-h">Ways to play</h2>
+  <div class="cards">
+    <article class="card">
+      <h3>A horizon of solo runs</h3>
+      <p>Start the daily seed or enter your own. Break structures, manage your
+        shells, and draft a modifier every four screens. Resume a saved run
+        or replay a seed to try a different approach.</p>
+    </article>
+    <article class="card">
+      <h3>Local duels, human or AI</h3>
+      <p>Two players share one device, or take on the computer at three difficulty
+        levels. Choose aim help and rolling guns before the match, then pass
+        the phone or controller between turns.</p>
+    </article>
+    <article class="card">
+      <h3>Make ground worth fighting over</h3>
+      <p>Sculpt, smooth, stamp, and mirror terrain in the map editor. Place both
+        guns, test the shots, and save a map or copy its share code. Paste a
+        friend's code to play the same ground.</p>
+    </article>
+    <article class="card">
+      <h3>Keep the shots you remember</h3>
+      <p>Watch finished runs and matches in Replays, and star favourites to keep
+        them. An idle demo shows the game in motion. Keyboard, controller,
+        touch buttons, and drag aiming are built in.</p>
+    </article>
+  </div>
+  <p class="small">Everything runs locally: no matchmaking, account, ads, or telemetry.
+    Share codes leave the game only when you copy and send them yourself.</p>
+</section>
+
 <!-- ------------------------------------------------------------- what -->
 <section id="what" aria-labelledby="what-h">
   <h2 id="what-h">The three things that matter</h2>
@@ -188,7 +223,7 @@
       <h3><span class="num">03</span> Determinism is a feature</h3>
       <p>Same seed plus same inputs gives a byte-identical final state on Linux,
         macOS and Windows — enforced in CI by comparing a digest across all
-        three. No libm, no thread RNG, no map iteration in any state-affecting
+        platforms. No libm, no thread RNG, no map iteration in any state-affecting
         path. A run saves as a seed and a shot log.</p>
       <code>DT = 1.0 / 120.0 · f64 throughout</code>
     </article>
@@ -268,7 +303,11 @@
 
 <!-- ------------------------------------------------------------- build -->
 <section id="build" aria-labelledby="build-h">
-  <h2 id="build-h">Build it &amp; play</h2>
+  <h2 id="build-h">Build from source</h2>
+  <p class="lede">For contributors: install Rust 1.98.1 (pinned in
+    <code>rust-toolchain.toml</code>), Godot 4.7.2, and <code>uv</code> for asset tools.
+    Follow the <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md#quick-start">README quick start</a>
+    for platform setup. Players downloading a packaged build do not need these tools.</p>
   <div class="build-grid">
     <div>
       <div class="codeblock">
@@ -282,7 +321,10 @@ godot --path .                   # play</code></pre>
       <p class="small">Build before you launch: the engine loads the extension out
         of <code>target/</code>, so a stale build is what it will run.</p>
 
-      <h3>Controls</h3>
+      <h3>Keyboard basics</h3>
+      <p class="small">In-game Settings lists keyboard, controller, and touch controls.
+        See the <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md#controls">full controls guide</a>
+        for drag aiming, replays, and the map editor.</p>
       <table class="keys">
         <tbody>
           <tr><th scope="row"><kbd>←</kbd> <kbd>→</kbd></th><td>Angle, one quantization step (<kbd>Shift</kbd>: ten)</td></tr>
@@ -298,15 +340,15 @@ godot --path .                   # play</code></pre>
     </div>
 
     <aside class="reqs panel">
-      <h3>System requirements</h3>
+      <h3>Build and runtime details</h3>
       <dl>
         <dt>OS</dt><dd>Android, Linux, macOS, Windows</dd>
-        <dt>Engine</dt><dd>Godot 4 (presentation only)</dd>
-        <dt>Toolchain</dt><dd>Rust, stable</dd>
+        <dt>Build engine</dt><dd>Godot 4.7.2 (presentation only)</dd>
+        <dt>Build tools</dt><dd>Rust 1.98.1, uv</dd>
         <dt>Internal res</dt><dd>320×180, integer-scaled</dd>
         <dt>Colours</dt><dd>16, fixed</dd>
-        <dt>Network</dt><dd>None. Ever.</dd>
-        <dt>Save file</dt><dd>(seed, width, shot log)</dd>
+        <dt>Network</dt><dd>Offline play; no telemetry</dd>
+        <dt>Run save</dt><dd>(seed, width, shot log)</dd>
         <dt>Dependencies</dt><dd>The sim crate has none — not even <code>rand</code></dd>
       </dl>
       <h3>Headless tools</h3>
@@ -326,7 +368,7 @@ godot --path .                   # play</code></pre>
   <ul class="checks">
     <li class="yes">The simulation is done and tested: ballistics, terrain damage, drafting, solvability, determinism.</li>
     <li class="yes">It is playable end to end, from the first screen to the run-over seed you can copy and share.</li>
-    <li class="yes">Packaged dev builds, sound effects, and in-game controls and audio settings are available.</li>
+    <li class="yes">Packaged dev builds, sound effects, and in-game controls, audio, and offline credits are available.</li>
     <li class="no">The art is generated programmer art. All five structures have three damage states; four still need hand-drawn leaning and collapsed poses.</li>
     <li class="no">Desktop builds are unsigned, and Android is a sideloaded APK.</li>
     <li class="no">Balance numbers move between commits. Seeds stay reproducible; they do not stay comparable across versions.</li>
@@ -339,16 +381,18 @@ godot --path .                   # play</code></pre>
   <div class="foot-grid">
     <div>
       <p class="brand-foot">SALT&nbsp;LINE</p>
-      <p class="small">Single-player artillery roguelike.<br>Deterministic Rust core, Godot 4 presentation.</p>
+      <p class="small">Solo runs, local duels, custom maps.<br>Deterministic Rust core, Godot 4 presentation.</p>
     </div>
     <nav aria-label="Project links">
       <a href="https://github.com/cascadiacollections/saltline">Repository</a>
       <a href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Design doc</a>
       <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md">README</a>
       <a href="https://github.com/cascadiacollections/saltline/issues">Issues</a>
+      <a href="licenses.html">MIT license &amp; FOSS acknowledgments</a>
     </nav>
     <p class="small colophon">No code, assets or naming lineage from any existing
-      artillery game. This page ships no trackers, no cookies and no third-party
+      artillery game. Settings → Credits / Licenses includes offline notices
+      for Godot, gdext, Rust libraries, and Linux integration. This page ships no trackers, no cookies and no third-party
       requests; every image on it is produced by
       <code>tools/build_site.py</code> from the game's own art pipeline.</p>
   </div>

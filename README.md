@@ -544,7 +544,15 @@ godot --headless --path . -- --salt-season-gallery /tmp/salt-seasons
 third-party requests. Its media is not hand-exported: `tools/build_site.py`
 imports `tools/gen_sprites.py` and draws the hero screen, the animated shot and
 the social card with the same palette, rasteriser and native grid the game uses.
-Change a sprite and the page changes with it.
+Change a sprite and the page changes with it. The same builder publishes
+`site/licenses.html` from the bundled license files, so site notices and
+offline notices use the same source. Keep the page's gameplay copy and the
+contributor prerequisites current when shipping features; the generator does
+not derive those descriptions from the game.
+
+Repository source and dev release downloads currently require repository access.
+GitHub Pages visibility is managed separately under Settings → Pages; making the
+site public does not make an internal repository's releases public.
 
 ```sh
 uv run python tools/build_site.py      # needs Pillow + Rust; writes into site/assets/
@@ -552,7 +560,8 @@ python3 -m http.server -d site 8000   # preview at http://localhost:8000
 ```
 
 `.github/workflows/pages.yml` regenerates the media on every push to `main` that
-touches `site/`, `art/` or either generator, then publishes `site/` to Pages.
+touches `site/`, `art/`, the simulation, either generator, or bundled license
+notices, then publishes `site/` to Pages.
 The live URL is whatever Pages reports for this repository — the workflow logs
 it and stamps it into the page's canonical and Open Graph tags, so nothing has
 to be hardcoded while the repo is internal.
