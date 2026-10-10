@@ -196,6 +196,9 @@ pub struct Save {
     /// Bundled challenges cleared: (index, most shells left over). At most
     /// one entry per index, in index order.
     pub challenges: Vec<(u8, u8)>,
+    /// Custom challenges cleared: (layout digest, most shells left over).
+    /// At most one entry per layout digest, in digest order.
+    pub custom_challenges: Vec<(u64, u8)>,
     /// Cosmetic target skins. Missing or malformed settings use Auto.
     pub seasonal: Option<crate::seasonal::Seasonal>,
     /// The file on disk was written by a newer build than this one. The save
@@ -230,6 +233,34 @@ impl Save {
             }
         }
     }
+
+    /// Best shells left after clearing a custom layout, or `None` if new.
+    pub fn custom_challenge_best(&self, digest: u64) -> Option<u8> {
+        self.custom_challenges
+            .iter()
+            .find(|(d, _)| *d == digest)
+            .map(|&(_, left)| left)
+    }
+
+    /// Note a cleared custom layout. Returns whether the save changed.
+    pub fn record_custom_challenge(&mut self, digest: u64, left: u8) -> bool {
+        match self
+            .custom_challenges
+            .iter_mut()
+            .find(|(d, _)| *d == digest)
+        {
+            Some((_, best)) if *best >= left => false,
+            Some((_, best)) => {
+                *best = left;
+                true
+            }
+            None => {
+                self.custom_challenges.push((digest, left));
+                self.custom_challenges.sort_unstable();
+                true
+            }
+        }
+    }
 }
 
 impl Default for Save {
@@ -247,6 +278,7 @@ impl Default for Save {
             idle_demo: None,
             controller: None,
             challenges: Vec::new(),
+            custom_challenges: Vec::new(),
             seasonal: None,
             from_the_future: false,
         }
@@ -306,6 +338,13 @@ impl Save {
                     let left = it.next().and_then(|s| s.parse::<u8>().ok());
                     if let (Some(index), Some(left)) = (index, left) {
                         save.record_challenge(index, left);
+                    }
+                }
+                Some("custom_challenge") => {
+                    let digest = it.next().and_then(|s| s.parse::<u64>().ok());
+                    let left = it.next().and_then(|s| s.parse::<u8>().ok());
+                    if let (Some(digest), Some(left)) = (digest, left) {
+                        save.record_custom_challenge(digest, left);
                     }
                 }
                 Some("controller") => {
@@ -404,6 +443,9 @@ impl Save {
         }
         for (index, left) in &self.challenges {
             out.push_str(&format!("challenge {index} {left}\n"));
+        }
+        for (digest, left) in &self.custom_challenges {
+            out.push_str(&format!("custom_challenge {digest} {left}\n"));
         }
         if let Some(season) = self.seasonal {
             out.push_str(&format!("seasonal {}\n", season.token()));
@@ -722,6 +764,27 @@ mod tests {
     }
 
     #[test]
+    fn custom_challenge_bests_are_keyed_by_digest_and_round_trip() {
+        let mut save = Save::default();
+        assert!(save.record_custom_challenge(42, 2));
+        assert!(save.record_custom_challenge(7, 1));
+        assert!(!save.record_custom_challenge(42, 1), "worse");
+        assert!(save.record_custom_challenge(42, 3), "better");
+        assert_eq!(save.custom_challenge_best(42), Some(3));
+        assert_eq!(save.custom_challenge_best(99), None);
+        assert_eq!(
+            save.custom_challenges,
+            vec![(7, 1), (42, 3)],
+            "digest order"
+        );
+        assert_eq!(Save::parse(&save.serialize()), save);
+        assert_eq!(
+            Save::parse("custom_challenge invalid 2\ncustom_challenge 9 256\n").custom_challenges,
+            Vec::new()
+        );
+    }
+
+    #[test]
     fn the_controller_preference_is_saved_only_once_chosen() {
         assert!(!Save::default().serialize().contains("controller"));
         for on in [true, false] {
@@ -830,7 +893,7 @@ mod tests {
 
             #[test]
             fn any_line_soup_parses_without_panicking(
-                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|controller|challenge|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
+                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|controller|challenge|custom_challenge|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
             ) {
                 let _ = Save::parse(&lines.join("\n"));
             }

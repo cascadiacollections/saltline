@@ -1895,19 +1895,21 @@ run.
 
 ## 13. Layouts, the editor and custom games
 
-**Status: Phase 4 vertical slice built (October 2026); the challenge course is
-playable, cosmetic Snow/Forest biome palettes are in the presentation layer,
-and persistent course scores and sharing remain proposed.** Phase 1 is the data model, forking a generated screen into it,
+**Status: Phase 4 vertical slice built (October 2026); bundled courses and
+custom one-layout challenges are playable, with bests kept locally by layout
+digest.** Phase 1 is the data model, forking a generated screen into it,
 the share code, validation, and a dev flag that plays a custom duel on a
 code (`--salt-layout`). Phase 3 is the map editor in the game, the slot
 file, the draft kept on disk, custom duels on the pre-match screen's
 GROUND row, bundled layouts, forking the round on screen, the clipboard,
-and resuming a match on a layout (§13.8, §13.9, §13.11). Phases 4 and 5
-(§13.12) are still a plan.
+and resuming a match on a layout (§13.8, §13.9, §13.11). Custom challenges
+can be pasted or saved in a map slot; their shot budget is derived from the
+solver. Multi-layout courses remain a plan (§13.12).
 
 **Owner decisions (October 2026):**
 
-- Custom duels come first. Single-player challenges come later.
+- Custom duels came first; one-layout single-player challenges now reuse the
+  same layout and solver rules. Multi-layout courses remain later.
 - The editor is in the game, built for a phone first (touch), and usable
   with a mouse.
 - A layout sets the wind and nothing else about the rules: a fixed wind, a
@@ -1943,8 +1945,8 @@ and resuming a match on a layout (§13.8, §13.9, §13.11). Phases 4 and 5
 |---|---|
 | **Layout** | One screen written down as data: the ground, the targets, the guns, the wind and a name. Built (Phase 1). |
 | **Custom duel** | A local versus match (§11) whose every round is played on one layout. Built behind a dev flag (Phase 1), then on the pre-match screen's GROUND row (Phase 3). |
-| **Challenge** | A one-gun layout played for shots, as a run screen is. Later. |
-| **Course** | An ordered list of layouts played as a short run, for challenges. Later. |
+| **Challenge** | A one-gun layout played for shots, as a run screen is. Bundled courses and custom one-layout play are built. |
+| **Course** | An ordered list of layouts played as a short run, for challenges. Multi-layout custom courses remain proposed. |
 
 A generated screen and a layout are opposites. A generated screen is a
 function of its seed (§2.2): nothing about it is stored, because the
@@ -2341,10 +2343,12 @@ leaves the title up with a note (and the console says why).
   carrying the layout's code (§13.4). A pasted code goes into the editor,
   from where it can be saved and played.
 
-**Challenges and courses (later).** A one-gun layout plays as a run screen
-does: a gun, targets, the base loadout, shots counted. A course strings a few
-together with a par. Both reuse `Screen::from_layout` and the one-gun gate as
-they are. Scoring and where results are kept are open (§13.13).
+**Challenges (built) and courses (later).** A one-gun layout plays as a run
+screen does: a gun, targets, the base loadout, shots counted. A custom
+challenge can be pasted or selected from saved layouts; its budget comes from
+the solver, its hint from a solver shot, and its best shells left are keyed by
+the layout digest. It reuses `Screen::from_layout` and the one-gun gate.
+Multi-layout courses and sharing remain open (§13.13).
 
 **Sharing (later).** The online versus design (an async relay with invite
 codes) could carry layout codes as they are: a code is text, small, and

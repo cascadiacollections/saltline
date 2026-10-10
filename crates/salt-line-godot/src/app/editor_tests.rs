@@ -903,10 +903,6 @@ fn copy_and_paste_a_code() {
     node.row(&mut g, RowAct::Paste);
     assert_eq!(g.status, "NOT A MAP CODE");
     assert_eq!(layout(&g), &made);
-    // A run screen's code: one gun, refused.
-    node.clipboard = Layout::from_run_screen(1, 0).to_code().unwrap();
-    node.row(&mut g, RowAct::Paste);
-    assert_eq!(g.status, "ONE-GUN MAPS COME LATER");
     // A replay's code: said where it goes.
     let run = crate::history::tests::finished_run(9, 320, 3);
     let replay = crate::history::Record::run(1, &run, false)

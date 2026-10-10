@@ -246,10 +246,7 @@ impl LayoutsState {
             .entries
             .iter()
             .map(|e| {
-                let layout = e
-                    .layout()
-                    .ok()
-                    .filter(|l| l.is_duel() && l.width() == LAYOUT_WIDTH);
+                let layout = e.layout().ok().filter(|l| l.width() == LAYOUT_WIDTH);
                 let ok = layout
                     .as_ref()
                     .is_some_and(|l| crate::custom::validate(l).is_ok());
@@ -477,6 +474,7 @@ impl Game {
             }
             self.note(match why {
                 SlotWrite::Save { .. } => "MAP NOT SAVED - DRAFT KEPT".into(),
+                SlotWrite::SaveCustom { .. } => "CHALLENGE MAP NOT SAVED".into(),
                 SlotWrite::Delete { .. } | SlotWrite::Undo => "MAPS NOT SAVED".into(),
             });
             return;
@@ -511,6 +509,9 @@ impl Game {
                     self.editor.toast = None;
                     self.note(format!("SAVED TO SLOT {slot}"));
                 }
+            }
+            SlotWrite::SaveCustom { slot } => {
+                self.note(format!("SAVED TO SLOT {slot}"));
             }
             SlotWrite::Delete { slot, before } => {
                 self.editor.toast = Some(Toast {
@@ -578,7 +579,7 @@ impl Game {
                 self.note("THAT IS A REPLAY CODE - PASTE IT IN REPLAYS".into());
             }
             Err(_) => self.note("NOT A MAP CODE".into()),
-            Ok(l) if !l.is_duel() => self.note("ONE-GUN MAPS COME LATER".into()),
+            Ok(l) if !l.is_duel() => self.start_custom_challenge(l),
             Ok(l) if l.width() != LAYOUT_WIDTH => self.note("MAP IS NOT 320 WIDE".into()),
             Ok(layout) => {
                 let ok = model::verdict(&layout).playable();
@@ -924,8 +925,12 @@ impl Game {
                     } else {
                         name.to_string()
                     };
+                    let kind = if l.is_duel() { "MAP" } else { "CHALLENGE" };
                     let mark = if ok { "" } else { "  ! FAILS" };
-                    (format!("{n:>2}  {name}  {}{mark}", fingerprint(l)), !ok)
+                    (
+                        format!("{n:>2}  {kind} {name}  {}{mark}", fingerprint(l)),
+                        !ok,
+                    )
                 }
                 _ => (format!("{n:>2}  NEWER VERSION"), true),
             },
@@ -1327,7 +1332,7 @@ impl Game {
 
     /// Open a bundled layout (as a new draft of its own) or a slot (a
     /// draft that saves back to it). One that does not read cannot be.
-    fn open_row(&mut self, row: SlotRow) {
+    pub(super) fn open_row(&mut self, row: SlotRow) {
         let (layout, from, slot) = match row {
             SlotRow::Bundled(i) => match crate::custom::bundled::layouts().get(i) {
                 Some(l) => (l.clone(), None, None),
@@ -1346,7 +1351,11 @@ impl Game {
             },
             SlotRow::New(_) => return,
         };
-        self.start_draft(Draft { layout, from, slot });
+        if layout.is_duel() {
+            self.start_draft(Draft { layout, from, slot });
+        } else {
+            self.start_custom_challenge(layout);
+        }
     }
 
     /// SAVE: refused while the draft does not pass; otherwise the slot
@@ -1786,7 +1795,7 @@ impl Game {
             })
             .collect();
         for (slot, layout, ok) in &self.layouts.checked {
-            if let Some(layout) = layout {
+            if let Some(layout) = layout.as_ref().filter(|layout| layout.is_duel()) {
                 out.push(GroundPick {
                     source: GroundSource::Slot(*slot),
                     layout: layout.clone(),

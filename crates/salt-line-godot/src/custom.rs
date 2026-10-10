@@ -20,7 +20,8 @@ use salt_line_sim::layout::{
 };
 use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::run::Screen;
-use salt_line_sim::solver::GATE_CAP;
+use salt_line_sim::solver::{self, GATE_CAP};
+use salt_line_sim::Vec2;
 use salt_line_sim::MIN_SOLUTIONS;
 
 use crate::versus::{self, frame_for, shots_at, target_in_frame, Ground, Match, Rules, Side};
@@ -170,6 +171,34 @@ pub fn validate(layout: &Layout) -> Result<(), Vec<Problem>> {
     } else {
         Err(problems)
     }
+}
+
+/// Shell budget for a one-gun layout, derived from the solver's hardest
+/// target: more distinct solutions give a tighter par, fewer give more room.
+pub fn challenge_shots(layout: &Layout) -> i32 {
+    let screen = Screen::from_layout(layout, layout.wind.draw(layout.digest()));
+    let report = solver::validate(&screen, &Loadout::new());
+    let hardest = report.worst.min(GATE_CAP);
+    layout.structures.len() as i32 + 1 + (GATE_CAP - hardest).div_ceil(2) as i32
+}
+
+/// The solver's first shot as a path, for a custom challenge's hint arc.
+pub fn challenge_hint_path(layout: &Layout) -> Vec<Vec2> {
+    let seed = layout.digest();
+    let mut screen = Screen::from_layout(layout, layout.wind.draw(seed));
+    let Some(hint) = solver::solve_target(&screen, &Loadout::new(), 0)
+        .into_iter()
+        .next()
+    else {
+        return Vec::new();
+    };
+    screen
+        .apply_shot(hint.shot, &Loadout::new(), Some(0.0), true)
+        .traces
+        .into_iter()
+        .next()
+        .map(|trace| trace.path)
+        .unwrap_or_default()
 }
 
 /// A share code read and checked: the layout, or one line saying why not,

@@ -380,6 +380,7 @@ impl Game {
         self.run_file.run_persist = true;
         self.run_file.resumed = true;
         self.play.challenge = None;
+        self.play.custom_challenge = None;
         self.play.hint_arc.clear();
         self.play.run = Some(run);
         self.mode = Mode::Playing;

@@ -466,6 +466,7 @@ impl Game {
         self.play.daily = false;
         self.play.last_seed = seed;
         self.play.challenge = None;
+        self.play.custom_challenge = None;
         self.play.hint_arc.clear();
         self.play.run = Some(state);
         self.mode = Mode::Playing;
