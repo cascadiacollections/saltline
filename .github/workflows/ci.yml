@@ -467,6 +467,8 @@ jobs:
           file: coverage.xml
           language: Rust
           label: code-coverage-agent
+          # A PR can merge before this job runs, making its coverage upload ineligible.
+          fail-on-error: false
 
   # Miri interprets the tests and fails on undefined behaviour. The code has
   # almost no unsafe today, so this is future-proofing: it covers the pure
