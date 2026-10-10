@@ -148,6 +148,7 @@ macOS packaging checks.
 | D | D-pad down (on the title) | DEMO (top-left corner) | Watch the attract demo (see below) |
 | Down | D-pad down (on the pre-match screen) | GROUND row, `<` | Pick the ground for a local versus match: generated, or a map |
 | E | X (pre-match, a match's pause or result) | MAKE MAP (pre-match, top-right corner) | Open the map editor (see below); on a match's pause or result, make a map of the round |
+| H | D-pad left (on the title) | CHALL | The challenge course; COPY CODE on its result screen exports a layout code |
 | W | D-pad up (on the title) | REPLAYS (top-left, under DEMO) | The list of finished runs and matches, to watch again (see below) |
 | W | D-pad up (run over, match won) | WATCH | Watch the run or match just finished |
 | S | Y (REPLAYS list, a replay's end) | the star beside a row; STAR at a replay's end | Star a replay to keep it for good, or take its star off (see below) |

@@ -255,6 +255,17 @@ fn challenges_begin_at_the_first_uncleared_and_keep_the_best() {
 }
 
 #[test]
+fn every_title_row_is_reachable_from_a_pad() {
+    let mut g = game();
+    tick(&mut g, pads(&[Pad::DpadUp]));
+    assert_eq!(g.mode, Mode::Replays, "d-pad up is REPLAYS");
+    let mut g = game();
+    tick(&mut g, pads(&[Pad::DpadLeft]));
+    assert_eq!(g.mode, Mode::Playing, "d-pad left is CHALLENGES");
+    assert!(g.play.challenge.is_some());
+}
+
+#[test]
 fn a_challenge_copies_its_layout_code() {
     let mut g = game();
     g.start_challenge(1);

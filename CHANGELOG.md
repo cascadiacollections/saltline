@@ -10,6 +10,12 @@ second. See RELEASING.md for the release steps.
 
 ## [Unreleased]
 
+### Fixed
+
+- On a controller, d-pad up on the title started the challenge course and
+  REPLAYS could not be reached, because both were bound to it. CHALLENGES is
+  now d-pad left.
+
 ## [0.2.0] - 2026-10-09
 
 A development preview: no monetization, and the desktop and Android builds are
