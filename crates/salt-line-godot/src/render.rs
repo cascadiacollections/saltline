@@ -679,7 +679,11 @@ impl Painter<'_> {
                     } else {
                         "PLAY AGAIN"
                     };
-                    vec![(Action::Replay, again), (Action::Confirm, "TITLE")]
+                    vec![
+                        (Action::Replay, again),
+                        (Action::Copy, "COPY CODE"),
+                        (Action::Confirm, "TITLE"),
+                    ]
                 } else {
                     [
                         (Action::Replay, "SAME SEED AGAIN"),

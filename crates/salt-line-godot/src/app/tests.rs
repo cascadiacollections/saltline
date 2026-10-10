@@ -255,6 +255,33 @@ fn challenges_begin_at_the_first_uncleared_and_keep_the_best() {
 }
 
 #[test]
+fn a_challenge_copies_its_layout_code() {
+    let mut g = game();
+    g.start_challenge(1);
+    g.play.run.as_mut().unwrap().phase =
+        salt_line_sim::run::Phase::Over(salt_line_sim::run::RunOver::OutOfShells);
+    g.finish_run();
+    g.take_effects();
+    let fx = tick(&mut g, keys(&[Key::C]));
+    let code = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Clipboard(c) => Some(c.clone()),
+            _ => None,
+        })
+        .expect("a code is copied");
+    let challenge = salt_line_sim::challenge::get(1).unwrap();
+    let expected = salt_line_sim::challenge::layout(challenge);
+    assert_eq!(
+        salt_line_sim::layout::Layout::from_code(&code)
+            .unwrap()
+            .digest(),
+        expected.digest()
+    );
+    assert_eq!(g.mode, Mode::GameOver);
+}
+
+#[test]
 fn a_failed_challenge_retries_itself_not_a_seeded_run() {
     let mut g = game();
     g.start_challenge(1);

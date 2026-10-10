@@ -12,6 +12,9 @@ second. See RELEASING.md for the release steps.
 
 ### Added
 
+- COPY CODE on a challenge's result screen puts its layout's share code on
+  the clipboard. Paste it in the editor (PASTE A CODE) to test-fire, change
+  or pass it on.
 - Three more cosmetic biomes: Desert (cactus silhouettes, heat shimmer),
   Night (moon and stars) and Volcanic (rising embers, glowing caps). Runs
   pick among six themes from existing run data, so seeds, saves and replays
