@@ -650,6 +650,69 @@ so the swap survives a power cut. On Windows the rename is atomic but the
 directory is not flushed, so a power cut in the moments after a write could
 still leave the previous save in place.
 
+## Android Game Mode (Pixel Game Dashboard)
+
+Android 12+ reads `GameManager.getGameMode()` at launch and on every application
+resume through Godot's built-in AndroidRuntime/JavaClassWrapper bridge. These
+are presentation settings only; simulation, replay timing, resolution, nearest
+filtering and Compatibility rendering stay unchanged.
+
+| Mode | Active play | Menus, pause and attract demo |
+|---|---|---|
+| Standard / unsupported | Original project cap (currently unlimited), VSync on | Original 30 FPS cap |
+| Battery | At most 30 FPS: fewer software raster passes, texture uploads and engine/render-loop wakeups during animation | At most 30 FPS |
+| Performance | Current display refresh rate, capped at 120 FPS (60 if unavailable), VSync on | At most 30 FPS |
+
+Tighter project caps always win. Performance favors stable, display-bounded frame
+pacing rather than disabling VSync or promising 120 FPS on a 60 Hz device. Actual
+FPS still depends on hardware, thermal limits and system refresh-rate policy.
+Returning to Standard restores the original cap. Older Android and other
+platforms do not change behavior.
+
+Both support flags are intentional: they tell Android the game implements
+these optimizations, **disabling OEM Game Mode interventions** for those modes.
+Do not advertise another mode without implementing it.
+
+Android exports now require Godot's `android_source.zip`, the Android SDK and
+JDK 17, and use Gradle. Existing `just android-apk`, `just android-release`,
+profiling and CI exports through `tools/godot_headless.sh` prepare the build
+automatically. Tracked `android/AndroidManifest.xml` and
+`android/res/xml/game_mode_config.xml` are reapplied to ignored generated
+`android/build` sources on every export. The selected custom APK's native engine
+is carried into the official Gradle AAR with the existing compiler check;
+switching to stock restores the stock AAR. For GUI/direct CLI exports, first run
+`python3 tools/godot_template.py prepare-android` (`--debug` for debug exports).
+Re-run preparation after reinstalling the Android build template.
+
+### Pixel verification
+
+1. Build/install with `just android` (or `just android-release`). Use a Pixel
+   running Android 12+ with Game Dashboard enabled; open Dashboard's optimization
+   control and check that Performance and Battery are offered. Availability also
+   depends on the Pixel/system configuration, not just the manifest.
+2. Inspect the final APK with SDK `aapt2 dump xmltree --file AndroidManifest.xml
+   build/SaltLine.apk` and `aapt2 dump xmltree --file res/xml/game_mode_config.xml
+   build/SaltLine.apk`: verify game category, metadata resource and both flags.
+3. Select each mode through Dashboard, or force it with:
+
+   ```sh
+   adb shell cmd game mode battery com.cascadiacollections.saltline
+   adb shell cmd game mode performance com.cascadiacollections.saltline
+   adb shell cmd game mode standard com.cascadiacollections.saltline
+   ```
+
+4. After each command, Home and return to the game (the query runs on resume).
+   Check `just android-log` for `Android Game Mode: mode=..., play_cap=...,
+   effective_cap=...` (Battery=3, Performance=2, Standard=1). Test cold launch
+   in each mode too. Enter active play: title/pause/demo intentionally stay at
+   30 FPS, so they cannot demonstrate the Performance cap.
+5. Compare moving-shell frame pacing with Dashboard's FPS counter or Perfetto.
+   Battery should render at most 30 FPS; Performance should target the display
+   rate up to 120. Confirm Standard restores the previous behavior, including
+   switching Battery → Standard during an existing session. Verify aiming,
+   pause, audio, saves and replay outcomes remain intact. Repeat on Android 11
+   (no API query) and a desktop build (no changed frame policy).
+
 ## License
 
 MIT. See `LICENSE`.

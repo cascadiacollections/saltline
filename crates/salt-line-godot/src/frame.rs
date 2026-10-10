@@ -96,6 +96,24 @@ pub fn frame_cap(on_menu: bool, project_cap: i32) -> i32 {
     }
 }
 
+/// Android GameManager values: 2 = Performance, 3 = Battery.
+/// Keep Standard/unsupported modes unchanged and respect tighter project caps.
+pub fn game_mode_cap(mode: i32, refresh_rate: f64, project_cap: i32) -> i32 {
+    let cap = match mode {
+        2 if refresh_rate.is_finite() && refresh_rate > 0.0 => {
+            (refresh_rate.round() as i32).clamp(1, 120)
+        }
+        2 => 60,
+        3 => IDLE_FPS,
+        _ => return project_cap,
+    };
+    if project_cap > 0 {
+        cap.min(project_cap)
+    } else {
+        cap
+    }
+}
+
 /// Whether to ask the display for its size and safe area again.
 #[derive(Debug, Default)]
 pub struct DisplayPoll {
@@ -186,6 +204,30 @@ mod tests {
         assert_eq!(frame_cap(true, 120), IDLE_FPS);
         assert_eq!(frame_cap(true, 20), 20);
         assert_eq!(frame_cap(false, 120), 120);
+    }
+
+    #[test]
+    fn android_modes_keep_standard_and_bound_rendering_work() {
+        for mode in [0, 1, 4, -1] {
+            for project in [0, 20, 144] {
+                assert_eq!(game_mode_cap(mode, 120.0, project), project);
+            }
+        }
+        assert_eq!(game_mode_cap(3, 120.0, 0), 30);
+        assert_eq!(game_mode_cap(3, 120.0, 20), 20);
+        for (refresh, expected) in [
+            (60.0, 60),
+            (90.0, 90),
+            (120.0, 120),
+            (144.0, 120),
+            (59.94, 60),
+            (-1.0, 60),
+            (f64::NAN, 60),
+        ] {
+            assert_eq!(game_mode_cap(2, refresh, 0), expected);
+        }
+        assert_eq!(game_mode_cap(2, 120.0, 45), 45);
+        assert_eq!(frame_cap(true, game_mode_cap(2, 120.0, 0)), 30);
     }
 
     #[test]

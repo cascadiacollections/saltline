@@ -52,6 +52,17 @@ esac
 rm -f "$cache_dir"/editor_doc_cache-*.res
 
 godot="${GODOT_BIN:-godot}"
+args=("$@")
+for ((i=0; i<${#args[@]}-1; i++)); do
+    if [[ "${args[i]}" = --export-* && "${args[i+1]}" = Android ]]; then
+        prepare_args=()
+        if [ "${args[i]}" = --export-debug ]; then prepare_args+=(--debug); fi
+        if [ "${args[i]}" != --export-pack ]; then
+            python3 "$root/tools/godot_template.py" prepare-android "${prepare_args[@]}"
+        fi
+        break
+    fi
+done
 is_import=false
 for arg in "$@"; do
     if [ "$arg" = --import ]; then is_import=true; fi

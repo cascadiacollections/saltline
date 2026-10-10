@@ -1,5 +1,7 @@
 /target
 /build
+/android/build/
+/android/.build_version
 /addons/xdg_portals/bin/
 /addons/xdg_portals/xdg_portals.gdextension
 /addons/xdg_portals/xdg_portals.gdextension.uid
