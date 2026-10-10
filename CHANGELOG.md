@@ -10,6 +10,11 @@ second. See RELEASING.md for the release steps.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
+A development preview: no monetization, and the desktop and Android builds are
+unsigned (macOS and Windows will warn before they run).
+
 ### Added
 
 - COPY CODE on a challenge's result screen puts its layout's share code on
