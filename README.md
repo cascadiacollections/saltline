@@ -29,7 +29,7 @@ failing loudly.
 | `crates/salt-line-sim` | The whole game. No Godot dependency, no runtime dependencies at all |
 | `crates/salt-line-godot` | Rendering, input, UI. Draws what the sim says is true |
 | `art/` | Native-resolution sprites, 16-colour palette, reference scene |
-| `tools/gen_sprites.py` | Regenerates all art; working reference for the terrain math |
+| `tools/gen_sprites.py` | Builds previews from exported sprites; reference terrain math |
 | `site/` | The alpha marketing page, published to GitHub Pages |
 | `tools/build_site.py` | Generates every image on that page out of the art pipeline |
 | `tools/gen_audio.py` | Deterministically generates the original PCM sound effects |
@@ -473,29 +473,42 @@ whether it passes its checks, and quit; screens and rounds count from 0).
 Regenerate after editing the generator:
 
 ```sh
-uv run python tools/gen_sprites.py     # writes into art/
+just gen-art                          # exports sprites, then rebuilds previews
+just check-sprites                    # checks source/export parity and constraints
 uv run python tools/gen_audio.py       # writes art/audio/
 ```
 
 The 16-colour palette is sampled out of `art/palette_16.png` at runtime rather
 than transcribed, so the image stays the single source of truth.
 
-Regenerating rewrites every PNG, and different Pillow versions encode identical
-pixels to different bytes. Compare pixels, not file hashes, before committing
-the churn.
+Editable sprite sources live in `art/aseprite/*.aseprite`, tracked with Git LFS
+and excluded from Godot exports by `.gdignore`. Run `git lfs install` and
+`git lfs pull` after cloning to get the editable files. The initial sources
+were imported losslessly from the native PNGs, not cropped out of the enlarged
+marketing contact sheets; each currently has one editable `art` layer.
 
-All five silhouettes now have all three damage states. The water tower is drawn
-per state by hand, with a riveted tank, open trestle and recognisable fallen
-tank in its wreck. Its leaning crown stays inside the original 17px canvas,
-and both standing states keep the original footing. The derrick, mast, silo
-and pylon are sheared about their own
-footing and wrecked from the intact drawing, so the states cannot drift away
-from the geometry they came from.
+Edit these sources in Aseprite, preserving canvas sizes, transparent backgrounds,
+footings and pivots. Each barrel source has nineteen 28×28 frames in ascending
+0–90° order at 5° steps, with angle tags for navigation. Tags do not determine
+export order. Tank pivots are `(15, 3)` for Base/Forced March and `(13, 4)` for
+Ballast; barrel pivots are `(3, 24)`. All five structures have authored intact,
+leaning and collapsed sources, including the seasonal water-tower skins.
 
-Replace all of it with hand-drawn work before any public release, but keep the
-dimensions and the palette fixed — they are the contract. Still open: no barrel
-strip for the Ballast or Forced March chassis, so those builds read from the
-hull alone.
+Install the Aseprite CLI (or set `ASEPRITE=/path/to/aseprite`), save edits, then
+run `just gen-art`. The exporter validates dimensions, frame counts, the
+16-colour palette, binary alpha and transparent barrel-frame edges before
+updating any game PNGs. It only rewrites PNGs whose pixels changed.
+`just check-sprites` reports missing or stale exports without modifying them.
+Commit the `.aseprite` sources and their exported PNGs together; do not edit
+`art/sprites/*.png` directly. The original procedural drawing functions remain
+in `tools/gen_sprites.py` as migration reference, but no longer generate game
+sprites.
+
+Scene previews and contact sheets read `art/sprites/` rather than redrawing
+entities. Run `just site` to rebuild all marketing media, including the hero,
+animated shot, favicon and social card, from those same exports. Site builds
+(including GitHub Pages) use committed PNGs and do not require Aseprite or LFS
+downloads. Compare pixels, not file hashes, when reviewing image encoder churn.
 
 The title background uses a separate authored painting in
 `art/source/title_salt_flat.png`; `.gdignore` keeps this full-size source out

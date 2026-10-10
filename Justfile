@@ -13,8 +13,16 @@ build-release:
 run: build
     godot --path .
 
-gen-art:
+gen-art: export-sprites
     uv run python tools/gen_sprites.py
+
+# Export art/aseprite/*.aseprite to art/sprites/*.png (needs the aseprite CLI; set ASEPRITE to override).
+export-sprites:
+    uv run python tools/export_sprites.py
+
+# Fail if art/sprites is stale vs art/aseprite or breaks the palette rules.
+check-sprites:
+    uv run python tools/export_sprites.py --check
 
 gen-audio:
     uv run python tools/gen_audio.py

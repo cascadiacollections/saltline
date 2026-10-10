@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Salt Line — sprite + scene generator.
+"""Salt Line — scene and contact-sheet builder using exported game sprites.
 
 Renders at the spec's native internal resolution (180px tall) using the
-16-colour fixed palette. Nothing here is anti-aliased, scaled or rotated at
-runtime; every sprite is rasterised directly into the pixel grid.
+16-colour fixed palette. Exported sprites are composited without rotation
+or filtering; enlarged previews use integer nearest-neighbour scaling.
 """
 import math, os, struct
 from PIL import Image
@@ -12,7 +12,6 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.environ.get("SALT_LINE_ART", os.path.join(ROOT, "art"))
 SPR = os.path.join(OUT, "sprites")
-os.makedirs(SPR, exist_ok=True)
 
 # ---------------------------------------------------------------- palette (16)
 P = {
@@ -103,6 +102,33 @@ class Buf:
         if scale != 1:
             im = im.resize((self.w * scale, self.h * scale), Image.NEAREST)
         return im
+
+
+def load_sprite(name, frame=None):
+    with Image.open(os.path.join(SPR, name + ".png")) as source:
+        image = source.convert("RGBA")
+    if frame is not None:
+        if image.size != (28 * 19, 28) or not 0 <= frame < 19:
+            raise ValueError(f"{name}: expected 19 horizontal 28x28 barrel frames")
+        image = image.crop((frame * 28, 0, (frame + 1) * 28, 28))
+    b = Buf(*image.size)
+    data = list(image.get_flattened_data() if hasattr(image, "get_flattened_data")
+                else image.getdata())
+    b.px = [data[y * b.w:(y + 1) * b.w] for y in range(b.h)]
+    return b
+
+
+def load_tank(variant="base"):
+    names = {"base": "tank_base", "ballast": "tank_ballast", "forced": "tank_forced_march"}
+    return load_sprite(names[variant]), (13, 4) if variant == "ballast" else (15, 3)
+
+
+def load_barrel(angle_deg, variant="base"):
+    names = {"base": "5deg", "ballast": "ballast", "forced": "forced_march",
+             "sabot": "sabot", "cluster": "cluster", "auger": "auger"}
+    # Match the sim's nearest pre-drawn angle; never rotate an exported frame.
+    frame = min(18, max(0, math.floor(angle_deg / 5 + 0.5)))
+    return load_sprite("barrel_strip_" + names[variant], frame), BARREL_PIVOT
 
 
 # ---------------------------------------------------------------- 3x5 font
@@ -497,7 +523,7 @@ def seasonal_sheet():
         for col, state in enumerate(("intact", "leaning", "collapsed")):
             x = 6 + col * 58
             text(b, state.upper(), x, y + 10, rgba("sky_lo"), labels)
-            sprite = seasonal_tower(season, state)
+            sprite = load_sprite(f"tower_{season}_{state}")
             b.blit(sprite, x + 10, y + 49 - sprite.h)
     return b
 
@@ -705,18 +731,18 @@ def scene(width=320, height=180, seed=20260907):
             b.set(x, top + 1, rgba("shadow"))
 
     # structures, seated into the surface
-    tower, tx = water_tower("leaning"), 188
+    tower, tx = load_sprite("tower_leaning"), 188
     b.blit(tower, tx, seat(hs, tx, 7) - tower.h + 3)
-    m, mx = radio_mast(), 236
+    m, mx = load_sprite("radio_mast"), 236
     b.blit(m, mx, seat(hs, mx, 13) - m.h + 1)
-    d, dx = derrick(), 268
+    d, dx = load_sprite("derrick"), 268
     b.blit(d, dx, seat(hs, dx, 15) - d.h + 2)
 
     # player
-    tk, pivot = tank("base")
+    tk, pivot = load_tank("base")
     px = 20
     py = seat(hs, px, 30) - tk.h + 3
-    bar, bp = barrel(45)
+    bar, bp = load_barrel(45)
     b.blit(bar, px + pivot[0] - bp[0], py + pivot[1] - bp[1])
     b.blit(tk, px, py)
 
@@ -743,22 +769,19 @@ def scene(width=320, height=180, seed=20260907):
 # ---------------------------------------------------------------- contact sheet
 def sheet():
     items = [
-        ("TANK", tank("base")[0]), ("BALLAST", tank("ballast")[0]),
-        ("FORCED", tank("forced")[0]),
-        ("TOWER", water_tower("intact")), ("LEANING", water_tower("leaning")),
-        ("COLLAPSED", water_tower("collapsed")),
+        ("TANK", load_tank("base")[0]), ("BALLAST", load_tank("ballast")[0]),
+        ("FORCED", load_tank("forced")[0]),
+        ("TOWER", load_sprite("tower_intact")), ("LEANING", load_sprite("tower_leaning")),
+        ("COLLAPSED", load_sprite("tower_collapsed")),
     ]
-    for label, make, phase in (
-        ("DERRICK", derrick, 1.7),
-        ("MAST", radio_mast, 2.3),
-        ("SILO", silo, 1.1),
-        ("PYLON", pylon, 2.9),
+    for label, name in (
+        ("DERRICK", "derrick"), ("MAST", "radio_mast"),
+        ("SILO", "silo"), ("PYLON", "pylon"),
     ):
-        src = make()
         items += [
-            (label, src),
-            ("LEANING", leaning(src)),
-            ("COLLAPSED", collapsed(src, phase)),
+            (label, load_sprite(name)),
+            ("LEANING", load_sprite(name + "_leaning")),
+            ("COLLAPSED", load_sprite(name + "_collapsed")),
         ]
     cell_w, cell_h = 46, 56
     cols = len(items)
@@ -772,7 +795,7 @@ def sheet():
     # barrel frame strip
     b2 = Buf(b.w, 34, rgba("sky_hi"))
     for k, ang in enumerate(range(0, 95, 10)):
-        br, bp = barrel(ang)
+        br, bp = load_barrel(ang)
         b2.blit(br, k * 34, 2)
     out = Buf(b.w, b.h + 36, rgba("sky_hi"))
     out.blit(b, 0, 0)
@@ -793,61 +816,28 @@ def palette_img():
     return b
 
 
-if __name__ == "__main__":
+def save_preview(image, path):
+    if os.path.isfile(path):
+        with Image.open(path) as existing:
+            if existing.size == image.size and existing.convert("RGBA").tobytes() == image.tobytes():
+                return
+    image.save(path)
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
     sc = scene()
-    sc.image(1).save(f"{OUT}/scene_native_320x180.png")
-    sc.image(4).save(f"{OUT}/scene_preview_4x.png")
+    save_preview(sc.image(1), f"{OUT}/scene_native_320x180.png")
+    save_preview(sc.image(4), f"{OUT}/scene_preview_4x.png")
 
     sh = sheet()
-    sh.image(4).save(f"{OUT}/sprite_sheet_4x.png")
+    save_preview(sh.image(4), f"{OUT}/sprite_sheet_4x.png")
 
-    palette_img().image(4).save(f"{OUT}/palette_16.png")
+    save_preview(palette_img().image(4), f"{OUT}/palette_16.png")
 
-    # clean native-resolution assets
-    tank("base")[0].image().save(f"{SPR}/tank_base.png")
-    tank("ballast")[0].image().save(f"{SPR}/tank_ballast.png")
-    tank("forced")[0].image().save(f"{SPR}/tank_forced_march.png")
-    water_tower("intact").image().save(f"{SPR}/tower_intact.png")
-    water_tower("leaning").image().save(f"{SPR}/tower_leaning.png")
-    water_tower("collapsed").image().save(f"{SPR}/tower_collapsed.png")
-    for season in ("halloween", "thanksgiving", "christmas"):
-        for state in ("intact", "leaning", "collapsed"):
-            seasonal_tower(season, state).image().save(f"{SPR}/tower_{season}_{state}.png")
-        check_lean_alignment(season, seasonal_tower(season), seasonal_tower(season, "leaning"))
-    seasonal_sheet().image(4).save(f"{OUT}/seasonal_sheet_4x.png")
-    # Every structure now has all three damage states (DESIGN §5.4). The water
-    # tower is hand-drawn per state; the rest are sheared and wrecked from
-    # their intact silhouette, which keeps the drawings in lockstep with the
-    # only place their geometry is defined.
-    derrick().image().save(f"{SPR}/derrick.png")
-    radio_mast().image().save(f"{SPR}/radio_mast.png")
-    silo().image().save(f"{SPR}/silo.png")
-    pylon().image().save(f"{SPR}/pylon.png")
-    for name, make, phase in (
-        ("derrick", derrick, 1.7),
-        ("radio_mast", radio_mast, 2.3),
-        ("silo", silo, 1.1),
-        ("pylon", pylon, 2.9),
-    ):
-        src = make()
-        leaning(src).image().save(f"{SPR}/{name}_leaning.png")
-        collapsed(src, phase).image().save(f"{SPR}/{name}_collapsed.png")
-        check_lean_alignment(name, src, leaning(src))
-
-    # 19-frame barrel strips, 5° increments, packed horizontally — one per
-    # build silhouette (§5.3). Sliced at 28px by the Godot layer.
-    for variant, name in (
-        ("base", "barrel_strip_5deg"),
-        ("ballast", "barrel_strip_ballast"),
-        ("forced", "barrel_strip_forced_march"),
-        ("sabot", "barrel_strip_sabot"),
-        ("cluster", "barrel_strip_cluster"),
-        ("auger", "barrel_strip_auger"),
-    ):
-        frames = [barrel(a, variant)[0] for a in range(0, 95, 5)]
-        strip = Buf(28 * len(frames), 28)
-        for i, f in enumerate(frames):
-            strip.blit(f, i * 28, 0)
-        strip.image().save(f"{SPR}/{name}.png")
-
+    save_preview(seasonal_sheet().image(4), f"{OUT}/seasonal_sheet_4x.png")
     print("ok")
+
+
+if __name__ == "__main__":
+    main()

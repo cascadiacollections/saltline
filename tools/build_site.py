@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Salt Line — marketing site media builder.
 
-Every image the site ships is produced here from the same primitives that
-draw the game's art (`tools/gen_sprites.py`): same 16-colour palette, same
-native 320x180 grid, same rasteriser. Nothing is drawn by hand, nothing is
-anti-aliased, and the only scaling is integer NEAREST.
+Every image the site ships uses the exported game sprites in art/sprites/.
+Terrain and UI come from tools/gen_sprites.py: same 16-colour palette, same
+native 320x180 grid, same rasteriser. Nothing is anti-aliased, and the only
+scaling is integer NEAREST. No Aseprite installation is needed for site builds.
 
     python3 tools/build_site.py     # needs Pillow + Rust; writes into site/assets/
 
@@ -114,19 +114,14 @@ def compose(
     ground(b, hs, width, height)
 
     for kind, x, state in props:
-        if kind == "tower":
-            spr = G.water_tower(state)
-        elif kind == "derrick":
-            spr = G.derrick()
-        elif kind == "mast":
-            spr = G.radio_mast()
-        elif kind == "silo":
-            spr = G.silo()
-        else:
-            spr = G.pylon()
+        name = {"tower": "tower", "derrick": "derrick", "mast": "radio_mast",
+                "silo": "silo", "pylon": "pylon"}[kind]
+        if kind == "tower" or state not in (None, "intact"):
+            name += "_" + state
+        spr = G.load_sprite(name)
         b.blit(spr, x, G.seat(hs, x, spr.w) - spr.h + 2)
 
-    tk, pivot = G.tank("base")
+    tk, pivot = G.load_tank("base")
     px = int(EMPLACEMENT_X) - pivot[0]
     py = G.seat(hs, int(EMPLACEMENT_X) - 13, 26) - tk.h + 3
     muzzle = (px + pivot[0], py + pivot[1])
@@ -135,8 +130,8 @@ def compose(
 
 def with_barrel(b, tank_xy, pivot, angle_deg):
     px, py = tank_xy
-    tk, _ = G.tank("base")
-    bar, bp = G.barrel(angle_deg)
+    tk, _ = G.load_tank("base")
+    bar, bp = G.load_barrel(angle_deg)
     b.blit(bar, px + pivot[0] - bp[0], py + pivot[1] - bp[1])
     b.blit(tk, px, py)
 
@@ -377,8 +372,8 @@ def og_card():
 
 def favicon():
     b = Buf(16, 16, rgba("ui_bg"))
-    tk, pivot = G.tank("base")
-    bar, bp = G.barrel(45)
+    tk, pivot = G.load_tank("base")
+    bar, bp = G.load_barrel(45)
     b.blit(bar, 1 + pivot[0] - bp[0] - 7, 3 + pivot[1] - bp[1])
     b.blit(tk, -7, 3)
     return b.image(4)
@@ -434,6 +429,7 @@ Godot C++ bindings and system libraries and services.</p>
 
 # ---------------------------------------------------------------- driver
 def main():
+    G.main()
     license_page()
     shutil.rmtree(OUT_SPR, ignore_errors=True)
     os.makedirs(OUT_SPR, exist_ok=True)
