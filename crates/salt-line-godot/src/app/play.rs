@@ -322,6 +322,19 @@ impl Game {
             .unwrap_or(0)
     }
 
+    /// The current challenge's layout as a share code on the clipboard.
+    pub(super) fn copy_challenge_code(&mut self) {
+        let code = self
+            .play
+            .challenge
+            .and_then(salt_line_sim::challenge::get)
+            .and_then(|c| salt_line_sim::challenge::layout(c).to_code().ok());
+        if let Some(code) = code {
+            self.fx.push(Effect::Clipboard(code));
+            self.note("CODE COPIED".into());
+        }
+    }
+
     /// Keep the shells left over from a cleared challenge if they beat the
     /// last time.
     pub(super) fn record_challenge_clear(&mut self) {

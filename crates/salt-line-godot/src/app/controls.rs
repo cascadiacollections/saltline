@@ -308,7 +308,9 @@ impl Game {
             Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::GameOver => {
                 if self.play.challenge.is_some() && self.action_pressed(Action::Copy) {
-                    // A challenge is a fixed layout, not a seed to share.
+                    // A challenge is a fixed layout: its share code opens in
+                    // the editor to test-fire, change or pass on.
+                    self.copy_challenge_code();
                 } else if self.action_pressed(Action::Copy) {
                     // Seed sharing: the seed is the whole run, so the
                     // clipboard is the whole share format.
