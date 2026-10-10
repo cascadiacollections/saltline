@@ -323,6 +323,7 @@ fn custom_challenge_finishes_without_a_run_score_or_replay() {
     g.play.run.as_mut().unwrap().phase = Phase::Over(salt_line_sim::run::RunOver::OutOfShells);
     g.finish_run();
     assert_eq!(g.mode, Mode::GameOver);
+    assert_eq!(g.status, "CHALLENGE COMPLETE");
     assert!(!g.run_file.run_persist);
     assert!(g.history.last_run.is_none());
     assert!(!g

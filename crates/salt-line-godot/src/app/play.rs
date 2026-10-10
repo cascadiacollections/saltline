@@ -309,7 +309,9 @@ impl Game {
                         self.finish_run();
                     }
                 } else if self.play.custom_challenge.is_some() {
-                    self.play.run.as_mut().map(|r| r.resolve_clear());
+                    if let Some(run) = self.play.run.as_mut() {
+                        run.resolve_clear();
+                    }
                     self.finish_run();
                 } else {
                     let advanced = self.play.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
@@ -451,7 +453,11 @@ impl Game {
         if self.play.challenge.is_some() || self.play.custom_challenge.is_some() {
             self.run_file.run_persist = false;
             self.mode = Mode::GameOver;
-            self.note("CHALLENGE COURSE COMPLETE".into());
+            self.note(if self.play.custom_challenge.is_some() {
+                "CHALLENGE COMPLETE".into()
+            } else {
+                "CHALLENGE COURSE COMPLETE".into()
+            });
             return;
         }
         // The run file goes before the score is recorded, never after, and
