@@ -1,13 +1,44 @@
 # Salt Line
 
+[![Build: GitHub Actions](https://img.shields.io/badge/build-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/cascadiacollections/saltline/actions/workflows/ci.yml?query=branch%3Amain)
+[![Release: latest](https://img.shields.io/badge/release-latest-3878AB)](https://github.com/cascadiacollections/saltline/releases/latest)
+[![Development build: main](https://img.shields.io/badge/development_build-main-D99A34)](https://github.com/cascadiacollections/saltline/releases/tag/dev)
+[![License: MIT](https://img.shields.io/badge/license-MIT-64748B)](LICENSE)
+
+<!-- These are navigation badges, not live status claims. Public badge services
+cannot read this internal repository. Their destinations stay current without
+pinning a release version or a CI result in the README. -->
+
 Single-player artillery roguelike. Endless procedural horizon, persistent
 terrain damage, shells as the run resource, modifier drafting every four screens.
 
 Deterministic Rust simulation core, Godot 4 presentation layer via `gdext`.
 
-**Status: 0.1.0 desktop development preview.** Not for sale, nothing to buy,
-every screen playable. Binaries are unsigned. `RELEASING.md` has the supported
-platforms, the release checklist, and the known-issues list.
+| In play | Title screen |
+|---|---|
+| ![A gun facing a silo on a raised plateau, with the Salt & Iron harbour behind the generated terrain](site/assets/readme/gameplay.png) | ![Salt Line's title menu over the harbour illustration](site/assets/readme/title.png) |
+
+Actual game captures at 1280×720. Gameplay: seed `20260907`, screen index `10`,
+seasonal art off. The title illustration is decorative; playable terrain and
+target placement come from the simulation.
+
+- **Play:** daily and seeded runs, a challenge course, local versus with a human
+  or AI opponent, a map editor, and saved replays.
+- **Build:** Rust owns simulation and solvability checks; Godot handles input,
+  audio and presentation. Rendering changes do not change collision geometry.
+- **Verify:** tests and cross-platform replay digests run in CI; every generated
+  screen is checked against the current loadout before play.
+
+**Status: development preview.** Free, every screen playable. Desktop binaries
+are unsigned. [Latest release](https://github.com/cascadiacollections/saltline/releases/latest)
+has the published version; the [development build](https://github.com/cascadiacollections/saltline/releases/tag/dev)
+follows passing builds of `main`. [RELEASING.md](RELEASING.md) covers supported
+platforms, the release checklist, and known issues.
+
+[Build and run](#quick-start) · [Controls](#controls) · [Developer tools](#tools) ·
+[Art and assets](#art) · [Determinism](#determinism) · [Report a bug](#reporting-bugs)
+
+## Build prerequisites
 
 Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`), Godot `4.7.2`, and
 `uv` for the Python asset tools. `just` is optional but provides the documented
@@ -28,8 +59,8 @@ failing loudly.
 | `design/DESIGN.md` | Full specification — mechanics, terrain, modifiers, art |
 | `crates/salt-line-sim` | The whole game. No Godot dependency, no runtime dependencies at all |
 | `crates/salt-line-godot` | Rendering, input, UI. Draws what the sim says is true |
-| `art/` | Native-resolution sprites, 16-colour palette, reference scene |
-| `tools/gen_sprites.py` | Regenerates all art; working reference for the terrain math |
+| `art/` | Source artwork, detailed game sprites, native fallback, UI palette and app icons |
+| `tools/gen_sprites.py`, `tools/build_detail_art.py` | Rebuild native and detailed artwork from the checked-in sources |
 | `site/` | The alpha marketing page, published to GitHub Pages |
 | `tools/build_site.py` | Generates every image on that page out of the art pipeline |
 | `tools/gen_audio.py` | Deterministically generates the original PCM sound effects |
@@ -469,6 +500,15 @@ whether it passes its checks, and quit; screens and rounds count from 0).
 
 ## Art
 
+![Shipped Salt & Iron sprites: three chassis, intact and damaged structures, and barrel angle frames](art/detail/preview.png)
+
+The generated sheet above shows actual game assets: light, heavy and mobile
+chassis, structure damage states, and precomputed barrel angles. The
+[application icon](art/icon_1024.png), [title artwork](art/detail/title.png), and
+[native seasonal sheet](art/seasonal_sheet_4x.png) are also checked in. The
+[source notes](art/source/salt-and-iron/README.md) record provenance and cleanup
+steps; the [design specification](design/DESIGN.md) describes the game's rules.
+
 The game uses chassis and structure cutouts from the
 [Salt & Iron concept board](https://cascadiacollections.github.io/saltline/assets/concept-boards/01-salt-and-iron.png).
 `art/detail/` preserves their source colors at four artwork pixels per logical
@@ -508,6 +548,22 @@ using adjacent source sky pixels. Its original wide aspect ratio is preserved
 with sky extended above the bottom-aligned scene. Menu text has opaque backings for legibility.
 Rebuild with `bash tools/build_title_art.sh`. The illustration is decorative and
 never supplies terrain or collision data.
+
+### Refresh the README captures
+
+After building the extension, capture the same views directly from the game:
+
+```sh
+mkdir -p site/assets/readme
+godot --headless --path . -- --salt-seed 20260907 --salt-screen 10 \
+    --salt-season off --salt-shot site/assets/readme/gameplay.png
+godot --headless --path . -- --salt-season off \
+    --salt-shot site/assets/readme/title.png
+```
+
+Keep their native aspect ratios when displaying them. The captures live under
+`site/` so they are excluded from game exports; the website's media builder does
+not overwrite them. The asset sheet updates with `tools/build_detail_art.py`.
 
 ### Seasonal targets
 
