@@ -367,3 +367,8 @@ footer nav { display: grid; gap: .4rem; font-size: .88rem; }
 .dl .card.yours { border-color: var(--alert); }
 .dl .card.yours h3::after { content: "this device"; color: var(--alert); font-size: .72rem; margin-left: .5rem; }
 .dl .card li code { display: inline; margin: 0; padding: .05rem .3rem; border-left: 0; }
+
+/* Bundled notices stay readable on narrow screens and at larger text sizes. */
+details { margin: 1rem 0; border: 1px solid var(--bedrock); padding: 1rem; }
+summary { cursor: pointer; color: var(--alert); }
+.license-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .85rem; }

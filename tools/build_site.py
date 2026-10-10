@@ -20,6 +20,7 @@ Outputs:
     site/assets/og.png                1200x630 social card
     site/assets/favicon.png           64x64
 """
+import html
 import os
 import shutil
 import subprocess
@@ -383,8 +384,57 @@ def favicon():
     return b.image(4)
 
 
+def license_page():
+    """Publish the bundled notices locally, without relying on repository access."""
+    notices = [
+        ("Salt Line — MIT", "LICENSE"),
+        ("Godot Engine — MIT", "third_party/godot-LICENSE.txt"),
+        ("Godot Rust bindings (gdext) — MPL-2.0", "third_party/gdext-LICENSE-MPL-2.0.txt"),
+        ("glam — MIT option", "third_party/glam-LICENSE-MIT.txt"),
+        ("libc — MIT option", "third_party/libc-LICENSE-MIT.txt"),
+        ("Linux desktop integration — MIT", "addons/xdg_portals/LICENSE"),
+        ("Linux integration third-party notices", "addons/xdg_portals/THIRD_PARTY_NOTICES.md"),
+    ]
+    sections = []
+    for title, relative_path in notices:
+        with open(os.path.join(ROOT, relative_path), encoding="utf-8") as source:
+            notice = source.read()
+        sections.append(
+            f'<details><summary>{html.escape(title)}</summary>'
+            f'<pre class="license-text">{html.escape(notice)}</pre></details>'
+        )
+    document = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Salt Line — credits and licenses</title>
+<meta name="description" content="Salt Line's MIT license and bundled free and open-source software acknowledgments.">
+<meta name="theme-color" content="#2e2a26">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><a class="brand" href="index.html">SALT LINE</a>
+<nav aria-label="Project links"><a href="index.html#download">Downloads</a></nav></header>
+<main id="main"><section aria-labelledby="licenses-h">
+<h1 id="licenses-h">Credits &amp; licenses</h1>
+<p>Salt Line is by Cascadia Collections and is licensed under MIT.
+Thank you to the free and open-source communities behind Godot Engine,
+the gdext Rust bindings, glam, libc, and Linux desktop integration.</p>
+<p>The complete bundled notices below are also available offline in the game's
+Settings → Credits / Licenses. The Linux integration notices describe its
+Godot C++ bindings and system libraries and services.</p>
+<p><a href="index.html">Back to Salt Line</a></p>
+""" + "\n".join(sections) + "\n</section></main>\n</body>\n</html>\n"
+    with open(os.path.join(ROOT, "site", "licenses.html"), "w", encoding="utf-8") as out:
+        out.write(document)
+
+
 # ---------------------------------------------------------------- driver
 def main():
+    license_page()
     shutil.rmtree(OUT_SPR, ignore_errors=True)
     os.makedirs(OUT_SPR, exist_ok=True)
 
