@@ -5,6 +5,13 @@
 [![Development build: main](https://img.shields.io/badge/development_build-main-D99A34)](https://github.com/cascadiacollections/saltline/releases/tag/dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B)](LICENSE)
 
+[![Rust 1.99.0](https://img.shields.io/badge/Rust-1.99.0-CE422B?logo=rust)](rust-toolchain.toml)
+[![uv 0.13.0](https://img.shields.io/badge/uv-0.13.0-DE5FE9?logo=uv)](pyproject.toml)
+[![Python 3.15.0](https://img.shields.io/badge/Python-3.15.0-3776AB?logo=python&logoColor=white)](.python-version)
+[![Godot 4.7.2](https://img.shields.io/badge/Godot-4.7.2-478CBF?logo=godotengine&logoColor=white)](project.godot)
+[![Zed](https://img.shields.io/badge/Zed-ready-084CCF?logo=zedindustries)](.zed/tasks.json)
+[![Devcontainer](https://img.shields.io/badge/devcontainer-Linux-2496ED?logo=docker&logoColor=white)](docs/development-environment.md)
+
 <!-- These are navigation badges, not live status claims. Public badge services
 cannot read this internal repository. Their destinations stay current without
 pinning a release version or a CI result in the README. -->
@@ -40,9 +47,9 @@ platforms, the release checklist, and known issues.
 
 ## Build prerequisites
 
-Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`), Godot `4.7.2`, and
-`uv` for the Python asset tools. `just` is optional but provides the documented
-shortcuts below.
+Requires Rust `1.99.0` (pinned in `rust-toolchain.toml`), Godot `4.7.2`, and
+`uv` 0.13.0 and Python 3.15.0 for the Python asset tools. `just` is optional
+but provides the documented shortcuts below.
 If you use mise, `mise install` reads the Rust version from the existing
 `rust-toolchain.toml`; run commands with `mise exec -- cargo ...`.
 
@@ -83,7 +90,11 @@ plays when the desktop portal or GameMode is unavailable.
 
 With `just` installed, the same common operations are available as `just test`,
 `just build`, and `just run`. The Python tools use the locked environment from
-`pyproject.toml` and `uv.lock`; run `uv sync` once after checkout.
+`pyproject.toml` and `uv.lock`; run `uv sync --locked` once after checkout.
+
+For a repeatable Linux environment, reopen this checkout in the
+[devcontainer](docs/development-environment.md). It supports headless Rust
+work and Python assets; Godot and mobile SDKs are opt-in.
 
 ### Development builds
 

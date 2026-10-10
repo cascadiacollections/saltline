@@ -1,0 +1,5 @@
+# Build only needs the Dockerfile: keep internal code, credentials and assets
+# out of the image context. The checkout is mounted by the devcontainer client.
+**
+!.devcontainer/
+!.devcontainer/Dockerfile

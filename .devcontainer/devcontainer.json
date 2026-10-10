@@ -1,0 +1,59 @@
+{
+  "name": "Salt Line \u2014 Linux development",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "developer",
+  "updateRemoteUserUID": true,
+  "init": true,
+  "shutdownAction": "stopContainer",
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "containerEnv": {
+    "CARGO_BUILD_JOBS": "2",
+    "UV_LINK_MODE": "copy",
+    "UV_PROJECT_ENVIRONMENT": "/home/developer/.venvs/saltline"
+  },
+  "postCreateCommand": "bash .devcontainer/bootstrap.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.cargo.allTargets": false,
+        "rust-analyzer.check.extraArgs": [
+          "--locked"
+        ]
+      }
+    },
+    "zed": {
+      "extensions": [
+        "toml",
+        "gdscript"
+      ]
+    }
+  },
+  "portsAttributes": {
+    "8000": {
+      "label": "Site preview",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    }
+  },
+  "otherPortsAttributes": {
+    "onAutoForward": "ignore"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/sshd@sha256:f5251b8e4325f68f7280973c6cd65daff414449c66f240621502d4e8e74eb7ee": {
+      "gatewayPorts": "no"
+    }
+  },
+  "containerUser": "root"
+}
