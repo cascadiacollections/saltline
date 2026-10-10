@@ -19,6 +19,7 @@ on:
       - tools/godot_build_profile.json
       - tools/godot_template.py
       - .github/workflows/godot-templates.yml
+      - .github/actions/build-godot-template/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -82,22 +83,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: false
-      # Godot asks for one NDK version and installs it through sdkmanager when
-      # ANDROID_HOME lacks it.
+      # The reusable builder produces the same native release library;
+      # Salt Line keeps its reviewed lock and release attestation policy.
       - name: build
-        env:
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          set -eu
-          python3 tools/godot_template.py build "$PLATFORM" --src "$RUNNER_TEMP/godot" -j "$(nproc)"
-          ls -l build/godot-templates
+        uses: ./.github/actions/build-godot-template # zizmor: ignore[self-repository] -- run the explicitly checked-out PR recipe
+        with:
+          tag: 4.7.2-stable
+          commit: ed1daf0bf001b61586d9930840f2f1394092c079
+          profile: tools/godot_build_profile.json
+          platform: ${{ matrix.platform }}
+          arch: arm64
+          flags: '["swappy=no"]'
+          toolchain-id: godot-4.7.2-default-ndk
+          cache: 'false'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: godot-template-${{ matrix.platform }}
-          path: build/godot-templates/*
+          path: build/godot-templates/libgodot.android.template_release.arm64.so
           if-no-files-found: error
 
   # Only main publishes: `lock --release` trusts a build only if its
