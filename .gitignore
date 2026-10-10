@@ -13,3 +13,7 @@ __pycache__/
 # cargo-mutants output
 mutants.out/
 mutants.out.old/
+
+# cargo-llvm-cov coverage reports
+/coverage.txt
+/coverage.xml
