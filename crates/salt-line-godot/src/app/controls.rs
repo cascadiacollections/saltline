@@ -329,7 +329,9 @@ impl Game {
             }
             Mode::SeedEntry => self.handle_seed_input(delta),
             Mode::GameOver => {
-                if self.play.challenge.is_some() && self.action_pressed(Action::Copy) {
+                let challenge =
+                    self.play.challenge.is_some() || self.play.custom_challenge.is_some();
+                if challenge && self.action_pressed(Action::Copy) {
                     // A challenge is a fixed layout: its share code opens in
                     // the editor to test-fire, change or pass on.
                     self.copy_challenge_code();
@@ -342,17 +344,21 @@ impl Game {
                 } else if self.action_pressed(Action::Confirm) || self.action_pressed(Action::Back)
                 {
                     self.mode = Mode::Title;
-                } else if self.play.challenge.is_some() && self.action_pressed(Action::Replay) {
+                } else if challenge && self.action_pressed(Action::Replay) {
                     // A failed course tries the same one again; a finished
                     // one starts over.
                     let failed = self.play.run.as_ref().is_some_and(|r| r.is_over());
-                    let index = self.play.challenge.unwrap_or(0);
-                    self.start_challenge(if failed { index } else { 0 });
+                    if let Some(layout) = self.play.custom_challenge.clone() {
+                        self.start_custom_challenge(layout);
+                    } else {
+                        let index = self.play.challenge.unwrap_or(0);
+                        self.start_challenge(if failed { index } else { 0 });
+                    }
                 } else if self.action_pressed(Action::Replay) {
                     let seed = self.play.last_seed;
                     let daily = self.play.daily;
                     self.start_run(seed, daily);
-                } else if self.play.challenge.is_none() && self.action_pressed(Action::Watch) {
+                } else if !challenge && self.action_pressed(Action::Watch) {
                     // WATCH the run just ended, then back to this screen.
                     self.watch_last_run();
                 }

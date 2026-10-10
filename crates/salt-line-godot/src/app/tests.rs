@@ -233,6 +233,39 @@ fn a_challenge_carries_a_hint_arc_and_a_normal_run_leaves_none_behind() {
 }
 
 #[test]
+fn pasted_and_saved_one_gun_layouts_start_custom_challenges() {
+    let challenge = salt_line_sim::challenge::get(0).unwrap();
+    let layout = salt_line_sim::challenge::layout(challenge);
+    let code = layout.to_code().unwrap();
+    let budget = crate::custom::challenge_shots(&layout);
+
+    let mut pasted = game();
+    pasted.mode = Mode::Editor;
+    pasted.pasted(&code);
+    assert_eq!(pasted.mode, Mode::Playing);
+    assert_eq!(pasted.play.custom_challenge.as_ref(), Some(&layout));
+    assert_eq!(pasted.play.challenge, None);
+    assert_eq!(pasted.play.run.as_ref().unwrap().run_seed, layout.digest());
+    assert_eq!(pasted.play.run.as_ref().unwrap().shells, budget);
+    assert!(!pasted.play.hint_arc.is_empty());
+    assert!(!pasted.run_file.run_persist);
+    assert!(pasted.play.run.as_ref().unwrap().log.is_empty());
+
+    let mut slots = crate::layouts_file::Slots::default();
+    slots.put(crate::layouts_file::SlotEntry {
+        slot: 1,
+        code,
+        origin: None,
+        tail: None,
+    });
+    let mut saved = game();
+    saved.layouts.set(slots);
+    saved.open_row(crate::app::editor::SlotRow::Slot(1));
+    assert_eq!(saved.mode, Mode::Playing);
+    assert_eq!(saved.play.custom_challenge.as_ref(), Some(&layout));
+}
+
+#[test]
 fn challenges_begin_at_the_first_uncleared_and_keep_the_best() {
     let mut g = game();
     assert_eq!(g.next_challenge(), 0);
@@ -252,6 +285,22 @@ fn challenges_begin_at_the_first_uncleared_and_keep_the_best() {
         g.save.record_challenge(i as u8, 1);
     }
     assert_eq!(g.next_challenge(), 0, "all cleared starts over");
+}
+
+#[test]
+fn custom_challenge_best_is_recorded_by_layout_digest() {
+    let challenge = salt_line_sim::challenge::get(0).unwrap();
+    let layout = salt_line_sim::challenge::layout(challenge);
+    let digest = layout.digest();
+    let mut g = game();
+    g.start_custom_challenge(layout);
+    g.play.run.as_mut().unwrap().shells = 2;
+    g.record_challenge_clear();
+    assert_eq!(g.save.custom_challenge_best(digest), Some(2));
+    assert_eq!(
+        Save::parse(&g.save.serialize()).custom_challenge_best(digest),
+        Some(2)
+    );
 }
 
 #[test]

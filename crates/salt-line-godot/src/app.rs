@@ -875,6 +875,8 @@ pub(crate) struct Play {
     pub(crate) preview_epoch: u32,
     /// The active bundled challenge index, or `None` for a normal run.
     pub(crate) challenge: Option<usize>,
+    /// The player-provided one-gun layout, or `None` outside custom challenges.
+    pub(crate) custom_challenge: Option<salt_line_sim::layout::Layout>,
     /// The solver's ghost arc for the challenge on screen, shown once the
     /// player has spent a shell. Empty outside challenges.
     pub(crate) hint_arc: Vec<Vec2>,
@@ -898,6 +900,7 @@ impl Default for Play {
             low_shell_warned: false,
             preview_epoch: 0,
             challenge: None,
+            custom_challenge: None,
             hint_arc: Vec::new(),
         }
     }

@@ -48,6 +48,7 @@ impl Game {
         self.play.last_seed = seed;
         self.retire_last_crash();
         self.play.challenge = None;
+        self.play.custom_challenge = None;
         self.play.hint_arc.clear();
         self.play.run = Some(state);
         self.mode = Mode::Playing;
@@ -66,6 +67,7 @@ impl Game {
         self.set_run_width(Some(layout.width()));
         let run = RunState::from_challenge(&challenge, &layout);
         self.play.challenge = Some(index);
+        self.play.custom_challenge = None;
         self.play.hint_arc = salt_line_sim::challenge::hint_path(challenge);
         self.play.angle_ticks = 900;
         self.play.power_ticks = 600;
@@ -86,6 +88,47 @@ impl Game {
         self.mode = Mode::Playing;
         self.apply_buffer_size();
         self.note(format!("{}  {} SHOTS", challenge.name, challenge.shots));
+    }
+
+    /// Start a checked one-gun layout as a standalone, unscored challenge.
+    pub(crate) fn start_custom_challenge(&mut self, layout: salt_line_sim::layout::Layout) {
+        if layout.width() != salt_line_sim::layout::LAYOUT_WIDTH
+            || layout.guns.len() != 1
+            || crate::custom::validate(&layout).is_err()
+        {
+            self.note("LAYOUT IS NOT A PLAYABLE CHALLENGE".into());
+            return;
+        }
+        let challenge = salt_line_sim::challenge::Challenge {
+            name: "CUSTOM",
+            seed: layout.digest(),
+            screen: 0,
+            shots: crate::custom::challenge_shots(&layout),
+        };
+        let run = RunState::from_challenge(&challenge, &layout);
+        self.set_run_width(Some(layout.width()));
+        self.play.challenge = None;
+        self.play.custom_challenge = Some(layout.clone());
+        self.play.hint_arc = crate::custom::challenge_hint_path(&layout);
+        self.play.angle_ticks = 900;
+        self.play.power_ticks = 600;
+        self.play.anim = None;
+        self.play.last_arc.clear();
+        self.play.clear_hold = 0.0;
+        self.play.sky_time = 0.0;
+        self.play.cam_x = 0;
+        self.play.cam_target = 0.0;
+        self.play.daily = false;
+        self.play.low_shell_warned = false;
+        self.play.last_seed = run.run_seed;
+        self.play.run = Some(run);
+        self.run_file.run_persist = false;
+        self.run_file.resumable = None;
+        self.retire_last_crash();
+        self.new_preview();
+        self.mode = Mode::Playing;
+        self.apply_buffer_size();
+        self.note(format!("CUSTOM  {} SHOTS", challenge.shots));
     }
 
     /// Level inspector: drop straight onto a screen index without playing the
@@ -265,6 +308,9 @@ impl Game {
                         self.play.run.as_mut().map(|r| r.resolve_clear());
                         self.finish_run();
                     }
+                } else if self.play.custom_challenge.is_some() {
+                    self.play.run.as_mut().map(|r| r.resolve_clear());
+                    self.finish_run();
                 } else {
                     let advanced = self.play.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
                     if advanced {
@@ -326,9 +372,15 @@ impl Game {
     pub(super) fn copy_challenge_code(&mut self) {
         let code = self
             .play
-            .challenge
-            .and_then(salt_line_sim::challenge::get)
-            .and_then(|c| salt_line_sim::challenge::layout(c).to_code().ok());
+            .custom_challenge
+            .as_ref()
+            .and_then(|layout| layout.to_code().ok())
+            .or_else(|| {
+                self.play
+                    .challenge
+                    .and_then(salt_line_sim::challenge::get)
+                    .and_then(|c| salt_line_sim::challenge::layout(c).to_code().ok())
+            });
         if let Some(code) = code {
             self.fx.push(Effect::Clipboard(code));
             self.note("CODE COPIED".into());
@@ -338,6 +390,15 @@ impl Game {
     /// Keep the shells left over from a cleared challenge if they beat the
     /// last time.
     pub(super) fn record_challenge_clear(&mut self) {
+        if let (Some(layout), Some(run)) =
+            (self.play.custom_challenge.as_ref(), self.play.run.as_ref())
+        {
+            let left = run.shells.clamp(0, i32::from(u8::MAX)) as u8;
+            if self.save.record_custom_challenge(layout.digest(), left) {
+                self.settings.touch();
+            }
+            return;
+        }
         let (Some(index), Some(run)) = (self.play.challenge, self.play.run.as_ref()) else {
             return;
         };
@@ -353,7 +414,7 @@ impl Game {
         if self.spectating() {
             return;
         }
-        if self.play.challenge.is_some() {
+        if self.play.challenge.is_some() || self.play.custom_challenge.is_some() {
             self.run_file.run_persist = false;
             self.mode = Mode::GameOver;
             self.note("CHALLENGE COURSE COMPLETE".into());

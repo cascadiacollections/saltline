@@ -632,7 +632,12 @@ impl Painter<'_> {
                     .play
                     .challenge
                     .is_some_and(|_| self.g.play.run.as_ref().is_some_and(|r| r.is_over()));
-                let heading = if self.g.play.challenge.is_some() {
+                let is_challenge =
+                    self.g.play.challenge.is_some() || self.g.play.custom_challenge.is_some();
+                let challenge_over = challenge_over
+                    || (self.g.play.custom_challenge.is_some()
+                        && self.g.play.run.as_ref().is_some_and(|r| r.is_over()));
+                let heading = if is_challenge {
                     if challenge_over {
                         "CHALLENGE FAILED"
                     } else {
@@ -643,7 +648,21 @@ impl Painter<'_> {
                 };
                 self.centred(y, heading, alert);
                 y += 14;
-                if let Some(index) = self.g.play.challenge {
+                if let Some(layout) = self.g.play.custom_challenge.as_ref() {
+                    let best = self
+                        .g
+                        .save
+                        .custom_challenge_best(layout.digest())
+                        .map_or("-".to_string(), |left| left.to_string());
+                    self.centred(
+                        y,
+                        &format!("CUSTOM {}", crate::layouts_file::fingerprint(layout)),
+                        fg,
+                    );
+                    y += 8;
+                    self.centred(y, &format!("BEST SHELLS LEFT {best}"), dim);
+                    y += 14;
+                } else if let Some(index) = self.g.play.challenge {
                     let bests = salt_line_sim::challenge::ALL
                         .iter()
                         .enumerate()
@@ -672,7 +691,7 @@ impl Painter<'_> {
                 }
                 // WATCH only for a run kept to watch (not a `--salt-screen`
                 // jump, whose log cannot rebuild it).
-                let challenge = self.g.play.challenge.is_some();
+                let challenge = is_challenge;
                 let rows: Vec<(Action, &str)> = if challenge {
                     let again = if challenge_over {
                         "RETRY"
