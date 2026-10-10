@@ -1,0 +1,62 @@
+[
+  {
+    "file": "concept-boards/01-salt-and-iron.png",
+    "width": 1672,
+    "height": 941,
+    "mode": "RGB"
+  },
+  {
+    "file": "concept-boards/02-storm-coast.png",
+    "width": 1672,
+    "height": 941,
+    "mode": "RGB"
+  },
+  {
+    "file": "concept-boards/03-fieldwork.png",
+    "width": 1672,
+    "height": 940,
+    "mode": "RGB"
+  },
+  {
+    "file": "concept-boards/04-sunbleached.png",
+    "width": 1672,
+    "height": 941,
+    "mode": "RGB"
+  },
+  {
+    "file": "concept-boards/05-night-signal.png",
+    "width": 1672,
+    "height": 941,
+    "mode": "RGB"
+  },
+  {
+    "file": "concept-boards/06-iron-and-chalk.png",
+    "width": 1536,
+    "height": 1024,
+    "mode": "RGB"
+  },
+  {
+    "file": "app-icons/saltline-default.png",
+    "width": 1254,
+    "height": 1254,
+    "mode": "RGB"
+  },
+  {
+    "file": "app-icons/saltline-halloween.png",
+    "width": 1254,
+    "height": 1254,
+    "mode": "RGB"
+  },
+  {
+    "file": "app-icons/saltline-thanksgiving.png",
+    "width": 1254,
+    "height": 1254,
+    "mode": "RGB"
+  },
+  {
+    "file": "app-icons/saltline-christmas.png",
+    "width": 1254,
+    "height": 1254,
+    "mode": "RGB"
+  }
+]

@@ -462,7 +462,7 @@ def main():
     og_card().save(os.path.join(OUT, "og.png"))
     print("og.png")
 
-    favicon().save(os.path.join(OUT, "favicon.png"))
+    Image.open(os.path.join(ART, "icon_1024.png")).resize((64, 64), Image.Resampling.LANCZOS).save(os.path.join(OUT, "favicon.png"))
     print("favicon.png")
 
 
