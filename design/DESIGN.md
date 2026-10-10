@@ -398,6 +398,18 @@ actually separate the two.
 
 ### 5.1 Resolution
 
+**Source-art presentation update (2026-10-10).** The logical layout stays
+320–400 × 180 (216 under Long Lens), and one logical unit remains one heightfield
+column. Source-color board artwork renders at four physical pixels per logical
+unit: 1280×720 for the default view. `canvas_items` stretch keeps those pixels
+available at window resolution. The flat painter composites high-detail sprites,
+world-anchored soil textures, effects and block-rendered UI in the original order.
+Muzzle pivots, collision geometry, input coordinates and deterministic generation
+remain logical. The original native palette renderer remains the fallback and
+regression baseline. This supersedes the native-only scaling and sixteen-color
+restrictions below for imported source artwork; UI and gameplay ink keep palette
+roles and the original logical grid. Barrel angles remain pre-rendered offline.
+
 **Internal buffer: 180px tall, width 320–400 depending on device aspect.**
 
 Fix the height, let the width float. Vertical scaling stays a clean integer on

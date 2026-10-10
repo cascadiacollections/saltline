@@ -743,7 +743,14 @@ impl Painter<'_> {
     }
 
     fn centred(&mut self, y: i32, text: &str, c: crate::palette::Rgba) {
-        let x = (self.canvas.w - crate::font::small_width(text) as i32) / 2;
+        let width = crate::font::small_width(text) as i32;
+        let x = (self.canvas.w - width) / 2;
+        if self.g.mode == Mode::Title && self.title_background.is_some() {
+            // The literal board scene is busier than the old title painting.
+            // Back only the labels, preserving the art and all menu geometry.
+            self.canvas
+                .rect(x - 2, y - 1, width + 4, 7, self.pal.get(slot::UI_BG));
+        }
         self.canvas.text_small(x.max(1), y, text, c);
     }
 
@@ -2958,6 +2965,7 @@ mod tests {
             w: 3,
             h: 1,
             px: vec![1, 2, 3, 255, 0, 0, 0, 0, 7, 8, 9, 255],
+            detail: None,
         };
         let mut a = Canvas::new(5, 1);
         a.blit(&sprite, 1, 0);

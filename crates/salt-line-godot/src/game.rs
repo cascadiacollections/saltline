@@ -223,7 +223,7 @@ impl INode2D for SaltLine {
             base,
             g: Game::default(),
             art: Art::default(),
-            canvas: Canvas::new(320, 180),
+            canvas: Canvas::detailed(320, 180),
             whole: None,
             strips: Vec::new(),
             layers: Layers::default(),
@@ -260,7 +260,7 @@ impl INode2D for SaltLine {
             #[cfg(feature = "profiling")]
             gpu_check: Default::default(),
             #[cfg(feature = "profiling")]
-            check_frame: (Canvas::new(1, 1), Cache::default(), Vec::new()),
+            check_frame: (Canvas::detailed(1, 1), Cache::default(), Vec::new()),
             #[cfg(feature = "profiling")]
             check_scene: 0,
         }
@@ -320,8 +320,10 @@ impl INode2D for SaltLine {
         let fx = self.g.fit_display(window, self.cutout);
         self.apply(fx);
         let args = DevArgs::parse(&Self::cmdline_all());
-        // Layered unless asked otherwise; see `backdrop`.
-        self.cache.backdrop.layered = !args.flat;
+        // Detailed source art is composited in the flat painter so all draw
+        // ordering, terrain occlusion and translucent arcs share one surface.
+        // The cached native path remains available to engine tests/profiling.
+        self.cache.backdrop.layered = self.canvas.scale() == 1 && !args.flat;
         #[cfg(feature = "profiling")]
         let args = {
             let mut args = args;
@@ -372,13 +374,17 @@ impl INode2D for SaltLine {
         #[cfg(feature = "profiling")]
         if self.gpu_check.pending() {
             // The viewport now holds the last frame drawn.
-            let left = self.base().get_position().x as i32;
+            let transform =
+                self.base().get_viewport_transform() * self.base().get_global_transform();
+            let origin = transform * Vector2::ZERO;
+            let end = transform * Vector2::new(self.canvas.w as f32, self.canvas.h as f32);
+            let destination = Rect2::new(origin, end - origin);
             let image = self
                 .base()
                 .get_viewport()
                 .and_then(|v| v.get_texture())
                 .and_then(|t| t.get_image());
-            if let Some(report) = image.and_then(|i| self.gpu_check.compare(i, left)) {
+            if let Some(report) = image.and_then(|i| self.gpu_check.compare(i, destination)) {
                 godot_print!("{report}");
                 self.check_scene += 1;
                 self.start_check_scene();
@@ -446,19 +452,11 @@ impl INode2D for SaltLine {
     }
 
     fn draw(&mut self) {
-        // In play, the sky and then the ground's window go first (see
-        // `backdrop`). The frame is one whole-frame texture at the internal
-        // resolution, with the strips that changed since it was last updated
-        // drawn in place of its rows (see `strips::Layers`), all blitted 1:1
-        // at whole-pixel positions. Godot's viewport stretch does the only scaling in the
-        // game, with nearest filtering set project-wide. A texture updated in
-        // place needs no new draw; this runs again only when which strips are
-        // shown, or where the ground is, changes.
-        //
-        // The order here, sky, ground, outline, then the frame, is the order
-        // `Backdrop::composite` puts the layers together in on the CPU, which
-        // is what the tests hold equal to the flat frame. Change one, change
-        // both.
+        // Texture storage is physical; destination rectangles remain logical.
+        // Detailed flat frames draw at 1/4 their pixel dimensions, and Godot's
+        // canvas_items stretch retains those pixels at window resolution.
+        // The native cached path keeps sky/ground/outline before the overlay,
+        // in the same order as Backdrop::composite.
         if let Some(shown) = self.cache.backdrop.shown() {
             if let Some(sky) = &self.sky {
                 let tex = sky.texture.clone();
@@ -486,13 +484,16 @@ impl INode2D for SaltLine {
         // texture's older pixels show through it.
         if let Some(whole) = &self.whole {
             let tex = whole.texture.clone();
+            let scale = self.canvas.scale() as f32;
             let w = whole.w as f32;
             for (y0, y1) in self.layers.whole_rows(whole.h) {
                 let rows = Rect2::new(
                     Vector2::new(0.0, y0 as f32),
                     Vector2::new(w, (y1 - y0) as f32),
                 );
-                self.base_mut().draw_texture_rect_region(&tex, rows, rows);
+                let destination = Rect2::new(rows.position / scale, rows.size / scale);
+                self.base_mut()
+                    .draw_texture_rect_region(&tex, destination, rows);
             }
         }
         let strips: Vec<_> = self
@@ -500,10 +501,18 @@ impl INode2D for SaltLine {
             .iter()
             .enumerate()
             .filter(|&(i, _)| self.layers.shown(i))
-            .map(|(_, l)| (l.texture.clone(), Vector2::new(0.0, l.y as f32)))
+            .map(|(_, l)| (l.texture.clone(), l.y, l.w, l.h))
             .collect();
-        for (tex, at) in strips {
-            self.base_mut().draw_texture(&tex, at);
+        for (tex, y, w, h) in strips {
+            let scale = self.canvas.scale() as f32;
+            self.base_mut().draw_texture_rect(
+                &tex,
+                Rect2::new(
+                    Vector2::new(0.0, y as f32 / scale),
+                    Vector2::new(w as f32 / scale, h as f32 / scale),
+                ),
+                false,
+            );
         }
     }
 
@@ -580,8 +589,8 @@ impl INode2D for SaltLine {
         let Ok(touch) = event.try_cast::<InputEventScreenTouch>() else {
             return;
         };
-        // The strips are drawn from the origin at 1:1, so the node's local
-        // space is buffer pixels whatever the window is scaled to.
+        // Texture destination rectangles use logical coordinates. Godot's
+        // local input conversion accounts for window stretch and letterboxing.
         let local = self
             .base()
             .make_input_local(&touch.clone().upcast::<InputEvent>());
@@ -1342,8 +1351,13 @@ impl SaltLine {
             render::frame(&self.g, &self.art, canvas, buttons, cache);
             let backdrop = &self.cache.backdrop;
             let (shown, ground) = (backdrop.shown(), backdrop.ground().1);
-            self.gpu_check
-                .expect(canvas.bytes(), canvas.w, canvas.h, shown, ground);
+            self.gpu_check.expect(
+                canvas.bytes(),
+                canvas.pixel_w(),
+                canvas.pixel_h(),
+                shown,
+                ground,
+            );
         }
     }
 
@@ -1403,7 +1417,7 @@ impl SaltLine {
         let backdrop_uploads = self.upload_backdrop();
         #[cfg(feature = "profiling")]
         let backdrop_time = backdrop_started.elapsed();
-        let (w, h) = (self.canvas.w, self.canvas.h);
+        let (w, h) = (self.canvas.pixel_w(), self.canvas.pixel_h());
         let bytes = self.canvas.bytes();
         // Layered, the frame goes over the backdrop, and blending is exact
         // only for pixels fully transparent or fully opaque (`backdrop`).
@@ -1535,11 +1549,16 @@ impl SaltLine {
         self.base().get_tree().quit();
     }
 
-    /// Write the buffer to a PNG at native resolution.
+    /// Write the finished backing image to a PNG at artwork resolution.
     fn save_canvas(&self, path: &str) {
-        let (w, h) = (self.canvas.w, self.canvas.h);
+        let (w, h) = (self.canvas.pixel_w(), self.canvas.pixel_h());
         // The finished frame, the layers under the canvas included.
-        let data = PackedByteArray::from(self.cache.backdrop.composite(&self.canvas).as_slice());
+        let pixels = if self.canvas.scale() == 1 {
+            self.cache.backdrop.composite(&self.canvas)
+        } else {
+            self.canvas.bytes().to_vec()
+        };
+        let data = PackedByteArray::from(pixels.as_slice());
         if let Some(image) =
             Image::create_from_data(w, h, false, godot::classes::image::Format::RGBA8, &data)
         {

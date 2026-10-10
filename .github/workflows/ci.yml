@@ -382,6 +382,21 @@ jobs:
 
 
 
+  art:
+    name: source art contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: verify source artwork and logical sprite contracts
+        run: |
+          python3 -m venv .venv
+          # Match the generator's locked Pillow version; no game code runs here.
+          .venv/bin/python -m pip install 'Pillow==12.3.0'
+          .venv/bin/python -m unittest discover -s tools -p test_concept_art.py -v
+
   # Cheap checks on everything that is not Rust logic: spelling (typos),
   # workflow security (zizmor) and declared-but-unused dependencies (machete).
   hygiene:
@@ -1411,7 +1426,7 @@ jobs:
   dev-release:
     name: dev release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, determinism, solvability, lint, playable, android, windows-arm64, sbom]
+    needs: [version, determinism, solvability, lint, art, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1475,7 +1490,7 @@ jobs:
   release:
     name: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version, determinism, solvability, lint, deny, playable, android, windows-arm64, sbom]
+    needs: [version, determinism, solvability, lint, art, deny, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
