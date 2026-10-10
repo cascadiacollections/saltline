@@ -110,6 +110,7 @@ class SpritePipelineTests(unittest.TestCase):
 
         with patch.object(exporter, "SRC", str(src)), patch.object(exporter, "DST", str(dst)), \
                 patch.object(exporter, "SIZES", {"tank_base": (30, 12)}), \
+                patch.object(exporter, "contracts", lambda: [("", dst, {"tank_base": (30, 12)}, True)]), \
                 patch.object(exporter, "ASEPRITE", "aseprite"), \
                 patch.object(exporter, "export", invalid_export), \
                 patch.object(sys, "argv", ["export_sprites.py"]), \

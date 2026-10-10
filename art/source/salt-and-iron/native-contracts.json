@@ -1,0 +1,98 @@
+{
+  "barrel_strip_5deg": [
+    532,
+    28
+  ],
+  "barrel_strip_auger": [
+    532,
+    28
+  ],
+  "barrel_strip_ballast": [
+    532,
+    28
+  ],
+  "barrel_strip_cluster": [
+    532,
+    28
+  ],
+  "barrel_strip_forced_march": [
+    532,
+    28
+  ],
+  "barrel_strip_sabot": [
+    532,
+    28
+  ],
+  "derrick": [
+    15,
+    42
+  ],
+  "derrick_collapsed": [
+    15,
+    10
+  ],
+  "derrick_leaning": [
+    31,
+    42
+  ],
+  "pylon": [
+    17,
+    33
+  ],
+  "pylon_collapsed": [
+    17,
+    8
+  ],
+  "pylon_leaning": [
+    29,
+    33
+  ],
+  "radio_mast": [
+    13,
+    32
+  ],
+  "radio_mast_collapsed": [
+    13,
+    8
+  ],
+  "radio_mast_leaning": [
+    25,
+    32
+  ],
+  "silo": [
+    11,
+    27
+  ],
+  "silo_collapsed": [
+    11,
+    6
+  ],
+  "silo_leaning": [
+    21,
+    27
+  ],
+  "tank_ballast": [
+    30,
+    12
+  ],
+  "tank_base": [
+    30,
+    12
+  ],
+  "tank_forced_march": [
+    30,
+    12
+  ],
+  "tower_collapsed": [
+    17,
+    8
+  ],
+  "tower_intact": [
+    17,
+    34
+  ],
+  "tower_leaning": [
+    17,
+    34
+  ]
+}

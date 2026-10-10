@@ -1,23 +1,7 @@
-//! The fixed 16-colour palette, sampled from `art/palette_16.png`.
-//!
-//! DESIGN §5.2: sixteen colours, fixed, no exceptions — and the brief says to
-//! sample the swatch image programmatically rather than transcribing hex
-//! values by hand. So the image is the single source of truth; edit
-//! `tools/gen_sprites.py`, regenerate, and the game follows.
-//!
-//! Everything the game draws goes into one native-resolution
-//! [`Canvas`](crate::raster::Canvas) (DESIGN §5.1), and every colour that
-//! reaches it comes from this table by slot index. Code names a *role*
-//! ([`slot::ALERT`], [`slot::UI_FG`]) rather than an RGB value, so the
-//! allocation in DESIGN §5.2 (four terrain tones, three sky, three hull,
-//! three structure, two UI, one alert) is visible at every call site. Slots
-//! are plain `usize` constants, so nothing stops a stray `[u8; 4]` literal;
-//! the rule is kept by drawing only through [`Palette::get`]. Read DESIGN §5
-//! before adding a colour: the answer is to reuse a slot.
-//!
-//! Colours are stored as straight RGBA bytes. The software rasteriser writes
-//! bytes into the buffer, so converting from Godot's float `Color` happens
-//! once, at load, instead of once per pixel.
+//! Sixteen role colors sampled from `art/palette_16.png` for UI, gameplay ink
+//! and native fallback assets. Detailed board artwork preserves its source RGB
+//! values as described in DESIGN §5.1's source-art presentation update.
+//! Colors are stored as straight RGBA bytes for the software rasterizer.
 
 use godot::classes::{Image, Texture2D};
 use godot::prelude::*;

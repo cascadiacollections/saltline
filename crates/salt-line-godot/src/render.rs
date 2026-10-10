@@ -249,7 +249,25 @@ impl Painter<'_> {
             if let Some(background) = self.title_background {
                 let x = (self.canvas.w - background.w) / 2;
                 let y = (self.canvas.h - background.h) / 2;
-                if x > 0 {
+                if let Some(detail) = background
+                    .detail
+                    .as_ref()
+                    .filter(|_| x > 0 && self.canvas.scale() == 4)
+                {
+                    let right = (x + background.w) * 4;
+                    for row in 0..detail.h {
+                        for col in 0..x * 4 {
+                            if let Some(c) = detail.pixel(0, row) {
+                                self.canvas.put_detail(col, y * 4 + row, c);
+                            }
+                        }
+                        for col in right..self.canvas.pixel_w() {
+                            if let Some(c) = detail.pixel(detail.w - 1, row) {
+                                self.canvas.put_detail(col, y * 4 + row, c);
+                            }
+                        }
+                    }
+                } else if x > 0 {
                     let right = x + background.w;
                     for row in 0..background.h {
                         if let Some(c) = background.pixel(0, row) {
@@ -276,10 +294,23 @@ impl Painter<'_> {
         let tracking = 6;
         let tw = title.chars().count() as i32 * tracking;
         let tx = (w - tw) / 2;
+        if matches!(self.g.mode, Mode::Title) {
+            // An instrument-panel heading, using the same native grid and
+            // palette as the coast below it. Menu rows keep their hit areas.
+            self.canvas
+                .hline(tx - 12, tx + tw + 10, y + 8, pal.get(slot::HULL_EDGE));
+            self.canvas.rect(tx - 10, y + 1, 3, 3, alert);
+            self.canvas.rect(tx + tw + 6, y + 1, 3, 3, alert);
+        }
+        let title_colour = if matches!(self.g.mode, Mode::Title) {
+            fg
+        } else {
+            alert
+        };
         for (i, ch) in title.chars().enumerate() {
             let s = ch.to_string();
             self.canvas
-                .text_small(tx + i as i32 * tracking, y, &s, alert);
+                .text_small(tx + i as i32 * tracking, y, &s, title_colour);
         }
         y += 12;
 
@@ -627,12 +658,11 @@ impl Painter<'_> {
                 }
             }
             Mode::GameOver => {
-                let challenge_over = self
-                    .g
-                    .play
-                    .challenge
-                    .is_some_and(|_| self.g.play.run.as_ref().is_some_and(|r| r.is_over()));
-                let heading = if self.g.play.challenge.is_some() {
+                let is_challenge =
+                    self.g.play.challenge.is_some() || self.g.play.custom_challenge.is_some();
+                let challenge_over =
+                    is_challenge && self.g.play.run.as_ref().is_some_and(|r| r.is_over());
+                let heading = if is_challenge {
                     if challenge_over {
                         "CHALLENGE FAILED"
                     } else {
@@ -643,7 +673,22 @@ impl Painter<'_> {
                 };
                 self.centred(y, heading, alert);
                 y += 14;
-                if let Some(index) = self.g.play.challenge {
+                if let Some(layout) = self.g.play.custom_challenge.as_ref() {
+                    let best = self
+                        .g
+                        .save
+                        .custom_challenge_best(layout.digest())
+                        .map_or("-".to_string(), |left| left.to_string());
+                    let left = self.g.play.run.as_ref().map_or(0, |run| run.shells.max(0));
+                    self.centred(
+                        y,
+                        &format!("CUSTOM {}", crate::layouts_file::fingerprint(layout)),
+                        fg,
+                    );
+                    y += 8;
+                    self.centred(y, &format!("{left} SHELLS LEFT  BEST {best}"), dim);
+                    y += 14;
+                } else if let Some(index) = self.g.play.challenge {
                     let bests = salt_line_sim::challenge::ALL
                         .iter()
                         .enumerate()
@@ -672,18 +717,19 @@ impl Painter<'_> {
                 }
                 // WATCH only for a run kept to watch (not a `--salt-screen`
                 // jump, whose log cannot rebuild it).
-                let challenge = self.g.play.challenge.is_some();
+                let challenge = is_challenge;
                 let rows: Vec<(Action, &str)> = if challenge {
                     let again = if challenge_over {
                         "RETRY"
                     } else {
                         "PLAY AGAIN"
                     };
-                    vec![
-                        (Action::Replay, again),
-                        (Action::Copy, "COPY CODE"),
-                        (Action::Confirm, "TITLE"),
-                    ]
+                    let mut rows = vec![(Action::Replay, again)];
+                    if self.g.play.custom_challenge.is_some() {
+                        rows.push((Action::Watch, "SAVE MAP"));
+                    }
+                    rows.extend([(Action::Copy, "COPY CODE"), (Action::Confirm, "TITLE")]);
+                    rows
                 } else {
                     [
                         (Action::Replay, "SAME SEED AGAIN"),
@@ -715,7 +761,14 @@ impl Painter<'_> {
     }
 
     fn centred(&mut self, y: i32, text: &str, c: crate::palette::Rgba) {
-        let x = (self.canvas.w - crate::font::small_width(text) as i32) / 2;
+        let width = crate::font::small_width(text) as i32;
+        let x = (self.canvas.w - width) / 2;
+        if self.g.mode == Mode::Title && self.title_background.is_some() {
+            // The literal board scene is busier than the old title painting.
+            // Back only the labels, preserving the art and all menu geometry.
+            self.canvas
+                .rect(x - 2, y - 1, width + 4, 7, self.pal.get(slot::UI_BG));
+        }
         self.canvas.text_small(x.max(1), y, text, c);
     }
 
@@ -1764,6 +1817,39 @@ mod tests {
 
     fn actions(buttons: &[Button]) -> Vec<Action> {
         buttons.iter().map(|b| b.action).collect()
+    }
+
+    #[test]
+    fn wide_detailed_title_margins_match_the_source_edge_colors() {
+        let mut g = game();
+        g.fit_display((1600, 720), (0, 0));
+        let color = [9, 31, 67, 255];
+        let art = Art {
+            title_background: Some(Sprite {
+                w: 320,
+                h: 180,
+                px: [201, 202, 203, 255].repeat(320 * 180),
+                detail: Some(Box::new(Sprite {
+                    w: 1280,
+                    h: 720,
+                    px: color.repeat(1280 * 720),
+                    detail: None,
+                })),
+            }),
+            ..Art::default()
+        };
+        let mut canvas = Canvas::detailed(400, 180);
+        frame(
+            &g,
+            &art,
+            &mut canvas,
+            &mut Vec::new(),
+            &mut Cache::default(),
+        );
+        for x in [0, 159, 160, 1439, 1440, 1599] {
+            let at = ((700 * 1600 + x) * 4) as usize;
+            assert_eq!(&canvas.bytes()[at..at + 4], &color);
+        }
     }
 
     #[test]
@@ -2930,6 +3016,7 @@ mod tests {
             w: 3,
             h: 1,
             px: vec![1, 2, 3, 255, 0, 0, 0, 0, 7, 8, 9, 255],
+            detail: None,
         };
         let mut a = Canvas::new(5, 1);
         a.blit(&sprite, 1, 0);

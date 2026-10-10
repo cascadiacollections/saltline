@@ -25,6 +25,7 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/pages.yml'
+      - '!site/assets/readme/**'
   workflow_dispatch:
 
 # Read-only by default. Only the deploy job gets to publish (pages, id-token);

@@ -372,3 +372,12 @@ footer nav { display: grid; gap: .4rem; font-size: .88rem; }
 details { margin: 1rem 0; border: 1px solid var(--bedrock); padding: 1rem; }
 summary { cursor: pointer; color: var(--alert); }
 .license-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .85rem; }
+
+/* Art-direction boards retain their complete composition at every size. */
+.concept-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; margin-top: 1.5rem; }
+.concept-grid figure { min-width: 0; margin: 0; }
+.concept-grid a { display: block; border: 1px solid var(--rock); }
+.concept-grid a:hover { border-color: var(--alert); }
+.concept-grid img { display: block; width: 100%; height: auto; }
+.concept-grid figcaption { padding-top: .6rem; color: var(--sand); }
+@media (max-width: 760px) { .concept-grid { grid-template-columns: minmax(0, 1fr); } }

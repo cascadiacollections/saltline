@@ -1,13 +1,49 @@
 # Salt Line
 
+[![Build: GitHub Actions](https://img.shields.io/badge/build-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/cascadiacollections/saltline/actions/workflows/ci.yml?query=branch%3Amain)
+[![Release: latest](https://img.shields.io/badge/release-latest-3878AB)](https://github.com/cascadiacollections/saltline/releases/latest)
+[![Development build: main](https://img.shields.io/badge/development_build-main-D99A34)](https://github.com/cascadiacollections/saltline/releases/tag/dev)
+[![License: MIT](https://img.shields.io/badge/license-MIT-64748B)](LICENSE)
+
+<!-- These are navigation badges, not live status claims. Public badge services
+cannot read this internal repository. Their destinations stay current without
+pinning a release version or a CI result in the README. -->
+
 Single-player artillery roguelike. Endless procedural horizon, persistent
 terrain damage, shells as the run resource, modifier drafting every four screens.
 
 Deterministic Rust simulation core, Godot 4 presentation layer via `gdext`.
 
-**Status: 0.1.0 desktop development preview.** Not for sale, nothing to buy,
-every screen playable. Binaries are unsigned. `RELEASING.md` has the supported
-platforms, the release checklist, and the known-issues list.
+| In play | Title screen |
+|---|---|
+| ![A gun facing a silo on a raised plateau, with the Salt & Iron harbour behind the generated terrain](site/assets/readme/gameplay.png) | ![Salt Line's title menu over the harbour illustration](site/assets/readme/title.png) |
+
+Actual game captures at 1280×720. Gameplay: seed `20260907`, screen index `10`,
+seasonal art off. The title illustration is decorative; playable terrain and
+target placement come from the simulation.
+
+- **Play:** daily and seeded runs, a challenge course, local versus with a human
+  or AI opponent, a map editor, and saved replays.
+- **Build:** Rust owns simulation and solvability checks; Godot handles input,
+  audio and presentation. Rendering changes do not change collision geometry.
+- **Verify:** tests and cross-platform replay digests run in CI; every generated
+  screen is checked against the current loadout before play.
+
+**Status: development preview.** Free, every screen playable. Desktop binaries
+are unsigned. [Latest release](https://github.com/cascadiacollections/saltline/releases/latest)
+has the published version; the [development build](https://github.com/cascadiacollections/saltline/releases/tag/dev)
+follows passing builds of `main`. [RELEASING.md](RELEASING.md) covers supported
+platforms, the release checklist, and known issues.
+
+Documentation-only changes (Markdown and README captures) skip the full build
+matrix. Markdown embedded in the game or used by golden tests still runs CI;
+release tags always run the full checks. README captures alone do not redeploy
+the website.
+
+[Build and run](#quick-start) · [Controls](#controls) · [Developer tools](#tools) ·
+[Art and assets](#art) · [Determinism](#determinism) · [Report a bug](#reporting-bugs)
+
+## Build prerequisites
 
 Requires Rust `1.98.1` (pinned in `rust-toolchain.toml`), Godot `4.7.2`, and
 `uv` for the Python asset tools. `just` is optional but provides the documented
@@ -28,8 +64,9 @@ failing loudly.
 | `design/DESIGN.md` | Full specification — mechanics, terrain, modifiers, art |
 | `crates/salt-line-sim` | The whole game. No Godot dependency, no runtime dependencies at all |
 | `crates/salt-line-godot` | Rendering, input, UI. Draws what the sim says is true |
-| `art/` | Native-resolution sprites, 16-colour palette, reference scene |
-| `tools/gen_sprites.py` | Builds previews from exported sprites; reference terrain math |
+| `art/` | Source artwork, detailed game sprites, native fallback, UI palette and app icons |
+| `tools/export_sprites.py` | Exports authored Aseprite artwork and embedded textures |
+| `tools/gen_sprites.py` | Builds native and detailed previews from exported sprites |
 | `site/` | The alpha marketing page, published to GitHub Pages |
 | `tools/build_site.py` | Generates every image on that page out of the art pipeline |
 | `tools/gen_audio.py` | Deterministically generates the original PCM sound effects |
@@ -469,17 +506,54 @@ whether it passes its checks, and quit; screens and rounds count from 0).
 
 ## Art
 
-`art/sprites/` is native-resolution programmer art from `tools/gen_sprites.py`.
-Regenerate after editing the generator:
+![Shipped Salt & Iron sprites: three chassis, intact and damaged structures, and barrel angle frames](art/detail/preview.png)
+
+The generated sheet above shows actual game assets: light, heavy and mobile
+chassis, structure damage states, and precomputed barrel angles. The
+[application icon](art/icon_1024.png), [title artwork](art/detail/title.png), and
+[native seasonal sheet](art/seasonal_sheet_4x.png) are also checked in. The
+[source notes](art/source/salt-and-iron/README.md) record provenance and cleanup
+steps; the [design specification](design/DESIGN.md) describes the game's rules.
+
+The game uses chassis and structure cutouts from the
+[Salt & Iron concept board](https://cascadiacollections.github.io/saltline/assets/concept-boards/01-salt-and-iron.png).
+`art/detail/` preserves their source colors at four artwork pixels per logical
+world unit. The standard 320×180 playfield uploads a 1280×720 image; wider views
+and Long Lens retain the same logical layout and receive proportionate backing
+images. Godot uses `canvas_items` stretch and nearest filtering to retain the
+artwork detail. The UI and aiming grid keep their original logical coordinates.
+
+The initial `tools/build_detail_art.py` import cut the actual light/heavy/mobile chassis and
+intact/damaged/collapsed water towers out of the board. The hero scene supplies
+lattice structures, the title illustration and soil texture samples. Two
+ImageGen cleanup derivatives supply the empty harbour plate and isolated barrel.
+Nineteen barrel frames are prepared offline; runtime does no sprite rotation.
+Terrain silhouettes and material selection come from the simulation, with source
+textures painted only inside that geometry. Seeds, muzzle anchors, target boxes,
+collision queries and solver inputs are unchanged.
+
+Detailed frames use the flat software painter to preserve occlusion and arc
+blending. The cached native renderer, sixteen-role UI palette and palette-mapped
+`art/sprites/` remain available for fallback and regression comparisons. Seasonal
+costumes retain their existing artwork. Detailed mode retains the harbour across
+biomes, with weather and target coatings supplying the variation. Sources, masks
+and cleanup prompts are in
+[`art/source/salt-and-iron/README.md`](art/source/salt-and-iron/README.md).
+
+Regenerate and check reproducibility:
 
 ```sh
 just gen-art                          # exports sprites, then rebuilds previews
 just check-sprites                    # checks source/export parity and constraints
 uv run python tools/gen_audio.py       # writes art/audio/
+uv run python -m unittest discover -s tools -p 'test_concept_art.py'
 ```
 
-The 16-colour palette is sampled out of `art/palette_16.png` at runtime rather
-than transcribed, so the image stays the single source of truth.
+The title uses the original hero scene, with only its baked-in lettering removed
+using adjacent source sky pixels. Its original wide aspect ratio is preserved
+with sky extended above the bottom-aligned scene. Menu text has opaque backings for legibility.
+Edit its Aseprite source and rebuild with `just gen-art`. The illustration is decorative and
+never supplies terrain or collision data.
 
 Editable sprite sources live in `art/aseprite/*.aseprite`, tracked with Git LFS
 and excluded from Godot exports by `.gdignore`. Run `git lfs install` and
@@ -487,6 +561,14 @@ and excluded from Godot exports by `.gdignore`. Run `git lfs install` and
 were imported losslessly from the native PNGs, not cropped out of the enlarged
 marketing contact sheets; each currently has one editable `art` layer.
 
+`art/aseprite/detail/` contains the full-colour 4x companions actually displayed
+by the detailed renderer, including `title.aseprite`, `sky.aseprite` and the
+64x64 soil tiles. `art/aseprite/screens/` contains the native title fallback;
+`art/aseprite/backgrounds/` contains the native palette-mapped harbour sky.
+Native and detailed sources are independent: update both representations when
+changing a shared silhouette. Detailed barrels are nineteen 112x112 frames,
+with pivots at four times the native coordinates. Full-colour companions are
+not reduced to sixteen colours; native exports retain that palette contract.
 Edit these sources in Aseprite, preserving canvas sizes, transparent backgrounds,
 footings and pivots. Each barrel source has nineteen 28×28 frames in ascending
 0–90° order at 5° steps, with angle tags for navigation. Tags do not determine
@@ -498,9 +580,11 @@ Install the Aseprite CLI (or set `ASEPRITE=/path/to/aseprite`), save edits, then
 run `just gen-art`. The exporter validates dimensions, frame counts, the
 16-colour palette, binary alpha and transparent barrel-frame edges before
 updating any game PNGs. It only rewrites PNGs whose pixels changed.
+The same export updates the embedded sky/soil byte files consumed by Rust;
+rebuild the GDExtension after editing those backgrounds or texture tiles.
 `just check-sprites` reports missing or stale exports without modifying them.
 Commit the `.aseprite` sources and their exported PNGs together; do not edit
-`art/sprites/*.png` directly. The original procedural drawing functions remain
+`art/sprites/*.png` or `art/detail/*.png` directly. The original procedural drawing functions remain
 in `tools/gen_sprites.py` as migration reference, but no longer generate game
 sprites.
 
@@ -510,21 +594,23 @@ animated shot, favicon and social card, from those same exports. Site builds
 (including GitHub Pages) use committed PNGs and do not require Aseprite or LFS
 downloads. Compare pixels, not file hashes, when reviewing image encoder churn.
 
-The title background uses a separate authored painting in
-`art/source/title_salt_flat.png`; `.gdignore` keeps this full-size source out
-of the game export. It was created with the built-in ImageGen tool, then
-sampled with nearest-neighbour filtering to 320×180 and mapped to the existing
-palette without dithering. Regenerate it with ImageMagick 7:
+### Refresh the README captures
+
+After building the extension, capture the same views directly from the game:
 
 ```sh
-bash tools/build_title_art.sh
+mkdir -p site/assets/readme
+godot --headless --path . -- --salt-seed 20260907 --salt-screen 10 \
+    --salt-season off --salt-shot site/assets/readme/gameplay.png
+godot --headless --path . -- --salt-season off \
+    --salt-shot site/assets/readme/title.png
 ```
 
-Art direction: a quiet navy sky over a bleached salt flat, a muted olive
-emplacement at lower left, a rust water tower at lower right and distant low
-mesas. Keep the centre clear for the existing menu, use hard pixel edges and
-the existing palette, and omit lettering, UI, explosions and projectile arcs.
-The title painting is decorative; it never supplies terrain or collision data.
+Keep their native aspect ratios when displaying them. The captures live under
+`site/` so they are excluded from game exports; the website's media builder does
+not overwrite them. The asset sheets update with `just gen-art`. Keep title
+illustrations and backgrounds editable in Aseprite, but leave menu layout,
+text, controller labels and localization in code.
 
 ### Seasonal targets
 
@@ -663,6 +749,87 @@ so the swap survives a power cut. On Windows the rename is atomic but the
 directory is not flushed, so a power cut in the moments after a write could
 still leave the previous save in place.
 
+## Android Game Mode (Pixel Game Dashboard)
+
+Android 12+ reads `GameManager.getGameMode()` at launch and on every application
+resume through Godot's built-in AndroidRuntime/JavaClassWrapper bridge. These
+are presentation settings only; simulation, replay timing, resolution, nearest
+filtering and Compatibility rendering stay unchanged.
+
+| Mode | Active play | Menus, pause and attract demo |
+|---|---|---|
+| Standard / unsupported | Original project cap (currently unlimited), VSync on | Original 30 FPS cap |
+| Battery | At most 30 FPS: fewer software raster passes, texture uploads and engine/render-loop wakeups during animation | At most 30 FPS |
+| Performance | Current display refresh rate, capped at 120 FPS (60 if unavailable), VSync on | At most 30 FPS |
+
+Tighter project caps always win. Performance favors stable, display-bounded frame
+pacing rather than disabling VSync or promising 120 FPS on a 60 Hz device. Actual
+FPS still depends on hardware, thermal limits and system refresh-rate policy.
+Returning to Standard restores the original cap. Older Android and other
+platforms do not change behavior.
+
+Both support flags are intentional: they tell Android the game implements
+these optimizations, **disabling OEM Game Mode interventions** for those modes.
+Do not advertise another mode without implementing it.
+
+Android exports now require Godot's `android_source.zip`, the Android SDK and
+JDK 17, and use Gradle. Existing `just android-apk`, `just android-release`,
+profiling and CI exports through `tools/godot_headless.sh` prepare the build
+automatically. Tracked `android/AndroidManifest.xml` and
+`android/res/xml/game_mode_config.xml` are reapplied to ignored generated
+`android/build` sources on every export. The selected custom APK's native engine
+is carried into the official Gradle AAR with the existing compiler check;
+switching to stock restores the stock AAR. For GUI/direct CLI exports, first run
+`python3 tools/godot_template.py prepare-android` (`--debug` for debug exports).
+Re-run preparation after reinstalling the Android build template.
+
+### Pixel verification
+
+1. Build/install with `just android` (or `just android-release`). Use a Pixel
+   running Android 12+ with Game Dashboard enabled; open Dashboard's optimization
+   control and check that Performance and Battery are offered. Availability also
+   depends on the Pixel/system configuration, not just the manifest.
+2. Inspect the final APK with SDK `aapt2 dump xmltree --file AndroidManifest.xml
+   build/SaltLine.apk` and `aapt2 dump xmltree --file res/xml/game_mode_config.xml
+   build/SaltLine.apk`: verify game category, metadata resource and both flags.
+3. Select each mode through Dashboard, or force it with:
+
+   ```sh
+   adb shell cmd game mode battery com.cascadiacollections.saltline
+   adb shell cmd game mode performance com.cascadiacollections.saltline
+   adb shell cmd game mode standard com.cascadiacollections.saltline
+   ```
+
+4. After each command, Home and return to the game (the query runs on resume).
+   Check `just android-log` for `Android Game Mode: mode=..., play_cap=...,
+   effective_cap=...` (Battery=3, Performance=2, Standard=1). Test cold launch
+   in each mode too. Enter active play: title/pause/demo intentionally stay at
+   30 FPS, so they cannot demonstrate the Performance cap.
+5. Compare moving-shell frame pacing with Dashboard's FPS counter or Perfetto.
+   Battery should render at most 30 FPS; Performance should target the display
+   rate up to 120. Confirm Standard restores the previous behavior, including
+   switching Battery → Standard during an existing session. Verify aiming,
+   pause, audio, saves and replay outcomes remain intact. Repeat on Android 11
+   (no API query) and a desktop build (no changed frame policy).
+
 ## License
 
 MIT. See `LICENSE`.
+
+### Concept boards and application icons
+
+The marketing page includes six supplied art-direction boards in
+`site/assets/concept-boards/`. They are labeled as concepts, separately from
+actual gameplay media. The site and original icon sources are excluded from
+exported game resources.
+
+The default Iron & Chalk icon ships on every platform. Regenerate its native
+1024px image and site favicon with `uv run python tools/build_app_icons.py`.
+For a seasonal export, pass `--variant halloween`, `--variant thanksgiving`,
+or `--variant christmas`, then import and export normally. Restore the default
+before committing. Original PNG images remain in `art/app-icons/`.
+
+On Linux, register the local development build with
+`uv run python tools/install_linux_launcher.py`, then open **Salt Line** from
+the application launcher. GNOME and Wayland use this desktop entry to associate
+the running game with its icon. Run the installer again after moving the checkout.

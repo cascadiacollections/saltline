@@ -5,6 +5,8 @@ import hashlib
 import subprocess
 import tempfile
 import unittest
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +22,50 @@ def report():
 
 
 class EngineTools(unittest.TestCase):
+    def test_android_overlay_survives_repeated_preparation_and_stock_reset(self):
+        templates = android_profile.templates
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "templates"
+            source.mkdir()
+            android = root / "android"
+            (android / "res" / "xml").mkdir(parents=True)
+            (android / "AndroidManifest.xml").write_text(
+                '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+                '<application android:appCategory="game"><meta-data '
+                'android:name="android.game_mode_config" android:resource="@xml/game_mode_config"/>'
+                '</application></manifest>')
+            (android / "res" / "xml" / "game_mode_config.xml").write_text("<game-mode-config/>")
+            presets = root / "export_presets.cfg"
+            presets.write_text('[preset.3]\nname="Android"\n[preset.3.options]\n')
+            aar = source / "stock.aar"
+            entry = f"jni/{templates.ANDROID_ABI}/libgodot_android.so"
+            with zipfile.ZipFile(aar, "w") as archive:
+                archive.writestr(entry, b"stock")
+                archive.writestr("classes.jar", b"java")
+            with zipfile.ZipFile(source / "android_source.zip", "w") as archive:
+                archive.writestr("src/main/AndroidManifest.xml", "<manifest><application/></manifest>")
+                archive.writestr("gradlew", "")
+                archive.writestr("libs/release/godot-lib.template_release.aar", aar.read_bytes())
+            apk = source / "custom.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(f"lib/{templates.ANDROID_ABI}/libgodot_android.so", b"stripped")
+            with patch.object(templates, "ROOT", root), \
+                 patch.object(templates, "official_templates", return_value=source), \
+                 patch.object(templates, "check_compiler"):
+                presets.write_text(presets.read_text() + f'custom_template/release="{apk}"\n')
+                for _ in range(2):
+                    templates.prepare_android()
+                    manifest = ET.parse(android / "build/src/main/AndroidManifest.xml")
+                    self.assertEqual(len(manifest.findall("application/meta-data")), 1)
+                    with zipfile.ZipFile(android / "build/libs/release/godot-lib.template_release.aar") as archive:
+                        self.assertEqual(archive.read(entry), b"stripped")
+                        self.assertEqual(archive.read("classes.jar"), b"java")
+                presets.write_text('[preset.3]\nname="Android"\n[preset.3.options]\n')
+                templates.prepare_android()
+                with zipfile.ZipFile(android / "build/libs/release/godot-lib.template_release.aar") as archive:
+                    self.assertEqual(archive.read(entry), b"stock")
+
     def test_success_exit_without_validation_cannot_reuse_an_old_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

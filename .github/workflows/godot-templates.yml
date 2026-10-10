@@ -20,6 +20,7 @@ on:
       - tools/godot_template.py
       - .github/workflows/godot-templates.yml
       - .github/actions/build-godot-template/**
+      - '!**/*.md'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

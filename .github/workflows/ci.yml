@@ -8,7 +8,22 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # Skip documentation-only pushes; tag releases always run (GitHub does
+    # not apply path filters to tags). Keep Markdown compiled into the game
+    # or used as a golden-test fixture covered.
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!site/assets/readme/**'
+      - 'NOTES.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
   pull_request:
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!site/assets/readme/**'
+      - 'NOTES.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
 
 # Superseded runs are not worth paying for; a new push to the same ref makes
 # the one in flight irrelevant.
@@ -382,6 +397,22 @@ jobs:
 
 
 
+  art:
+    name: source art contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: verify source artwork and logical sprite contracts
+        run: |
+          python3 -m venv .venv
+          # Match the generator's locked Pillow version; no game code runs here.
+          .venv/bin/python -m pip install 'Pillow==12.3.0'
+          .venv/bin/python -m unittest discover -s tools -p test_concept_art.py -v
+          .venv/bin/python -m unittest discover -s tools -p test_sprite_pipeline.py -v
+
   # Cheap checks on everything that is not Rust logic: spelling (typos),
   # workflow security (zizmor) and declared-but-unused dependencies (machete).
   hygiene:
@@ -404,8 +435,9 @@ jobs:
       - name: unused dependencies
         run: cargo machete
 
-  # Line coverage, written to the job summary. Informational: no threshold and
-  # no upload to a coverage service, in keeping with no telemetry.
+  # Line coverage, written to the job summary and uploaded to GitHub's code
+  # coverage API so PRs and the dashboard both see it. No third-party coverage
+  # service is involved, in keeping with no telemetry.
   coverage:
     name: coverage
     runs-on: ubuntu-latest
@@ -428,7 +460,9 @@ jobs:
       - name: coverage
         run: |
           set -eu
-          cargo llvm-cov nextest --workspace --profile ci --summary-only --ignore-filename-regex '/bin/' | tee coverage.txt
+          cargo llvm-cov nextest --workspace --profile ci --no-report --ignore-filename-regex '/bin/'
+          cargo llvm-cov report --summary-only --ignore-filename-regex '/bin/' | tee coverage.txt
+          cargo llvm-cov report --cobertura --output-path coverage.xml --ignore-filename-regex '/bin/'
           {
             echo '## Coverage'
             echo
@@ -436,6 +470,36 @@ jobs:
             cat coverage.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage artifact
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report-rust
+          path: coverage.xml
+
+  # Uploads the Cobertura report from `coverage` to GitHub's code coverage
+  # API. Split into its own job so only this step, not the test run above,
+  # holds the `code-quality: write` permission.
+  upload-coverage-rust:
+    name: upload coverage (rust)
+    needs: coverage
+    if: ${{ !cancelled() && needs.coverage.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      code-quality: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-report-rust
+      - uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: coverage.xml
+          language: Rust
+          label: code-coverage-agent
+          # A PR can merge before this job runs, making its coverage upload ineligible.
+          fail-on-error: false
 
   # Miri interprets the tests and fails on undefined behaviour. The code has
   # almost no unsafe today, so this is future-proofing: it covers the pure
@@ -1378,7 +1442,7 @@ jobs:
   dev-release:
     name: dev release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, determinism, solvability, lint, playable, android, windows-arm64, sbom]
+    needs: [version, determinism, solvability, lint, art, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1442,7 +1506,7 @@ jobs:
   release:
     name: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version, determinism, solvability, lint, deny, playable, android, windows-arm64, sbom]
+    needs: [version, determinism, solvability, lint, art, deny, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

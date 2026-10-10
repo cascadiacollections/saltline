@@ -20,6 +20,8 @@ on:
       - 'export_presets.cfg'
       - 'salt_line.gdextension'
       - 'Justfile'
+      - '!**/*.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
   push:
     branches: [main]
     paths:
@@ -27,6 +29,7 @@ on:
       - 'tools/godot_template.py'
       - '.github/workflows/engine-validation.yml'
       - '.github/actions/build-godot-template/**'
+      - '!**/*.md'
 
 permissions:
   contents: read

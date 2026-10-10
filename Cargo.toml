@@ -28,3 +28,9 @@ panic = "unwind"
 inherits = "test"
 opt-level = 1
 debug = "none"
+
+# The source-art software painter writes a 4x backing image. Optimize the
+# presentation crate in local builds while retaining debug assertions and
+# normal debugging for the deterministic simulation.
+[profile.dev.package.salt-line-godot]
+opt-level = 2

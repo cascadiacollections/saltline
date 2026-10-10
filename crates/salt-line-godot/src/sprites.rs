@@ -1,21 +1,15 @@
-//! Sprite loading and slicing. DESIGN §5.3, §5.4.
+//! Native sprite contracts plus optional four-times source-color companions.
 //!
-//! No sprite is ever scaled or rotated. The barrel is nineteen pre-drawn
-//! frames in a horizontal strip, sliced at 28px, because runtime rotation at
-//! this resolution produces stair-stepping that changes shape frame to frame.
+//! All placement, frame slicing and muzzle pivots use logical coordinates.
+//! `art/detail` companions retain source detail within those same bounds;
+//! the detailed rasterizer copies their physical pixels without runtime rotation.
+//! Native images remain the fallback and regression baseline. Missing native
+//! slots fall back to procedural silhouettes; imported companions are checked
+//! for exact four-times bounds when loading.
 //!
-//! Every PNG under `res://art/sprites` is exported from `art/aseprite` by
-//! `tools/export_sprites.py`
-//! and loaded once at start-up into a plain byte buffer
-//! ([`Sprite`]), then composited by the software
-//! rasteriser into the one canvas (DESIGN §5.1). The constants below are
-//! fixed pixel coordinates that authored sprites must preserve. Changing a
-//! source canvas or pivot requires updating this runtime contract too.
-//!
-//! Missing art is never fatal. Each slot is an `Option`, the names of files
-//! that failed to load are collected in [`Sprites::missing`] and logged, and
-//! the renderer falls back to flat columns or a procedural rubble mound so a
-//! broken export still plays.
+//! Both native and detailed PNGs are exported from `art/aseprite` by
+//! `tools/export_sprites.py`. Authored sprites must preserve the fixed canvas
+//! and pivot contracts below; changing them requires corresponding runtime changes.
 
 use godot::classes::Texture2D;
 use godot::prelude::*;
@@ -89,10 +83,9 @@ pub struct Sprites {
 /// `None`.
 ///
 /// The sprites become Rust-side pixels rather than engine textures because
-/// every one of them is composited into the same native-resolution buffer the
-/// terrain is drawn into. One buffer, one upload, one draw call — and no way
-/// for a sprite to end up sampled or filtered on its way to the screen.
-fn load(path: &str, missing: &mut Vec<String>) -> Option<Sprite> {
+/// every one is composited into the same backing image as the terrain. Native
+/// pixels supply the fallback; source-color companions supply the 4x artwork.
+fn load_native(path: &str, missing: &mut Vec<String>) -> Option<Sprite> {
     // Loaded as a `Texture2D` resource rather than with `Image::load_from_file`
     // so it keeps working in an exported build, where the PNG has become a
     // .ctex and the raw file is gone.
@@ -122,7 +115,33 @@ fn load(path: &str, missing: &mut Vec<String>) -> Option<Sprite> {
         missing.push(path.to_string());
         return None;
     }
-    Some(Sprite { w, h, px })
+    Some(Sprite {
+        w,
+        h,
+        px,
+        detail: None,
+    })
+}
+
+fn load(path: &str, missing: &mut Vec<String>) -> Option<Sprite> {
+    let mut sprite = load_native(path, missing)?;
+    let name = path.rsplit('/').next()?;
+    let detail_name = if name == "title_background_320x180.png" {
+        "title.png"
+    } else {
+        name
+    };
+    let detail_path = format!("res://art/detail/{detail_name}");
+    if godot::classes::ResourceLoader::singleton().exists(&detail_path) {
+        if let Some(detail) = load_native(&detail_path, missing) {
+            if detail.w == sprite.w * 4 && detail.h == sprite.h * 4 {
+                sprite.detail = Some(Box::new(detail));
+            } else {
+                missing.push(format!("{detail_path}: wrong logical bounds"));
+            }
+        }
+    }
+    Some(sprite)
 }
 
 impl Sprites {
@@ -324,6 +343,7 @@ mod seasonal_tests {
             w: 1,
             h: 1,
             px: vec![value, 0, 0, 255],
+            detail: None,
         }
     }
 
