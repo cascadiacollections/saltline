@@ -8,7 +8,22 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # Skip documentation-only pushes; tag releases always run (GitHub does
+    # not apply path filters to tags). Keep Markdown compiled into the game
+    # or used as a golden-test fixture covered.
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!site/assets/readme/**'
+      - 'NOTES.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
   pull_request:
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!site/assets/readme/**'
+      - 'NOTES.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
 
 # Superseded runs are not worth paying for; a new push to the same ref makes
 # the one in flight irrelevant.
