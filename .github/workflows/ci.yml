@@ -629,6 +629,9 @@ jobs:
       - name: build the release GDExtension
         if: runner.os != 'macOS'
         run: cargo build --release -p salt-line-godot
+      - name: strip nonessential Linux release symbols
+        if: runner.os == 'Linux'
+        run: bash tools/strip_linux_release.sh
       # The macOS export ships one universal dylib (arm64 + x86_64), which is
       # what `macos.release` in salt_line.gdextension points at; `just
       # macos-universal` is the same thing on a Mac. Debug builds stay
