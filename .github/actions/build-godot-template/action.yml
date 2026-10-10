@@ -1,0 +1,117 @@
+name: Build optimized Godot template
+description: Build a pinned, size-optimized Android or Linux release engine from a caller profile.
+inputs:
+  tag:
+    description: Godot source tag
+    required: true
+  commit:
+    description: Full source commit SHA checked against tag
+    required: true
+  profile:
+    description: Caller build-profile JSON path
+    required: true
+  platform:
+    description: android or linux
+    required: true
+  arch:
+    description: Godot architecture
+    required: true
+  scons-version:
+    description: Exact SCons version
+    required: false
+    default: '4.11.1'
+  flags:
+    description: JSON array of additional SCons options
+    required: false
+    default: '[]'
+  output-directory:
+    description: Binary and report directory
+    required: false
+    default: 'build/godot-templates'
+  toolchain-id:
+    description: Caller compiler or Android NDK identity for cache partitioning
+    required: true
+  cache:
+    description: Reuse content-keyed binary cache
+    required: false
+    default: 'true'
+outputs:
+  key:
+    description: Build key
+    value: ${{ steps.key.outputs.key }}
+  directory:
+    description: Build directory
+    value: ${{ steps.key.outputs.directory }}
+  binary:
+    description: Build binary
+    value: ${{ steps.report.outputs.binary }}
+  sha256:
+    description: Build sha256
+    value: ${{ steps.report.outputs.sha256 }}
+  bytes:
+    description: Build bytes
+    value: ${{ steps.report.outputs.bytes }}
+  report:
+    description: Build report
+    value: ${{ steps.report.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      with:
+        enable-cache: false
+    - name: Validate inputs and compute content key
+      id: key
+      shell: bash
+      env:
+        ENGINE_TAG: ${{ inputs.tag }}
+        ENGINE_COMMIT: ${{ inputs.commit }}
+        BUILD_PROFILE: ${{ inputs.profile }}
+        BUILD_PLATFORM: ${{ inputs.platform }}
+        BUILD_ARCH: ${{ inputs.arch }}
+        SCONS_VERSION: ${{ inputs.scons-version }}
+        BUILD_FLAGS: ${{ inputs.flags }}
+        BUILD_OUTPUT: ${{ inputs.output-directory }}
+        BUILD_TOOLCHAIN: ${{ inputs.toolchain-id }}
+        BUILD_SOURCE: ${{ format('{0}/godot-{1}', runner.temp, github.action) }}
+        ACTION_DIRECTORY: ${{ github.action_path }}
+      run: python3 "$ACTION_DIRECTORY/build.py" key
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: cache
+      if: inputs.cache == 'true'
+      with:
+        path: ${{ steps.key.outputs.directory }}
+        key: godot-template-${{ steps.key.outputs.key }}
+    - name: Build release engine
+      id: build
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ENGINE_TAG: ${{ inputs.tag }}
+        ENGINE_COMMIT: ${{ inputs.commit }}
+        BUILD_PROFILE: ${{ inputs.profile }}
+        BUILD_PLATFORM: ${{ inputs.platform }}
+        BUILD_ARCH: ${{ inputs.arch }}
+        SCONS_VERSION: ${{ inputs.scons-version }}
+        BUILD_FLAGS: ${{ inputs.flags }}
+        BUILD_OUTPUT: ${{ inputs.output-directory }}
+        BUILD_TOOLCHAIN: ${{ inputs.toolchain-id }}
+        BUILD_SOURCE: ${{ format('{0}/godot-{1}', runner.temp, github.action) }}
+        ACTION_DIRECTORY: ${{ github.action_path }}
+      run: python3 "$ACTION_DIRECTORY/build.py" build
+    - name: Write checksum and size report
+      id: report
+      shell: bash
+      env:
+        ENGINE_TAG: ${{ inputs.tag }}
+        ENGINE_COMMIT: ${{ inputs.commit }}
+        BUILD_PROFILE: ${{ inputs.profile }}
+        BUILD_PLATFORM: ${{ inputs.platform }}
+        BUILD_ARCH: ${{ inputs.arch }}
+        SCONS_VERSION: ${{ inputs.scons-version }}
+        BUILD_FLAGS: ${{ inputs.flags }}
+        BUILD_OUTPUT: ${{ inputs.output-directory }}
+        BUILD_TOOLCHAIN: ${{ inputs.toolchain-id }}
+        BUILD_SOURCE: ${{ format('{0}/godot-{1}', runner.temp, github.action) }}
+        ACTION_DIRECTORY: ${{ github.action_path }}
+      run: python3 "$ACTION_DIRECTORY/build.py" report
