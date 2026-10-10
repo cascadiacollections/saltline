@@ -505,7 +505,7 @@ impl Painter<'_> {
                     y = self.menu_row(y, Action::ArcHint, "", arc, fg);
                 }
                 y += 4;
-                y = self.menu_row(y, Action::Confirm, "", "CREDITS & LICENSES", fg);
+                y = self.menu_row(y, Action::Confirm, "", "CREDITS / LICENSES", fg);
                 self.menu_row(y, Action::Back, "", "BACK", fg);
             }
             Mode::Controls => {
@@ -569,7 +569,7 @@ impl Painter<'_> {
                 self.centred(y, "FORMAT: bind ACTION KEY PAD", dim);
                 y += 9;
                 let confirm = self.g.input_label(Action::Confirm);
-                self.centred(y, &format!("{confirm}  CREDITS & LICENSES"), fg);
+                self.centred(y, &format!("{confirm}  CREDITS / LICENSES"), fg);
                 y += 9;
                 let back = self.g.input_label(Action::Back);
                 self.centred(y, &format!("{back}  BACK"), fg);
@@ -577,14 +577,14 @@ impl Painter<'_> {
             Mode::Credits => {
                 let pages = crate::credits::pages();
                 let page = self.g.credits_page.min(pages.len() - 1);
-                self.centred(y, "CREDITS & LICENSES", fg);
+                self.centred(y, "CREDITS / LICENSES", fg);
                 y += 12;
                 for line in &pages[page] {
                     self.centred(y, line, fg);
                     y += 7;
                 }
                 y = 130;
-                self.centred(y, &format!("PAGE {} / {}", page + 1, pages.len()), dim);
+                self.centred(y, &format!("PAGE {} / {}", page + 1, pages.len()), fg);
                 y += 12;
                 if self.plated() {
                     self.draw_touch_button(w / 2 - 90, y - 4, 50, 13, "PREV", Action::Left);
