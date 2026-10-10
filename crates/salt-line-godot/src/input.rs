@@ -482,7 +482,8 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         // D for demo. D-pad down is read by neither the title nor Controls,
         // the two screens that ask for this.
         Action::Demo => ("D", "DPAD_DOWN"),
-        Action::Challenges => ("H", "DPAD_UP"),
+        // D-pad up is WATCH on the title; left is read by nothing there.
+        Action::Challenges => ("H", "DPAD_LEFT"),
         // W for watch. D-pad up is read by none of the screens that ask for
         // this: the title, a run's result and a won match's plate.
         Action::Watch => ("W", "DPAD_UP"),
