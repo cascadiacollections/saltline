@@ -1,3 +1,16 @@
-Built-in ImageGen prompt (2026-10-09):
+Built-in ImageGen prompt (2026-10-09), using the Iron & Chalk concept board as
+an art-direction reference:
 
-Use case: stylized-concept. Asset type: Salt Line pixel-art title-screen background, widescreen 16:9. Create a restrained native 320x180 pixel art composition displayed enlarged with nearest-neighbor hard square pixels. A desolate bleached salt flat under a deep flat navy night sky, small muted olive artillery emplacement in the bottom left, lone rust water tower in the bottom right, distant low mesas and thin pale salt horizon in the bottom quarter. Upper 75 percent is almost entirely calm navy negative space for existing menu text. Palette restricted to navy #24365c, slate #3c5480, pale blue #6e86a8, sand #e8dcc8, rock #a89680, brown #6b5c4d, shadow #4a3e36, olive #5a6b58 #7e8f76 #2e3830, rust #b5674a #d8907a #6e3a2c. Quiet, atmospheric, precise silhouette pixel craft, sparse texture only in lower ground. No lettering, no logos, no UI, no explosions, no projectile arc, no glow, no gradients, no antialiasing. Keep both side edges navy above the ground so it blends with wider game buffers.
+Salt Line game title background, widescreen 16:9. Single coastal composition,
+not a concept board. Native 320x180 pixel-art composition with hard square
+pixels and a restrained 16-color look. Bleached chalk cliffs and broken layers
+on the lower coast, small golden-ochre tracked artillery at bottom left,
+rust-red water tower and skeletal dock at bottom right, blue-slate sea and
+far industrial silhouettes on a low horizon. Calm dark-navy negative space
+through the upper and central frame for cream menu text, a low pale moon far
+upper right. Quiet chalk coast at night, large silhouettes, sparse dithering.
+Navy, slate, pale blue, cream, earth, olive, rust and ochre. No letters, logos,
+UI, borders, panels, shells, trajectories, explosions or glow.
+
+Normalize with tools/build_title_art.py: nearest-neighbor 320x180 resize and
+no-dither quantization to the sixteen sampled game-palette swatches.

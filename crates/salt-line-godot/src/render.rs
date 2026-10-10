@@ -276,10 +276,23 @@ impl Painter<'_> {
         let tracking = 6;
         let tw = title.chars().count() as i32 * tracking;
         let tx = (w - tw) / 2;
+        if matches!(self.g.mode, Mode::Title) {
+            // An instrument-panel heading, using the same native grid and
+            // palette as the coast below it. Menu rows keep their hit areas.
+            self.canvas
+                .hline(tx - 12, tx + tw + 10, y + 8, pal.get(slot::HULL_EDGE));
+            self.canvas.rect(tx - 10, y + 1, 3, 3, alert);
+            self.canvas.rect(tx + tw + 6, y + 1, 3, 3, alert);
+        }
+        let title_colour = if matches!(self.g.mode, Mode::Title) {
+            fg
+        } else {
+            alert
+        };
         for (i, ch) in title.chars().enumerate() {
             let s = ch.to_string();
             self.canvas
-                .text_small(tx + i as i32 * tracking, y, &s, alert);
+                .text_small(tx + i as i32 * tracking, y, &s, title_colour);
         }
         y += 12;
 
