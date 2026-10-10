@@ -385,8 +385,8 @@ impl Painter<'_> {
                 y = self.menu_row(
                     y,
                     Action::Controls,
-                    &format!("{controls}  CONTROLS / AUDIO"),
-                    "CONTROLS / AUDIO",
+                    &format!("{controls}  SETTINGS"),
+                    "SETTINGS",
                     fg,
                 );
                 // On a touchscreen the demo is the corner plate above.
@@ -453,8 +453,8 @@ impl Painter<'_> {
                 }
             }
             Mode::Controls if self.g.input.touch_active => {
-                self.centred(y, "CONTROLS / AUDIO", fg);
-                y += 16;
+                self.centred(y, "SETTINGS", fg);
+                y += 12;
                 let muted = if self.g.save.muted { " MUTED" } else { "" };
                 let text = format!("VOLUME {}%{muted}", self.g.save.volume);
                 let tw = crate::font::small_width(&text) as i32;
@@ -462,7 +462,7 @@ impl Painter<'_> {
                 self.canvas.text_small(tx, y, &text, alert);
                 self.draw_touch_button(tx - 26, y - 6, 20, 17, "-", Action::Left);
                 self.draw_touch_button(tx + tw + 6, y - 6, 20, 17, "+", Action::Right);
-                y += 20;
+                y += 16;
                 let mute = if self.g.save.muted { "UNMUTE" } else { "MUTE" };
                 self.draw_touch_button(w / 4 - 30, y - 4, 60, 13, mute, Action::Mute);
                 let season = format!(
@@ -503,17 +503,13 @@ impl Painter<'_> {
                         ArcHint::Wind => "ARC: FULL + WIND",
                     };
                     y = self.menu_row(y, Action::ArcHint, "", arc, fg);
-                    y += 4;
-                    self.centred(y, "IN PLAY: PULL BACK, LET GO TO FIRE", fg);
-                } else {
-                    y += 4;
-                    self.centred(y, "IN PLAY: < > ANGLE   - + POWER", fg);
                 }
-                y += 12;
+                y += 4;
+                y = self.menu_row(y, Action::Confirm, "", "CREDITS / LICENSES", fg);
                 self.menu_row(y, Action::Back, "", "BACK", fg);
             }
             Mode::Controls => {
-                self.centred(y, "CONTROLS / AUDIO", fg);
+                self.centred(y, "SETTINGS", fg);
                 y += 12;
                 let muted = if self.g.save.muted { " MUTED" } else { "" };
                 self.centred(
@@ -572,8 +568,35 @@ impl Painter<'_> {
                 y += 7;
                 self.centred(y, "FORMAT: bind ACTION KEY PAD", dim);
                 y += 9;
+                let confirm = self.g.input_label(Action::Confirm);
+                self.centred(y, &format!("{confirm}  CREDITS / LICENSES"), fg);
+                y += 9;
                 let back = self.g.input_label(Action::Back);
                 self.centred(y, &format!("{back}  BACK"), fg);
+            }
+            Mode::Credits => {
+                let pages = crate::credits::pages();
+                let page = self.g.credits_page.min(pages.len() - 1);
+                self.centred(y, "CREDITS / LICENSES", fg);
+                y += 12;
+                for line in &pages[page] {
+                    self.centred(y, line, fg);
+                    y += 7;
+                }
+                y = 130;
+                self.centred(y, &format!("PAGE {} / {}", page + 1, pages.len()), fg);
+                y += 12;
+                if self.plated() {
+                    self.draw_touch_button(w / 2 - 90, y - 4, 50, 13, "PREV", Action::Left);
+                    self.draw_touch_button(w / 2 + 40, y - 4, 50, 13, "NEXT", Action::Right);
+                } else {
+                    let left = self.g.input_label(Action::Left);
+                    let right = self.g.input_label(Action::Right);
+                    self.centred(y, &format!("{left} / {right}  CHANGE PAGE"), dim);
+                }
+                y += 17;
+                let back = self.g.input_label(Action::Back);
+                self.menu_row(y, Action::Back, &format!("{back}  BACK"), "BACK", fg);
             }
             Mode::SeedEntry => {
                 self.centred(y, "ENTER A SEED", dim);
@@ -2002,6 +2025,30 @@ mod tests {
                 Action::Copy
             ]
         );
+    }
+
+    #[test]
+    fn credits_navigation_fits_and_supports_touch_and_controller() {
+        let mut g = game();
+        g.mode = Mode::Credits;
+        for touch in [false, true] {
+            g.input.touch_active = touch;
+            g.input.controller_active = !touch;
+            for page in 0..crate::credits::pages().len() {
+                g.credits_page = page;
+                let (_, buttons) = draw(&g);
+                if touch {
+                    for action in [Action::Left, Action::Right, Action::Back] {
+                        assert!(buttons.iter().any(|b| b.action == action));
+                    }
+                    for button in buttons {
+                        assert!(button.rect.y >= 0 && button.rect.y + button.rect.h <= 180);
+                    }
+                } else {
+                    assert!(buttons.is_empty());
+                }
+            }
+        }
     }
 
     #[test]

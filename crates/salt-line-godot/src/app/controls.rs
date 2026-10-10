@@ -248,6 +248,13 @@ impl Game {
                 }
             }
             Mode::Controls => {
+                if self.action_pressed(Action::Confirm) {
+                    self.flush_settings();
+                    self.credits_page = 0;
+                    self.mode = Mode::Credits;
+                    self.play(Sound::Ui);
+                    return;
+                }
                 let down = self.action_repeated(0, Action::Left, delta);
                 let up = self.action_repeated(1, Action::Right, delta);
                 if down + up > 0 {
@@ -292,6 +299,21 @@ impl Game {
                 } else if self.action_pressed(Action::Back) {
                     self.play(Sound::Ui);
                     self.mode = Mode::Title;
+                }
+            }
+            Mode::Credits => {
+                if self.action_pressed(Action::Back) {
+                    self.mode = Mode::Controls;
+                    self.play(Sound::Ui);
+                } else {
+                    let count = crate::credits::pages().len();
+                    if self.action_pressed(Action::Right) || self.action_pressed(Action::Confirm) {
+                        self.credits_page = (self.credits_page + 1) % count;
+                        self.play(Sound::Ui);
+                    } else if self.action_pressed(Action::Left) {
+                        self.credits_page = (self.credits_page + count - 1) % count;
+                        self.play(Sound::Ui);
+                    }
                 }
             }
             Mode::Paused => {

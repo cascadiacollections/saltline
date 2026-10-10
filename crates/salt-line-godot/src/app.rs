@@ -292,6 +292,8 @@ pub enum Mode {
     Title,
     /// Controls and audio: volume, toggles, the bindings in use.
     Controls,
+    /// Open-source acknowledgments and license notices.
+    Credits,
     /// Typing a seed, by keyboard, touch keypad or controller focus.
     SeedEntry,
     /// A run on screen and taking input. The only mode that steps the replay
@@ -687,6 +689,7 @@ pub const SEED_MAX: usize = 20;
 #[derive(PartialEq, Debug)]
 pub struct FrameState {
     pub mode: Mode,
+    credits_page: usize,
     aim: (i32, i32),
     cam_x: i32,
     buffer: (i32, i32, (i32, i32)),
@@ -728,6 +731,7 @@ pub struct FrameState {
 /// directly.
 pub struct Game {
     pub(crate) mode: Mode,
+    pub(crate) credits_page: usize,
     /// Days since the Unix epoch, as the adapter last read the clock. The
     /// sim never touches system time.
     pub(crate) today: u64,
@@ -1000,6 +1004,7 @@ impl Default for Game {
     fn default() -> Self {
         Game {
             mode: Mode::Title,
+            credits_page: 0,
             today: 0,
             save: Save::default(),
             settings: Debounce::default(),
@@ -1163,6 +1168,7 @@ impl Game {
             Mode::Playing => true,
             Mode::Versus => self.versus.live.as_ref().is_some_and(|vs| !vs.paused),
             Mode::Title
+            | Mode::Credits
             | Mode::Controls
             | Mode::SeedEntry
             | Mode::Paused
@@ -1956,6 +1962,7 @@ impl Game {
     /// the frame as a second line of defence behind the explicit redraws.
     pub(crate) fn frame_state(&self) -> FrameState {
         FrameState {
+            credits_page: self.credits_page,
             mode: self.mode,
             aim: (self.play.angle_ticks, self.play.power_ticks),
             cam_x: self.play.cam_x,
@@ -2050,6 +2057,7 @@ impl Game {
         match self.mode {
             Mode::Title => "Title",
             Mode::Controls => "Controls",
+            Mode::Credits => "Credits",
             Mode::SeedEntry => "SeedEntry",
             Mode::Playing => "Playing",
             Mode::Paused => "Paused",
