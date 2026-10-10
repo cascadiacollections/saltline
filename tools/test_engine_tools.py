@@ -39,7 +39,7 @@ class EngineTools(unittest.TestCase):
             presets = root / "export_presets.cfg"
             presets.write_text('[preset.3]\nname="Android"\n[preset.3.options]\n')
             aar = source / "stock.aar"
-            entry = "jni/arm64-v8a/libgodot_android.so"
+            entry = f"jni/{templates.ANDROID_ABI}/libgodot_android.so"
             with zipfile.ZipFile(aar, "w") as archive:
                 archive.writestr(entry, b"stock")
                 archive.writestr("classes.jar", b"java")
@@ -49,7 +49,7 @@ class EngineTools(unittest.TestCase):
                 archive.writestr("libs/release/godot-lib.template_release.aar", aar.read_bytes())
             apk = source / "custom.apk"
             with zipfile.ZipFile(apk, "w") as archive:
-                archive.writestr("lib/arm64-v8a/libgodot_android.so", b"stripped")
+                archive.writestr(f"lib/{templates.ANDROID_ABI}/libgodot_android.so", b"stripped")
             with patch.object(templates, "ROOT", root), \
                  patch.object(templates, "official_templates", return_value=source), \
                  patch.object(templates, "check_compiler"):

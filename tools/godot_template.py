@@ -384,7 +384,9 @@ def prepare_android(debug: bool = False) -> None:
     # switch back to the stock template cannot silently retain a stripped .so.
     presets = configparser.ConfigParser(interpolation=None, strict=False)
     presets.read(ROOT / "export_presets.cfg")
-    section = next(s for s in presets.sections() if presets.get(s, "name", fallback="") == '"Android"')
+    section = next((s for s in presets.sections() if presets.get(s, "name", fallback="") == '"Android"'), None)
+    if section is None:
+        fail("no preset named 'Android' in export_presets.cfg")
     variant = "debug" if debug else "release"
     custom = presets.get(f"{section}.options", f"custom_template/{variant}", fallback="").strip('"')
     if custom:
@@ -399,10 +401,10 @@ def prepare_android(debug: bool = False) -> None:
                 with zipfile.ZipFile(staged, "w") as output:
                     for info in original.infolist():
                         output.writestr(info, native if info.filename == entry else original.read(info))
-                # Close the input before replacing it (also works on Windows).
             except BaseException:
                 staged.unlink(missing_ok=True)
                 raise
+        # Close the input before replacing it (also works on Windows).
         staged.replace(aar)
     print(f"Android Gradle source prepared: {directory}")
 
