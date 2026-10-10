@@ -35,6 +35,22 @@ bash tools/godot_headless.sh --import
 bash tools/godot_headless.sh --export-release "Linux" build/SaltLine.x86_64
 ```
 
+Linux CI runs `bash tools/strip_linux_release.sh` after the release build and
+before Godot import/export. The native `strip --strip-unneeded` removes symbol
+and debug sections that the ELF loader does not use, while checking that every
+dynamic export (including `gdext_rust_init`) is unchanged. The same step works
+locally on Linux after `cargo build --release`; install your distribution's
+`binutils` if `strip`, `nm`, or `stat` is unavailable. Both x86_64 and arm64
+packaging use the runner's native tools.
+
+This reduces library and download size, not frame rendering time. Full LTO,
+`opt-level=3`, one codegen unit and panic unwinding remain in effect. Release
+crash reports use the panic hook's message/location and replay context, not the
+removed symbol table. Keep the unstripped library from the same build if you
+need native symbol names for profiling or postmortem analysis; stripping does
+not create a separate debug-symbol artifact. Local builds stay unstripped until
+you explicitly run this packaging step.
+
 `--import` is not optional on a clean checkout: without it the export succeeds
 and ships with no art in it.
 
