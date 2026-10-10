@@ -119,7 +119,7 @@
 //! | `Store(Learned)` | an onboarding step done for the first time | `save::store`, then [`Game::stored`] | yes, ignored | yes |
 //! | `Store(Settings)` | settings once they settle (`durable::Debounce`) or on leaving Controls; at once on focus lost, pause and close | `save::store`, then [`Game::stored`] | yes: "SETTINGS NOT SAVED" | yes |
 //! | `Store(Score)` | a run finished, or a finished run found at launch | `resume::replace` with its `clear` text, then, only if that is confirmed, `save::store` with the entry placed; then [`Game::stored`] | yes: placed in memory on success; on failure the run file is rewritten with the finished runs kept (`RunFile::Write`) | yes |
-//! | `Store(Layouts)` | the editor's SAVE, a slot deleted, a toast's UNDO (`app/editor.rs`) | `save::write` of the slot file (`layouts_file`), then [`Game::stored`] | yes: memory takes the new slots only on success, then a saved draft is cleared (`DraftFile(Discard)`); on failure a note, and the draft is kept | yes |
+//! | `Store(Layouts)` | the editor's SAVE, a custom challenge's SAVE MAP, a slot deleted, a toast's UNDO | `save::write` of the slot file (`layouts_file`), then [`Game::stored`] | yes: memory takes the new slots only on success; an editor draft is cleared only when it was saved | yes |
 //! | `DraftFile(Write)` | the editor's draft changed, once a stroke has ended (`persist_draft`) | `resume::replace_at` at `layouts_file::DRAFT_FILES` | no | yes |
 //! | `DraftFile(Restore)` | [`Game::saved_draft`], once the set-aside draft has been read (or is from a newer build) | rename `draft-loading.txt` back to `draft.txt` | no | yes |
 //! | `DraftFile(Discard)` | the draft saved (from `stored`), DISCARD MAP once the editor is left, or a blank draft file at launch ([`Game::saved_draft`]); never over a newer build's draft | `resume::replace_at` with `""` | no | yes |
@@ -486,6 +486,8 @@ pub enum SlotWrite {
         /// The draft's revision saved: only that is cleared once confirmed.
         rev: u64,
     },
+    /// A custom challenge layout saved into a new slot.
+    SaveCustom { slot: u8 },
     /// `slot` emptied; `before` is the file as it was, for UNDO.
     Delete { slot: u8, before: String },
     /// An UNDO putting the file back.

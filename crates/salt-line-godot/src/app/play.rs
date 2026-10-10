@@ -387,6 +387,40 @@ impl Game {
         }
     }
 
+    /// Save the custom challenge's layout into the first open map slot.
+    pub(super) fn save_custom_challenge_layout(&mut self) {
+        let Some(layout) = self.play.custom_challenge.as_ref() else {
+            return;
+        };
+        if self.layouts.slots.from_the_future {
+            self.note("MAPS FILE IS FROM A NEWER VERSION".into());
+            return;
+        }
+        if self.layouts.slots.damaged {
+            self.note("MAPS FILE IS DAMAGED - NOT WRITTEN".into());
+            return;
+        }
+        let Some(slot) = self.layouts.slots.free() else {
+            self.note("NO OPEN MAP SLOTS".into());
+            return;
+        };
+        let Some(code) = layout.to_code().ok() else {
+            self.note("CHALLENGE MAP CANNOT BE SAVED".into());
+            return;
+        };
+        let mut slots = self.layouts.slots.clone();
+        slots.put(crate::layouts_file::SlotEntry {
+            slot,
+            code,
+            origin: None,
+            tail: None,
+        });
+        self.fx.push(Effect::Store(Store::Layouts {
+            text: slots.serialize(),
+            why: SlotWrite::SaveCustom { slot },
+        }));
+    }
+
     /// Keep the shells left over from a cleared challenge if they beat the
     /// last time.
     pub(super) fn record_challenge_clear(&mut self) {

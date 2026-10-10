@@ -331,7 +331,9 @@ impl Game {
             Mode::GameOver => {
                 let challenge =
                     self.play.challenge.is_some() || self.play.custom_challenge.is_some();
-                if challenge && self.action_pressed(Action::Copy) {
+                if self.play.custom_challenge.is_some() && self.action_pressed(Action::Watch) {
+                    self.save_custom_challenge_layout();
+                } else if challenge && self.action_pressed(Action::Copy) {
                     // A challenge is a fixed layout: its share code opens in
                     // the editor to test-fire, change or pass on.
                     self.copy_challenge_code();

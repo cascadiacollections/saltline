@@ -474,6 +474,7 @@ impl Game {
             }
             self.note(match why {
                 SlotWrite::Save { .. } => "MAP NOT SAVED - DRAFT KEPT".into(),
+                SlotWrite::SaveCustom { .. } => "CHALLENGE MAP NOT SAVED".into(),
                 SlotWrite::Delete { .. } | SlotWrite::Undo => "MAPS NOT SAVED".into(),
             });
             return;
@@ -508,6 +509,9 @@ impl Game {
                     self.editor.toast = None;
                     self.note(format!("SAVED TO SLOT {slot}"));
                 }
+            }
+            SlotWrite::SaveCustom { slot } => {
+                self.note(format!("SAVED TO SLOT {slot}"));
             }
             SlotWrite::Delete { slot, before } => {
                 self.editor.toast = Some(Toast {

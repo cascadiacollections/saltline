@@ -627,16 +627,10 @@ impl Painter<'_> {
                 }
             }
             Mode::GameOver => {
-                let challenge_over = self
-                    .g
-                    .play
-                    .challenge
-                    .is_some_and(|_| self.g.play.run.as_ref().is_some_and(|r| r.is_over()));
                 let is_challenge =
                     self.g.play.challenge.is_some() || self.g.play.custom_challenge.is_some();
-                let challenge_over = challenge_over
-                    || (self.g.play.custom_challenge.is_some()
-                        && self.g.play.run.as_ref().is_some_and(|r| r.is_over()));
+                let challenge_over =
+                    is_challenge && self.g.play.run.as_ref().is_some_and(|r| r.is_over());
                 let heading = if is_challenge {
                     if challenge_over {
                         "CHALLENGE FAILED"
@@ -654,13 +648,14 @@ impl Painter<'_> {
                         .save
                         .custom_challenge_best(layout.digest())
                         .map_or("-".to_string(), |left| left.to_string());
+                    let left = self.g.play.run.as_ref().map_or(0, |run| run.shells.max(0));
                     self.centred(
                         y,
                         &format!("CUSTOM {}", crate::layouts_file::fingerprint(layout)),
                         fg,
                     );
                     y += 8;
-                    self.centred(y, &format!("BEST SHELLS LEFT {best}"), dim);
+                    self.centred(y, &format!("{left} SHELLS LEFT  BEST {best}"), dim);
                     y += 14;
                 } else if let Some(index) = self.g.play.challenge {
                     let bests = salt_line_sim::challenge::ALL
@@ -698,11 +693,12 @@ impl Painter<'_> {
                     } else {
                         "PLAY AGAIN"
                     };
-                    vec![
-                        (Action::Replay, again),
-                        (Action::Copy, "COPY CODE"),
-                        (Action::Confirm, "TITLE"),
-                    ]
+                    let mut rows = vec![(Action::Replay, again)];
+                    if self.g.play.custom_challenge.is_some() {
+                        rows.push((Action::Watch, "SAVE MAP"));
+                    }
+                    rows.extend([(Action::Copy, "COPY CODE"), (Action::Confirm, "TITLE")]);
+                    rows
                 } else {
                     [
                         (Action::Replay, "SAME SEED AGAIN"),

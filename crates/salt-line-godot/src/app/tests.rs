@@ -251,15 +251,27 @@ fn pasted_and_saved_one_gun_layouts_start_custom_challenges() {
     assert!(!pasted.run_file.run_persist);
     assert!(pasted.play.run.as_ref().unwrap().log.is_empty());
 
-    let mut slots = crate::layouts_file::Slots::default();
-    slots.put(crate::layouts_file::SlotEntry {
-        slot: 1,
-        code,
-        origin: None,
-        tail: None,
-    });
     let mut saved = game();
-    saved.layouts.set(slots);
+    saved.start_custom_challenge(layout.clone());
+    saved.mode = Mode::GameOver;
+    saved.save_custom_challenge_layout();
+    let (text, why) = saved
+        .take_effects()
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::Store(Store::Layouts { text, why }) => Some((text, why)),
+            _ => None,
+        })
+        .expect("saving a custom challenge writes its layout slot");
+    assert_eq!(
+        crate::layouts_file::Slots::parse(&text)
+            .get(1)
+            .unwrap()
+            .layout()
+            .unwrap(),
+        layout
+    );
+    saved.stored(Store::Layouts { text, why }, true);
     saved.open_row(crate::app::editor::SlotRow::Slot(1));
     assert_eq!(saved.mode, Mode::Playing);
     assert_eq!(saved.play.custom_challenge.as_ref(), Some(&layout));
@@ -301,6 +313,22 @@ fn custom_challenge_best_is_recorded_by_layout_digest() {
         Save::parse(&g.save.serialize()).custom_challenge_best(digest),
         Some(2)
     );
+}
+
+#[test]
+fn custom_challenge_finishes_without_a_run_score_or_replay() {
+    let layout = salt_line_sim::challenge::layout(salt_line_sim::challenge::get(0).unwrap());
+    let mut g = game();
+    g.start_custom_challenge(layout);
+    g.play.run.as_mut().unwrap().phase = Phase::Over(salt_line_sim::run::RunOver::OutOfShells);
+    g.finish_run();
+    assert_eq!(g.mode, Mode::GameOver);
+    assert!(!g.run_file.run_persist);
+    assert!(g.history.last_run.is_none());
+    assert!(!g
+        .take_effects()
+        .iter()
+        .any(|effect| matches!(effect, Effect::Store(Store::Score { .. }))));
 }
 
 #[test]
