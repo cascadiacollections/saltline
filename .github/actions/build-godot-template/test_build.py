@@ -48,6 +48,16 @@ class BuilderTests(unittest.TestCase):
                 with patch.object(saltline, 'PORTABLE_RECIPE', paths):
                     self.assertNotEqual(baseline, saltline.key())
 
+    def test_dogfood_workflows_pin_the_current_engine_and_platform_flags(self):
+        for name, platform in [('godot-templates.yml', 'android'), ('engine-validation.yml', 'linux')]:
+            workflow = (ROOT / '.github/workflows' / name).read_text()
+            with self.subTest(workflow=name):
+                self.assertIn(f'tag: {saltline.GODOT_TAG}', workflow)
+                self.assertIn(f'commit: {saltline.GODOT_COMMIT}', workflow)
+                expected = [flag for flag in saltline.PLATFORM_FLAGS[platform] if not flag.startswith('platform=')]
+                self.assertIn("flags: '" + json.dumps(expected) + "'", workflow)
+                self.assertIn('profile: tools/godot_build_profile.json', workflow)
+
     def test_configuration_rejects_unpinned_and_override_inputs(self):
         for key, value in [('ENGINE_COMMIT', 'main'), ('ENGINE_TAG', '--help'),
                            ('SCONS_VERSION', 'latest'), ('BUILD_ARCH', '../arm64'),

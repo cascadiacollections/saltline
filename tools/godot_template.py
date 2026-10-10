@@ -72,7 +72,7 @@ PROFILE = ROOT / "tools" / "godot_build_profile.json"
 # The publishing workflow dogfoods this portable recipe. Hash it as well
 # as the legacy local recipe so a real CI build change cannot reuse a release.
 PORTABLE_RECIPE = tuple(ROOT / ".github" / "actions" / "build-godot-template" / name
-                        for name in ("action.yml", "build.py"))
+                        for name in ("action.yml", "build.py")) + (ROOT / ".github" / "workflows" / "godot-templates.yml",)
 LOCK = ROOT / "tools" / "godot_templates.lock.json"
 DEFAULT_OUT = ROOT / "build" / "godot-templates"
 REPO = "cascadiacollections/saltline"

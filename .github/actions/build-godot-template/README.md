@@ -84,7 +84,8 @@ Disable cache for newly attested release builds, as Salt Line does. A cache hit
 regenerates the checksum/report from the restored binary. Build provenance and
 reviewed digest pins belong in the caller's publishing job.
 
-Salt Line's published template key additionally hashes this action and driver.
+Salt Line's published template key additionally hashes this action, driver and
+publishing workflow (including caller flags and toolchain identity).
 The initial extraction changes that key: rebuild templates after merge and
 review `python3 tools/godot_template.py lock --release` before shipping the new
 engine. Lock schema, native artifact names, signing workflow and replay parity
