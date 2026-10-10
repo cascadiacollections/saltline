@@ -716,3 +716,16 @@ Re-run preparation after reinstalling the Android build template.
 ## License
 
 MIT. See `LICENSE`.
+
+### Concept boards and application icons
+
+The marketing page includes six supplied art-direction boards in
+`site/assets/concept-boards/`. They are labeled as concepts, separately from
+actual gameplay media. The site and original icon sources are excluded from
+exported game resources.
+
+The default Iron & Chalk icon ships on every platform. Regenerate its native
+1024px image and site favicon with `uv run python tools/build_app_icons.py`.
+For a seasonal export, pass `--variant halloween`, `--variant thanksgiving`,
+or `--variant christmas`, then import and export normally. Restore the default
+before committing. Original PNGs remain in `art/app-icons/`.
