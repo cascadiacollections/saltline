@@ -189,7 +189,7 @@ pub struct SaltLine {
     title_fade: f64,
 
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
-    /// native resolution, and quit. How the pixel output gets checked without
+    /// artwork resolution, and quit. How the pixel output gets checked without
     /// a human at the keyboard.
     shot_path: Option<String>,
     /// Frames processed, drawn or not. A capture waits for at least three.
@@ -267,6 +267,19 @@ impl INode2D for SaltLine {
     }
 
     fn ready(&mut self) {
+        // Imported PNG files become textures in exports. Resolve the icon as a
+        // resource too, rather than relying on the engine's raw-image loader.
+        // The Linux window/task switcher then uses the same art as the bundles.
+        if DisplayServer::singleton().has_feature(godot::classes::display_server::Feature::ICON) {
+            if let Ok(icon) = try_load::<godot::classes::Texture2D>("res://art/icon_1024.png") {
+                if let Some(mut image) = icon.get_image() {
+                    // Large 1024px packaging art exceeds some X11 property
+                    // limits. A 256px copy is sufficient for window chrome.
+                    image.resize(256, 256);
+                    DisplayServer::singleton().set_icon(&image);
+                }
+            }
+        }
         // `--salt-phone` lays the game out as a phone would (touch controls,
         // the rounded corners' pad, a phone's window), for captures.
         let phone = DevArgs::parse(&Self::cmdline_all()).phone;
@@ -589,8 +602,9 @@ impl INode2D for SaltLine {
         let Ok(touch) = event.try_cast::<InputEventScreenTouch>() else {
             return;
         };
-        // Texture destination rectangles use logical coordinates. Godot's
-        // local input conversion accounts for window stretch and letterboxing.
+        // Godot delivers viewport coordinates after window stretch and
+        // letterboxing. Account for the node's canvas transform as well;
+        // texture destination rectangles and core input are both logical.
         let local = self
             .base()
             .make_input_local(&touch.clone().upcast::<InputEvent>());

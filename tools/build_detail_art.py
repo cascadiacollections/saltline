@@ -208,9 +208,7 @@ def build(out=OUT):
         )
         binary(image).save(out / f"{name}.png")
     plate = Image.open(native.SOURCE / "clean-background.png").convert("RGBA")
-    plate = plate.crop((0, 0, plate.width, round(plate.height * 2 / 3))).resize(
-        (320 * S, 180 * S), Image.Resampling.LANCZOS
-    )
+    plate = native.sky_background(plate, (320 * S, 180 * S), Image.Resampling.LANCZOS)
     textures = []
     for name, box in [
         ("sand", (560, 416, 568, 424)),

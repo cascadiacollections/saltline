@@ -9,7 +9,9 @@ use crate::input::Intents;
 use crate::raster::Canvas;
 use crate::render::{self, Art, Cache};
 use crate::save_format::Save;
-use godot::classes::{AudioStream, Image, ImageTexture, ProjectSettings, ResourceLoader};
+use godot::classes::{
+    AudioStream, Image, ImageTexture, ProjectSettings, ResourceLoader, Texture2D,
+};
 use godot::prelude::*;
 use salt_line_sim::replay::{state_hash, Hasher};
 use std::path::Path;
@@ -33,6 +35,12 @@ pub fn run(art: &Art, directory: &str) -> Result<(), String> {
     }
     if !art.pal.sampled || art.title_background.is_none() {
         return Err("palette or title background failed to load".into());
+    }
+    let icon = try_load::<Texture2D>("res://art/icon_1024.png")
+        .map_err(|_| "application icon failed to load".to_string())?;
+    let icon_image = icon.get_image().ok_or("application icon has no pixels")?;
+    if icon_image.get_width() != 1024 || icon_image.get_height() != 1024 {
+        return Err("application icon has incorrect packaging dimensions".into());
     }
     let sprites = art.sprites.as_ref().ok_or("sprites were not loaded")?;
     if !sprites.missing.is_empty() {

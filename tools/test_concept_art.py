@@ -99,6 +99,17 @@ class ConceptArtTests(unittest.TestCase):
                 scene.crop((0, 0, 1280, 1)).tobytes(),
             )
 
+    def test_gameplay_background_keeps_source_proportions(self):
+        plate = Image.open(concept.SOURCE / "clean-background.png").convert("RGBA")
+        background = concept.sky_background(plate, (1280, 720))
+        # 1672x941 scales uniformly to 1280x720. Only placement changes:
+        # 144 pixels of empty sky above; excess water cropped below.
+        scaled = plate.resize((1280, 720), Image.Resampling.NEAREST)
+        self.assertEqual(
+            background.crop((0, 144, 1280, 720)).tobytes(),
+            scaled.crop((0, 0, 1280, 576)).tobytes(),
+        )
+
     def test_shipping_assets_reproduce_from_kept_sources(self):
         contracts = json.loads((concept.SOURCE / "native-contracts.json").read_text())
         self.assertEqual(set(contracts), set(self.products))

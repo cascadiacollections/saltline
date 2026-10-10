@@ -249,7 +249,25 @@ impl Painter<'_> {
             if let Some(background) = self.title_background {
                 let x = (self.canvas.w - background.w) / 2;
                 let y = (self.canvas.h - background.h) / 2;
-                if x > 0 {
+                if let Some(detail) = background
+                    .detail
+                    .as_ref()
+                    .filter(|_| x > 0 && self.canvas.scale() == 4)
+                {
+                    let right = (x + background.w) * 4;
+                    for row in 0..detail.h {
+                        for col in 0..x * 4 {
+                            if let Some(c) = detail.pixel(0, row) {
+                                self.canvas.put_detail(col, y * 4 + row, c);
+                            }
+                        }
+                        for col in right..self.canvas.pixel_w() {
+                            if let Some(c) = detail.pixel(detail.w - 1, row) {
+                                self.canvas.put_detail(col, y * 4 + row, c);
+                            }
+                        }
+                    }
+                } else if x > 0 {
                     let right = x + background.w;
                     for row in 0..background.h {
                         if let Some(c) = background.pixel(0, row) {
@@ -1799,6 +1817,39 @@ mod tests {
 
     fn actions(buttons: &[Button]) -> Vec<Action> {
         buttons.iter().map(|b| b.action).collect()
+    }
+
+    #[test]
+    fn wide_detailed_title_margins_match_the_source_edge_colors() {
+        let mut g = game();
+        g.fit_display((1600, 720), (0, 0));
+        let color = [9, 31, 67, 255];
+        let art = Art {
+            title_background: Some(Sprite {
+                w: 320,
+                h: 180,
+                px: [201, 202, 203, 255].repeat(320 * 180),
+                detail: Some(Box::new(Sprite {
+                    w: 1280,
+                    h: 720,
+                    px: color.repeat(1280 * 720),
+                    detail: None,
+                })),
+            }),
+            ..Art::default()
+        };
+        let mut canvas = Canvas::detailed(400, 180);
+        frame(
+            &g,
+            &art,
+            &mut canvas,
+            &mut Vec::new(),
+            &mut Cache::default(),
+        );
+        for x in [0, 159, 160, 1439, 1440, 1599] {
+            let at = ((700 * 1600 + x) * 4) as usize;
+            assert_eq!(&canvas.bytes()[at..at + 4], &color);
+        }
     }
 
     #[test]

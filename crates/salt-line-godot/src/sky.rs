@@ -68,8 +68,10 @@ pub fn draw_still(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase)
     canvas.fill(pal.get(slot::SKY_HI));
     let top = view.h - 180;
     if canvas.scale() == 4 {
-        for y in (top * 4).max(0)..view.h * 4 {
-            let sy = (y - top * 4) as usize;
+        for y in 0..view.h * 4 {
+            // Long Lens adds sky matching the source plate, rather than a
+            // different palette-color band above the detailed background.
+            let sy = (y - top * 4).max(0) as usize;
             for x in 0..view.w * 4 {
                 let sx = if (x / 1280) % 2 == 0 {
                     x % 1280
@@ -458,6 +460,26 @@ mod tests {
                     let index = ((y * w + x) * 4) as usize;
                     assert_eq!(&canvas.bytes()[index..index + 4], &want, "({x}, {y})");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn detailed_long_lens_sky_extends_the_source_plate_without_a_color_seam() {
+        let mut canvas = Canvas::detailed(400, 216);
+        let view = View {
+            cam_x: 137,
+            w: 400,
+            h: 216,
+        };
+        draw_still(&mut canvas, &view, &Palette::default(), Phase::Day);
+        for y in [0, 143, 144, 300, 863] {
+            for x in [0, 1279, 1280, 1599] {
+                let sx = if x < 1280 { x } else { 2559 - x };
+                let sy = (y - 144).max(0);
+                let at = ((y * 1600 + x) * 4) as usize;
+                let source = ((sy * 1280 + sx) * 4) as usize;
+                assert_eq!(&canvas.bytes()[at..at + 4], &DETAIL_SKY[source..source + 4]);
             }
         }
     }

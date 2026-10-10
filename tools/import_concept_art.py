@@ -225,6 +225,22 @@ def build_title(out=None):
     )
 
 
+def sky_background(plate, size, resample=Image.Resampling.NEAREST):
+    """Scale the harbour uniformly and place its horizon below the aim area.
+
+    Keep the source's 40%-height horizon near 60% of the gameplay frame.
+    Extend only empty sky above it and crop excess water below the frame.
+    """
+    height = round(size[0] * plate.height / plate.width)
+    plate = plate.resize((size[0], height), resample)
+    top = round(size[1] * 0.6 - height * 0.4)
+    image = Image.new("RGBA", size)
+    if top > 0:
+        image.paste(plate.crop((0, 0, size[0], 1)).resize((size[0], top)), (0, 0))
+    image.paste(plate, (0, top))
+    return image
+
+
 def build(out=None):
     out = Path(out or generated.OUT)
     sprites = out / "sprites"
@@ -358,10 +374,7 @@ def build(out=None):
     # Native sky's palette indices are embedded in Rust, so headless tests,
     # flat rendering and layered rendering use the actual imported artwork.
     plate = Image.open(SOURCE / "clean-background.png").convert("RGBA")
-    # Restore the original board scene's framing; the cleanup includes extra
-    # water below the original foreground which should not raise the horizon.
-    plate = plate.crop((0, 0, plate.width, round(plate.height * 2 / 3)))
-    sky = quantize(plate.resize((320, 180), Image.Resampling.NEAREST), sky=True)
+    sky = quantize(sky_background(plate, (320, 180)), sky=True)
     sky.save(backgrounds / "salt_iron_sky_320x180.png")
     indices = bytes(colour(p[:3]) for p in sky.get_flattened_data())
     (backgrounds / "salt_iron_sky_320x180.pal8").write_bytes(indices)
