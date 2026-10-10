@@ -1,58 +1,11 @@
-//! The pixel buffer, and everything drawn into it.
+//! Software painter with logical world coordinates and optional 4x source art.
 //!
-//! DESIGN §5.5: terrain is vertical spans of solid colour, one pixel column
-//! each, straight into an image buffer. No tilemap, no mesh, no sprites for
-//! the ground. It is a per-column loop and it is fast enough at 320 wide to
-//! redraw every frame.
-//!
-//! Nothing here scales, rotates or anti-aliases. Every coordinate that reaches
-//! `put` is already a whole pixel.
-//!
-//! # One canvas at the internal resolution
-//!
-//! DESIGN §5.1 fixes the buffer at 180 buffer pixels tall and 320 to 400
-//! wide, by device aspect; Long Lens makes it 216 tall
-//! (`app::LONG_LENS_H`), adding sky rather than scaling. The whole frame,
-//! terrain, sprites, HUD and text alike, is drawn by the CPU at that size,
-//! then uploaded (only the strips that changed; see `strips`) to textures
-//! that `game.rs` draws at 1:1. In play the sky and the ground are drawn into
-//! canvases of their own, kept until they change, and everything else into
-//! a transparent [`Canvas`] over them (`backdrop`); every pixel is still
-//! drawn here, by the CPU. Godot's viewport stretch, with nearest filtering
-//! set project-wide, does the only scaling in the game, so every buffer
-//! pixel lands on the screen as the same whole block.
-//! UI in the same buffer at the same resolution is itself a §5.1 rule.
-//!
-//! World units map one to one onto buffer pixels: a heightfield column is
-//! one world unit wide and one buffer pixel wide. [`View`] turns world
-//! positions into buffer pixels with the camera's whole-pixel offset.
-//!
-//! # Dithering
-//!
-//! Gradients are ordered dithering with a 4x4 Bayer matrix ([`BAYER`]):
-//! each pixel compares the blend it wants against a fixed threshold for its
-//! position, and takes one palette colour or the other. No colour off the
-//! sixteen is ever made (DESIGN §5.2), and the pattern is stable frame to
-//! frame, unlike random dithering. It is used only where §5.2 allows it:
-//! the sky and the rock-to-bedrock band.
-//!
-//! # Pinned frames
-//!
-//! Tests pin whole frames with `Canvas::palette_text` (test builds only):
-//! every pixel written as the hex digit of its palette slot, one text row
-//! per buffer row, and the text snapshotted with `insta` (see
-//! `a_frame_of_a_real_screen_is_pinned` below; the snapshots live in
-//! `src/snapshots/`). A change to any drawing shows up in review as exactly
-//! the characters, so exactly the pixels, that moved. A few rows of that
-//! snapshot, where the high sky (slot 4) is dithered into the middle sky
-//! (slot 5):
-//!
-//! ```text
-//! 444444444444444444444444
-//! 544454445444544454445444
-//! 444444444444444444444444
-//! 445444544454445444544454
-//! ```
+//! The native canvas remains the palette snapshot/fallback path. Detailed
+//! canvases retain the same logical bounds but store four display pixels per
+//! unit. Logical writes fill blocks; source sprites copy their actual pixels.
+//! Terrain masks and material selection always come from the heightfield.
+//! Barrel rotations and source resampling happen offline. The engine composites
+//! detailed frames flat, preserving painter order and per-pixel arc blending.
 
 use godot::builtin::PackedByteArray;
 use salt_line_sim::rng::mix64;
@@ -62,6 +15,9 @@ use salt_line_sim::SCREEN_H;
 
 use crate::font;
 use crate::palette::{slot, Palette, Rgba};
+
+/// Source-art soil samples, ordered sand, rock, bedrock.
+const DETAIL_SOIL: &[u8; 3 * 64 * 64 * 4] = include_bytes!("../../../art/detail/soil.rgba");
 
 /// 4x4 Bayer matrix: the values 0 to 15 laid out so that any threshold
 /// switches on pixels spread as evenly as possible. The only dithering in
@@ -101,14 +57,15 @@ impl Ink {
     }
 }
 
-/// An RGBA8 pixel buffer at the internal resolution.
+/// An RGBA8 backing image with logical layout bounds.
 pub struct Canvas {
     /// Width in buffer pixels.
     pub w: i32,
     /// Height in buffer pixels.
     pub h: i32,
-    /// `w * h` pixels, row by row from the top left, four bytes each.
+    /// Physical pixels, row by row, four bytes each; `pixel_w() * pixel_h()`.
     px: Vec<u8>,
+    scale: i32,
 }
 
 impl Canvas {
@@ -119,7 +76,36 @@ impl Canvas {
             w,
             h,
             px: vec![0; (w * h * 4) as usize],
+            scale: 1,
         }
+    }
+
+    /// Artwork pixels per logical world unit. Coordinates and hit geometry
+    /// remain logical; only the backing image changes resolution.
+    pub fn detailed(w: i32, h: i32) -> Self {
+        let mut canvas = Self::new(w, h);
+        canvas.scale = 4;
+        canvas.px = vec![0; (canvas.pixel_w() * canvas.pixel_h() * 4) as usize];
+        canvas
+    }
+
+    pub fn scale(&self) -> i32 {
+        self.scale
+    }
+    pub fn pixel_w(&self) -> i32 {
+        self.w * self.scale
+    }
+    pub fn pixel_h(&self) -> i32 {
+        self.h * self.scale
+    }
+
+    /// Write a display pixel without changing the logical drawing grid.
+    pub fn put_detail(&mut self, x: i32, y: i32, c: Rgba) {
+        if x < 0 || y < 0 || x >= self.pixel_w() || y >= self.pixel_h() {
+            return;
+        }
+        let i = ((y * self.pixel_w() + x) * 4) as usize;
+        self.px[i..i + 4].copy_from_slice(&c);
     }
 
     /// Change size, clearing the buffer only if the size actually changed.
@@ -128,7 +114,7 @@ impl Canvas {
         if w != self.w || h != self.h {
             self.w = w;
             self.h = h;
-            self.px = vec![0; (w * h * 4) as usize];
+            self.px = vec![0; (self.pixel_w() * self.pixel_h() * 4) as usize];
         }
     }
 
@@ -151,8 +137,11 @@ impl Canvas {
         if x < 0 || y < 0 || x >= self.w || y >= self.h {
             return;
         }
-        let i = ((y * self.w + x) * 4) as usize;
-        self.px[i..i + 4].copy_from_slice(&c);
+        for dy in 0..self.scale {
+            for dx in 0..self.scale {
+                self.put_detail(x * self.scale + dx, y * self.scale + dy, c);
+            }
+        }
     }
 
     /// Alpha-blended write, for the one translucent mark (the last arc).
@@ -182,17 +171,21 @@ impl Canvas {
         if x < 0 || y < 0 || x >= self.w || y >= self.h || alpha == 0 {
             return;
         }
-        let i = ((y * self.w + x) * 4) as usize;
-        if self.px[i + 3] == 0 {
-            let u = under(x, y);
-            self.px[i..i + 3].copy_from_slice(&u[..3]);
-        }
         let a = alpha as u32;
-        for (dst, src) in self.px[i..i + 3].iter_mut().zip(c.iter()) {
-            let under = *dst as u32;
-            *dst = ((*src as u32 * a + under * (255 - a)) / 255) as u8;
+        for dy in 0..self.scale {
+            for dx in 0..self.scale {
+                let i =
+                    (((y * self.scale + dy) * self.pixel_w() + x * self.scale + dx) * 4) as usize;
+                if self.px[i + 3] == 0 {
+                    let u = under(x, y);
+                    self.px[i..i + 3].copy_from_slice(&u[..3]);
+                }
+                for (dst, src) in self.px[i..i + 3].iter_mut().zip(c.iter()) {
+                    *dst = ((*src as u32 * a + *dst as u32 * (255 - a)) / 255) as u8;
+                }
+                self.px[i + 3] = 255;
+            }
         }
-        self.px[i + 3] = 255;
     }
 
     /// The pixel at `(x, y)`, transparent if off the buffer or unpainted.
@@ -201,7 +194,9 @@ impl Canvas {
         if x < 0 || y < 0 || x >= self.w || y >= self.h {
             return [0; 4];
         }
-        let i = ((y * self.w + x) * 4) as usize;
+        let i =
+            (((y * self.scale + self.scale / 2) * self.pixel_w() + x * self.scale + self.scale / 2)
+                * 4) as usize;
         [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
     }
 
@@ -497,7 +492,31 @@ pub fn draw_terrain(canvas: &mut Canvas, view: &View, field: &Heightfield, pal: 
             } else {
                 pal.get(slot::BEDROCK)
             };
-            canvas.put(sx, y, c);
+            if canvas.scale() == 4 {
+                // Texture samples come from the board, while the material
+                // selection and silhouette still come from the heightfield.
+                let material = if c == pal.get(slot::SAND) {
+                    0
+                } else if c == pal.get(slot::ROCK) {
+                    1
+                } else {
+                    2
+                };
+                for dy in 0..4 {
+                    for dx in 0..4 {
+                        let tx = (world_x * 4 + dx).rem_euclid(64) as usize;
+                        let ty = (view.world_row(y) * 4 - dy).rem_euclid(64) as usize;
+                        let at = (material * 64 * 64 + ty * 64 + tx) * 4;
+                        canvas.put_detail(
+                            sx * 4 + dx,
+                            y * 4 + dy,
+                            DETAIL_SOIL[at..at + 4].try_into().unwrap(),
+                        );
+                    }
+                }
+            } else {
+                canvas.put(sx, y, c);
+            }
         }
 
         // Crater rims get one pixel of the shadow tone on the inner edge,
@@ -783,6 +802,8 @@ pub struct Sprite {
     pub w: i32,
     pub h: i32,
     pub px: Vec<u8>,
+    /// Optional source-color artwork, exactly four times these logical bounds.
+    pub detail: Option<Box<Sprite>>,
 }
 
 impl Sprite {
@@ -816,6 +837,21 @@ impl Canvas {
         }
     }
 
+    fn blit_detail(&mut self, sprite: &Sprite, x: i32, y: i32, src: Rect, flipped: bool) -> bool {
+        let Some(detail) = sprite.detail.as_ref().filter(|_| self.scale == 4) else {
+            return false;
+        };
+        for j in 0..src.h * 4 {
+            for i in 0..src.w * 4 {
+                if let Some(c) = detail.pixel(src.x * 4 + i, src.y * 4 + j) {
+                    let dx = if flipped { src.w * 4 - 1 - i } else { i };
+                    self.put_detail(x * 4 + dx, y * 4 + j, c);
+                }
+            }
+        }
+        true
+    }
+
     /// Blit a whole sprite at a whole-pixel position.
     pub fn blit(&mut self, sprite: &Sprite, x: i32, y: i32) {
         self.blit_region(
@@ -833,6 +869,9 @@ impl Canvas {
 
     /// Blit one region of a sprite sheet — the barrel strip, sliced at 28px.
     pub fn blit_region(&mut self, sprite: &Sprite, x: i32, y: i32, src: Rect) {
+        if self.blit_detail(sprite, x, y, src, false) {
+            return;
+        }
         let Rect { x: sx, y: sy, w, h } = src;
         for j in 0..h {
             for i in 0..w {
@@ -863,6 +902,9 @@ impl Canvas {
     /// rule against rotating sprites still holds: every pixel is copied one
     /// for one. Versus draws the right-hand gun this way.
     pub fn blit_region_flipped(&mut self, sprite: &Sprite, x: i32, y: i32, src: Rect) {
+        if self.blit_detail(sprite, x, y, src, true) {
+            return;
+        }
         let Rect { x: sx, y: sy, w, h } = src;
         for j in 0..h {
             for i in 0..w {
@@ -881,6 +923,133 @@ mod tests {
     use salt_line_sim::terrain::{self, ShapeParams, Template};
 
     #[test]
+    fn detail_retains_logical_coordinates_and_resizes_physical_storage() {
+        let mut c = Canvas::detailed(3, 2);
+        c.put(1, 0, [1, 2, 3, 255]);
+        assert_eq!((c.w, c.h, c.pixel_w(), c.pixel_h()), (3, 2, 12, 8));
+        for y in 0..8 {
+            for x in 0..12 {
+                let i = ((y * 12 + x) * 4) as usize;
+                let expected = if y < 4 && (4..8).contains(&x) {
+                    [1, 2, 3, 255]
+                } else {
+                    [0; 4]
+                };
+                assert_eq!(&c.bytes()[i..i + 4], &expected);
+            }
+        }
+        c.resize(4, 3);
+        assert_eq!(c.bytes().len(), 16 * 12 * 4);
+        assert!(c.bytes().iter().all(|&v| v == 0));
+        assert_eq!(c.scale(), 4);
+    }
+
+    #[test]
+    fn source_pixels_survive_sheet_slicing_mirroring_and_later_occlusion() {
+        let detail = Sprite {
+            w: 8,
+            h: 4,
+            px: (0..32)
+                .flat_map(|i| [i, 0, 0, if i % 8 == 7 { 0 } else { 255 }])
+                .collect(),
+            detail: None,
+        };
+        let sprite = Sprite {
+            w: 2,
+            h: 1,
+            px: vec![99; 8],
+            detail: Some(Box::new(detail)),
+        };
+        let mut c = Canvas::detailed(2, 1);
+        c.fill([80, 80, 80, 255]);
+        c.blit_region_flipped(
+            &sprite,
+            0,
+            0,
+            Rect {
+                x: 1,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+        );
+        assert_eq!(
+            &c.bytes()[0..4],
+            &[80, 80, 80, 255],
+            "transparent source leaves the backing"
+        );
+        assert_eq!(&c.bytes()[4..8], &[6, 0, 0, 255]);
+        assert_eq!(&c.bytes()[12..16], &[4, 0, 0, 255]);
+        c.put(0, 0, [42, 0, 0, 255]);
+        assert_eq!(
+            c.get(0, 0),
+            [42, 0, 0, 255],
+            "later terrain/UI covers every source pixel"
+        );
+        c.blit_region(
+            &sprite,
+            -1,
+            0,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
+        );
+        assert_eq!(
+            &c.bytes()[0..4],
+            &[4, 0, 0, 255],
+            "clipping keeps the correct sheet pixel"
+        );
+    }
+
+    #[test]
+    fn translucent_arc_blends_each_source_pixel_without_erasing_detail() {
+        let mut c = Canvas::detailed(1, 1);
+        for x in 0..4 {
+            c.put_detail(x, 0, [x as u8 * 40, 0, 0, 255]);
+        }
+        c.put_blend_on(0, 0, [200, 0, 0, 255], 128, |_, _| [80, 0, 0, 255]);
+        assert_eq!(c.bytes()[0], 100);
+        assert_eq!(c.bytes()[12], 160);
+        assert_eq!(
+            c.bytes()[16],
+            140,
+            "transparent pixels blend against the supplied backing"
+        );
+        assert!(c.bytes().as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+    }
+
+    #[test]
+    fn detail_terrain_uses_the_identical_heightfield_mask() {
+        let mut field = field(320);
+        field.crater(110.0, 28.0);
+        field.crater(200.0, 16.0);
+        let view = View {
+            cam_x: 0,
+            w: 320,
+            h: 180,
+        };
+        let pal = Palette::default();
+        let mut native = Canvas::new(320, 180);
+        let mut detail = Canvas::detailed(320, 180);
+        draw_terrain(&mut native, &view, &field, &pal);
+        draw_terrain(&mut detail, &view, &field, &pal);
+        for y in 0..180 {
+            for x in 0..320 {
+                let alpha = native.get(x, y)[3];
+                for dy in 0..4 {
+                    for dx in 0..4 {
+                        let i = (((y * 4 + dy) * 1280 + x * 4 + dx) * 4) as usize;
+                        assert_eq!(detail.bytes()[i + 3], alpha);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_cap_covers_only_the_top_of_the_sprite() {
         // A 3x3 sprite with a hole in its top-left corner.
         let mut px = vec![0u8; 3 * 3 * 4];
@@ -892,7 +1061,12 @@ mod tests {
                 }
             }
         }
-        let sprite = Sprite { w: 3, h: 3, px };
+        let sprite = Sprite {
+            w: 3,
+            h: 3,
+            px,
+            detail: None,
+        };
         let mut canvas = Canvas::new(5, 5);
         canvas.blit(&sprite, 1, 1);
         let white = [255, 255, 255, 255];

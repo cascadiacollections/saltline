@@ -40,6 +40,18 @@ P = {
     "alert":     (232, 163,  61),
 }
 T = (0, 0, 0, 0)
+CONCEPT_PRODUCTS = {}
+
+
+def concept_buf(name):
+    """Native imported pixels, when generating the shipping concept art."""
+    image = CONCEPT_PRODUCTS.get(name)
+    if image is None:
+        return None
+    buf = Buf(*image.size)
+    buf.px = [list(image.crop((0, y, image.width, y + 1)).get_flattened_data())
+              for y in range(image.height)]
+    return buf
 
 
 def rgba(name, a=255):
@@ -259,6 +271,10 @@ def terrain(width, seed, amp=1.0, base_y=128):
 
 # ---------------------------------------------------------------- entities
 def tank(variant="base"):
+    imported = concept_buf({"base": "tank_base", "ballast": "tank_ballast",
+                            "forced": "tank_forced_march"}[variant])
+    if imported:
+        return imported, (13, 4) if variant == "ballast" else (15, 3)
     w, h = 30, 12
     b = Buf(w, h)
     wide = variant == "ballast"
@@ -290,6 +306,17 @@ BARREL_PIVOT = (3, 24)   # (x, y) inside the 28px frame
 
 def barrel(angle_deg, variant="base"):
     """Pre-rendered frame — no runtime rotation (§5.3)."""
+    strip = CONCEPT_PRODUCTS.get({
+        "base": "barrel_strip_5deg", "ballast": "barrel_strip_ballast",
+        "forced": "barrel_strip_forced_march", "sabot": "barrel_strip_sabot",
+        "cluster": "barrel_strip_cluster", "auger": "barrel_strip_auger",
+    }[variant])
+    if strip:
+        frame = min(18, max(0, round(angle_deg / 5)))
+        image = strip.crop((frame * 28, 0, (frame + 1) * 28, 28))
+        buf = Buf(28, 28)
+        buf.px = [list(image.crop((0, y, 28, y + 1)).get_flattened_data()) for y in range(28)]
+        return buf, BARREL_PIVOT
     length, thick = 16, 3
     if variant == "sabot":
         length, thick = 22, 2
@@ -333,6 +360,9 @@ def water_tower(state="intact"):
     The damaged tank shifts only two pixels: the old shear pushed its crown
     outside the 17px canvas. Both trestles still meet the same ground row.
     """
+    imported = concept_buf(f"tower_{state}")
+    if imported:
+        return imported
     w, h = 17, 34
     b = Buf(w, h)
     if state == "collapsed":
@@ -503,6 +533,9 @@ def seasonal_sheet():
 
 
 def derrick():
+    imported = concept_buf("derrick")
+    if imported:
+        return imported
     w, h = 15, 42
     b = Buf(w, h)
     for j in range(0, 41):
@@ -520,6 +553,9 @@ def derrick():
 
 
 def radio_mast():
+    imported = concept_buf("radio_mast")
+    if imported:
+        return imported
     w, h = 13, 32
     b = Buf(w, h)
     b.rect(6, 0, 2, 31, rgba("st"))
@@ -533,6 +569,9 @@ def radio_mast():
 
 
 def silo():
+    imported = concept_buf("silo")
+    if imported:
+        return imported
     w, h = 11, 27
     b = Buf(w, h)
     b.rect(1, 4, 9, 23, rgba("st"))
@@ -545,6 +584,9 @@ def silo():
 
 
 def pylon():
+    imported = concept_buf("pylon")
+    if imported:
+        return imported
     w, h = 17, 33
     b = Buf(w, h)
     for j in range(32):
@@ -682,6 +724,12 @@ def scene(width=320, height=180, seed=20260907):
             else:
                 b.set(x, y, rgba(hi if f > th else lo))
 
+    if CONCEPT_PRODUCTS:
+        plate = Image.open(os.path.join(OUT, "backgrounds/salt_iron_sky_320x180.png")).convert("RGBA")
+        for y in range(height):
+            for x in range(width):
+                b.set(x, y, plate.getpixel((x % 320, y % 180)))
+
     hs = terrain(width, seed, amp=1.25)
     crater(hs, 196, 11)   # undermining hit at the tower footing
     crater(hs, 150, 7)    # ranging miss
@@ -794,6 +842,8 @@ def palette_img():
 
 
 if __name__ == "__main__":
+    from import_concept_art import build
+    CONCEPT_PRODUCTS = build(OUT)
     sc = scene()
     sc.image(1).save(f"{OUT}/scene_native_320x180.png")
     sc.image(4).save(f"{OUT}/scene_preview_4x.png")
@@ -850,4 +900,6 @@ if __name__ == "__main__":
             strip.blit(f, i * 28, 0)
         strip.image().save(f"{SPR}/{name}.png")
 
+    from build_detail_art import build as build_detail
+    build_detail()
     print("ok")

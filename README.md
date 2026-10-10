@@ -469,49 +469,45 @@ whether it passes its checks, and quit; screens and rounds count from 0).
 
 ## Art
 
-`art/sprites/` is native-resolution programmer art from `tools/gen_sprites.py`.
-Regenerate after editing the generator:
+The game uses chassis and structure cutouts from the
+[Salt & Iron concept board](https://cascadiacollections.github.io/saltline/assets/concept-boards/01-salt-and-iron.png).
+`art/detail/` preserves their source colors at four artwork pixels per logical
+world unit. The standard 320×180 playfield uploads a 1280×720 image; wider views
+and Long Lens retain the same logical layout and receive proportionate backing
+images. Godot uses `canvas_items` stretch and nearest filtering to retain the
+artwork detail. The UI and aiming grid keep their original logical coordinates.
+
+`tools/build_detail_art.py` cuts the actual light/heavy/mobile chassis and
+intact/damaged/collapsed water towers out of the board. The hero scene supplies
+lattice structures, the title illustration and soil texture samples. Two
+ImageGen cleanup derivatives supply the empty harbour plate and isolated barrel.
+Nineteen barrel frames are prepared offline; runtime does no sprite rotation.
+Terrain silhouettes and material selection come from the simulation, with source
+textures painted only inside that geometry. Seeds, muzzle anchors, target boxes,
+collision queries and solver inputs are unchanged.
+
+Detailed frames use the flat software painter to preserve occlusion and arc
+blending. The cached native renderer, sixteen-role UI palette and palette-mapped
+`art/sprites/` remain available for fallback and regression comparisons. Seasonal
+costumes retain their existing artwork. Detailed mode retains the harbour across
+biomes, with weather and target coatings supplying the variation. Sources, masks
+and cleanup prompts are in
+[`art/source/salt-and-iron/README.md`](art/source/salt-and-iron/README.md).
+
+Regenerate and check reproducibility:
 
 ```sh
-uv run python tools/gen_sprites.py     # writes into art/
-uv run python tools/gen_audio.py       # writes art/audio/
+uv run python tools/gen_sprites.py     # native fallback and detailed art
+uv run python tools/build_detail_art.py # detailed art only
+uv run python -m unittest discover -s tools -p 'test_concept_art.py'
+uv run python tools/gen_audio.py
 ```
 
-The 16-colour palette is sampled out of `art/palette_16.png` at runtime rather
-than transcribed, so the image stays the single source of truth.
-
-Regenerating rewrites every PNG, and different Pillow versions encode identical
-pixels to different bytes. Compare pixels, not file hashes, before committing
-the churn.
-
-All five silhouettes now have all three damage states. The water tower is drawn
-per state by hand, with a riveted tank, open trestle and recognisable fallen
-tank in its wreck. Its leaning crown stays inside the original 17px canvas,
-and both standing states keep the original footing. The derrick, mast, silo
-and pylon are sheared about their own
-footing and wrecked from the intact drawing, so the states cannot drift away
-from the geometry they came from.
-
-Replace all of it with hand-drawn work before any public release, but keep the
-dimensions and the palette fixed — they are the contract. Still open: no barrel
-strip for the Ballast or Forced March chassis, so those builds read from the
-hull alone.
-
-The title background uses a separate authored painting in
-`art/source/title_salt_flat.png`; `.gdignore` keeps this full-size source out
-of the game export. It was created with the built-in ImageGen tool, then
-sampled with nearest-neighbour filtering to 320×180 and mapped to the existing
-palette without dithering. Regenerate it with ImageMagick 7:
-
-```sh
-bash tools/build_title_art.sh
-```
-
-Art direction: a quiet navy sky over a bleached salt flat, a muted olive
-emplacement at lower left, a rust water tower at lower right and distant low
-mesas. Keep the centre clear for the existing menu, use hard pixel edges and
-the existing palette, and omit lettering, UI, explosions and projectile arcs.
-The title painting is decorative; it never supplies terrain or collision data.
+The title uses the original hero scene, with only its baked-in lettering removed
+using adjacent source sky pixels. Its original wide aspect ratio is preserved
+with sky extended above the bottom-aligned scene. Menu text has opaque backings for legibility.
+Rebuild with `bash tools/build_title_art.sh`. The illustration is decorative and
+never supplies terrain or collision data.
 
 ### Seasonal targets
 
@@ -729,3 +725,8 @@ The default Iron & Chalk icon ships on every platform. Regenerate its native
 For a seasonal export, pass `--variant halloween`, `--variant thanksgiving`,
 or `--variant christmas`, then import and export normally. Restore the default
 before committing. Original PNG images remain in `art/app-icons/`.
+
+On Linux, register the local development build with
+`uv run python tools/install_linux_launcher.py`, then open **Salt Line** from
+the application launcher. GNOME and Wayland use this desktop entry to associate
+the running game with its icon. Run the installer again after moving the checkout.

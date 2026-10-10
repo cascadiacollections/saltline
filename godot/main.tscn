@@ -1,7 +1,7 @@
 [gd_scene load_steps=2 format=3 uid="uid://bs4lt1n3m41n0"]
 
 ; The wrapper only manages optional desktop services. Everything the game
-; draws remains in SaltLine's single native-resolution image buffer.
+; draws remains in SaltLine's single logical-grid image buffer with detailed source pixels.
 
 [ext_resource type="Script" path="res://godot/platform_services.gd" id="1_services"]
 

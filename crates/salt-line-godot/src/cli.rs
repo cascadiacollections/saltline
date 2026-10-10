@@ -36,7 +36,7 @@ pub struct DevArgs {
     /// Review each seasonal water-tower damage state in the game renderer.
     pub seasonal_gallery: Option<String>,
     /// `--salt-shot <path>`: render a few frames, save the buffer as a PNG at
-    /// native resolution, and quit. How the pixel output gets checked without
+    /// artwork resolution, and quit. How the pixel output gets checked without
     /// a human at the keyboard.
     pub shot: Option<String>,
     /// `--salt-shot-at <seconds>`: when to grab the screenshot, in seconds

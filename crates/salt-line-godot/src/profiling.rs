@@ -319,10 +319,14 @@ impl GpuCheck {
         self.pending
     }
 
-    /// Compare `image`, the viewport read back, whose buffer starts `left`
-    /// pixels in (the letterbox), with the frame last drawn. Returns the
-    /// scene's report when its last frame has been compared.
-    pub fn compare(&mut self, image: Gd<godot::classes::Image>, left: i32) -> Option<String> {
+    /// Compare viewport pixels within the actual destination rectangle with
+    /// nearest samples of the physical backing image. This accounts for
+    /// canvas_items stretch, fractional window scaling and letterboxing.
+    pub fn compare(
+        &mut self,
+        image: Gd<godot::classes::Image>,
+        destination: Rect2,
+    ) -> Option<String> {
         self.pending = false;
         let mut image = image;
         image.convert(godot::classes::image::Format::RGBA8);
@@ -330,14 +334,31 @@ impl GpuCheck {
         let got = image.get_data();
         let got = got.as_slice();
         let wrong = |want: &[u8], w: i32, h: i32| -> Vec<(i32, i32, [u8; 3], [u8; 3])> {
-            if ih != h || iw < left + w {
+            let Rect2 { position, size } = destination;
+            if size.x <= 0.0
+                || size.y <= 0.0
+                || position.x < 0.0
+                || position.y < 0.0
+                || position.x + size.x > iw as f32 + 0.01
+                || position.y + size.y > ih as f32 + 0.01
+            {
                 return vec![(-1, -1, [0; 3], [0; 3])];
             }
             let mut out = Vec::new();
-            for y in 0..h {
-                for x in 0..w {
-                    let a = ((y * iw + x + left) * 4) as usize;
-                    let b = ((y * w + x) * 4) as usize;
+            let x0 = (position.x - 0.5).ceil().max(0.0) as i32;
+            let y0 = (position.y - 0.5).ceil().max(0.0) as i32;
+            let x1 = (position.x + size.x - 0.5).ceil().min(iw as f32) as i32;
+            let y1 = (position.y + size.y - 0.5).ceil().min(ih as f32) as i32;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let sx = (((x as f64 + 0.5 - position.x as f64) * w as f64 / size.x as f64)
+                        .floor() as i32)
+                        .clamp(0, w - 1);
+                    let sy = (((y as f64 + 0.5 - position.y as f64) * h as f64 / size.y as f64)
+                        .floor() as i32)
+                        .clamp(0, h - 1);
+                    let a = ((y * iw + x) * 4) as usize;
+                    let b = ((sy * w + sx) * 4) as usize;
                     if got[a..a + 3] != want[b..b + 3] {
                         let rgb = |p: &[u8]| [p[0], p[1], p[2]];
                         out.push((x, y, rgb(&got[a..a + 3]), rgb(&want[b..b + 3])));

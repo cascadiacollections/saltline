@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Normalize the authored title painting to the game's native grid and palette.
+# Preserve the Salt & Iron hero scene's proportions in native and detailed art.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-uv run python tools/build_title_art.py
+exec uv run python tools/build_title_art.py

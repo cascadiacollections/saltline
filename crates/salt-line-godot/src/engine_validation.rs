@@ -9,7 +9,9 @@ use crate::input::Intents;
 use crate::raster::Canvas;
 use crate::render::{self, Art, Cache};
 use crate::save_format::Save;
-use godot::classes::{AudioStream, Image, ImageTexture, ProjectSettings, ResourceLoader};
+use godot::classes::{
+    AudioStream, Image, ImageTexture, ProjectSettings, ResourceLoader, Texture2D,
+};
 use godot::prelude::*;
 use salt_line_sim::replay::{state_hash, Hasher};
 use std::path::Path;
@@ -34,6 +36,12 @@ pub fn run(art: &Art, directory: &str) -> Result<(), String> {
     if !art.pal.sampled || art.title_background.is_none() {
         return Err("palette or title background failed to load".into());
     }
+    let icon = try_load::<Texture2D>("res://art/icon_1024.png")
+        .map_err(|_| "application icon failed to load".to_string())?;
+    let icon_image = icon.get_image().ok_or("application icon has no pixels")?;
+    if icon_image.get_width() != 1024 || icon_image.get_height() != 1024 {
+        return Err("application icon has incorrect packaging dimensions".into());
+    }
     let sprites = art.sprites.as_ref().ok_or("sprites were not loaded")?;
     if !sprites.missing.is_empty() {
         return Err(format!("missing sprites: {:?}", sprites.missing));
@@ -52,11 +60,42 @@ pub fn run(art: &Art, directory: &str) -> Result<(), String> {
         }
         audio.write_f64(length);
     }
-    let rows = suite(art, |name, canvas, last| {
+    for (name, sprite) in [
+        ("base chassis", sprites.tank_base.as_ref()),
+        ("heavy chassis", sprites.tank_ballast.as_ref()),
+        ("mobile chassis", sprites.tank_forced.as_ref()),
+        ("base barrel", sprites.barrel_base.as_ref()),
+        ("heavy barrel", sprites.barrel_ballast.as_ref()),
+        ("mobile barrel", sprites.barrel_forced.as_ref()),
+        ("sabot barrel", sprites.barrel_sabot.as_ref()),
+        ("cluster barrel", sprites.barrel_cluster.as_ref()),
+        ("auger barrel", sprites.barrel_auger.as_ref()),
+        ("intact tower", sprites.tower_intact.as_ref()),
+        ("leaning tower", sprites.tower_leaning.as_ref()),
+        ("collapsed tower", sprites.tower_collapsed.as_ref()),
+        ("derrick", sprites.derrick.as_ref()),
+        ("leaning derrick", sprites.derrick_leaning.as_ref()),
+        ("collapsed derrick", sprites.derrick_collapsed.as_ref()),
+        ("mast", sprites.radio_mast.as_ref()),
+        ("leaning mast", sprites.radio_mast_leaning.as_ref()),
+        ("collapsed mast", sprites.radio_mast_collapsed.as_ref()),
+        ("silo", sprites.silo.as_ref()),
+        ("leaning silo", sprites.silo_leaning.as_ref()),
+        ("collapsed silo", sprites.silo_collapsed.as_ref()),
+        ("pylon", sprites.pylon.as_ref()),
+        ("leaning pylon", sprites.pylon_leaning.as_ref()),
+        ("collapsed pylon", sprites.pylon_collapsed.as_ref()),
+        ("title", art.title_background.as_ref()),
+    ] {
+        if sprite.and_then(|s| s.detail.as_ref()).is_none() {
+            return Err(format!("missing detailed source artwork: {name}"));
+        }
+    }
+    let rows = suite(art, true, |name, canvas, last| {
         let data = PackedByteArray::from(canvas.bytes());
         let image = Image::create_from_data(
-            canvas.w,
-            canvas.h,
+            canvas.pixel_w(),
+            canvas.pixel_h(),
             false,
             godot::classes::image::Format::RGBA8,
             &data,
@@ -87,6 +126,7 @@ pub fn run(art: &Art, directory: &str) -> Result<(), String> {
 
 fn suite(
     art: &Art,
+    detailed: bool,
     mut capture: impl FnMut(&str, &Canvas, bool) -> Result<(), String>,
 ) -> Result<Vec<String>, String> {
     let mut rows = Vec::new();
@@ -140,7 +180,11 @@ fn suite(
                 .ok_or_else(|| format!("{name}: WATCH diverged"))?;
             let last = watch.ended;
             if frame % 60 == 0 || last {
-                let mut canvas = Canvas::new(game.display.buffer_w, game.display.buffer_h);
+                let mut canvas = if detailed {
+                    Canvas::detailed(game.display.buffer_w, game.display.buffer_h)
+                } else {
+                    Canvas::new(game.display.buffer_w, game.display.buffer_h)
+                };
                 render::frame(&game, art, &mut canvas, &mut buttons, &mut cache);
                 pixels.write_usize(frame);
                 for &byte in canvas.bytes() {
@@ -187,7 +231,7 @@ mod tests {
     #[test]
     fn fixtures_finish_through_watch_without_writing_player_files() {
         let mut captures = 0;
-        let rows = suite(&Art::default(), |_, _, last| {
+        let rows = suite(&Art::default(), false, |_, _, last| {
             captures += usize::from(last);
             Ok(())
         })

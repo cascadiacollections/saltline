@@ -1,9 +1,18 @@
-//! Palette-only sky phases. This is presentation, keyed to the screen number;
+//! Source-art sky plate and native palette sky phases. This is presentation, keyed to the screen number;
 //! it never consumes the simulation's random stream or changes a shot.
 
 use crate::biome::Biome;
 use crate::palette::{slot, Palette};
 use crate::raster::{Canvas, View};
+
+// Offline import writes both the PNG and these palette indices. Embedding
+// the native pixels keeps engine-free tests and both frame paths identical.
+const SALT_IRON_SKY: &[u8; 320 * 180] =
+    include_bytes!("../../../art/backgrounds/salt_iron_sky_320x180.pal8");
+
+// Full source-color plate for the detailed presentation. Physics still uses
+// the same logical 320-wide world; this is not a larger generated screen.
+const DETAIL_SKY: &[u8; 1280 * 720 * 4] = include_bytes!("../../../art/detail/sky.rgba");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -52,39 +61,60 @@ pub fn draw(
     draw_biome(canvas, view, pal, biome, seed, time, |_, _| true);
 }
 
-/// The part of [`draw`] that holds still for a whole screen: the fill, the
-/// horizon band and the sun. It depends only on the phase and the buffer's
+/// The part of [`draw`] that holds still for a whole screen: the imported
+/// Salt & Iron harbour plate. It depends only on the phase and the buffer's
 /// size, which is what lets `backdrop` keep it in a texture of its own.
 pub fn draw_still(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase) {
-    let (base, horizon) = match phase {
-        Phase::Day => (slot::SKY_MID, slot::SKY_LO),
-        Phase::Dusk => (slot::SKY_HI, slot::SKY_MID),
-        Phase::Night => (slot::SKY_HI, slot::SKY_HI),
-        Phase::Dawn => (slot::SKY_HI, slot::SKY_LO),
-    };
-    canvas.fill(pal.get(base));
-    let horizon_y = view.h - 88;
-    if base != horizon {
-        canvas.rect(
-            0,
-            horizon_y - 3,
-            canvas.w,
-            canvas.h - horizon_y + 3,
-            pal.get(horizon),
-        );
+    canvas.fill(pal.get(slot::SKY_HI));
+    let top = view.h - 180;
+    if canvas.scale() == 4 {
+        for y in 0..view.h * 4 {
+            // Long Lens adds sky matching the source plate, rather than a
+            // different palette-color band above the detailed background.
+            let sy = (y - top * 4).max(0) as usize;
+            for x in 0..view.w * 4 {
+                let sx = if (x / 1280) % 2 == 0 {
+                    x % 1280
+                } else {
+                    1279 - x % 1280
+                };
+                let at = (sy * 1280 + sx as usize) * 4;
+                let mut c: [u8; 4] = DETAIL_SKY[at..at + 4].try_into().unwrap();
+                let brightness = match phase {
+                    Phase::Night => 45,
+                    Phase::Dusk => 75,
+                    Phase::Dawn => 90,
+                    Phase::Day => 100,
+                };
+                for v in &mut c[..3] {
+                    *v = (*v as u32 * brightness / 100) as u8;
+                }
+                canvas.put_detail(x, y, c);
+            }
+        }
+        return;
     }
-    if matches!(phase, Phase::Dusk | Phase::Dawn) {
-        let x = if phase == Phase::Dusk {
-            view.w * 3 / 4
-        } else {
-            view.w / 5
-        };
-        let colour = if phase == Phase::Dusk {
-            slot::ST_DMG
-        } else {
-            slot::ST_HI
-        };
-        canvas.rect(x, horizon_y + 1, 3, 3, pal.get(colour));
+    for y in top.max(0)..view.h {
+        let source_y = (y - top) as usize;
+        for x in 0..view.w {
+            // Mirror alternate native-width panels for wider buffers without
+            // runtime scaling, fractional sampling or a new random stream.
+            let panel = x / 320;
+            let source_x = if panel % 2 == 0 {
+                x % 320
+            } else {
+                319 - x % 320
+            };
+            let source = SALT_IRON_SKY[source_y * 320 + source_x as usize] as usize;
+            let ink = match (phase, source) {
+                (Phase::Night, slot::SKY_LO) => slot::SKY_MID,
+                (Phase::Night, slot::SKY_MID) => slot::SKY_HI,
+                (Phase::Night, slot::ALERT | slot::ST_HI) => slot::SKY_LO,
+                (Phase::Dusk, slot::SKY_LO) => slot::SKY_MID,
+                _ => source,
+            };
+            canvas.put(x, y, pal.get(ink));
+        }
     }
 }
 
@@ -143,6 +173,11 @@ pub fn draw_biome(
     match biome {
         Biome::Salt => draw_dust(canvas, view, pal, seed, time, &open),
         Biome::Snow => draw_snow(canvas, view, pal, seed, time, &open),
+        // Source-art mode keeps the harbour scenery visible; biome coatings
+        // and weather carry the variation instead of native tree/cactus shapes.
+        Biome::Forest | Biome::Desert if canvas.scale() == 4 => {
+            draw_dust(canvas, view, pal, seed, time, &open)
+        }
         Biome::Forest => draw_forest(canvas, view, pal, seed, &open),
         Biome::Desert => draw_desert(canvas, view, pal, seed, time, &open),
         Biome::Night => draw_night(canvas, view, pal, seed, time, &open),
@@ -405,6 +440,49 @@ fn shooting_star(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_sky_copies_native_pixels_and_extends_without_scaling() {
+        let pal = Palette::default();
+        for (w, h) in [(320, 180), (640, 216)] {
+            let view = View { cam_x: 137, w, h };
+            let mut canvas = Canvas::new(w, h);
+            draw_still(&mut canvas, &view, &pal, Phase::Day);
+            for y in 0..h {
+                for x in 0..w {
+                    let want = if y < h - 180 {
+                        pal.get(slot::SKY_HI)
+                    } else {
+                        let sx = if x < 320 { x } else { 639 - x };
+                        let index = ((y - (h - 180)) * 320 + sx) as usize;
+                        pal.get(SALT_IRON_SKY[index] as usize)
+                    };
+                    let index = ((y * w + x) * 4) as usize;
+                    assert_eq!(&canvas.bytes()[index..index + 4], &want, "({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn detailed_long_lens_sky_extends_the_source_plate_without_a_color_seam() {
+        let mut canvas = Canvas::detailed(400, 216);
+        let view = View {
+            cam_x: 137,
+            w: 400,
+            h: 216,
+        };
+        draw_still(&mut canvas, &view, &Palette::default(), Phase::Day);
+        for y in [0, 143, 144, 300, 863] {
+            for x in [0, 1279, 1280, 1599] {
+                let sx = if x < 1280 { x } else { 2559 - x };
+                let sy = (y - 144).max(0);
+                let at = ((y * 1600 + x) * 4) as usize;
+                let source = ((sy * 1280 + sx) * 4) as usize;
+                assert_eq!(&canvas.bytes()[at..at + 4], &DETAIL_SKY[source..source + 4]);
+            }
+        }
+    }
 
     #[test]
     fn phases_repeat_without_touching_simulation_state() {
