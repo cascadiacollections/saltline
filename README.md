@@ -55,9 +55,11 @@ With `just` installed, the same common operations are available as `just test`,
 From the title, press **3 / Y** to enter a 30-second Drone Trial. Use the
 existing angle/power controls and fire button. Esc/B pauses; Enter/A resumes;
 Esc/B again returns to the title. At round end, Enter/A restarts the same seed.
-Scores are currently session-only. The arena uses a procedural coastal backdrop, shared tank sprites and
-placeholder drones; no coastal reference assets or high-resolution renderer
-are included yet.
+Scores are currently session-only. Drone Trial draws the generated 16:9 coastal
+refinery artwork at source resolution behind the existing 320×180 gameplay
+buffer, with a small shore strip, shared tank sprites and placeholder drones.
+The art changes presentation only: simulation geometry and artillery rendering
+are unchanged; this is not the separate high-resolution renderer experiment.
 
 Headless rendering: `godot --headless --path . -- --salt-trial --salt-seed 42
 --salt-shot /tmp/trial.png --salt-shot-at 2`. The simulation replay format is

@@ -47,6 +47,8 @@ pub struct Sprites {
     pub pylon: Option<Sprite>,
     pub pylon_leaning: Option<Sprite>,
     pub pylon_collapsed: Option<Sprite>,
+    /// Generated 16:9 coastal backdrop, used only by Drone Trial.
+    pub trial_coast_texture: Option<Gd<Texture2D>>,
     pub missing: Vec<String>,
 }
 
@@ -89,6 +91,11 @@ impl Sprites {
     pub fn load_all(dir: &str) -> Sprites {
         let mut missing = Vec::new();
         let p = |name: &str| format!("{dir}/{name}.png");
+        let coast_path = "res://art/trial_coast.png";
+        let trial_coast_texture = try_load::<Texture2D>(coast_path).ok();
+        if trial_coast_texture.is_none() {
+            missing.push(coast_path.to_string());
+        }
         let s = Sprites {
             tank_base: load(&p("tank_base"), &mut missing),
             tank_ballast: load(&p("tank_ballast"), &mut missing),
@@ -112,6 +119,7 @@ impl Sprites {
             pylon: load(&p("pylon"), &mut missing),
             pylon_leaning: load(&p("pylon_leaning"), &mut missing),
             pylon_collapsed: load(&p("pylon_collapsed"), &mut missing),
+            trial_coast_texture,
             missing,
         };
         if !s.missing.is_empty() {

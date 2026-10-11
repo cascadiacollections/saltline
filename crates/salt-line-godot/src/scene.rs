@@ -31,6 +31,15 @@ impl WorldViewport {
             (self.top + (self.height - point.y) * self.scale).round() as i32 - 1,
         )
     }
+    /// Destination rectangle for a full-world background at its native aspect.
+    pub fn bounds(self, world_width: f64) -> (f64, f64, f64, f64) {
+        (
+            self.left,
+            self.top,
+            world_width * self.scale,
+            self.height * self.scale,
+        )
+    }
 }
 
 /// Native sprite rendering shared by artillery and Trial. Barrel root is
@@ -100,6 +109,7 @@ mod tests {
     fn wide_window_adds_margins_without_stretching_the_arena() {
         let native = WorldViewport::fit(320, 180, 320.0, 180.0);
         let wide = WorldViewport::fit(400, 180, 320.0, 180.0);
+        assert_eq!(wide.bounds(320.0), (40.0, 0.0, 320.0, 180.0));
         for p in [Vec2::new(30.0, 15.0), Vec2::new(200.0, 90.0)] {
             let a = native.project(p);
             let b = wide.project(p);

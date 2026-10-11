@@ -291,9 +291,29 @@ impl INode2D for SaltLine {
     }
 
     fn draw(&mut self) {
-        // The whole frame is one texture at the internal resolution, blitted
-        // at 1:1. Godot's viewport stretch does the only scaling in the game,
-        // with nearest filtering set project-wide.
+        // Trial layers the source-resolution coast texture under this transparent
+        // native-resolution gameplay buffer; other modes stay one low-res layer.
+        if self.trial.is_some() {
+            let coast = self
+                .sprites
+                .as_ref()
+                .and_then(|s| s.trial_coast_texture.clone());
+            if let Some(coast) = coast {
+                let bounds = WorldViewport::fit(self.canvas.w, self.canvas.h, 320.0, 180.0);
+                let (left, top, width, height) = bounds.bounds(320.0);
+                let viewport = Rect2::new(
+                    Vector2::ZERO,
+                    Vector2::new(self.canvas.w as f32, self.canvas.h as f32),
+                );
+                self.base_mut()
+                    .draw_rect(viewport, Color::from_rgb(0.04, 0.09, 0.2));
+                let rect = Rect2::new(
+                    Vector2::new(left as f32, top as f32),
+                    Vector2::new(width as f32, height as f32),
+                );
+                self.base_mut().draw_texture_rect(&coast, rect, false);
+            }
+        }
         if let Some(tex) = self.texture.clone() {
             self.base_mut().draw_texture(&tex, Vector2::ZERO);
         }
@@ -1449,15 +1469,28 @@ impl SaltLine {
     fn render_trial(&mut self) {
         let pal = self.pal.clone();
         let view = self.view();
-        raster::draw_sky(&mut self.canvas, &view, &pal);
         let fg = pal.get(slot::UI_FG);
         let alert = pal.get(slot::ALERT);
         let w = self.canvas.w;
         let h = self.canvas.h;
+        if self
+            .sprites
+            .as_ref()
+            .is_some_and(|s| s.trial_coast_texture.is_some())
+        {
+            self.canvas.clear();
+            self.canvas.rect(0, h - 7, 64, 7, pal.get(slot::ROCK));
+            for x in (0..64).step_by(5) {
+                self.canvas
+                    .hline(x, x + 3, h - 7 - (x / 5) % 2, pal.get(slot::SAND));
+            }
+        } else {
+            raster::draw_sky(&mut self.canvas, &view, &pal);
+            scene::draw_coast(&mut self.canvas, &pal);
+        }
         let viewport = WorldViewport::fit(w, h, 320.0, 180.0);
         let sx = |x: f64| viewport.project(Vec2::new(x, 0.0)).0;
         let sy = |y: f64| viewport.project(Vec2::new(0.0, y)).1;
-        scene::draw_coast(&mut self.canvas, &pal);
         let loadout = Loadout::default();
         let shot = Shot::new(self.angle_ticks, self.power_ticks);
         scene::draw_emplacement(
