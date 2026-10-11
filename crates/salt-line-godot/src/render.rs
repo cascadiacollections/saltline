@@ -216,14 +216,7 @@ impl Painter<'_> {
         let loadout = Loadout::default();
         let shot = Shot::new(trial_state.angle_ticks, trial_state.power_ticks);
         let (tank_x, tank_y) = project(30.0, 15.0);
-        crate::scene::draw_emplacement(
-            self.canvas,
-            self.sprites,
-            &loadout,
-            shot,
-            tank_x,
-            tank_y,
-        );
+        crate::scene::draw_emplacement(self.canvas, self.sprites, &loadout, shot, tank_x, tank_y);
 
         let direction = shot.velocity(&loadout);
         let length = direction.x.hypot(direction.y).max(1.0);
@@ -253,7 +246,11 @@ impl Painter<'_> {
         self.canvas.text_small(
             6,
             6,
-            &format!("TRIAL {seconds}s  SCORE {}  SHELLS {}/8", simulation.score(), simulation.ammo()),
+            &format!(
+                "TRIAL {seconds}s  SCORE {}  SHELLS {}/8",
+                simulation.score(),
+                simulation.ammo()
+            ),
             fg,
         );
         self.canvas.text_small(
@@ -272,7 +269,14 @@ impl Painter<'_> {
         if simulation.finished() {
             self.centred(65, "TRIAL COMPLETE", alert);
             if self.g.input.touch_active {
-                self.draw_touch_button(width / 2 - 64, height - 22, 60, 16, "REPLAY", Action::Confirm);
+                self.draw_touch_button(
+                    width / 2 - 64,
+                    height - 22,
+                    60,
+                    16,
+                    "REPLAY",
+                    Action::Confirm,
+                );
                 self.draw_touch_button(width / 2 + 4, height - 22, 60, 16, "TITLE", Action::Back);
             } else {
                 self.centred(77, "ENTER / A REPLAY   ESC / B TITLE", fg);
@@ -280,7 +284,14 @@ impl Painter<'_> {
         } else if trial_state.paused {
             self.centred(65, "PAUSED", alert);
             if self.g.input.touch_active {
-                self.draw_touch_button(width / 2 - 64, height - 22, 60, 16, "RESUME", Action::Confirm);
+                self.draw_touch_button(
+                    width / 2 - 64,
+                    height - 22,
+                    60,
+                    16,
+                    "RESUME",
+                    Action::Confirm,
+                );
                 self.draw_touch_button(width / 2 + 4, height - 22, 60, 16, "TITLE", Action::Back);
             } else {
                 self.centred(77, "ENTER / A RESUME   ESC / B TITLE", fg);
@@ -293,9 +304,20 @@ impl Painter<'_> {
             self.draw_touch_button(105, bottom, 28, 16, "+", Action::Up);
             self.draw_touch_button(width - 48, bottom, 45, 16, "FIRE", Action::Fire);
             let (edge_x, edge_y) = self.g.display.corner_pad;
-            self.draw_touch_button(width - 45 - edge_x, 3 + edge_y, 42, 13, "PAUSE", Action::Back);
+            self.draw_touch_button(
+                width - 45 - edge_x,
+                3 + edge_y,
+                42,
+                13,
+                "PAUSE",
+                Action::Back,
+            );
         } else {
-            self.centred(height - 9, "ARROWS AIM/POWER  SPACE/A FIRE  ESC/B PAUSE", fg);
+            self.centred(
+                height - 9,
+                "ARROWS AIM/POWER  SPACE/A FIRE  ESC/B PAUSE",
+                fg,
+            );
         }
     }
 

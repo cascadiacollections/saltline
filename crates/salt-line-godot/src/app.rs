@@ -1917,7 +1917,10 @@ impl Game {
     /// in versus, which has no loadout to draft: a run set aside for
     /// CONTINUE keeps its lens for when it comes back.
     pub(crate) fn long_lens(&self) -> bool {
-        if matches!(self.mode, Mode::VersusSetup | Mode::Versus | Mode::Editor | Mode::Trial) {
+        if matches!(
+            self.mode,
+            Mode::VersusSetup | Mode::Versus | Mode::Editor | Mode::Trial
+        ) {
             return false;
         }
         self.play
@@ -2028,14 +2031,16 @@ impl Game {
                 self.editor_fingerprint(),
                 self.versus.ground.as_ref().map(|g| g.label()),
             ),
-            trial: self.trial.as_ref().map(|t| (
-                t.simulation.tick(),
-                t.simulation.score(),
-                t.simulation.state_hash(),
-                t.angle_ticks,
-                t.power_ticks,
-                t.paused,
-            )),
+            trial: self.trial.as_ref().map(|t| {
+                (
+                    t.simulation.tick(),
+                    t.simulation.score(),
+                    t.simulation.state_hash(),
+                    t.angle_ticks,
+                    t.power_ticks,
+                    t.paused,
+                )
+            }),
             misc: (
                 self.debug,
                 self.crash.crash_copied,
@@ -2173,9 +2178,9 @@ mod demo;
 mod editor;
 mod play;
 mod session;
+mod trial;
 mod versus;
 mod watch;
-mod trial;
 
 pub(crate) use demo::Demo;
 pub use demo::{Card as DemoCard, Leg as DemoLeg, Started as DemoStarted, IDLE_DEMO_AFTER};

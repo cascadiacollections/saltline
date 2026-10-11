@@ -56,7 +56,10 @@ impl Game {
                 trial.paused = false;
             }
         }
-        let paused = self.trial.as_ref().is_none_or(|t| t.paused || t.simulation.finished());
+        let paused = self
+            .trial
+            .as_ref()
+            .is_none_or(|t| t.paused || t.simulation.finished());
         if paused {
             return;
         }
