@@ -89,50 +89,60 @@ impl Game {
     }
 
     pub(super) fn step_trial(&mut self, delta: f64) {
-        let (hit, finished, replay) = {
-            let Some(trial) = self.trial.as_mut() else {
-                return;
-            };
-            if trial.paused || trial.simulation.finished() {
-                return;
+        let Some(trial) = self.trial.as_mut() else {
+            return;
+        };
+        if trial.paused || trial.simulation.finished() {
+            return;
+        }
+        trial.accumulator += delta;
+        for _ in 0..240 {
+            let can_step = self.trial.as_ref().is_some_and(|trial| {
+                trial.accumulator >= salt_line_sim::DT && !trial.simulation.finished()
+            });
+            if !can_step {
+                break;
             }
-            trial.accumulator += delta;
-            let mut hit = false;
-            let mut replay = None;
-            let mut finished = false;
-            for _ in 0..240 {
-                if trial.accumulator < salt_line_sim::DT || trial.simulation.finished() {
-                    break;
-                }
+            let auto_fire = self.dev.auto
+                && self
+                    .trial
+                    .as_ref()
+                    .is_some_and(|trial| trial.simulation.tick().is_multiple_of(180));
+            if auto_fire {
+                self.fire_trial();
+            }
+            let (hit, finished, replay) = {
+                let trial = self.trial.as_mut().unwrap();
                 trial.simulation.step();
                 trial.accumulator -= salt_line_sim::DT;
                 let events = trial.simulation.take_events();
-                hit |= events
+                let hit = events
                     .iter()
                     .any(|e| matches!(e, salt_line_sim::trial::Event::Hit { .. }));
-                if events.contains(&salt_line_sim::trial::Event::Finished) {
-                    finished = true;
-                    let record = salt_line_sim::trial::Replay {
+                let finished = events.contains(&salt_line_sim::trial::Event::Finished);
+                let replay = finished.then(|| {
+                    salt_line_sim::trial::Replay {
                         rules_version: salt_line_sim::trial::RULES_VERSION,
                         seed: trial.seed,
                         commands: trial.commands.clone(),
-                    };
-                    replay = record.encode().ok();
-                    break;
+                    }
+                    .encode()
+                    .ok()
+                });
+                (hit, finished, replay.flatten())
+            };
+            if hit {
+                self.play(Sound::Structure);
+            }
+            if finished {
+                if let Some(text) = replay {
+                    self.fx.push(Effect::TrialReplay(text));
+                    self.note("TRIAL COMPLETE".into());
+                } else {
+                    self.note("REPLAY COULD NOT BE SAVED".into());
                 }
+                break;
             }
-            (hit, finished, replay)
-        };
-        if hit {
-            self.play(Sound::Structure);
-        }
-        if finished {
-            if let Some(text) = replay {
-                self.fx.push(Effect::TrialReplay(text));
-            } else {
-                self.note("REPLAY COULD NOT BE SAVED".into());
-            }
-            self.note("TRIAL COMPLETE".into());
         }
     }
 }

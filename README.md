@@ -182,14 +182,12 @@ macOS packaging checks.
 
 ## Drone Trial prototype
 
-From the title, press **3 / Y** to enter a 30-second Drone Trial. Use the
-existing angle/power controls and fire button. Esc/B pauses; Enter/A resumes;
+From the title, press **T / D-pad Right** to enter a 30-second Drone Trial.
+Use the existing angle/power controls and fire button. Esc/B pauses; Enter/A resumes;
 Esc/B again returns to the title. At round end, Enter/A restarts the same seed.
-Scores are currently session-only. Drone Trial draws the generated 16:9 coastal
-refinery artwork at source resolution behind the existing 320×180 gameplay
-buffer, with a small shore strip, shared tank sprites and placeholder drones.
-The art changes presentation only: simulation geometry and artillery rendering
-are unchanged; this is not the separate high-resolution renderer experiment.
+Scores are currently session-only. Drone Trial uses generated coastal scenery,
+shared tank sprites and placeholder drones in the existing gameplay buffer.
+The art changes presentation only; simulation geometry is fixed at 320×180.
 
 Headless rendering: `godot --headless --path . -- --salt-trial --salt-seed 42
 --salt-shot /tmp/trial.png --salt-shot-at 2`. The simulation replay format is

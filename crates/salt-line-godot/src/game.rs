@@ -369,10 +369,17 @@ impl INode2D for SaltLine {
         }
         self.shot_path = args.shot.clone();
         self.shot_at = args.shot_at;
+        let trial_mode = Self::cmdline_all().iter().any(|arg| arg == "--salt-trial");
+        let trial_seed = args.seed.unwrap_or(42);
+        let mut args = args;
+        if trial_mode {
+            args.seed = None;
+            args.continue_run = false;
+        }
         let fx = self.g.start_dev(&args, Self::today());
         self.apply(fx);
-        if Self::cmdline_all().iter().any(|arg| arg == "--salt-trial") {
-            self.g.start_trial(args.seed.unwrap_or(42));
+        if trial_mode {
+            self.g.start_trial(trial_seed);
             let effects = self.g.take_effects();
             self.apply(effects);
         }
