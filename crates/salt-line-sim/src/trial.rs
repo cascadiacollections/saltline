@@ -88,6 +88,40 @@ impl Trial {
             events: Vec::new(),
         }
     }
+    /// Hash all simulation state; presentation event queues are excluded.
+    pub fn state_hash(&self) -> u64 {
+        let mut h = crate::replay::Hasher::new();
+        h.write_u32(RULES_VERSION);
+        for v in [
+            self.tick,
+            self.ammo,
+            self.score,
+            self.ready_tick,
+            self.next_drone,
+            self.next_projectile,
+        ] {
+            h.write_u32(v);
+        }
+        h.write_f64(self.wind);
+        let (state, stream) = self.rng.state_words();
+        h.write_u64(state);
+        h.write_u64(stream);
+        h.write_usize(self.drones.len());
+        for d in &self.drones {
+            h.write_u32(d.id);
+            for v in [d.position.x, d.position.y, d.velocity.x, d.velocity.y] {
+                h.write_f64(v);
+            }
+        }
+        h.write_usize(self.projectiles.len());
+        for p in &self.projectiles {
+            h.write_u32(p.id);
+            for v in [p.position.x, p.position.y, p.velocity.x, p.velocity.y] {
+                h.write_f64(v);
+            }
+        }
+        h.finish()
+    }
     pub fn tick(&self) -> u32 {
         self.tick
     }
@@ -226,18 +260,13 @@ pub struct Replay {
 pub enum ReplayError {
     UnsupportedRules,
     InvalidTickOrder,
+    InvalidFormat,
+    TooLarge,
 }
 impl Replay {
     /// Commands in the same tick run in recorded order, including rejected fires.
     pub fn play(&self) -> Result<Trial, ReplayError> {
-        if self.rules_version != RULES_VERSION {
-            return Err(ReplayError::UnsupportedRules);
-        }
-        if self.commands.iter().any(|c| c.tick >= ROUND_TICKS)
-            || self.commands.windows(2).any(|w| w[0].tick > w[1].tick)
-        {
-            return Err(ReplayError::InvalidTickOrder);
-        }
+        self.validate()?;
         let mut trial = Trial::new(self.seed);
         let mut commands = self.commands.iter().peekable();
         while !trial.finished() {

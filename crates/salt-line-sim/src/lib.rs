@@ -16,7 +16,8 @@ pub mod rng; // M1 — SplitMix64, PCG32
 pub mod run; // M3 — economy, screen assembly, state machine
 pub mod solver; // M2 — solvability validation
 pub mod terrain;
-pub mod trial; // live drone trial and tick-addressed replay // M1 — noise, heightfield, scar buffer, materials // M4 — seed + shot log -> verified reconstruction
+pub mod trial;
+mod trial_replay; // live drone trial and tick-addressed replay // M1 — noise, heightfield, scar buffer, materials // M4 — seed + shot log -> verified reconstruction
 
 /// Fixed simulation timestep. Never make this variable.
 pub const DT: f64 = 1.0 / 120.0;

@@ -1,7 +1,8 @@
 # Drone Trial implementation plan
 
 Status: shared motion plus headless Trial state and in-memory replay implemented;
-no playable mode yet. Cross-platform Trial digests and replay persistence remain.
+no playable mode yet. Text replay persistence and a per-tick digest workload are implemented.
+Cross-platform verification is wired into CI and awaits remote results.
 Branch: codex/drone-trial. Existing artillery behavior remains the baseline.
 
 ## Decisions challenged
@@ -89,5 +90,7 @@ These rules are provisional, not a balance or reachability certification.
 
 Headless validation covers reload/ammo/expiry, moving target crossings,
 nearest-contact ordering, competing shells, bounded live entities and replay
-agreement. Next: serialized mode/rules header, cross-platform Trial digest gate,
-then the Godot menu/input/accumulator/rendering prototype.
+agreement. Replay files now carry a mode/format/rules header and bounded command data.
+The Trial digest workload compares 200 persisted replays and hashes every tick;
+CI compares both artillery and Trial digests on Linux/macOS/Windows.
+Next: the Godot menu/input/accumulator/rendering prototype.

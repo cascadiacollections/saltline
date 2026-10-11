@@ -1,11 +1,10 @@
 name: ci
 
 on:
-  # Only main on push. Without the branch filter a pull request branch runs the
-  # whole matrix twice for every commit -- once for push, once for
-  # pull_request -- which is pure waste on the macOS and Windows runners.
+  # Validate Drone Trial checkpoints across platforms while the mode develops.
+  # Other feature branches run the matrix through pull requests.
   push:
-    branches: [main]
+    branches: [main, codex/drone-trial]
   pull_request:
 
 # Superseded runs are not worth paying for; a new push to the same ref makes
@@ -49,6 +48,8 @@ jobs:
         run: |
           cargo run --release -q -p salt-line-sim --bin determinism | tee digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-${{ matrix.os }}.txt
+          cargo run --release -q -p salt-line-sim --bin trial_determinism | tee trial-digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' trial-digest.txt | cut -d' ' -f2 >> digest-${{ matrix.os }}.txt
           cat digest-${{ matrix.os }}.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -81,10 +82,16 @@ jobs:
             echo "expected three platform digests, got $found" >&2
             exit 1
           fi
-          if [ "$(cat digest-*.txt | sort -u | wc -l)" -ne 1 ]; then
-            echo "DETERMINISM LEAK: platform digests differ" >&2
-            exit 1
-          fi
+          for f in digest-*.txt; do
+            if [ "$(wc -l < "$f")" -ne 2 ]; then
+              echo "expected artillery and Trial digests in $f" >&2
+              exit 1
+            fi
+            if ! cmp -s digest-ubuntu-latest.txt "$f"; then
+              echo "DETERMINISM LEAK: platform digests differ" >&2
+              exit 1
+            fi
+          done
           echo "all platforms agree: $(cat digest-ubuntu-latest.txt)"
 
   # Brief M2 acceptance: every screen the generator can produce is solvable.
