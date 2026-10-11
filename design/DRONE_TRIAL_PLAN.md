@@ -97,5 +97,6 @@ Next: the Godot menu/input/accumulator/rendering prototype.
 
 Playable prototype: title 3/Y, existing aim/fire controls, pause/resume/title,
 same-seed restart, live HUD and placeholder geometry. Catch-up is limited to
-240 steps per rendered frame and retains debt. Interactive replay export,
-high-resolution presentation, effects and reachability tuning remain.
+240 steps per rendered frame and retains debt. Finished rounds now atomically save their tick-addressed recording separately
+from artillery saves. A headless replay verifier reads those files.
+High-resolution presentation, persistent scores, effects and reachability tuning remain.

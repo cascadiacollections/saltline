@@ -69,3 +69,25 @@ pub fn record(save: &mut Save, entry: Entry) -> Option<usize> {
     store(save);
     at
 }
+
+/// Keep Trial replays separate from the existing artillery save format.
+pub fn store_trial_replay(replay: &salt_line_sim::trial::Replay) -> bool {
+    let Ok(text) = replay.encode() else {
+        return false;
+    };
+    let temporary = "user://drone_trial.replay.new";
+    let target = "user://drone_trial.replay";
+    let Some(mut file) = FileAccess::open(temporary, ModeFlags::WRITE) else {
+        return false;
+    };
+    file.store_string(&GString::from(text.as_str()));
+    let error = file.get_error();
+    file.close();
+    if error != godot::global::Error::OK {
+        return false;
+    }
+    let Some(mut dir) = DirAccess::open("user://") else {
+        return false;
+    };
+    dir.rename(temporary, target) == godot::global::Error::OK
+}

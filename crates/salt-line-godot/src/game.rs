@@ -148,6 +148,7 @@ pub struct SaltLine {
     trial: Option<salt_line_sim::trial::Trial>,
     trial_paused: bool,
     trial_accumulator: f64,
+    trial_commands: Vec<salt_line_sim::trial::FireCommand>,
     anim: Option<Anim>,
     clear_hold: f64,
     /// Aim inputs, in the sim's tick space.
@@ -213,6 +214,7 @@ impl INode2D for SaltLine {
             trial: None,
             trial_paused: false,
             trial_accumulator: 0.0,
+            trial_commands: Vec::new(),
             anim: None,
             clear_hold: 0.0,
             angle_ticks: 900,
@@ -279,7 +281,7 @@ impl INode2D for SaltLine {
         self.elapsed += delta;
         self.status_time = (self.status_time - delta).max(0.0);
         self.handle_input(delta);
-        if self.auto {
+        if self.auto && self.trial.is_none() {
             self.autopilot(delta);
         }
         self.step(delta);
@@ -1333,6 +1335,7 @@ impl SaltLine {
         self.cam_x = 0;
         self.trial_paused = false;
         self.trial_accumulator = 0.0;
+        self.trial_commands.clear();
         self.apply_buffer_size();
         self.trial = Some(salt_line_sim::trial::Trial::new(seed));
     }
@@ -1365,14 +1368,22 @@ impl SaltLine {
         self.angle_ticks = (self.angle_ticks + (right - left) * 10 * multiplier).clamp(0, 1800);
         self.power_ticks = (self.power_ticks + (up - down) * 10 * multiplier).clamp(0, 1000);
         if self.action_pressed(4, "fire") {
-            let result = self
-                .trial
-                .as_mut()
-                .unwrap()
-                .fire(Shot::new(self.angle_ticks, self.power_ticks));
-            if result == salt_line_sim::trial::FireResult::Fired {
-                self.play_sound(Sound::Fire);
-            }
+            self.fire_trial();
+        }
+    }
+
+    fn fire_trial(&mut self) {
+        let trial = self.trial.as_mut().unwrap();
+        let shot = Shot::new(self.angle_ticks, self.power_ticks);
+        self.trial_commands.push(salt_line_sim::trial::FireCommand {
+            tick: trial.tick(),
+            shot,
+        });
+        match trial.fire(shot) {
+            salt_line_sim::trial::FireResult::Fired => self.play_sound(Sound::Fire),
+            salt_line_sim::trial::FireResult::Reloading => self.note("RELOADING".into()),
+            salt_line_sim::trial::FireResult::Empty => self.note("OUT OF SHELLS".into()),
+            salt_line_sim::trial::FireResult::Finished => {}
         }
     }
 
@@ -1386,19 +1397,50 @@ impl SaltLine {
             if self.trial_accumulator < salt_line_sim::DT {
                 break;
             }
+            if self.auto
+                && self
+                    .trial
+                    .as_ref()
+                    .is_some_and(|t| !t.finished() && t.tick().is_multiple_of(180))
+            {
+                self.fire_trial();
+            }
             let trial = self.trial.as_mut().unwrap();
             if trial.finished() {
                 self.trial_accumulator = 0.0;
                 break;
             }
             trial.step();
-            let hit = trial
-                .take_events()
+            let events = trial.take_events();
+            let hit = events
                 .iter()
                 .any(|e| matches!(e, salt_line_sim::trial::Event::Hit { .. }));
+            let finished = events.contains(&salt_line_sim::trial::Event::Finished);
             self.trial_accumulator -= salt_line_sim::DT;
             if hit {
                 self.play_sound(Sound::Structure);
+            }
+            if finished {
+                let replay = salt_line_sim::trial::Replay {
+                    rules_version: salt_line_sim::trial::RULES_VERSION,
+                    seed: self.last_seed,
+                    commands: self.trial_commands.clone(),
+                };
+                let live = self.trial.as_ref().unwrap();
+                godot_print!(
+                    "drone trial complete: score {}, state {:#018x}",
+                    live.score(),
+                    live.state_hash()
+                );
+                let saved = save::store_trial_replay(&replay);
+                self.note(
+                    if saved {
+                        "REPLAY SAVED"
+                    } else {
+                        "REPLAY SAVE FAILED"
+                    }
+                    .into(),
+                );
             }
         }
     }
@@ -1428,6 +1470,11 @@ impl SaltLine {
         }
         let trial = self.trial.as_ref().unwrap();
         for d in trial.drones() {
+            let x = sx(d.position.x);
+            let y = sy(d.position.y);
+            self.canvas.hline(x - 8, x + 8, y - 3, fg);
+            self.canvas.rect_outline(x - 9, y - 5, 5, 3, fg);
+            self.canvas.rect_outline(x + 4, y - 5, 5, 3, fg);
             self.canvas.rect(
                 sx(d.position.x - 5.0),
                 sy(d.position.y + 3.0),
@@ -1458,12 +1505,20 @@ impl SaltLine {
             ),
             fg,
         );
-        if trial.finished() {
+        let finished = trial.finished();
+        if self.status_time > 0.0 {
+            let status = self.status.clone();
+            self.centred(32, &status, alert);
+        }
+        if finished {
             self.centred(65, "TRIAL COMPLETE", alert);
             self.centred(77, "ENTER / A REPLAY   ESC / B TITLE", fg);
         } else if self.trial_paused {
             self.centred(65, "PAUSED", alert);
             self.centred(77, "ENTER / A RESUME   ESC / B TITLE", fg);
+        } else {
+            self.canvas
+                .text_small(6, h - 9, "ARROWS AIM/POWER  SPACE/A FIRE  ESC/B PAUSE", fg);
         }
     }
 
