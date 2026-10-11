@@ -22,6 +22,17 @@ fn idle() -> Intents {
     }
 }
 
+#[test]
+fn a_running_trial_uses_the_gameplay_frame_rate_and_a_paused_trial_idles() {
+    let mut g = game();
+    g.start_trial(1);
+
+    assert!(!g.idle());
+
+    g.trial.as_mut().unwrap().paused = true;
+    assert!(g.idle());
+}
+
 /// Keys that went down this frame and are still held.
 fn keys(keys: &[Key]) -> Intents {
     Intents {

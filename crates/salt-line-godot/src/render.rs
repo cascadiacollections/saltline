@@ -65,13 +65,14 @@ use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
 use crate::touch::{Button, Rect};
 
 /// What the node loaded for drawing: the palette sampled from
-/// `art/palette_16.png` and the sprites under `art/sprites`. Either may be a
-/// fallback: the built-in palette, flat columns for missing sprites.
+/// `art/palette_16.png`, sprites under `art/sprites`, and full-frame art.
+/// Missing assets fall back to the built-in palette or procedural drawing.
 #[derive(Default)]
 pub struct Art {
     pub pal: Palette,
     pub sprites: Option<Sprites>,
     pub title_background: Option<Sprite>,
+    pub trial_background: Option<Sprite>,
 }
 
 /// Drawing work kept from one frame to the next.
@@ -171,6 +172,7 @@ struct Painter<'a> {
     pal: &'a Palette,
     sprites: Option<&'a Sprites>,
     title_background: Option<&'a Sprite>,
+    trial_background: Option<&'a Sprite>,
     canvas: &'a mut Canvas,
     buttons: &'a mut Vec<Button>,
     cache: &'a mut Cache,
@@ -189,6 +191,7 @@ impl<'a> Painter<'a> {
             pal: &art.pal,
             sprites: art.sprites.as_ref(),
             title_background: art.title_background.as_ref(),
+            trial_background: art.trial_background.as_ref(),
             canvas,
             buttons,
             cache,
@@ -208,10 +211,13 @@ impl Painter<'_> {
         let alert = pal.get(slot::ALERT);
         let width = self.canvas.w;
         let height = self.canvas.h;
-        raster::draw_sky(self.canvas, &self.g.view(), pal);
-        crate::scene::draw_coast(self.canvas, pal);
-
         let viewport = crate::scene::WorldViewport::fit(width, height, 320.0, 180.0);
+        if let Some(background) = self.trial_background {
+            Self::draw_scaled_background(self.canvas, background, viewport);
+        } else {
+            raster::draw_sky(self.canvas, &self.g.view(), pal);
+            crate::scene::draw_coast(self.canvas, pal);
+        }
         let project = |x: f64, y: f64| viewport.project(Vec2::new(x, y));
         let loadout = Loadout::default();
         let shot = Shot::new(trial_state.angle_ticks, trial_state.power_ticks);
@@ -318,6 +324,31 @@ impl Painter<'_> {
                 "ARROWS AIM/POWER  SPACE/A FIRE  ESC/B PAUSE",
                 fg,
             );
+        }
+    }
+
+    fn draw_scaled_background(
+        canvas: &mut Canvas,
+        background: &Sprite,
+        viewport: crate::scene::WorldViewport,
+    ) {
+        let (x, y, width, height) = viewport.bounds(320.0);
+        let scale = canvas.scale() as f64;
+        let x0 = (x * scale).round() as i32;
+        let y0 = (y * scale).round() as i32;
+        let x1 = ((x + width) * scale).round() as i32;
+        let y1 = ((y + height) * scale).round() as i32;
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        for dy in y0..y1 {
+            let sy = (dy - y0) * background.h / (y1 - y0);
+            for dx in x0..x1 {
+                let sx = (dx - x0) * background.w / (x1 - x0);
+                if let Some(colour) = background.pixel(sx, sy) {
+                    canvas.put_detail(dx, dy, colour);
+                }
+            }
         }
     }
 
@@ -1946,6 +1977,33 @@ mod tests {
             &mut Cache::default(),
         );
         (canvas, buttons)
+    }
+
+    #[test]
+    fn trial_composites_the_loaded_coastal_background_on_both_canvas_scales() {
+        let mut g = game();
+        g.start_trial(1);
+        let colour = [91, 82, 73, 255];
+        let art = Art {
+            trial_background: Some(Sprite {
+                w: 1,
+                h: 1,
+                px: colour.to_vec(),
+                detail: None,
+            }),
+            ..Art::default()
+        };
+
+        for mut canvas in [Canvas::new(320, 180), Canvas::detailed(320, 180)] {
+            frame(
+                &g,
+                &art,
+                &mut canvas,
+                &mut Vec::new(),
+                &mut Cache::default(),
+            );
+            assert_eq!(&canvas.bytes()[..4], &colour);
+        }
     }
 
     fn actions(buttons: &[Button]) -> Vec<Action> {

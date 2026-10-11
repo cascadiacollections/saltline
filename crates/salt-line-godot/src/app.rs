@@ -1406,6 +1406,7 @@ impl Game {
         self.watch.as_ref().is_some_and(|w| w.paused || w.ended)
             || self.crash.broken
             || !(matches!(self.mode, Mode::Playing | Mode::Versus)
+                || (self.mode == Mode::Trial && self.live_play())
                 || (self.mode == Mode::Editor && self.editor.testing_in_flight()))
     }
 

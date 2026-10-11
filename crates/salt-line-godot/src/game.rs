@@ -110,6 +110,7 @@ use crate::touch::Button;
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
 const TITLE_BACKGROUND_PATH: &str = "res://art/title_background_320x180.png";
+const TRIAL_BACKGROUND_PATH: &str = "res://art/trial_coast.png";
 /// Music sits behind the sharper one-shot effects instead of competing with them.
 const TITLE_GAIN_DB: f32 = -8.0;
 /// A cold launch should not hit the speaker at the track's full level.
@@ -294,6 +295,7 @@ impl INode2D for SaltLine {
             pal: Palette::load(PALETTE_PATH),
             sprites: Some(Sprites::load_all(SPRITE_DIR)),
             title_background: Sprites::load_one(TITLE_BACKGROUND_PATH),
+            trial_background: Sprites::load_one(TRIAL_BACKGROUND_PATH),
         };
         // Before reading or recovering any player files. The validation
         // games are in memory and never apply their disk effects.
