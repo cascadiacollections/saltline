@@ -1503,10 +1503,11 @@ impl SaltLine {
             6,
             16,
             &format!(
-                "WIND {:.1}  ANG {:.1}  POWER {}",
+                "WIND {:.1}  ANG {:.1}  PWR {}  RELOAD {}s",
                 trial.wind(),
                 self.angle_ticks as f64 * 0.05,
-                self.power_ticks
+                self.power_ticks,
+                trial.reload_ticks_remaining().div_ceil(120)
             ),
             fg,
         );

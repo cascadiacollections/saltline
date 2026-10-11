@@ -128,6 +128,10 @@ impl Trial {
     pub fn ammo(&self) -> u32 {
         self.ammo
     }
+    /// Remaining reload duration in ticks; zero means ready.
+    pub fn reload_ticks_remaining(&self) -> u32 {
+        self.ready_tick.saturating_sub(self.tick)
+    }
     pub fn score(&self) -> u32 {
         self.score
     }
@@ -287,6 +291,7 @@ mod tests {
         let mut t = Trial::new(1);
         for _ in 0..START_AMMO {
             assert_eq!(t.fire(Shot::new(900, 500)), FireResult::Fired);
+            assert_eq!(t.reload_ticks_remaining(), RELOAD_TICKS);
             assert_eq!(
                 t.fire(Shot::default()),
                 if t.ammo == 0 {
@@ -296,6 +301,7 @@ mod tests {
                 }
             );
             for _ in 0..RELOAD_TICKS {
+                assert!(t.reload_ticks_remaining() > 0);
                 t.step();
             }
         }
