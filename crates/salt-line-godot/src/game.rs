@@ -145,6 +145,9 @@ pub struct SaltLine {
 
     mode: Mode,
     run: Option<RunState>,
+    trial: Option<salt_line_sim::trial::Trial>,
+    trial_paused: bool,
+    trial_accumulator: f64,
     anim: Option<Anim>,
     clear_hold: f64,
     /// Aim inputs, in the sim's tick space.
@@ -207,6 +210,9 @@ impl INode2D for SaltLine {
             cam_target: 0.0,
             mode: Mode::Title,
             run: None,
+            trial: None,
+            trial_paused: false,
+            trial_accumulator: 0.0,
             anim: None,
             clear_hold: 0.0,
             angle_ticks: 900,
@@ -260,6 +266,9 @@ impl INode2D for SaltLine {
             if let Some(n) = Self::screen_arg() {
                 self.jump_to(n);
             }
+        }
+        if Self::cmdline_flag("--salt-trial") {
+            self.start_trial(Self::seed_arg().unwrap_or(42));
         }
         if !self.pal.sampled {
             godot_warn!("salt-line: palette not sampled from art; using the built-in fallback");
@@ -655,8 +664,16 @@ impl SaltLine {
                 "SOUND ON".into()
             });
         }
+        if self.trial.is_some() {
+            self.handle_trial_input(delta);
+            return;
+        }
         match self.mode {
             Mode::Title => {
+                if self.action_pressed(3, "draft_3") {
+                    self.start_trial(daily_seed(Self::today()));
+                    return;
+                }
                 if self.action_pressed(0, "confirm") || self.pressed(Key::KP_ENTER) {
                     let seed = daily_seed(Self::today());
                     self.play_sound(Sound::Ui);
@@ -867,6 +884,10 @@ impl SaltLine {
     }
 
     fn step(&mut self, delta: f64) {
+        if self.trial.is_some() {
+            self.step_trial(delta);
+            return;
+        }
         if self.mode != Mode::Playing {
             return;
         }
@@ -1043,9 +1064,13 @@ impl SaltLine {
             self.buffer_w = want_w;
             self.apply_buffer_size();
         }
-        match self.mode {
-            Mode::Playing | Mode::Paused | Mode::Paywall => self.render_play(),
-            _ => self.render_menu(),
+        if self.trial.is_some() {
+            self.render_trial();
+        } else {
+            match self.mode {
+                Mode::Playing | Mode::Paused | Mode::Paywall => self.render_play(),
+                _ => self.render_menu(),
+            }
         }
 
         self.upload();
@@ -1298,6 +1323,150 @@ impl SaltLine {
         }
     }
 
+    fn start_trial(&mut self, seed: u64) {
+        self.run = None;
+        self.anim = None;
+        self.mode = Mode::Title;
+        self.last_seed = seed;
+        self.angle_ticks = 900;
+        self.power_ticks = 600;
+        self.cam_x = 0;
+        self.trial_paused = false;
+        self.trial_accumulator = 0.0;
+        self.apply_buffer_size();
+        self.trial = Some(salt_line_sim::trial::Trial::new(seed));
+    }
+
+    fn handle_trial_input(&mut self, delta: f64) {
+        if self.action_pressed(0, "back") {
+            if self.trial_paused || self.trial.as_ref().is_some_and(|t| t.finished()) {
+                self.trial = None;
+                self.mode = Mode::Title;
+            } else {
+                self.trial_paused = true;
+            }
+            return;
+        }
+        if self.action_pressed(1, "confirm") {
+            if self.trial.as_ref().is_some_and(|t| t.finished()) {
+                self.start_trial(self.last_seed);
+            } else if self.trial_paused {
+                self.trial_paused = false;
+            }
+        }
+        if self.trial_paused || self.trial.as_ref().is_some_and(|t| t.finished()) {
+            return;
+        }
+        let left = self.action_repeated(0, "left", delta) as i32;
+        let right = self.action_repeated(1, "right", delta) as i32;
+        let down = self.action_repeated(2, "down", delta) as i32;
+        let up = self.action_repeated(3, "up", delta) as i32;
+        let multiplier = if self.shift_held() { 10 } else { 1 };
+        self.angle_ticks = (self.angle_ticks + (right - left) * 10 * multiplier).clamp(0, 1800);
+        self.power_ticks = (self.power_ticks + (up - down) * 10 * multiplier).clamp(0, 1000);
+        if self.action_pressed(4, "fire") {
+            let result = self
+                .trial
+                .as_mut()
+                .unwrap()
+                .fire(Shot::new(self.angle_ticks, self.power_ticks));
+            if result == salt_line_sim::trial::FireResult::Fired {
+                self.play_sound(Sound::Fire);
+            }
+        }
+    }
+
+    fn step_trial(&mut self, delta: f64) {
+        if self.trial_paused {
+            return;
+        }
+        self.trial_accumulator += delta;
+        // Bounded catch-up retains outstanding ticks rather than discarding time.
+        for _ in 0..240 {
+            if self.trial_accumulator < salt_line_sim::DT {
+                break;
+            }
+            let trial = self.trial.as_mut().unwrap();
+            if trial.finished() {
+                self.trial_accumulator = 0.0;
+                break;
+            }
+            trial.step();
+            let hit = trial
+                .take_events()
+                .iter()
+                .any(|e| matches!(e, salt_line_sim::trial::Event::Hit { .. }));
+            self.trial_accumulator -= salt_line_sim::DT;
+            if hit {
+                self.play_sound(Sound::Structure);
+            }
+        }
+    }
+
+    fn render_trial(&mut self) {
+        let pal = self.pal.clone();
+        let view = self.view();
+        raster::draw_sky(&mut self.canvas, &view, &pal);
+        let fg = pal.get(slot::UI_FG);
+        let alert = pal.get(slot::ALERT);
+        let w = self.canvas.w;
+        let h = self.canvas.h;
+        let sx = |x: f64| (x * w as f64 / 320.0).round() as i32;
+        let sy = |y: f64| h - (y * h as f64 / 180.0).round() as i32;
+        self.canvas.rect(0, sy(10.0), w, h, pal.get(slot::ROCK));
+        self.canvas
+            .rect(sx(20.0), sy(15.0), 20, 5, pal.get(slot::HULL));
+        let dir = Shot::new(self.angle_ticks, self.power_ticks)
+            .velocity(&salt_line_sim::modifiers::Loadout::default());
+        let length = (dir.x * dir.x + dir.y * dir.y).sqrt();
+        for n in 0..14 {
+            self.canvas.put(
+                sx(30.0 + dir.x / length * n as f64),
+                sy(15.0 + dir.y / length * n as f64),
+                fg,
+            );
+        }
+        let trial = self.trial.as_ref().unwrap();
+        for d in trial.drones() {
+            self.canvas.rect(
+                sx(d.position.x - 5.0),
+                sy(d.position.y + 3.0),
+                (10 * w / 320).max(1),
+                (6 * h / 180).max(1),
+                alert,
+            );
+        }
+        for p in trial.projectiles() {
+            self.canvas
+                .rect(sx(p.position.x), sy(p.position.y), 2, 2, fg);
+        }
+        let seconds = (salt_line_sim::trial::ROUND_TICKS - trial.tick()).div_ceil(120);
+        let hud = format!(
+            "TRIAL {seconds}s  SCORE {}  SHELLS {}/8",
+            trial.score(),
+            trial.ammo()
+        );
+        self.canvas.text_small(6, 6, &hud, fg);
+        self.canvas.text_small(
+            6,
+            16,
+            &format!(
+                "WIND {:.1}  ANG {:.1}  POWER {}",
+                trial.wind(),
+                self.angle_ticks as f64 * 0.05,
+                self.power_ticks
+            ),
+            fg,
+        );
+        if trial.finished() {
+            self.centred(65, "TRIAL COMPLETE", alert);
+            self.centred(77, "ENTER / A REPLAY   ESC / B TITLE", fg);
+        } else if self.trial_paused {
+            self.centred(65, "PAUSED", alert);
+            self.centred(77, "ENTER / A RESUME   ESC / B TITLE", fg);
+        }
+    }
+
     fn render_menu(&mut self) {
         let pal = self.pal.clone();
         let view = self.view();
@@ -1330,6 +1499,9 @@ impl SaltLine {
                 self.centred(y, &format!("{confirm}  DAILY RUN"), fg);
                 y += 8;
                 self.centred(y, "S      SEED ENTRY", fg);
+                y += 8;
+                let trial = self.input_label("draft_3");
+                self.centred(y, &format!("{trial}  DRONE TRIAL (PROTOTYPE)"), fg);
                 y += 8;
                 let controls = self.input_label("controls");
                 self.centred(y, &format!("{controls}  CONTROLS / AUDIO"), fg);

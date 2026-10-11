@@ -1,7 +1,7 @@
 # Drone Trial implementation plan
 
 Status: shared motion plus headless Trial state and in-memory replay implemented;
-no playable mode yet. Text replay persistence and a per-tick digest workload are implemented.
+Low-resolution playable prototype added. Text replay persistence and a per-tick digest workload are implemented.
 Cross-platform verification is wired into CI and awaits remote results.
 Branch: codex/drone-trial. Existing artillery behavior remains the baseline.
 
@@ -94,3 +94,8 @@ agreement. Replay files now carry a mode/format/rules header and bounded command
 The Trial digest workload compares 200 persisted replays and hashes every tick;
 CI compares both artillery and Trial digests on Linux/macOS/Windows.
 Next: the Godot menu/input/accumulator/rendering prototype.
+
+Playable prototype: title 3/Y, existing aim/fire controls, pause/resume/title,
+same-seed restart, live HUD and placeholder geometry. Catch-up is limited to
+240 steps per rendered frame and retains debt. Interactive replay export,
+high-resolution presentation, effects and reachability tuning remain.

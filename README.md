@@ -50,6 +50,20 @@ With `just` installed, the same common operations are available as `just test`,
 `just build`, and `just run`. The Python tools use the locked environment from
 `pyproject.toml` and `uv.lock`; run `uv sync` once after checkout.
 
+## Drone Trial prototype
+
+From the title, press **3 / Y** to enter a 30-second Drone Trial. Use the
+existing angle/power controls and fire button. Esc/B pauses; Enter/A resumes;
+Esc/B again returns to the title. At round end, Enter/A restarts the same seed.
+Scores are currently session-only. Art is placeholder geometry; no coastal
+reference assets or high-resolution renderer are included yet.
+
+Headless rendering: `godot --headless --path . -- --salt-trial --salt-seed 42
+--salt-shot /tmp/trial.png --salt-shot-at 2`. The simulation replay format is
+implemented, but interactive replay recording/export is not wired up yet.
+Run `cargo run -p salt-line-sim --bin trial_determinism` to exercise 200
+persisted replays and produce a cross-platform digest.
+
 ## Controls
 
 | Keyboard | Controller | Action |
