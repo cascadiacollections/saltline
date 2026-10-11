@@ -110,6 +110,7 @@ use crate::touch::Button;
 const PALETTE_PATH: &str = "res://art/palette_16.png";
 const SPRITE_DIR: &str = "res://art/sprites";
 const TITLE_BACKGROUND_PATH: &str = "res://art/title_background_320x180.png";
+const TRIAL_BACKGROUND_PATH: &str = "res://art/trial_coast.png";
 /// Music sits behind the sharper one-shot effects instead of competing with them.
 const TITLE_GAIN_DB: f32 = -8.0;
 /// A cold launch should not hit the speaker at the track's full level.
@@ -294,6 +295,7 @@ impl INode2D for SaltLine {
             pal: Palette::load(PALETTE_PATH),
             sprites: Some(Sprites::load_all(SPRITE_DIR)),
             title_background: Sprites::load_one(TITLE_BACKGROUND_PATH),
+            trial_background: Sprites::load_one(TRIAL_BACKGROUND_PATH),
         };
         // Before reading or recovering any player files. The validation
         // games are in memory and never apply their disk effects.
@@ -369,8 +371,20 @@ impl INode2D for SaltLine {
         }
         self.shot_path = args.shot.clone();
         self.shot_at = args.shot_at;
+        let trial_mode = Self::cmdline_all().iter().any(|arg| arg == "--salt-trial");
+        let trial_seed = args.seed.unwrap_or(42);
+        let mut args = args;
+        if trial_mode {
+            args.seed = None;
+            args.continue_run = false;
+        }
         let fx = self.g.start_dev(&args, Self::today());
         self.apply(fx);
+        if trial_mode {
+            self.g.start_trial(trial_seed);
+            let effects = self.g.take_effects();
+            self.apply(effects);
+        }
         if let Some(why) = self.g.dev.layout_refused.take() {
             godot_warn!("salt-line: --salt-layout: {why}");
         }
@@ -868,6 +882,9 @@ impl SaltLine {
                 // replay, and is logged by `save::write`.
                 Effect::History(text) => {
                     save::write(HISTORY_PATH, HISTORY_TEMP_PATH, &text);
+                }
+                Effect::TrialReplay(text) => {
+                    save::write(save::TRIAL_REPLAY_PATH, save::TRIAL_REPLAY_TEMP_PATH, &text);
                 }
                 Effect::CrashReport(CrashReport::Retire) => {
                     if let (Some(from), Some(to)) = (

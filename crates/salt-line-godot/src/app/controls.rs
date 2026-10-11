@@ -226,6 +226,9 @@ impl Game {
                 } else if self.action_pressed(Action::Challenges) {
                     self.play(Sound::Ui);
                     self.start_challenge(self.next_challenge());
+                } else if self.action_pressed(Action::DroneTrial) {
+                    self.play(Sound::Ui);
+                    self.start_trial(daily_seed(self.today));
                 } else if self.action_pressed(Action::Demo) {
                     // Like versus, the demo never touches the kept run.
                     self.start_demo(DemoStarted::Menu);
@@ -370,6 +373,7 @@ impl Game {
             Mode::VersusSetup => self.handle_versus_setup_input(),
             Mode::Versus => self.handle_versus_input(delta),
             Mode::Editor => self.handle_editor_input(delta),
+            Mode::Trial => self.handle_trial_input(delta),
         }
     }
 

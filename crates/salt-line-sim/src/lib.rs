@@ -40,11 +40,14 @@ pub mod codec; // bits, base32 and CRC for share codes (DESIGN §13.7, §9.7)
 pub mod dmath; // platform-stable trig, so the sim never calls libm
 pub mod layout; // DESIGN §13 — a screen as editable, shareable data
 pub mod modifiers; // M3 — pool, draft, loadout deltas
+pub mod motion; // shared fixed-step motion and translating-target collision
 pub mod replay; // M4 — seed + shot log -> verified reconstruction
 pub mod rng; // M1 — SplitMix64, PCG32
 pub mod run; // M3 — economy, screen assembly, state machine
 pub mod solver; // M2 — solvability validation
 pub mod terrain; // M1 — noise, heightfield, scar buffer, materials
+pub mod trial;
+mod trial_replay;
 
 /// Version of the sim's outcomes. DESIGN §9.3.
 ///

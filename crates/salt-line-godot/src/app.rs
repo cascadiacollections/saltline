@@ -316,6 +316,8 @@ pub enum Mode {
     /// watch itself is `Playing`
     /// or `Versus` with [`Game::watching`] set.
     Replays,
+    /// The deterministic Drone Trial prototype.
+    Trial,
 }
 
 /// A shot being replayed to the player. The sim has already resolved it.
@@ -560,6 +562,8 @@ pub enum Effect {
     /// written whole and atomically (`save::write`), a run or match added
     /// or a star set or taken off.
     History(String),
+    /// Persist the completed Drone Trial replay.
+    TrialReplay(String),
 }
 
 /// What to do with the saved run (DESIGN §9.6). Which files that means is the
@@ -661,6 +665,7 @@ impl Effect {
                 | Effect::DraftFile(_)
                 | Effect::CrashReport(_)
                 | Effect::History(_)
+                | Effect::TrialReplay(_)
         )
     }
 }
@@ -722,6 +727,7 @@ pub struct FrameState {
     /// What the map editor shows (`editor_fingerprint`), and the ground
     /// the pre-match screen has picked.
     editor: (Option<editor::Fingerprint>, Option<String>),
+    trial: Option<(u32, u32, u64, i32, i32, bool)>,
     misc: (bool, bool, bool),
 }
 
@@ -769,6 +775,9 @@ pub struct Game {
     /// A finished run or match being watched again (`app/watch.rs`). Like
     /// the demo, it holds what it set aside until it ends.
     pub(crate) watch: Option<Watch>,
+    /// The standalone deterministic Drone Trial, which leaves a suspended
+    /// artillery run untouched.
+    pub(crate) trial: Option<trial::TrialState>,
     /// The history of finished runs and matches, and the REPLAYS list.
     pub(crate) history: HistoryState,
     /// The player's saved layouts, as last confirmed on disk (DESIGN
@@ -1055,6 +1064,7 @@ impl Default for Game {
             saved_match: None,
             demo: None,
             watch: None,
+            trial: None,
             history: HistoryState::default(),
             layouts: LayoutsState::default(),
             editor: EditorState::default(),
@@ -1171,6 +1181,7 @@ impl Game {
     pub fn live_play(&self) -> bool {
         match self.mode {
             Mode::Playing => true,
+            Mode::Trial => self.trial.as_ref().is_some_and(|t| !t.paused),
             Mode::Versus => self.versus.live.as_ref().is_some_and(|vs| !vs.paused),
             Mode::Title
             | Mode::Credits
@@ -1261,6 +1272,9 @@ impl Game {
             self.watch_frame(delta);
         } else {
             self.step(delta);
+        }
+        if !watching {
+            self.step_trial(delta);
         }
         let ai_before = self.versus_screen();
         let ai_moved = self.step_versus_ai(delta);
@@ -1392,6 +1406,7 @@ impl Game {
         self.watch.as_ref().is_some_and(|w| w.paused || w.ended)
             || self.crash.broken
             || !(matches!(self.mode, Mode::Playing | Mode::Versus)
+                || (self.mode == Mode::Trial && self.live_play())
                 || (self.mode == Mode::Editor && self.editor.testing_in_flight()))
     }
 
@@ -1903,7 +1918,10 @@ impl Game {
     /// in versus, which has no loadout to draft: a run set aside for
     /// CONTINUE keeps its lens for when it comes back.
     pub(crate) fn long_lens(&self) -> bool {
-        if matches!(self.mode, Mode::VersusSetup | Mode::Versus | Mode::Editor) {
+        if matches!(
+            self.mode,
+            Mode::VersusSetup | Mode::Versus | Mode::Editor | Mode::Trial
+        ) {
             return false;
         }
         self.play
@@ -2014,6 +2032,16 @@ impl Game {
                 self.editor_fingerprint(),
                 self.versus.ground.as_ref().map(|g| g.label()),
             ),
+            trial: self.trial.as_ref().map(|t| {
+                (
+                    t.simulation.tick(),
+                    t.simulation.score(),
+                    t.simulation.state_hash(),
+                    t.angle_ticks,
+                    t.power_ticks,
+                    t.paused,
+                )
+            }),
             misc: (
                 self.debug,
                 self.crash.crash_copied,
@@ -2071,6 +2099,7 @@ impl Game {
             Mode::Versus => "Versus",
             Mode::Editor => "Editor",
             Mode::Replays => "Replays",
+            Mode::Trial => "Trial",
         }
     }
 
@@ -2150,6 +2179,7 @@ mod demo;
 mod editor;
 mod play;
 mod session;
+mod trial;
 mod versus;
 mod watch;
 

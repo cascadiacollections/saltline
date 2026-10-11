@@ -36,6 +36,8 @@ pub const SAVE_PATH: &str = "user://salt_line.txt";
 /// Written in full, then moved over the real file. A crash or a full disk
 /// during the write costs the new record, not the existing board.
 pub const TEMP_PATH: &str = "user://salt_line.txt.new";
+pub const TRIAL_REPLAY_PATH: &str = "user://drone_trial.replay";
+pub const TRIAL_REPLAY_TEMP_PATH: &str = "user://drone_trial.replay.new";
 
 /// A `user://` path as a real filesystem path, for `std::fs`. `None` where the
 /// platform has no such thing (Godot hands the virtual path back unchanged);

@@ -105,6 +105,10 @@ pub struct Pcg32 {
 const PCG_MULT: u64 = 6364136223846793005;
 
 impl Pcg32 {
+    pub(crate) fn state_words(&self) -> (u64, u64) {
+        (self.state, self.inc)
+    }
+
     /// Seeded from a single u64; the stream selector is derived so that two
     /// nearby seeds do not produce correlated streams.
     ///

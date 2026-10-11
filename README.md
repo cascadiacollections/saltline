@@ -180,6 +180,24 @@ Gameplay-only pull requests run Linux and Windows checks; the full macOS and
 iOS checks run after merge. Release tags retain full platform determinism and
 macOS packaging checks.
 
+## Drone Trial prototype
+
+From the title, press **T / D-pad Right** to enter a 30-second Drone Trial.
+Use the existing angle/power controls and fire button. Esc/B pauses; Enter/A resumes;
+Esc/B again returns to the title. At round end, Enter/A restarts the same seed.
+Scores are currently session-only. Drone Trial uses generated coastal scenery,
+shared tank sprites and placeholder drones in the existing gameplay buffer.
+The art changes presentation only; simulation geometry is fixed at 320×180.
+
+Headless rendering: `godot --headless --path . -- --salt-trial --salt-seed 42
+--salt-shot /tmp/trial.png --salt-shot-at 2`. The simulation replay format is
+implemented. Finished trials automatically save the latest recording to
+`user://drone_trial.replay`, separately from artillery saves. Verify a recording
+with `cargo run -p salt-line-sim --bin trial_replay -- <replay-file>`.
+`--salt-auto` also fires automatically in Trial for smoke testing.
+Run `cargo run -p salt-line-sim --bin trial_determinism` to exercise 200
+persisted replays and produce a cross-platform digest.
+
 ## Controls
 
 | Keyboard | Controller | Touch | Action |

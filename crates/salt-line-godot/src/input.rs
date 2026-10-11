@@ -157,6 +157,7 @@ impl Key {
             "L" => Self::L,
             "D" => Self::D,
             "H" => Self::H,
+            "T" => Self::T,
             "W" => Self::W,
             // The map editor's keys (E T Z Y I X P) and the replays' K are
             // read as keys, not through bindings, so no `bind` line may put
@@ -257,6 +258,8 @@ pub enum Action {
     Demo,
     /// The bundled one-gun challenge course.
     Challenges,
+    /// The Drone Trial prototype.
+    DroneTrial,
     /// WATCH on a run's result and a won match's plate, and the title's
     /// REPLAYS list (DESIGN §9.4).
     Watch,
@@ -424,6 +427,7 @@ impl Action {
             Self::Star => "star",
             Self::TitleMusic
             | Self::Challenges
+            | Self::DroneTrial
             | Self::AimMode
             | Self::ArcHint
             | Self::Type(_)
@@ -484,6 +488,7 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         Action::Demo => ("D", "DPAD_DOWN"),
         // D-pad up is WATCH on the title; left is read by nothing there.
         Action::Challenges => ("H", "DPAD_LEFT"),
+        Action::DroneTrial => ("T", "DPAD_RIGHT"),
         // W for watch. D-pad up is read by none of the screens that ask for
         // this: the title, a run's result and a won match's plate.
         Action::Watch => ("W", "DPAD_UP"),
@@ -509,6 +514,7 @@ pub fn touch_label(action: Action) -> &'static str {
         Action::RepositionLeft => "E<",
         Action::RepositionRight => "E>",
         Action::Draft1 | Action::Draft2 | Action::Draft3 => "TAP",
+        Action::DroneTrial => "TRIAL",
         _ => "",
     }
 }

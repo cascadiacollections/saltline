@@ -229,6 +229,13 @@ impl Game {
             self.fx.push(Effect::Redraw);
             return;
         }
+        if self.mode == Mode::Trial {
+            if let Some(trial) = self.trial.as_mut() {
+                trial.paused = true;
+                self.fx.push(Effect::Redraw);
+            }
+            return;
+        }
         self.auto_pause_versus();
         if self.mode != Mode::Playing {
             return;

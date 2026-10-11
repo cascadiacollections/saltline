@@ -65,13 +65,14 @@ use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
 use crate::touch::{Button, Rect};
 
 /// What the node loaded for drawing: the palette sampled from
-/// `art/palette_16.png` and the sprites under `art/sprites`. Either may be a
-/// fallback: the built-in palette, flat columns for missing sprites.
+/// `art/palette_16.png`, sprites under `art/sprites`, and full-frame art.
+/// Missing assets fall back to the built-in palette or procedural drawing.
 #[derive(Default)]
 pub struct Art {
     pub pal: Palette,
     pub sprites: Option<Sprites>,
     pub title_background: Option<Sprite>,
+    pub trial_background: Option<Sprite>,
 }
 
 /// Drawing work kept from one frame to the next.
@@ -121,6 +122,7 @@ pub fn frame(
         Mode::Playing | Mode::Paused => p.render_play(),
         Mode::Versus => p.render_versus(),
         Mode::Editor => p.render_editor(),
+        Mode::Trial => p.render_trial(),
         _ => p.render_menu(),
     }
     if g.in_demo() {
@@ -170,6 +172,7 @@ struct Painter<'a> {
     pal: &'a Palette,
     sprites: Option<&'a Sprites>,
     title_background: Option<&'a Sprite>,
+    trial_background: Option<&'a Sprite>,
     canvas: &'a mut Canvas,
     buttons: &'a mut Vec<Button>,
     cache: &'a mut Cache,
@@ -188,6 +191,7 @@ impl<'a> Painter<'a> {
             pal: &art.pal,
             sprites: art.sprites.as_ref(),
             title_background: art.title_background.as_ref(),
+            trial_background: art.trial_background.as_ref(),
             canvas,
             buttons,
             cache,
@@ -196,6 +200,170 @@ impl<'a> Painter<'a> {
 }
 
 impl Painter<'_> {
+    fn render_trial(&mut self) {
+        let Some(trial_state) = self.g.trial.as_ref() else {
+            self.canvas.fill(self.pal.get(slot::UI_BG));
+            self.centred(80, "TRIAL UNAVAILABLE", self.pal.get(slot::ALERT));
+            return;
+        };
+        let pal = self.pal;
+        let fg = pal.get(slot::UI_FG);
+        let alert = pal.get(slot::ALERT);
+        let width = self.canvas.w;
+        let height = self.canvas.h;
+        let viewport = crate::scene::WorldViewport::fit(width, height, 320.0, 180.0);
+        if let Some(background) = self.trial_background {
+            Self::draw_scaled_background(self.canvas, background, viewport);
+        } else {
+            raster::draw_sky(self.canvas, &self.g.view(), pal);
+            crate::scene::draw_coast(self.canvas, pal);
+        }
+        let project = |x: f64, y: f64| viewport.project(Vec2::new(x, y));
+        let loadout = Loadout::default();
+        let shot = Shot::new(trial_state.angle_ticks, trial_state.power_ticks);
+        let (tank_x, tank_y) = project(30.0, 15.0);
+        crate::scene::draw_emplacement(self.canvas, self.sprites, &loadout, shot, tank_x, tank_y);
+
+        let direction = shot.velocity(&loadout);
+        let length = direction.x.hypot(direction.y).max(1.0);
+        for offset in (18..40).step_by(4) {
+            let (x, y) = project(
+                30.0 + direction.x / length * offset as f64,
+                15.0 + direction.y / length * offset as f64,
+            );
+            self.canvas.put(x, y, alert);
+        }
+
+        let simulation = &trial_state.simulation;
+        for drone in simulation.drones() {
+            let (x, y) = project(drone.position.x, drone.position.y);
+            self.canvas.hline(x - 8, x + 8, y - 3, fg);
+            self.canvas.rect_outline(x - 9, y - 5, 5, 3, fg);
+            self.canvas.rect_outline(x + 4, y - 5, 5, 3, fg);
+            let (body_x, body_y) = project(drone.position.x - 5.0, drone.position.y + 3.0);
+            self.canvas.rect(body_x, body_y, 10, 6, alert);
+        }
+        for projectile in simulation.projectiles() {
+            let (x, y) = project(projectile.position.x, projectile.position.y);
+            self.canvas.rect(x, y, 2, 2, fg);
+        }
+
+        let seconds = (salt_line_sim::trial::ROUND_TICKS - simulation.tick()).div_ceil(120);
+        self.canvas.text_small(
+            6,
+            6,
+            &format!(
+                "TRIAL {seconds}s  SCORE {}  SHELLS {}/8",
+                simulation.score(),
+                simulation.ammo()
+            ),
+            fg,
+        );
+        self.canvas.text_small(
+            6,
+            16,
+            &format!(
+                "WIND {:.1}  ANG {:.1}  PWR {}  RELOAD {}s",
+                simulation.wind(),
+                trial_state.angle_ticks as f64 * 0.05,
+                trial_state.power_ticks,
+                simulation.reload_ticks_remaining().div_ceil(120)
+            ),
+            fg,
+        );
+
+        if simulation.finished() {
+            self.centred(65, "TRIAL COMPLETE", alert);
+            if self.g.input.touch_active {
+                self.draw_touch_button(
+                    width / 2 - 64,
+                    height - 22,
+                    60,
+                    16,
+                    "REPLAY",
+                    Action::Confirm,
+                );
+                self.draw_touch_button(width / 2 + 4, height - 22, 60, 16, "TITLE", Action::Back);
+            } else {
+                self.centred(77, "ENTER / A REPLAY   ESC / B TITLE", fg);
+            }
+        } else if trial_state.paused {
+            self.centred(65, "PAUSED", alert);
+            if self.g.input.touch_active {
+                self.draw_touch_button(
+                    width / 2 - 64,
+                    height - 22,
+                    60,
+                    16,
+                    "RESUME",
+                    Action::Confirm,
+                );
+                self.draw_touch_button(width / 2 + 4, height - 22, 60, 16, "TITLE", Action::Back);
+            } else {
+                self.centred(77, "ENTER / A RESUME   ESC / B TITLE", fg);
+            }
+        } else if self.g.input.touch_active {
+            let bottom = height - 20;
+            self.draw_touch_button(3, bottom, 28, 16, "<", Action::Left);
+            self.draw_touch_button(33, bottom, 28, 16, ">", Action::Right);
+            self.draw_touch_button(75, bottom, 28, 16, "-", Action::Down);
+            self.draw_touch_button(105, bottom, 28, 16, "+", Action::Up);
+            self.draw_touch_button(width - 48, bottom, 45, 16, "FIRE", Action::Fire);
+            let (edge_x, edge_y) = self.g.display.corner_pad;
+            self.draw_touch_button(
+                width - 45 - edge_x,
+                3 + edge_y,
+                42,
+                13,
+                "PAUSE",
+                Action::Back,
+            );
+        } else {
+            self.centred(
+                height - 9,
+                "ARROWS AIM/POWER  SPACE/A FIRE  ESC/B PAUSE",
+                fg,
+            );
+        }
+    }
+
+    fn draw_scaled_background(
+        canvas: &mut Canvas,
+        background: &Sprite,
+        viewport: crate::scene::WorldViewport,
+    ) {
+        let (x, y, width, height) = viewport.bounds(320.0);
+        let scale = canvas.scale() as f64;
+        let x0 = (x * scale).round() as i32;
+        let y0 = (y * scale).round() as i32;
+        let x1 = ((x + width) * scale).round() as i32;
+        let y1 = ((y + height) * scale).round() as i32;
+        let target_width = x1 - x0;
+        let target_height = y1 - y0;
+        if target_width <= 0 || target_height <= 0 {
+            return;
+        }
+        let source_x_max = background.w.saturating_sub(1);
+        let source_y_max = background.h.saturating_sub(1);
+        for dy in y0..y1 {
+            let sy = if target_height == 1 {
+                0
+            } else {
+                ((dy - y0) * source_y_max / (target_height - 1)).min(source_y_max)
+            };
+            for dx in x0..x1 {
+                let sx = if target_width == 1 {
+                    0
+                } else {
+                    ((dx - x0) * source_x_max / (target_width - 1)).min(source_x_max)
+                };
+                if let Some(colour) = background.pixel(sx, sy) {
+                    canvas.put_detail(dx, dy, colour);
+                }
+            }
+        }
+    }
+
     /// The error screen. See `Game::broken_tick`.
     fn render_broken(&mut self) {
         self.buttons.clear();
@@ -386,6 +554,14 @@ impl Painter<'_> {
                         &format!("{challenges}  CHALLENGES {cleared}/{total}"),
                         &format!("CHALLENGES {cleared}/{total}"),
                         alert,
+                    );
+                    let trial = self.g.input_label(Action::DroneTrial);
+                    y = self.menu_row(
+                        y,
+                        Action::DroneTrial,
+                        &format!("{trial}  DRONE TRIAL (PROTOTYPE)"),
+                        "DRONE TRIAL (PROTOTYPE)",
+                        fg,
                     );
                 }
                 // Local versus is offered as a row on a touchscreen, the
@@ -1813,6 +1989,38 @@ mod tests {
             &mut Cache::default(),
         );
         (canvas, buttons)
+    }
+
+    #[test]
+    fn trial_composites_the_loaded_coastal_background_on_both_canvas_scales() {
+        let mut g = game();
+        g.start_trial(1);
+        let mut px = [91, 82, 73, 255].repeat(1281);
+        px[1279 * 4..1280 * 4].copy_from_slice(&[99, 99, 99, 255]);
+        px[1280 * 4..1281 * 4].copy_from_slice(&[11, 22, 33, 255]);
+        let first = [91, 82, 73, 255];
+        let last = [11, 22, 33, 255];
+        let art = Art {
+            trial_background: Some(Sprite {
+                w: 1281,
+                h: 1,
+                px,
+                detail: None,
+            }),
+            ..Art::default()
+        };
+
+        for mut canvas in [Canvas::new(320, 180), Canvas::detailed(320, 180)] {
+            frame(
+                &g,
+                &art,
+                &mut canvas,
+                &mut Vec::new(),
+                &mut Cache::default(),
+            );
+            assert_eq!(&canvas.bytes()[..4], &first);
+            assert_eq!(&canvas.bytes()[canvas.bytes().len() - 4..], &last);
+        }
     }
 
     fn actions(buttons: &[Button]) -> Vec<Action> {
