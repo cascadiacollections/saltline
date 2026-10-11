@@ -100,3 +100,13 @@ same-seed restart, live HUD and placeholder geometry. Catch-up is limited to
 240 steps per rendered frame and retains debt. Finished rounds now atomically save their tick-addressed recording separately
 from artillery saves. A headless replay verifier reads those files.
 High-resolution presentation, persistent scores, effects and reachability tuning remain.
+
+## Shared presentation checkpoint
+
+Artillery and Trial now use the same native tank/barrel renderer. A seeded
+artillery screenshot was pixel-identical before and after extraction. Trial
+uses a uniform world viewport: wide windows add margins rather than stretching
+collision geometry. Projection tests cover wide and 720p targets, but the
+runtime still renders at native low resolution. A procedural coastal backdrop,
+true-angle sight dots and existing tank sprites replace the flat test arena.
+This is a readability prototype, not the reference-quality art upgrade.

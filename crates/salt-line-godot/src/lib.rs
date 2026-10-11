@@ -16,6 +16,7 @@ pub mod presentation;
 pub mod raster;
 pub mod save;
 pub mod save_format;
+pub mod scene;
 pub mod sprites;
 pub mod store;
 

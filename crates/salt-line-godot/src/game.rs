@@ -27,7 +27,8 @@ use crate::presentation::{
 };
 use crate::raster::{self, Canvas, View};
 use crate::save::{self, Entry, Save};
-use crate::sprites::{Sprites, BARREL_FRAME, BARREL_PIVOT, PIVOT_BASE};
+use crate::scene::{self, WorldViewport};
+use crate::sprites::Sprites;
 use crate::store::{self, Entitlement};
 
 const PALETTE_PATH: &str = "res://art/palette_16.png";
@@ -1453,19 +1454,28 @@ impl SaltLine {
         let alert = pal.get(slot::ALERT);
         let w = self.canvas.w;
         let h = self.canvas.h;
-        let sx = |x: f64| (x * w as f64 / 320.0).round() as i32;
-        let sy = |y: f64| h - (y * h as f64 / 180.0).round() as i32;
-        self.canvas.rect(0, sy(10.0), w, h, pal.get(slot::ROCK));
-        self.canvas
-            .rect(sx(20.0), sy(15.0), 20, 5, pal.get(slot::HULL));
-        let dir = Shot::new(self.angle_ticks, self.power_ticks)
-            .velocity(&salt_line_sim::modifiers::Loadout::default());
+        let viewport = WorldViewport::fit(w, h, 320.0, 180.0);
+        let sx = |x: f64| viewport.project(Vec2::new(x, 0.0)).0;
+        let sy = |y: f64| viewport.project(Vec2::new(0.0, y)).1;
+        scene::draw_coast(&mut self.canvas, &pal);
+        let loadout = Loadout::default();
+        let shot = Shot::new(self.angle_ticks, self.power_ticks);
+        scene::draw_emplacement(
+            &mut self.canvas,
+            self.sprites.as_ref(),
+            &loadout,
+            shot,
+            sx(30.0),
+            sy(15.0),
+        );
+        // A short dotted sight line shows the true angle between barrel frames.
+        let dir = shot.velocity(&loadout);
         let length = (dir.x * dir.x + dir.y * dir.y).sqrt();
-        for n in 0..14 {
+        for n in (18..40).step_by(4) {
             self.canvas.put(
                 sx(30.0 + dir.x / length * n as f64),
                 sy(15.0 + dir.y / length * n as f64),
-                fg,
+                alert,
             );
         }
         let trial = self.trial.as_ref().unwrap();
@@ -1475,13 +1485,8 @@ impl SaltLine {
             self.canvas.hline(x - 8, x + 8, y - 3, fg);
             self.canvas.rect_outline(x - 9, y - 5, 5, 3, fg);
             self.canvas.rect_outline(x + 4, y - 5, 5, 3, fg);
-            self.canvas.rect(
-                sx(d.position.x - 5.0),
-                sy(d.position.y + 3.0),
-                (10 * w / 320).max(1),
-                (6 * h / 180).max(1),
-                alert,
-            );
+            self.canvas
+                .rect(sx(d.position.x - 5.0), sy(d.position.y + 3.0), 10, 6, alert);
         }
         for p in trial.projectiles() {
             self.canvas
@@ -1518,7 +1523,9 @@ impl SaltLine {
             self.centred(77, "ENTER / A RESUME   ESC / B TITLE", fg);
         } else {
             self.canvas
-                .text_small(6, h - 9, "ARROWS AIM/POWER  SPACE/A FIRE  ESC/B PAUSE", fg);
+                .rect(64, h - 12, w - 64, 12, pal.get(slot::UI_BG));
+            self.canvas
+                .text_small(70, h - 9, "ARROWS AIM/POWER SPACE/A FIRE ESC/B PAUSE", fg);
         }
     }
 
@@ -1837,38 +1844,14 @@ impl SaltLine {
     fn draw_player(&mut self, screen: &Screen, loadout: &Loadout, view: &View) {
         let muzzle = screen.muzzle();
         let shot = Shot::new(self.angle_ticks, self.power_ticks).quantized(loadout);
-        let frame = shot.barrel_frame();
-
-        let (tank, pivot, barrel) = match self.sprites.as_ref() {
-            Some(s) => {
-                let (t, p) = s.tank(loadout);
-                (t.cloned(), p, s.barrel(loadout).cloned())
-            }
-            None => (None, PIVOT_BASE, None),
-        };
-
-        let pivot_x = view.sx(muzzle.x);
-        let pivot_y = view.sy(muzzle.y);
-
-        // Barrel first, so the chassis overlaps its root.
-        if let Some(barrel) = barrel {
-            let sx = Sprites::barrel_frame_x(frame);
-            self.canvas.blit_region(
-                &barrel,
-                pivot_x - BARREL_PIVOT.0,
-                pivot_y - BARREL_PIVOT.1,
-                crate::raster::Rect {
-                    x: sx,
-                    y: 0,
-                    w: BARREL_FRAME,
-                    h: BARREL_FRAME,
-                },
-            );
-        }
-        if let Some(tank) = tank {
-            self.canvas
-                .blit(&tank, pivot_x - pivot.0, pivot_y - pivot.1);
-        }
+        scene::draw_emplacement(
+            &mut self.canvas,
+            self.sprites.as_ref(),
+            loadout,
+            shot,
+            view.sx(muzzle.x),
+            view.sy(muzzle.y),
+        );
     }
 
     fn draw_shot_effects(&mut self, view: &View) {
