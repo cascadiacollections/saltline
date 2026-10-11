@@ -338,13 +338,25 @@ impl Painter<'_> {
         let y0 = (y * scale).round() as i32;
         let x1 = ((x + width) * scale).round() as i32;
         let y1 = ((y + height) * scale).round() as i32;
-        if x1 <= x0 || y1 <= y0 {
+        let target_width = x1 - x0;
+        let target_height = y1 - y0;
+        if target_width <= 0 || target_height <= 0 {
             return;
         }
+        let source_x_max = background.w.saturating_sub(1);
+        let source_y_max = background.h.saturating_sub(1);
         for dy in y0..y1 {
-            let sy = (dy - y0) * background.h / (y1 - y0);
+            let sy = if target_height == 1 {
+                0
+            } else {
+                ((dy - y0) * source_y_max / (target_height - 1)).min(source_y_max)
+            };
             for dx in x0..x1 {
-                let sx = (dx - x0) * background.w / (x1 - x0);
+                let sx = if target_width == 1 {
+                    0
+                } else {
+                    ((dx - x0) * source_x_max / (target_width - 1)).min(source_x_max)
+                };
                 if let Some(colour) = background.pixel(sx, sy) {
                     canvas.put_detail(dx, dy, colour);
                 }
@@ -1983,12 +1995,16 @@ mod tests {
     fn trial_composites_the_loaded_coastal_background_on_both_canvas_scales() {
         let mut g = game();
         g.start_trial(1);
-        let colour = [91, 82, 73, 255];
+        let mut px = [91, 82, 73, 255].repeat(1281);
+        px[1279 * 4..1280 * 4].copy_from_slice(&[99, 99, 99, 255]);
+        px[1280 * 4..1281 * 4].copy_from_slice(&[11, 22, 33, 255]);
+        let first = [91, 82, 73, 255];
+        let last = [11, 22, 33, 255];
         let art = Art {
             trial_background: Some(Sprite {
-                w: 1,
+                w: 1281,
                 h: 1,
-                px: colour.to_vec(),
+                px,
                 detail: None,
             }),
             ..Art::default()
@@ -2002,7 +2018,8 @@ mod tests {
                 &mut Vec::new(),
                 &mut Cache::default(),
             );
-            assert_eq!(&canvas.bytes()[..4], &colour);
+            assert_eq!(&canvas.bytes()[..4], &first);
+            assert_eq!(&canvas.bytes()[canvas.bytes().len() - 4..], &last);
         }
     }
 
