@@ -1,0 +1,200 @@
+# SPDX-FileCopyrightText: 2026 Kevin Coughlin
+#
+# SPDX-License-Identifier: MIT
+class_name DesktopServicesNativeBackend
+extends DesktopServicesBackend
+
+## Thin adapter over the [code]XdgPortalNative[/code] GDExtension class.
+##
+## It owns no portal logic of its own: it forwards calls, re-emits the native
+## signals under the backend contract, and translates the facade's typed
+## arguments into the plain values the extension expects. Construct it through
+## [method create], which returns [code]null[/code] when the extension is not
+## loaded rather than raising.
+
+## Source of the flag values, so the mask below cannot drift from the enum the
+## facade publishes. Preloaded rather than read off the autoload: backends are
+## constructed directly by the test suite, where no autoload exists.
+const _FACADE := preload("res://addons/xdg_portals/desktop_services.gd")
+
+## org.freedesktop.portal.GameMode.QueryStatus results, as the interface
+## documents them. -1 (the query failed) is not listed: it is unknown, as is
+## anything else.
+const PORTAL_GAME_MODE_INACTIVE := 0
+const PORTAL_GAME_MODE_ACTIVE := 1
+const PORTAL_GAME_MODE_REGISTERED := 2
+
+var _native: RefCounted = null
+var _versions: Dictionary = {}
+
+
+## Returns a ready backend, or [code]null[/code] when the native class is missing
+## or could not reach the session bus.
+static func create() -> DesktopServicesNativeBackend:
+	if not ClassDB.class_exists(&"XdgPortalNative"):
+		return null
+	if not ClassDB.can_instantiate(&"XdgPortalNative"):
+		return null
+
+	var native: Object = ClassDB.instantiate(&"XdgPortalNative")
+	if native == null or not (native is RefCounted):
+		return null
+
+	var backend := DesktopServicesNativeBackend.new()
+	backend._bind(native as RefCounted)
+	return backend
+
+
+func _bind(native: RefCounted) -> void:
+	_native = native
+	_native.connect("power_saver_changed", _on_power_saver_changed)
+	_native.connect("request_completed", _on_request_completed)
+	_native.connect("notification_action_invoked", _on_notification_action_invoked)
+	_native.connect("portal_error", _on_portal_error)
+
+
+func get_backend_name() -> String:
+	return "native"
+
+
+func is_available() -> bool:
+	return _native != null and bool(_native.call("is_available"))
+
+
+## Reason reported by the extension when the session bus could not be reached.
+func get_unavailable_reason() -> String:
+	if _native == null:
+		return "The XdgPortalNative extension is not loaded."
+	return String(_native.call("get_unavailable_reason"))
+
+
+## Reads the portal's exported interface versions and reports a capability as
+## available where its interface has one. The extension answers keyed by
+## interface name — the only backend for which that vocabulary is literally
+## true — so the translation to [code]Capability[/code] lives here rather than
+## leaking into the facade.
+func get_capabilities() -> Dictionary:
+	_versions = {} if _native == null else _native.call("get_interface_versions")
+	var capabilities: Dictionary = {}
+	for capability: int in _FACADE.INTERFACE_NAMES:
+		capabilities[capability] = get_interface_version(capability) >= 0
+	return capabilities
+
+
+## The portal interface version, from the versions read by the last
+## [method get_capabilities].
+func get_interface_version(capability: int) -> int:
+	var interface_name: String = _FACADE.INTERFACE_NAMES.get(capability, "")
+	if interface_name.is_empty():
+		return -1
+	return int(_versions.get(interface_name, -1))
+
+
+## Translates the portal's [code]QueryStatus[/code] code into a
+## [code]GameModeStatus[/code]. The two number the states differently — the
+## portal's 1 means "active, but not for this pid" and its 2 means "registered"
+## — so passing the code through unchanged reports the opposite of the truth.
+func game_mode_query_status(pid: int) -> int:
+	if _native == null:
+		return _FACADE.GameModeStatus.UNKNOWN
+	return game_mode_status_from_portal(int(_native.call("game_mode_query_status", pid)))
+
+
+## The [code]GameModeStatus[/code] for a portal [code]QueryStatus[/code] code.
+## Anything outside the documented codes is unknown, never a guess.
+static func game_mode_status_from_portal(code: int) -> int:
+	match code:
+		PORTAL_GAME_MODE_INACTIVE:
+			return _FACADE.GameModeStatus.NOT_REGISTERED
+		PORTAL_GAME_MODE_ACTIVE:
+			return _FACADE.GameModeStatus.ACTIVE_FOR_OTHERS
+		PORTAL_GAME_MODE_REGISTERED:
+			return _FACADE.GameModeStatus.REGISTERED
+		_:
+			return _FACADE.GameModeStatus.UNKNOWN
+
+
+func game_mode_register(pid: int) -> int:
+	if _native == null:
+		return -1
+	return int(_native.call("game_mode_register", pid))
+
+
+func game_mode_unregister(pid: int) -> int:
+	if _native == null:
+		return -1
+	return int(_native.call("game_mode_unregister", pid))
+
+
+func inhibit(flags: int, reason: String, parent_window: String) -> String:
+	if _native == null:
+		return ""
+	return String(_native.call("inhibit", flags, reason, parent_window))
+
+
+## The portal accepts all four bits. Whether the desktop's backend acts on each
+## one varies (wlroots compositors commonly ignore logout and user-switch), and
+## the portal does not report which it honoured — see
+## [method DesktopServicesBackend.get_supported_inhibit_flags].
+func get_supported_inhibit_flags() -> int:
+	if _native == null:
+		return 0
+	return _FACADE.INHIBIT_FLAGS_MASK
+
+
+func close_request(handle: String) -> bool:
+	if _native == null:
+		return false
+	return bool(_native.call("close_request", handle))
+
+
+func power_saver_state() -> int:
+	if _native == null:
+		return -1
+	return int(_native.call("power_saver_state"))
+
+
+func open_uri(uri: String, ask: bool, parent_window: String) -> String:
+	if _native == null:
+		return ""
+	return String(_native.call("open_uri", uri, ask, parent_window))
+
+
+func scheme_supported(scheme: String) -> int:
+	if _native == null:
+		return -1
+	return int(_native.call("scheme_supported", scheme))
+
+
+func add_notification(id: String, title: String, body: String, priority: String) -> bool:
+	if _native == null:
+		return false
+	return bool(_native.call("add_notification", id, title, body, priority))
+
+
+func remove_notification(id: String) -> bool:
+	if _native == null:
+		return false
+	return bool(_native.call("remove_notification", id))
+
+
+func shutdown() -> void:
+	# Dropping the last reference tears down the worker thread and the private
+	# bus connection in the extension's destructor.
+	_native = null
+
+
+func _on_power_saver_changed(enabled: bool) -> void:
+	power_saver_changed.emit(enabled)
+
+
+func _on_request_completed(handle: String, response: int, results: Dictionary) -> void:
+	request_completed.emit(handle, response, results)
+
+
+func _on_notification_action_invoked(id: String, action: String, parameters: Array) -> void:
+	notification_action_invoked.emit(id, action, parameters)
+
+
+func _on_portal_error(context: String, message: String) -> void:
+	portal_error.emit(context, message)

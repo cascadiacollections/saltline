@@ -1,0 +1,14 @@
+Salt Line is a single-player artillery roguelike. Aim over procedural ridges and chasms, reshape the terrain with every impact, and see how far your shell supply can carry you.
+
+Each screen is generated from a shareable seed. Plan your angle, power, and shot type; clear targets efficiently to conserve shells. Every four screens, choose a modifier that changes how your run plays. The horizon keeps moving until your ammunition runs out.
+
+Features:
+• Deterministic procedural terrain and shareable seeds
+• Destructible ground that remembers every crater during a run
+• A growing set of artillery rounds and run modifiers
+• Touch controls, including buttons and optional drag aiming
+• Controller support, plus remappable keyboard controls
+• Local plain-text saves and replayable runs
+• No ads, in-app purchases, network connection, or telemetry
+
+Salt Line is free and open-source software, released under the MIT License. It is an early development preview; gameplay and balance may change.

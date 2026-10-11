@@ -1,0 +1,13 @@
+# typos (https://github.com/crate-ci/typos). Snapshot files are generated hex
+# digests and palette digits, not prose. Raw RGBA and palette-index files
+# and Blender files are binary artwork.
+[files]
+extend-exclude = ["*.snap", "*.rgba", "*.pal8", "*.blend", "proptest-regressions/"]
+
+[default.extend-words]
+# Apple's Unique Device Identifier, not a misspelt UUID.
+UDID = "UDID"
+
+[default.extend-identifiers]
+# Plural PNG acronym, not the words PN and Gs.
+PNGs = "PNGs"

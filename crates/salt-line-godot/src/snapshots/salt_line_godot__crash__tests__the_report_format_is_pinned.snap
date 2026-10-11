@@ -1,0 +1,21 @@
+---
+source: crates/salt-line-godot/src/crash.rs
+expression: sample(Some(&ctx))
+---
+SALT LINE CRASH REPORT
+Paste this into a bug report: https://github.com/cascadiacollections/saltline/issues
+Nothing was sent anywhere.
+
+version: 0.1.0
+platform: linux x86_64
+panic: attempt to subtract with overflow
+at: crates/salt-line-sim/src/run.rs:940:9
+mode: Playing
+seed: 20260907
+width: 480
+screen: 4 (index 3)
+aim: angle 875 power 640
+resumed: yes
+log: 10
+  v2 @0 F120 900:600 901:600 902:600 @1 903:600 904:600 905:600
+  @2 906:600 907:600 908:600 @3 D1

@@ -1,0 +1,6 @@
+---
+source: crates/salt-line-godot/src/resume.rs
+assertion_line: 490
+expression: "Saved::of(&run, true).to_line()"
+---
+resume 6 20260907 320 1 v2 @0 F1095 180:948 @1 1030:375 @2 1020:368

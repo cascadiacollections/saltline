@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Salt Line — marketing site media builder.
 
-Every image the site ships is produced here from the same primitives that
-draw the game's art (`tools/gen_sprites.py`): same 16-colour palette, same
-native 320x180 grid, same rasteriser. Nothing is drawn by hand, nothing is
-anti-aliased, and the only scaling is integer NEAREST.
+Every image the site ships uses the exported game sprites in art/sprites/.
+Terrain and UI come from tools/gen_sprites.py: same 16-colour palette, same
+native 320x180 grid, same rasteriser. Nothing is anti-aliased, and the only
+scaling is integer NEAREST. No Aseprite installation is needed for site builds.
 
     python3 tools/build_site.py     # needs Pillow + Rust; writes into site/assets/
 
@@ -20,6 +20,7 @@ Outputs:
     site/assets/og.png                1200x630 social card
     site/assets/favicon.png           64x64
 """
+import html
 import os
 import shutil
 import subprocess
@@ -30,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PIL import Image
 
 import gen_sprites as G
-from gen_sprites import BAYER, Buf, rgba, text
+from gen_sprites import BAYER, Buf, hud, rgba, text
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ART = os.path.join(ROOT, "art")
@@ -113,19 +114,14 @@ def compose(
     ground(b, hs, width, height)
 
     for kind, x, state in props:
-        if kind == "tower":
-            spr = G.water_tower(state)
-        elif kind == "derrick":
-            spr = G.derrick()
-        elif kind == "mast":
-            spr = G.radio_mast()
-        elif kind == "silo":
-            spr = G.silo()
-        else:
-            spr = G.pylon()
+        name = {"tower": "tower", "derrick": "derrick", "mast": "radio_mast",
+                "silo": "silo", "pylon": "pylon"}[kind]
+        if kind == "tower" or state not in (None, "intact"):
+            name += "_" + state
+        spr = G.load_sprite(name)
         b.blit(spr, x, G.seat(hs, x, spr.w) - spr.h + 2)
 
-    tk, pivot = G.tank("base")
+    tk, pivot = G.load_tank("base")
     px = int(EMPLACEMENT_X) - pivot[0]
     py = G.seat(hs, int(EMPLACEMENT_X) - 13, 26) - tk.h + 3
     muzzle = (px + pivot[0], py + pivot[1])
@@ -134,18 +130,10 @@ def compose(
 
 def with_barrel(b, tank_xy, pivot, angle_deg):
     px, py = tank_xy
-    tk, _ = G.tank("base")
-    bar, bp = G.barrel(angle_deg)
+    tk, _ = G.load_tank("base")
+    bar, bp = G.load_barrel(angle_deg)
     b.blit(bar, px + pivot[0] - bp[0], py + pivot[1] - bp[1])
     b.blit(tk, px, py)
-
-
-def hud(b, width, height, wind, shells, screen):
-    b.rect(3, 3, 41, 9, rgba("ui_bg"))
-    text(b, wind, 5, 5, rgba("alert"))
-    b.rect(width - 42, 3, 39, 9, rgba("ui_bg"))
-    text(b, shells, width - 40, 5, rgba("ui_fg"))
-    text(b, screen, width - 11, height - 8, rgba("ui_fg"))
 
 
 # ---------------------------------------------------------------- ballistics
@@ -267,7 +255,7 @@ def hero_wide(scale=2):
     _, path, hit, ang, _ = shot
     with_barrel(b, tank_xy, pivot, ang)
     tracer(b, path, hit)
-    hud(b, width, height, "WIND +4.0", "SHELLS 31", "27")
+    hud(b, width, height, 4.0, 31, "27")
     return b.image(scale)
 
 
@@ -289,7 +277,7 @@ def shot_gif(scale=2, path_out=None):
     err = abs(hit[0] - target)
 
     with_barrel(b, tank_xy, pivot, ang)
-    hud(b, width, height, "WIND +3.2", "SHELLS 28", "34")
+    hud(b, width, height, 3.2, 28, "34")
     base = b.image(1)
 
     # after: the same screen after the sim applies the impact, tower down
@@ -302,7 +290,7 @@ def shot_gif(scale=2, path_out=None):
         terrain_heights=after_hs,
     )
     with_barrel(ab, atank, apivot, ang)
-    hud(ab, width, height, "WIND +3.2", "SHELLS 27", "34")
+    hud(ab, width, height, 3.2, 27, "34")
     after = ab.image(1)
 
     fg = tuple(G.P["ui_fg"]) + (255,)
@@ -384,15 +372,65 @@ def og_card():
 
 def favicon():
     b = Buf(16, 16, rgba("ui_bg"))
-    tk, pivot = G.tank("base")
-    bar, bp = G.barrel(45)
+    tk, pivot = G.load_tank("base")
+    bar, bp = G.load_barrel(45)
     b.blit(bar, 1 + pivot[0] - bp[0] - 7, 3 + pivot[1] - bp[1])
     b.blit(tk, -7, 3)
     return b.image(4)
 
 
+def license_page():
+    """Publish the bundled notices locally, without relying on repository access."""
+    notices = [
+        ("Salt Line — MIT", "LICENSE"),
+        ("Godot Engine — MIT", "third_party/godot-LICENSE.txt"),
+        ("Godot Rust bindings (gdext) — MPL-2.0", "third_party/gdext-LICENSE-MPL-2.0.txt"),
+        ("glam — MIT option", "third_party/glam-LICENSE-MIT.txt"),
+        ("libc — MIT option", "third_party/libc-LICENSE-MIT.txt"),
+        ("Linux desktop integration — MIT", "addons/xdg_portals/LICENSE"),
+        ("Linux integration third-party notices", "addons/xdg_portals/THIRD_PARTY_NOTICES.md"),
+    ]
+    sections = []
+    for title, relative_path in notices:
+        with open(os.path.join(ROOT, relative_path), encoding="utf-8") as source:
+            notice = source.read()
+        sections.append(
+            f'<details><summary>{html.escape(title)}</summary>'
+            f'<pre class="license-text">{html.escape(notice)}</pre></details>'
+        )
+    document = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Salt Line — credits and licenses</title>
+<meta name="description" content="Salt Line's MIT license and bundled free and open-source software acknowledgments.">
+<meta name="theme-color" content="#2e2a26">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><a class="brand" href="index.html">SALT LINE</a>
+<nav aria-label="Project links"><a href="index.html#download">Downloads</a></nav></header>
+<main id="main"><section aria-labelledby="licenses-h">
+<h1 id="licenses-h">Credits &amp; licenses</h1>
+<p>Salt Line is by Cascadia Collections and is licensed under MIT.
+Thank you to the free and open-source communities behind Godot Engine,
+the gdext Rust bindings, glam, libc, and Linux desktop integration.</p>
+<p>The complete bundled notices below are also available offline in the game's
+Settings → Credits / Licenses. The Linux integration notices describe its
+Godot C++ bindings and system libraries and services.</p>
+<p><a href="index.html">Back to Salt Line</a></p>
+""" + "\n".join(sections) + "\n</section></main>\n</body>\n</html>\n"
+    with open(os.path.join(ROOT, "site", "licenses.html"), "w", encoding="utf-8") as out:
+        out.write(document)
+
+
 # ---------------------------------------------------------------- driver
 def main():
+    G.main()
+    license_page()
     shutil.rmtree(OUT_SPR, ignore_errors=True)
     os.makedirs(OUT_SPR, exist_ok=True)
 
@@ -420,7 +458,7 @@ def main():
     og_card().save(os.path.join(OUT, "og.png"))
     print("og.png")
 
-    favicon().save(os.path.join(OUT, "favicon.png"))
+    Image.open(os.path.join(ART, "icon_1024.png")).resize((64, 64), Image.Resampling.LANCZOS).save(os.path.join(OUT, "favicon.png"))
     print("favicon.png")
 
 

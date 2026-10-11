@@ -1,0 +1,76 @@
+# Coverage-guided fuzzing (cargo-fuzz, libFuzzer). Its own workspace, outside
+# the game's, so nothing here reaches a build of the game. Needs nightly:
+#   rustup run nightly cargo fuzz run save_parse
+# The weekly workflow runs every target for a few minutes.
+[package]
+name = "salt-line-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+salt-line-godot = { path = "../crates/salt-line-godot" }
+salt-line-sim = { path = "../crates/salt-line-sim" }
+
+[workspace]
+
+[[bin]]
+name = "save_parse"
+path = "fuzz_targets/save_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "seed_parse"
+path = "fuzz_targets/seed_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "replay"
+path = "fuzz_targets/replay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "match_log"
+path = "fuzz_targets/match_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "layout_code"
+path = "fuzz_targets/layout_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "layouts_file"
+path = "fuzz_targets/layouts_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "history_file"
+path = "fuzz_targets/history_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "replay_code"
+path = "fuzz_targets/replay_code.rs"
+test = false
+doc = false
+bench = false

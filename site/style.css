@@ -190,6 +190,19 @@ section:first-of-type { border-top: 0; }
 .btn.ghost:hover { color: var(--sand); border-color: var(--sand); }
 .fineprint { font-size: .8rem; color: var(--rock); }
 
+/* ---------------------------------------------------- gameplay preview */
+.gameplay-preview {
+  display: grid;
+  grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
+  align-items: center;
+  gap: 2rem;
+  padding-top: 2.5rem;
+  padding-bottom: 2.5rem;
+}
+.gameplay-preview > * { min-width: 0; }
+.gameplay-preview .preview-copy p { color: var(--rock); max-width: 42ch; }
+.gameplay-preview .shot-figure { margin: 0; }
+
 /* ----------------------------------------------------------- shareware */
 .shareware {
   display: grid; gap: 2rem;
@@ -340,7 +353,31 @@ footer nav { display: grid; gap: .4rem; font-size: .88rem; }
 .media-grid img, .split img, .palette img, .shot-figure img { max-width: 100%; }
 
 @media (max-width: 760px) {
-  .shareware, .build-grid { grid-template-columns: minmax(0, 1fr); }
+  .gameplay-preview, .shareware, .build-grid { grid-template-columns: minmax(0, 1fr); }
   .hero-copy { margin-top: -3rem; }
   .keys th { width: 7.5rem; }
 }
+
+/* Download cards: steps, buttons along the bottom, the visitor's own platform lit. */
+.dl .card { display: flex; flex-direction: column; }
+.dl .card ol { margin: 0 0 1rem; padding-left: 1.2rem; flex: 1; }
+.dl .card li { margin: .3rem 0; }
+.dl .card .btn { margin: .3rem .4rem 0 0; align-self: flex-start; }
+.dl .arch { color: var(--rock); font-size: .8rem; margin-left: .3rem; }
+.dl .card.yours { border-color: var(--alert); }
+.dl .card.yours h3::after { content: "this device"; color: var(--alert); font-size: .72rem; margin-left: .5rem; }
+.dl .card li code { display: inline; margin: 0; padding: .05rem .3rem; border-left: 0; }
+
+/* Bundled notices stay readable on narrow screens and at larger text sizes. */
+details { margin: 1rem 0; border: 1px solid var(--bedrock); padding: 1rem; }
+summary { cursor: pointer; color: var(--alert); }
+.license-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .85rem; }
+
+/* Art-direction boards retain their complete composition at every size. */
+.concept-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; margin-top: 1.5rem; }
+.concept-grid figure { min-width: 0; margin: 0; }
+.concept-grid a { display: block; border: 1px solid var(--rock); }
+.concept-grid a:hover { border-color: var(--alert); }
+.concept-grid img { display: block; width: 100%; height: auto; }
+.concept-grid figcaption { padding-top: .6rem; color: var(--sand); }
+@media (max-width: 760px) { .concept-grid { grid-template-columns: minmax(0, 1fr); } }

@@ -94,7 +94,9 @@ reference scene seats that chassis two rows into the ground.
   presentation layer needs the collapse to animate on the screen that was
   cleared. Headless callers call it straight away.
 - **Auger's budget** is the remaining thickness of the layer it entered (8
-  units in sand, 22 in rock). Bedrock stops it, per §4.
+  units in sand, 22 in rock). Bedrock stops it, per §4, at the shell's own
+  depth below the original surface, so a shell entering Rock near bedrock
+  stops there with budget left.
 - **Airburst's fuse** is horizontal distance from the muzzle, which is the
   number Rangefinder displays.
 - **Storm Front** resamples the wind at the trajectory apex — one resample per
@@ -136,7 +138,8 @@ seeds, with the loadout evolving one seeded pick per band:
   the HUD worth looking at from screen 1.
 - Template and target-count weights now overlap for build testing: two-target
   screens begin in band 3, three-target screens in band 9, and later bands
-  retain a small share of simpler counts. Eligible
+  retain a small share of simpler counts. (Superseded by epoch 6: doubles now
+  begin in band 2 and triples in band 4; see §6.) Eligible
   `Overhang` has signature-template weight comparable to `Basin` instead of
   half its weight, while its capability and solvability gates remain intact.
 - The batch report now includes a deterministic solver-assisted economy
@@ -165,3 +168,947 @@ Programmer art, per the brief, but two gaps affect play rather than polish:
   now emits base, sabot, cluster and auger strips; the two chassis variants
   reuse the base barrel, which is correct but means those builds read only from
   the hull.
+
+---
+
+## 6. Sim epochs
+
+`SIM_EPOCH` (`salt-line-sim/src/lib.rs`) versions the sim's outcomes, as
+DESIGN §9.3 proposes. `tests/golden_runs.rs` hashes the pinned screen digests
+together with the golden-run corpus (`tests/golden_runs.txt`) and asserts the
+result is the current epoch's entry in `EPOCHS`. When it fails: bump
+`SIM_EPOCH`, regenerate the corpus, append `(epoch, digest)` to `EPOCHS`
+(never edit an entry that has reached `main`; an epoch still only on an
+unmerged branch may have its digest replaced in place) and add a line here with the digest; a test
+checks that every digest in `EPOCHS` appears in this section.
+
+Saved logs use the text form of `replay::encode_log`, which starts with a
+format version (`v2`). The parser rejects any other version, so an epoch-1
+log, which has no fuse or offset to give, is refused rather than replayed
+with guessed values.
+
+- **Epoch 1:** everything before epoch 2. Shot logs held only screen, angle
+  and power, so a run that used Airburst or Enfilade did not replay: the
+  fuse and the emplacement offset were never recorded.
+- **Epoch 2:** each logged shot also records the fuse (tenths of a unit) and
+  the emplacement offset (whole units), and both are in `state_hash`. The
+  live game now holds the fuse on a 0.1-unit grid (a new screen's default
+  fuse is rounded to it) and the offset on whole units, so a replay applies
+  exactly the values that flew. Screen generation is unchanged — the pinned
+  screen digests did not move — but every run's final hash did, and the
+  determinism bin's digest changed from `0xe58dfc4036186a6a` to
+  `0x6d19f4bc6cd194fa`. Epoch digest: `0xce60de848487e4a5`.
+- **Epoch 3:** three rule fixes. A Scavenger Rites supply screen just
+  before a band start (15, 35, …) was walked through without the band-end
+  draft check, so the drafts at 16 and 36 never opened; they now open, with
+  the run drafting on the supply screen. A collapsed structure is no longer
+  re-resolved, so debris refilling its footprint cannot stand it back up
+  (DESIGN §2.7). Auger's bedrock check reads the layer at the shell's depth,
+  not the column's surface, so bedrock stops a tunnelling shell wherever it
+  reaches it (DESIGN §4); the check is made only while the shell is
+  underground, so one that tunnels out over a deep crater flies on. The
+  terrain-free generation fallback is now gated on the solver like every
+  other rung, with a level, windless single-target rung below it that is
+  solvable by construction (DESIGN §2.4). A screen that reaches the fallback
+  and fails the gate now comes off the level rung instead of being shown
+  unproven; no such screen has been found for any loadout a draft can build,
+  so no pinned screen, golden run or digest moved for it. Otherwise screen
+  generation is unchanged — the pinned screen digests did not move — but a
+  log that crosses a band start after a supply screen, tunnels with Auger,
+  or piles debris over a wreck replays differently. The determinism bin's digest changed from
+  `0x6d19f4bc6cd194fa` to `0x8e29ed6154deaf03`. As with any bump, a saved
+  in-progress run from epoch 2 is discarded on update: the resume file
+  refuses an older epoch rather than replay it under new rules. Epoch
+  digest: `0x64713d327a31a792`.
+- **Epoch 4:** screen 3 features a radio mast behind a ridge that blocks a
+  straight sightline, and screen 6 features a silo across a chasm. Other early
+  screens still draw from their band's template and structure weights.
+  The normal solvability gate and fallback ladder still apply. This changes
+  generated screens and the outcomes of saved shot logs, so an in-progress
+  epoch-3 run is discarded on update. Epoch digest: `0x1104ab329b376f2c`.
+- **Epoch 5:** a direct shell hit on an already collapsed wreck clears its
+  drawing and collision box. It still counts as a downed target, and the
+  debris mound remains destructible terrain. A shot log that strikes rubble
+  can now replay differently, so epoch-4 in-progress runs are discarded.
+  The epoch digest includes an explicit rubble-clearing probe because the
+  scripted golden runs do not reliably take that second shot. Epoch digest:
+  `0x9c4ef5d00758cebe`.
+- **Epoch 6:** the target-count mix introduces doubles in band 2 (screen 9)
+  and triples in band 4 (screen 17), then ramps them through band 9, instead
+  of guaranteeing single-target screens for the first twelve. Doubles come a
+  band after the first wind and triples two bands after that, so no two
+  difficulty-table dials turn on the same screen (DESIGN §2.5; band 2 also
+  unlocks the Mesa template, which that table does not count as a dial). The golden corpus gains a
+  ninth run (seed `0xb`) because none of the first eight drafted on a supply
+  screen under the new mix. Existing epoch-5 runs are discarded on update
+  because generated screens and outcomes change. Epoch digest:
+  `0x0e222e08a33eaf8a`.
+
+---
+
+## 7. Local versus prototype (DESIGN §11)
+
+Choices the owner's brief left open, made the simple way:
+
+- **No self-hits.** A shell that lands on its own gun scores nothing (the
+  screens call it OOPS). The shooter's own gun is not a collision box; the
+  other gun is.
+- **Openers alternate by round**, left first, rather than the loser opening.
+  (Equal shots, below, has since removed most of what opening is worth.)
+- **The gate checks three winds** (calm and both extremes), not every turn's
+  draw. Craters change the ground during a round anyway, so no per-turn gate
+  could hold; this proves the screen fair as dealt.
+- **Gun box** is the 26-pixel chassis around the barrel pivot, three rows
+  above it and nine below (two of those in the ground), measured off
+  `tank_base.png` as it is seated.
+- **Title entry.** A LOCAL VERSUS row on a touchscreen only; with keys it is
+  the bindable `versus` action (`2`, pad LB). Adding a keyed row would have
+  changed the pinned title snapshot, which the brief asked to keep.
+- **The score and wind wait for the landing.** The rules score a shot when it
+  is fired; the HUD shows the score and the wind as they were until the
+  shell comes down, like SCREEN CLEAR in a run.
+- **Nothing reaches the board.** No score, and no onboarding lessons learned
+  from versus input. (The match itself is kept for resume since October
+  2026: see "Resume and the eased roll" below.)
+- **Match seed** mixes the wall clock at launch (read by the adapter; the core
+  reads no clock), the daily seed and a per-session match count, so no two
+  launches deal the same first match.
+- **One touch, one screen.** Every versus screen change spends the fingers
+  down and ignores new touches for 0.3 s, after a Pixel playtest where one tap
+  on START also readied the turn and fired. Single-player screens are not
+  changed.
+- **Mirrored controls.** Left and Right move either barrel's tip the same way
+  across the screen, so for the right gun they run the other way in angle.
+- **Rematch goes through the pre-match screen.** REMATCH opens the aim-help
+  choice again rather than dealing the next match at once, so a player can
+  change their mind about help between matches. The choices are session
+  state, so the last match's are already set; nothing new is stored.
+- **Kid readability (DESIGN §11.4).** Amber left, sky blue right: two of
+  the sixteen slots, chosen for hue distance and red-green colour blindness.
+  The blue *is* the duel sky's horizon band (`SKY_LO`, the Day phase's
+  bottom band), with no contrast at all there, which is why everything in a
+  side colour sits on a plate or a one-pixel `UI_BG` backing (`raster::Ink`):
+  the gun tags, the gun name, the callout, the shell head, the flashes, the
+  landing mark, the hit outline and edge flash. A render test checks that no
+  amber pixel touches the field; both sides draw through the same code.
+  Versus moves its dim text to `ROCK`, its wind digits to plain text and its
+  windsock to brick and sand, so the colours mean only a side. This relaxes
+  §5.2's reservation of amber for wind and the low-shell counter, in versus
+  only. Digit scores are gone in favour of pips; the round number stays as
+  text bottom right.
+- **Big type is the small face scaled.** HIT/MISS at 4x, names at 2x
+  (`Canvas::text_small_scaled`), rather than a new large face: one glyph set
+  to keep legible, and integer blocks keep it on the pixel grid. Versus only;
+  §5.6 still governs everything else.
+- **Cues beyond colour.** A HIT callout sits over the scorer's half and,
+  like the handoff and result plates, has an arrowhead on that side.
+- **OOPS.** A shell that misses the other gun but reaches its own is called
+  OOPS, plain, with no pip and no ding. The godot-side `TurnReport` gains
+  `self_hit`; the sim is unchanged.
+- **The ding waits 80 ms** after the landing (`DING_DELAY`), so it is not
+  masked by the impact and collapse sounds on the same frame. Collapse stays.
+- **The HIT/MISS status line became the callout.** The callout is derived
+  from the match state (`VersusPlay::callout`), so it lasts exactly the
+  landing hold and goes when the phone is passed; the status line is left
+  for other notes and drawn in plain text in versus.
+- **Sounds.** `versus_hit` (A5 then E6) and `versus_win` (C-E-G-C up) come
+  from `tools/gen_audio.py` like the rest, standard library only. The hit
+  ding plays with the landing; the fanfare plays once, with the result plate.
+
+### The opener's edge and the repeated shot (October 2026)
+
+Owner playtest: once a player had found the range they could fire the same
+shot again, and whoever shot first had the edge. The brief's first idea, wind
+every turn and alternating openers, was already in the rules, so the levers
+were measured instead with a new duel harness (`just duel`,
+`crates/salt-line-godot/examples/duel.rs`): two bots that re-aim from their
+last landing, 400 matches per row, width 320. `kid` is a young player with
+aim help (shaky hand, slow learning, little wind reading, the odd
+overcorrection or change of angle), `steady` a grown-up without it; both are
+guesses, so compare rows rather than reading them as forecasts.
+
+| rules, kid v kid | shots per hit | turns per round | repeat hits | opener wins round | past 3 hits | turns per match (mean, p90) |
+|---|---|---|---|---|---|---|
+| as shipped in #60 | 1.77 | 7.7 | 96% | 59.0% | 0% | 19.2, 26 |
+| equal shots only | 1.66 | 9.1 | 96% | 46.7% | 22% | 23.1, 34 |
+| **equal shots + rolling guns (16, ladder −1..+2)** | **2.28** | **11.5** | **40%** | **46.5%** | **16%** | **28.8, 42** |
+| same, step 20 (hangs 3 px off screen) | 2.58 | 12.8 | 22% | 48.2% | 15% | 32.0, 47 |
+| same, step 16, forward only (ladder 0..+3) | 2.16 | 11.3 | 37% | 45.6% | 20% | 28.5, 40 |
+
+| rules, steady v steady | shots per hit | turns per round | repeat hits | opener wins round | past 3 hits | turns per match (mean, p90) |
+|---|---|---|---|---|---|---|
+| as shipped in #60 | 1.44 | 6.6 | 96% | 67.7% | 0% | 16.7, 22 |
+| equal shots only | 1.28 | 11.5 | 93% | 48.5% | 37% | 28.0, 48 |
+| **equal shots + rolling guns** | **1.90** | **12.8** | **51%** | **51.3%** | **33%** | **31.8, 52** |
+
+Kid against steady, the kid's share of matches (the mean over the two ways
+round, since the side that opens round 1 differs):
+
+| rules | kid as left | kid as right | kid's share |
+|---|---|---|---|
+| as shipped in #60 | 30.8% | 25.0% | 27.9% |
+| equal shots only | 14.8% | 22.2% | 18.5% |
+| **equal shots + rolling guns** | **24.2%** | **24.8%** | **24.5%** |
+
+"Repeat hits" is how often the shot that just hit, fired again unchanged on
+that side's next turn, would hit again. "Past 3 hits" is the share of rounds
+that a tie carried beyond three.
+
+- **Wind was not the lever.** A 45° shot across a duel flies about two
+  seconds, so ±2.5 drifts it about ±5 units against a hit window 44 units wide
+  (the 26-unit box plus 9 of reach each side). In the first round of
+  measurements (an earlier, stronger kid bot), wind 2–7 with a floor of 2 only
+  took repeat hits from 96% to 85%, and spoiling repeats with wind alone needs
+  winds well past single-player's cap, which would swamp every shot.
+  `WIND_MIN` exists as a lever; it and `WIND_MAX` keep their old values.
+- **A shorter reach makes every shot harder, not repeats rarer** (reach 4:
+  repeat hits 94%). `HIT_REACH` stays at the blast radius.
+- **Rolling the guns** is what spoils a repeat. Both guns move together, back
+  or forward, so the duel stays mirrored and one value (`Screen::muzzle_x`)
+  still places both guns. At a step of 16 a repeated hit lands about as often
+  as a fresh aim does (kid 40% against 1 / 2.28 = 44%; steady 51% against
+  1 / 1.90 = 53%), so repeating the last hit stops being worth anything. A step of 20
+  would make repeating worse than aiming afresh, but one step back would put
+  the pivot at x = 10 and the chassis 3 pixels off the screen; 16 is the
+  longest step that can go back once and stay on screen, so both ways are
+  reachable from home.
+- **Even odds, both ways.** A forward-only ladder (guns only ever start by
+  closing in) measured about the same (37% repeats, 45.6% opener rounds), so
+  there is no case for it over a random direction.
+- **They roll at the end of a pair**, not straight after the hit. Rolling at
+  once left the opener winning 55–61% of rounds even with equal shots: the
+  side answering a winning hit had to aim at guns that had just moved.
+- **Equal shots** removes the opener's edge within a round: the side that did
+  not open gets its shot whenever that shot could still tie. If its answer
+  ties things past three, play goes on in pairs until one pair ends with
+  someone ahead. An opener two or more clear at the mark (3-0, 3-1) wins on
+  its own shot rather than handing the other side a shot that cannot matter.
+  On its own equal shots hurts a weaker player against a stronger one (the
+  stronger rarely misses the answering shot); with rolling guns the kid's
+  share comes most of the way back (24.5% against 27.9% under the #60 rules).
+- **Fresh ground under rolled guns.** A gun could roll into a stretch the
+  other side had cratered: the two pivots were up to 16 units apart after a
+  roll, against under 5 on the generated ground (what is left of its
+  asymmetry). Rolling now fills the craters under both chassis, so both sit
+  on the generated ground; after a roll the pivots differ by 1.4 on average
+  and 4.6 at most.
+- **The re-gate is cheap.** A shot that rolls the guns takes about 0.12 ms on
+  the desktop in a release build (0.34 ms at most), against microseconds for
+  one that does not; the duel gate saturates its cap of 8 shots almost at
+  once.
+- **Owner toggle.** ROLLING GUNS on the pre-match screen (on by default, kept
+  for a rematch) plays a match with `GUN_SHIFT` at zero, so the rule can be
+  tried both ways. Equal shots stays on.
+- What is left: at the match level, the side that opens round 1 won 44–47%
+  of same-bot matches under the new rules (±2.5% at 400 matches).
+- **The guns are found moved after the handoff.** During the HIT or MISS
+  hold the guns are drawn where the shot found them; the move happens behind
+  the pass-the-phone plate. Each side's landing mark and last arc move with
+  its gun. The handoff plate then says GUNS ROLLED CLOSER or APART
+  (DESIGN §11.4). The guns are not eased to their new spots: the screen
+  shown is a borrowed `Screen`, and easing would need an owned copy rebuilt
+  every frame for the field, the gun tags and aim help alike, for a move the
+  plate already announces.
+- **Overtime cues** (DESIGN §11.4) come from one rules query,
+  `Match::stakes`: LAST SHOT when the side to move must answer a winning hit
+  and a hit would tie, TIED when a pair ended level past three, HIT TO WIN
+  whenever a hit by the side to move would end the round in their favour
+  (in overtime, and at the ordinary deciding moments such as 2-2 after the
+  opener missed). HIT TO WIN asks `round_winner` itself, so the cue and the
+  rule cannot drift apart, and the HIT callout and the handoff plate read
+  the same query. Pips past three grow both rows to the higher count rather
+  than adding a +1 marker, up to five; past that the score is two numbers
+  in the sides' colours, so the plate stays clear of the pause button and
+  inside the 200-pixel handoff and result plates.
+
+### Resume and the eased roll (October 2026)
+
+DESIGN §11.6. Two §11.5 follow-ups, decided here:
+
+- **A match is logged the way a run is**, in its own file
+  (`user://match.txt`, `match_log`), by the run file's own rules
+  (`resume::take_aside`/`replace_at`, generalised over a `Paths` triple), so
+  every crash case the run file survives, the match file survives too
+  (`app/disk_tests.rs` kills a match flow after every disk operation). A
+  separate file rather than a line in `run.txt`: the run file's line order
+  carries the unscored-score protocol, and a match has nothing to score.
+- **The log is shots and round marks.** `A:P` per shot as dialled, `/` when
+  the players move on from a round's result. The first cut left rounds
+  implicit (dealt before the next shot), and the byte-for-byte test caught
+  it: a match killed after NEXT ROUND came back on the old round's result
+  plate. Marking the round makes either side of it resume exactly.
+- **Its own epoch.** The duel rules live in this crate, outside
+  `SIM_EPOCH`'s digest, so `match_log::MATCH_EPOCH` is held by a golden
+  match (bot-played, rolling guns, two rounds, 18 shots) whose final state
+  hash is pinned. The line also carries `FORMAT` and `SIM_EPOCH`; any of the
+  three differing discards the file with a note.
+- **The newline, and a count.** A torn line could otherwise end in a
+  shorter but valid shot (`900:6` for `900:640`) and replay as a different
+  match. Requiring the trailing newline is what makes every truncation
+  damaged (a test cuts at every byte); the entry count catches an entry
+  lost from the middle, as a hand edit could.
+- **A won match is kept until its result plate is left.** The first cut
+  cleared the file the frame the winning shot was fired; review pointed
+  out that a kill mid-flight then lost the one plate a young winner cares
+  about. Now the winning shot is written like any other, a resume lands on
+  the match's result plate, and REMATCH or TITLE clears it. Quitting from
+  the pause or a round's result plate clears it as it leaves.
+- **The title.** On a touchscreen a suspended match turns the LOCAL VERSUS
+  row into RESUME MATCH (amber, as CONTINUE is), in the same slot: the phone
+  title's worst case (saved run, crash report, a launch note) already fills
+  the screen, so no new row. With keys a `2  RESUME MATCH` row appears only
+  while there is one, so the default keyed title snapshot is unchanged. A
+  new match while one is suspended is had by resuming and quitting it
+  (RESUME MATCH, pause, QUIT, LOCAL VERSUS): four taps, the cost of giving
+  up a match in play. Not a NEW MATCH row (one more row on a full phone
+  title) and not a second-press confirm on the versus row (a double tap
+  would throw away the match it offers). Whether a long-suspended match
+  should expire is left open.
+- **A run and a match side by side.** Each offer sits in its own mode's
+  slot: CONTINUE on confirm (the run is the main game), RESUME MATCH on the
+  versus row. They are independent files and independent state; taking one
+  leaves the other's file byte for byte as it was (tested).
+- **Width.** A resumed match keeps the width it was dealt at, letterboxed,
+  as a resumed run does (`poll_display` treats a live match like a run).
+- **The ease waits for READY.** "When the field is shown": the handoff plate
+  dims and covers the field, so the guns are drawn at their old spots behind
+  it and roll over `ROLL_EASE` (0.45 s, smoothstep) once the next player is
+  ready, in full view. Only the drawn pivot moves (`VersusPlay::shown_muzzle`,
+  gun and tag, and the ground-detail mask with them); the terrain, crater
+  fills included, is already the new one. Aim help appears once
+  the guns are home rather than following them, which keeps the landing mark
+  on the ground it fell on. A pause holds the ease; a shot fired mid-ease
+  fires from the real spot, as the rules always did.
+
+## 8. Attract demo (DESIGN §12)
+
+The owner settled two things: the idle demo is on by default with an opt-out,
+and the loop alternates a run and a duel. Everything else was decided here.
+
+- **Set aside, not copied.** The demo reuses the run and versus code rather
+  than a second renderer, so it moves the player's whole `Play` (and the
+  versus state and buffer width) into its own stash and moves it back. A copy
+  would have needed `Play` to be `Clone` and left two runs in memory that could
+  drift; a move means the player's run cannot be reached at all while the demo
+  runs. The CONTINUE offer (`run_file`) is never moved: nothing in the demo
+  reads it.
+- **Guards at the source, a backstop at the end.** `persist_run`,
+  `finish_run`, `learn`, `write_settings`/`tick_settings` and
+  `retire_last_crash` each return early in the demo, as do the match file's
+  `persist_match` and `drop_live_match` (DESIGN §11.6; the demo's duels are
+  never marked kept either). `persist_run` is the one
+  that matters most: after a quit to the title `run_persist` is still set for
+  the suspended run, so without the guard the demo's run would have been
+  written over `run.txt` on its first shot. (Removing that guard fails four of
+  the demo tests.) `Game::tick` then strips any disk effect a demo frame still
+  asked for and `debug_assert!`s there was none.
+- **Pending settings are flushed on entry**, while writes are still allowed,
+  so "no write during the demo" holds without losing a change made the frame
+  before.
+- **The demo's run is jumped, not played to.** Each curated run starts on a
+  chosen screen, as `--salt-screen` does, because the early bands are plain
+  ground and one structure. Screens were picked from headless screenshots of a
+  dozen seeds at several screens: `DUNE` 7, `TOWER` 12, `1984` 8, `MESA` 16
+  (zero-based).
+- **Near misses had to search angle as well as power.** A first cut moved only
+  the power, up to ±240 ticks, and on fast flat shots (power 800–900) every
+  step still brought the target down, so the demo fell back to its short lob
+  on most first shots. Steeper and flatter barrels (±170 to ±420 angle ticks)
+  after the power steps found a real near miss for every miss in the four
+  curated run legs; the
+  run-leg test now fails if more than a quarter of the shots are the lob.
+- **Pacing and balance.** 0.8 s per aim (the barrel eases to it over
+  0.55 s, then holds), 1.6 s of draft cards, 0.8 s of heading plate, 1.8 s
+  of result plate, 1.2 s on a run's last screen. The first cut (3 screens a
+  run, 2 rounds or 90 s a duel) gave duels 75–80% of each cycle, so review
+  rebalanced it to 4 screens a run and 1 round or 40 s a duel. Over the
+  first eight cycles a run leg now takes 17–27 s and a duel 20–42 s (a 3-0
+  round is the short end), a little over half of each cycle.
+- **Taps in a duel.** Every versus screen change settles touches for 0.3 s
+  ("one touch, one screen"), and the demo's duel changes plate several
+  times a turn, so about one tap in five on a demo duel was ignored. In the
+  demo only its own start settles touches now; a test taps on the frame after
+  each of a duel's first plate changes and expects the title.
+- **Unwatched demos end.** An idle-started demo ends when the window or app
+  loses focus (`focus_lost`, `app_paused`), does not start while unfocused
+  (the adapter's FOCUS_IN calls `focus_gained`), and gives the title back
+  after 10 minutes, after which the title waits for input before trying
+  again. Analog triggers, which no action reads, now reach the core as
+  `Event::Trigger` on the pull past halfway, so they count as input too.
+- **Rotation across demos.** The next demo in a session starts on the leg
+  after the last one shown, so a second look is not the same run again.
+- **Exit is any new input, counted from events.** Held keys are not input to
+  stop on (the key that chose DEMO is often still down the next frame), but
+  any key event is, read by the game or not. A finger going down during the
+  touch settle after DEMO was tapped is that tap reported again, so it does
+  not stop the demo it just started.
+- **Screen sleep.** Godot's `keep_screen_on` defaults to on, which held the
+  screen on everywhere, title, menus and pause included: a phone left on the
+  title never slept. The demo first worked around that by releasing the hold
+  for an idle demo and restoring the setting after. Since then the project
+  sets `keep_screen_on` off, and the core holds the screen on only for live
+  play (`Playing`, the draft included), a versus match not paused (its
+  plates and results too: both players are looking at the phone) and a
+  menu-started demo; everything else, an idle demo included, lets the
+  screen sleep on the OS timeout (DESIGN §12.4 has the table). Even those
+  let go after a spell without input (`AWAKE_QUIET_LIMIT`, 4 minutes;
+  `DEMO_AWAKE_LIMIT`, 15 minutes for a menu demo, which plays on), so a
+  phone put down mid-run sleeps; the next input holds again, and the dev
+  autopilot and `--salt-shot` captures are exempt. `Game::live_play` is the
+  one definition of "a run or an unpaused match", shared with the adapter's
+  `is_active_play` (desktop GameMode), which now also lets go on the error
+  screen.
+  `Game::screen_awake_wanted` derives the state from the mode, the pause
+  and the demo, and `take_effects`, which every effect leaves through,
+  sends `ScreenAwake(bool)` only when it changes, so no transition pushes it
+  and the focus and app-pause notifications (which return their effects at
+  once) let go too. Out of focus or app-paused counts as unwatched: a draft
+  or a versus plate, which focus loss does not pause, lets go until focus
+  comes back. The old three-way `Awake` (keep, let sleep, as project) and
+  the adapter's launch-time read of the project setting are gone.
+  `app/awake_tests.rs` checks every mode, pause and resume, both demos,
+  the quiet limits (release, re-hold, a fresh count, the autopilot's
+  exemption), focus, app pause and the error screen, with a stand-in
+  adapter that fails on any repeated or out-of-step effect.
+- **30 fps.** The demo uses the menus' `IDLE_FPS` cap rather than play's
+  uncapped rate. It also stays out of `is_active_play`, so it never asks for
+  Linux GameMode.
+- **Title layout.** The keyed title gains a `D  DEMO` row (the pinned title
+  snapshot changes by that one row, which the brief allowed). The touch title
+  instead gets a DEMO plate in the top-left corner, mirroring MUS ON/OFF: a
+  further plated row would have pushed DEVELOPMENT PREVIEW off the bottom of a
+  phone's title once a run is kept for CONTINUE and the board has a best.
+- **Duel plates in the demo** keep the side heading and score but drop TAKE
+  THE PHONE - NO PEEKING and READY, and do not dim the board.
+- **Banner text** follows the input in use: `TAP TO PLAY` on a touchscreen,
+  `PRESS ANY KEY` otherwise.
+- **Snapshots.** Changed: the title (the new row) and the save format (the
+  pinned save now sets `idle_demo 0`). New: the demo's first run frame and
+  its first duel handoff, banner and all.
+- **Mode cards (the §12.5 question, settled yes).** Each leg opens with a
+  card, ROGUELIKE / TOPPLE TARGETS · DRAFT A BUILD or TWO PLAYERS / ONE
+  PHONE · TAKE TURNS, for `DEMO_CARD` (1.8 s) over the leg's first frame.
+  The card is a hold at the start of the leg rather than a gap between legs:
+  `begin_demo_leg` sets it, and `demo_step` drives nothing and counts no
+  `leg_time` or wait until it runs out, so the screen under it is the leg's
+  real opening (never black) and the caps (`DEMO_RUN_TIME`,
+  `DEMO_DUEL_TIME`) still measure play. Exit needed nothing new: input is
+  read before `demo_step`, card or not. Placement: top centre, level with
+  the corner plates (row 3 plus the cutout pad), since the duel's opening
+  plate takes the middle and the curated runs' targets reach row 40; the
+  card ends at row 29, or 35 with a phone's 6-row pad. (A first cut at row
+  8 plus the pad reached row 40 on a phone and covered the TOWER and 1984
+  targets' top rows; the render test now measures those targets' actual
+  top rows for all four runs, with and without the pad.) Native 3x5 text
+  only, as the banner: the 5x7 face has no letters, and scaled type is
+  §11.4's versus-only exception. The duel card's hook is in `ROCK`, as versus draws
+  secondary text, since `SKY_LO` is the right side's colour. A third line
+  with the run's seed (SEED DUNE) read fine but sat on the TOWER and 1984
+  targets and means nothing to a first-time viewer, so it was dropped.
+  Legs with their cards now take 19–29 s (run) and 22–44 s (duel) over the
+  first eight cycles. Snapshots: `demo_run` and `demo_duel` change only
+  inside the card's rectangle (135x27 and 103x27 px), which
+  `the_demo_card_is_a_plate_over_the_leg` checks against the same frame
+  with the card cleared.
+
+## 9. Layouts (DESIGN §13), Phase 1
+
+The owner fixed the scope (custom duels first; wind only; 320 columns; fork
+from a seed as the editor's base). These were decided here, with the
+measurements behind them. Reproduce the numbers with `just layouts` (100
+seeds: 4,000 run screens at 40 a seed, 300 duel rounds at 3 a seed).
+
+- **Fork parity is "within a rounding", not hash-equal.** The brief asked
+  for a fork to rebuild a screen whose state hash equals the generated one.
+  The hash covers every height's bit pattern, and generated heights are
+  arbitrary doubles, so only keeping all of their bits could do that (a
+  fixed point with 49 fraction bits: every double from 12 to 108 is a whole
+  number of 2^-49). That costs about 3,080 characters a code against about
+  200. What the tests hold instead: structures (kind and column), guns and a
+  duel's wind are exact; heights and seats move by at most 1/32 and a run's
+  wind by at most 0.0005; the fork is a fixed point of forking; and a code
+  rebuilds a bit-identical screen on every device. Shots fired at a fork end
+  as at the generated screen 99.92% of the time (runs) and 99.3% (duels).
+- **Phase 1 was checked on desktop.** `--salt-layout` played a forked duel
+  in Godot at 320 columns, letterboxed in a wider window (a headless
+  screenshot, plus the app test at a 400-column window). A phone has no
+  command line, so nothing here has run on the Pixel; the first phone path
+  is the GROUND row (DESIGN §13.12).
+- **Heights in sixteenths.** Measured on a smaller sample, 2,000 run forks
+  and 150 duel forks (`just layouts --seeds 50`), changing only
+  `HEIGHT_SCALE`:
+
+  | Grid | Median code: runs | duels | Shots ending the same: runs | duels |
+  |---|---|---|---|---|
+  | whole units | 113 | 103 | 98.25% | 86.4% |
+  | quarters | 150 | 143 | 99.76% | 97.0% |
+  | **sixteenths** | **202** | **198** | **99.93%** | **99.3%** |
+  | 1/64 | 305 | 298 | 99.97% | 99.8% |
+  | 1/256 | 426 | 423 | 99.98% | 99.97% |
+
+  "Ending the same" means the same kind of end within a unit, the same
+  structures down or leaning and the same clear (runs), or the same hit
+  (duels), for the gate's own shots and as many random ones. Sixteenths is
+  where the curve flattens; the shots that still differ graze the ground.
+- **Code lengths** (characters, `SL` included): run forks median 206, p99
+  354, max 380; duel forks median 194, p99 366, max 374. A hand-made layout
+  of level ground with one target is 28 (the run-length mode; 89 without
+  it). The budget in DESIGN §13.7 is 400 for any fork. The longest code any
+  layout can have, 400 columns of noise each escaped, is about 3,400; the
+  decoder refuses text past 4,096.
+- **Check time** (release build, one core of a Ryzen AI 7 PRO 350):
+  placement plus the one-gun gate median 47 µs, p99 about 150 µs, max
+  210–260 µs across runs; the duel gate median about 100 µs, max 160–225 µs. Cheap enough to run after every edit.
+- **Generated structures float.** About 9% of run screens fail the
+  floating rule (at least half the footprint within 4 units of the seat):
+  9.2% over 18,000 screens (300 seeds, 60 screens each), and 320 of the
+  harness's 4,000 (8%). By template: `Spires` 25%, `Ridge` 17%,
+  `Basin` 8.5%, `Chasm` 6%, `Flat` 0.1%, `Mesa` 0. They are second and
+  third targets stepping back onto a spire or a ridge's flank. Raising the
+  limit does not help much: 6.8% at 6 units, 2.8% at 12, 1.7% at 24 (some
+  stand on a single column 50 units above the rest of their footprint). The
+  rule is kept and the generator question is DESIGN §13.13's.
+- **Other placement limits from the generator.** The gun rule (half the
+  chassis within 12 units of the seat) is above the worst a generated run
+  screen does (10.4 over 18,000 screens); every duel fork passes. The burial
+  rule (ground above the top on both sides within 3 columns) never fires on
+  generated screens; ground above the top on one side does (next to a
+  spire), which is shelter, not burial, so it is allowed.
+- **Every fork in the sample passes the solvability gate** where it passes
+  placement: all 300 duel forks, and every run fork that is not floating.
+- **Duel gun rules from the review.** The right gun is seated in the mirrored
+  frame, one column right of where the left gun's rule would put it (a test
+  puts a one-column spike under each chassis's last column). A duel's guns
+  must be in order and at least `MIN_GUN_GAP` = 44 apart: the 26-column
+  chassis plus twice the base blast radius, so the two boxes are at least 18
+  apart and no one detonation reaches both, and a shot is never a hit and a
+  self-hit at once.
+- **No rolling on a layout.** `Match::on_ground` and `custom::duel_rules`
+  set `gun_shift` to 0, and `roll_guns` refuses on a match with a ground,
+  since the ladder counts from `EMPLACEMENT_X` and `fill_under_guns` would
+  rewrite the layout's ground: a gun at 100 never rolled, and guns at 60 or
+  20 snapped to default spots. DESIGN §13.13 has the Phase 3 fix.
+- **Duel layouts have no structures** in Phase 1: versus flies a duel shot
+  against the other gun's box only, so a structure would be drawn and not
+  hit. **A duel's guns must be mirror images**, because versus places the
+  right gun as the left's mirror (one `muzzle_x` for both).
+- **A layout match shares the start of every match.** `start_versus_on`
+  now hands its `Match` to `start_versus_with`, which `start_layout_match`
+  calls with the layout's; nothing else about starting a match changed. It
+  keeps the layout's width through `set_run_width`, which the display poll
+  already leaves alone while a versus match is on (§11.6's resumed matches
+  needed the same). It is never kept on disk: `start_versus` marks a match
+  kept, and the match log has no field for a layout yet (Phase 3 keeps a
+  match on a map, in match log format 2: §10).
+- **Fuzzing.** `layout_code` ran 11.8 million inputs in 150 s locally with no
+  finding. It frames each input as a code with a valid checksum as well as
+  trying it as text, since random text almost never passes a CRC and would
+  leave the bit-level decoder unfuzzed.
+
+## 10. The map editor and custom duels (DESIGN §13, Phase 3)
+
+The owner's decisions are in DESIGN §13 (custom duels first; phone-first,
+with mouse, keys and a controller; wind only; 320 columns; fork this round
+as a crop keeping both guns, fork a seed as a labelled draft; floating
+structures warn; no rolling on a map; a fixed wind turns round every pair
+of turns, changed in place from every round before the PR merged; sculpt
+and MAKE MAP's place kept as built). What was decided here, and measured:
+
+- **Where it lives.** The phone title's worst case already fills the screen
+  (§11.6), so the editor is on the versus pre-match screen, a MAKE MAP
+  corner plate mirroring the title's DEMO and MUS plates, and on a match's
+  pause and result plates (MAKE MAP OF THIS ROUND). The pre-match screen
+  itself grew one row (GROUND) and still ends at row 165 on a phone, its
+  hint line included.
+- **Every editor control is above the world's ceiling.** `WORLD_CEIL` is
+  108, so the top 72 rows of the 180-row buffer are always sky; the three
+  rows of 18-row buttons end at row 63, or 69 with a phone's corner pad. No
+  button covers ground, and the whole rest of the screen takes strokes. A
+  render test holds it.
+- **Validation cost per edit** (`just layouts editor`, release build, one
+  core of a Ryzen AI 7 PRO 350, over the bundled maps, 40 duel forks and a
+  blank map, five times each):
+
+  | Check | Median | 95th | Worst |
+  |---|---|---|---|
+  | the full verdict: placement, the duel gate, fairness counted to 64 | 904 µs | 916 µs | 923 µs |
+  | the quick verdict: placement and the gate at its cap of 8 | 100 µs | 151 µs | 155 µs |
+  | a sculpt frame of a drag, quick verdict included | 116 µs | 157 µs | 195 µs |
+
+  The gate alone is the 0.1 ms the brief expected. Counting far enough for
+  the fairness sign costs nine times that, so a drag's frames run the quick
+  verdict (every problem, the sign held as it was) and the stroke's end the
+  full one; a key nudge, a stamp or a WIND press runs the full one, under a
+  millisecond on a desktop and a few on a phone.
+- **Why fairness counts past the gate's cap.** At the gate's cap of 8 both
+  guns reach the cap in every wind on nearly every playable duel (§11.3:
+  300 seeds, every gun saturated), so a sign read from those counts said
+  FAIR of every lopsided test map. Counted to 64, the bundled maps and duel
+  forks show 35 to 56 shots a gun a wind, and a lopsided stamp moves one
+  side by a few: a spires stamp at column 240 of a blank map gave 68 to 71
+  summed over the three winds. A sign that flipped on one shot would flicker
+  as a finger drags, so HARDER needs more than a tenth fewer and at least
+  two; the pit test map (the right gun walled in) reads RIGHT HARDER.
+- **Fork this round on a Pixel is always the splice.** At 400 columns with
+  the guns home (30 and 369) neither fits the centred window (40 to 359),
+  so each gun keeps its own 160 columns and the middle 80 are lost; guns
+  rolled forward a step (62 and 337) fit, and get the centred window. At
+  320 the crop is the screen itself, and a test holds that it equals
+  `custom::fork_duel` of the same seed and round.
+- **The draft is written as a stroke ends, not every frame.** A drag
+  changes the draft every frame, and a phone's flash does not want sixty
+  atomic replaces a second; the line goes out as the finger lifts (one
+  write per stroke, a test counts it), as a match's does per shot.
+- **Memory follows the slot file.** A save, overwrite or delete asks for
+  the whole file's new text (`Store::Layouts`); `Game::stored` takes it
+  into memory and only then clears the draft, so a full disk loses nothing
+  (a test). Killing the process after every disk operation of an edit and
+  a save (`editing_and_saving_survive_a_crash_anywhere`) never loses the
+  map once its draft reached disk: a launch finds it as the draft, in its
+  slot, or both.
+- **Match log format 2 only for maps.** A match on generated screens is
+  still written as format 1, so its pinned line and every file on a phone
+  are unchanged; only a match on a map carries a code. No `MATCH_EPOCH`
+  bump, and no `SIM_EPOCH` bump: the sim is untouched, and `versus::resolve`
+  is `Match::fire`'s shot moved out unchanged, which the golden match's
+  digest holds.
+- **Bundled maps are recipes.** RIDGE, MESAS, CANYON and SPIRES are each a
+  few editor operations on a blank draft (`custom::bundled::recipe`), so
+  the CI test holds each code to its recipe as well as to the gate and a
+  FAIR sign; an ignored test prints new codes when a recipe changes. A fork
+  of a generated round would move with the generator
+  (§13.4), and these must not.
+- **Headless captures.** `--salt-phone` lays the game out as a Pixel would
+  (touch, the corner pad, a 2424x1080 window, so a 400-column buffer) on a
+  desktop; with `--salt-editor`, `--salt-editor-page` and `--salt-setup` the
+  editor's pages and the GROUND row were captured at 320 and on the phone
+  layout, and looked at, for this change.
+- **Fuzzing.** The new `layouts_file` target ran 8.3 million inputs in 180 s locally after one early finding (a newer header does not survive a write; such a file is never written, and the target now says so), and `match_log`, with logs on map grounds, 123,000 in 120 s, neither with a finding.
+- **From the reviews.** MIRROR starts on for every duel draft, forks included (it started off for a fork, where dragging a gun made the map unplayable); a toast goes as soon as the draft changes; DISCARD keeps the file until the editor is left; a finger mid-drag when the app pauses is written at once; a second finger or key that ends a stroke spends its drag. DESIGN §13.11 has the rules.
+
+## 11. The layered frame (October 2026)
+
+In play the sky and the ground are textures of their own, kept until they
+change, under a transparent overlay of everything else (`backdrop`). The
+landing shake and camera moves now cost no upload, and the CPU no longer
+fills the sky and redraws the ground each frame.
+
+- **Measured on a Pixel 10** (profiling build, four interleaved runs per
+  build): process time per frame, mean 1.51 → 1.00 ms, p95 3.48 → 2.00 ms;
+  raster 0.60 → 0.20 ms; whole-frame uploads 221 → 34 per ~960 frames. The
+  worst frame of a run (22–51 ms) is noise in both builds. Power was not
+  measured; the `strips::WHOLE_ABOVE` power capture suggests upload choices
+  do not show on the rails, so this is a frame-time result only.
+  Re-measure on a Mali GPU (Galaxy A16) before relying on it for a release.
+- **Exactness** is a compositing argument, not a second renderer: every
+  layer is drawn by the same Rust code, the GPU only copies. Tests composite
+  the layers on the CPU and compare with the flat frame every frame of runs,
+  matches, the demo and the editor; the profiling build reads the viewport
+  back on the device and compares it with the flat frame (run, versus, night
+  under Long Lens).
+- **Rejected: a terrain shader.** Uploading a heightfield and drawing the
+  strata and dither in GLSL would save the same uploads, but would be a
+  second ground renderer at mobile float precision that had to match an
+  `f64` one bit for bit, and the sky's 64-bit star hash has no GLSL ES 3.0
+  equivalent.
+- `--salt-flat` draws the old single canvas: the tests' reference and a
+  developer fallback, not a player setting.
+
+## 12. Run history and WATCH (DESIGN §9), stage 1
+
+The owner asked for history and WATCH on the device, runs and matches
+alike, with share codes and GIFs left for later. Where the spec left a gap
+or proposed something else:
+
+- **Twenty of each kind, not 500.** §9.1 proposed 500 runs plus the
+  board's. With no PLAY AGAIN or sharing yet, an entry's only use is to be
+  watched, and a child scrolls a short list. The first cut kept twenty in
+  all; review asked for a cap per kind (an afternoon of matches would push
+  the last run out), decided for the owner: 20 runs and 20 matches, each
+  pushing out only its own oldest, shown as one list newest first. The
+  same game is never recorded twice.
+- **Written whole, not appended.** §9.1 proposed append and compact. A full
+  file is about 10–30 KB (a run or a match on generated screens is a few
+  hundred characters, a match on a map about 5,000 for its layout's code);
+  one atomic replace each time (the slot file's way) means a crash leaves
+  the old file or the new one, never a torn line to skip, and no
+  compaction to get wrong. A write drops the oldest records until the file
+  is under 512 KiB, which only forty worst-case lines (a 2,000-entry match
+  on a map, about 24 KB) could reach. Reading has no file limit: lines are
+  judged one at a time (32 KiB at most), so a damaged or huge file never
+  costs the good lines in it.
+- **What is recorded.** A run where its run file is cleared for the score,
+  after the score; a match where its match file is cleared, only if won. A
+  quit match is not recorded, nor a finished run a launch finds and scores:
+  both are rare or unwanted, and the second would need its line judged
+  twice. Each rule has a test; the demo's runs and duels are kept out by
+  the same guard as every other write, and its backstop.
+- **Sound on.** The demo is muted because it plays to an empty room; a
+  watch is chosen by the person holding the phone. A skip is silent, or
+  NEXT ROUND would play a round's worth of sounds in one frame.
+- **Pacing.** A watch reuses the demo's aim (0.8 s, the swing 0.55 s) and
+  draft (1.6 s) holds and the AI's cued plate (2 s); a plain handoff is 1 s
+  and a round's result 2 s, slower than the demo's 0.8 and 1.8 s so a child
+  can say who won. At 4x a run of about 60 shots plays in well under a
+  minute.
+- **Skips land on real frames.** NEXT SHOT and NEXT ROUND step the game in
+  tenths of a second, fast and silent, until the next shot is fired or the
+  next round's plate (a run's next screen) is up, rather than jumping state
+  directly: what is shown after a skip is a frame the game really showed.
+  A paused watch stays paused, so NEXT SHOT steps a game shot by shot.
+- **The phone title.** It has no row to spare (§11.6), so REPLAYS is a
+  corner plate under DEMO, both being things to watch. The won match's
+  plate grew a row (WATCH, under REMATCH) and so grew 20 rows; centred at
+  180 rows it would cover the corner of the score plate, so its top is now
+  held below that (`result_plate_rect`); no other plate moved (their pinned
+  frames are unchanged).
+- **Checked twice.** Before a watch, the line is rebuilt off screen and its
+  result compared with the one it records; while it plays, every shot the
+  game fires is compared with its log entry and the end with the record.
+  Neither has ever fired in the tests; they are there so a determinism bug
+  shows as a note rather than as a different game.
+- **A watch is shown, not played.** It never asks for desktop GameMode, and
+  paused or at its end it drops to the idle frame rate; the screen is held
+  only while it plays. Mute and F1 work during it; a mute is kept in memory
+  and written once the watch is over, since nothing is written while
+  spectating.
+- **EXIT apart.** On a phone the bar first had EXIT beside PAUSE; review
+  moved it to the top centre, where a game's II is, so a child tapping
+  PAUSE cannot leave by mistake. Tapping the board to pause was not added:
+  a child taps the board a lot, and a pause they did not mean is as
+  confusing as an exit.
+- **No epoch bump.** Nothing in the sim or the duel rules changed.
+- **Fuzzing.** The new `history_file` target ran 3.9 million inputs in 90 s
+  locally with no finding.
+
+## 13. Starred replays (DESIGN §9)
+
+The owner asked for a way for him and his son to keep a few favourites so
+they are never pushed off the list. Where the request left a choice:
+
+- **Five stars, of both kinds together.** Few enough to stay favourites (a
+  child counts them on one hand), a bound on the file (20 + 20 + 5
+  records), and one fewer than a phone's page of six rows: with the starred
+  listed first, the game just played is still on the first page. Five per
+  kind would make ten, and push the newest game to page two.
+- **Starred first, then newest first.** A child looking for "the good one"
+  finds it at the top without paging; the rows the list showed before
+  stars keep their order below. The chosen row follows a starred record to
+  the top, so the marker never lands on a different game.
+- **A line of its own, before the record's.** A prefix on the record's line
+  would make the line a share code carries differ starred or not; a field
+  inside it would change `LINE_FORMAT`. `star` on its own line leaves every
+  record line byte for byte as before.
+- **Older builds: header 2 while starred, 1 otherwise.** A build from
+  before stars reads `star` as damage and its next write would apply the
+  caps to the starred, losing them silently. With `history 2` in the
+  header it reads the file as a newer build's and never writes it. It still
+  caps what it read in memory, so its list shows only the newest 20 of
+  each kind, without stars: an older starred replay can be missing there,
+  though it is still in the file and this build shows it again. The price, paid only while
+  something is starred and only on a downgrade: what that build finishes is
+  kept for its session. Writing header 1 whenever nothing is starred keeps
+  a family that never stars anything fully compatible both ways.
+- **Taking a star off counts as adding it again** (review, then owner
+  decision). The first cut left it in place and capped it at the next
+  game or launch, so a stray tap on an old favourite could lose it before
+  it was starred again. Now it moves to the end of the file, the newest
+  place of its kind: it lasts 20 more games of its kind, across launches,
+  since the file's order is what is kept, and no record line changes. The
+  list shows it just below the starred, the first of the rest, where the
+  eye already is; its date stays the day it was played, which can be older
+  than the row below it. That seemed less surprising than jumping down to
+  wherever its date would put it, and an older date out of order says
+  nothing wrong. Like any record added, it may push the oldest unstarred
+  one of its kind past the cap.
+- **Trim order.** When a write is over 512 KiB, every unstarred record goes
+  first, oldest first; only then the oldest starred. Five real starred
+  lines never come near it.
+- **Touch: a star button per row, apart.** A star on the focused row would
+  need a focus, which a touch list does not have (a tap on a row watches
+  it). Each row's star sits in its own column 12 pixels right of the
+  widest row on the page, 22 by 15 (a page button's width, a row's touch
+  target's height). Where the column would run off a narrow screen or into
+  a cutout's pad, the rows move left rather than the gap shrink; a test
+  pins it at every width from 320 to 400 with the worst-case 53-character
+  row. A tap on a star never turns the page, even when its row moves to
+  page one; keys and a controller follow the row instead.
+- **The list opens on the game just played,** the newest row not starred,
+  rather than on a favourite: that is what a child opening it after a game
+  wants to see first.
+- **Only kept matches.** WATCH, and so STAR, is offered only on a player's
+  match kept on disk; a dev `--layout` match is never recorded.
+- **Keys: `S`, pad Y, a new `star` binding.** The list reads Up, Down,
+  Left, Right, Enter/A and Esc/B, and a watch also Up, Right, Down, Space
+  and M; S (seed entry) and Y (REPLAY, seed entry, reposition) are read on
+  neither screen.
+- **STAR at a replay's end.** Not before the end: the bar is full, and
+  "keep this one" is a thing said once it has been seen. A watch writes
+  nothing while it plays, so the star is set in memory and the file
+  written as the watch ends, or as the app is paused or closed, the way a
+  mute made while watching is. A won match watched from its own plate is
+  not yet recorded (that happens when the plate is left), so starring it
+  records it there and then. A status note is not drawn during a watch, so
+  `5 STARS - TAKE ONE OFF FIRST` (or, for a run too long to keep, `TOO
+  LONG TO KEEP - CANNOT STAR`) is a plate over the bar. Child-facing text
+  says "take off", never "unstar". In a newer build's file, which is never
+  written, the list says `STARRED UNTIL THE GAME CLOSES`. A lone or
+  trailing `star` line counts as damage.
+- **Fuzzing.** The `history_file` target now also checks the star bound,
+  that a record's own line reads back unstarred, and that the header says
+  1 exactly when nothing is starred; about 740,000 inputs in 90 s (a dev
+  build) locally, no finding.
+
+## 14. Stripped Godot engine (October 2026)
+
+The Android release APK now runs on Godot 4.7.2 built from source without
+3D, physics, navigation, XR, Vulkan, text shaping and every codec the game
+does not load (`docs/godot-templates.md` has the list and how to add
+something back).
+
+- **Measured** (release export, arm64, same commit, same signing):
+  APK 36,685,396 → 18,671,188 B (−49%); `libgodot_android.so` 71,114,944 →
+  23,186,048 B uncompressed, 25,072,330 → 8,439,831 B deflated in the APK;
+  `libsalt_line_godot.so` 5,116,696 → 3,733,136 B (gdext's lazy method
+  tables, below). For reference, the CI release APK before this was about
+  35.0 MB (docs/rendering-footprint.md).
+- **Linux** (local build, not shipped): release template 73,519,416 →
+  17,349,728 B. Not switched: a template built on the CI runner raises the
+  glibc floor from the official 2.28 to the runner's, so it needs an
+  older-glibc build environment first.
+- **gdext.** By default gdext resolves every method of every engine class
+  at load and panics on the first missing one, so the stripped engine
+  needed `lazy-function-tables`: methods are resolved on first call. A
+  call into a removed class now panics when made, not at load; the cost
+  per call is a hash lookup.
+- **Compiled for size** (`optimize=size_extra lto=full`): `size_extra`
+  also stops force-inlining in the engine. The engine's share of a frame
+  is texture uploads and input; the raster is Rust and unaffected.
+- **Checked** on an x86_64 emulator with the same profile (title, a run's
+  shots and pause, the map editor's sculpt, a versus match's handoff,
+  background and resume, an OpenSL player started for the sound, saves
+  kept across screens) and on the Pixel 10 (arm64: installs over the debug
+  build, the engine and its GL Compatibility renderer start on the PowerVR
+  GPU, no errors in logcat).
+- **On the phone** the saving is bigger: the template sets
+  `extractNativeLibs="true"`, so libraries are unpacked at install; about
+  114 MB installed on the official template against 47 MB (computed from
+  the files: APK plus unpacked libraries).
+- **`deprecated` stays on.** SConstruct reads it before applying a build
+  profile, so `"deprecated": false` in the profile did nothing: the build
+  with it was byte for byte the build without it (which also shows the
+  build is reproducible on one machine). The profile no longer pretends.
+- **Guards.** The library checks at startup that every engine class it uses
+  exists (`engine_classes`, with a test that the list covers every
+  `godot::classes` import); `package-android` refuses an engine built by
+  another compiler than the official template's; `build` refuses profile
+  options the Godot source does not know; `STRIPPED_ENGINE=off` puts the
+  official template back without a code change.
+- **Rejected: rebuilding the engine in every CI run.** It is built once
+  per set of inputs by its own workflow, published, and pinned by sha256
+  in `tools/godot_templates.lock.json`; until a build is pinned, pull
+  requests and main fall back to the official template with a warning and
+  a tag fails.
+
+## 15. Replay share codes (DESIGN §9.7, stage 2)
+
+The owner said yes to sharing replays as codes. Where the brief left a
+choice:
+
+- **A packed record, not the line re-encoded.** Base32 of the history line
+  costs 1.6 characters per character of text and, for a match on a map,
+  encodes the map's `SL…` code a second time. The payload packs the record
+  field by field and carries the map as `Layout::to_bytes` (the bytes
+  inside its `SL…` code). Decoding builds the same `Record`, whose line is
+  the sender's byte for byte, so dedup (`Record::same_game`) works on a
+  pasted copy of a game already listed.
+- **Shots as changes from a guess, exp-Golomb.** The guess is the shot
+  before in a run (a player walks the aim in) and the shot two before in a
+  match (turns alternate, so it is the same side's). Rice, as for map
+  ground, spent 42 bits on every first shot at a new screen (an escape);
+  exp-Golomb with a per-code parameter spends about 15, and the same as
+  Rice on the small changes. A run's fuse is coded as its value, not a
+  change: each screen sets it afresh, so the change says nothing more.
+- **Measured** (`history::code::tests::typical_games_stay_well_under_the_limit`,
+  `--nocapture` prints it):
+
+  | game | shots | line chars | code chars | budget |
+  |---|---:|---:|---:|---:|
+  | short run (first 12 shots of a played run) | 12 | 166 | 89 | 120 |
+  | 60-shot run (first 60 of the same) | 60 | 718 | 346 | 400 |
+  | long run (a whole played run) | 101 | 1,198 | 583 | 1,200 |
+  | match on generated screens, vs AI EASY | 18 | 212 | 113 | 200 |
+  | match on a map, 3 rounds, overtime | 23 | 474 | 340 | 600 |
+
+  "Played" is a bot that walks each target in with two near misses, the
+  aim moved a little each time and the fuse reset per target, so it costs
+  more than most real runs. About 5.8 characters a shot in a run, half the
+  line's 12; a map adds about 230.
+- **Limit: 4,096 characters**, checked before anything is decoded, and a
+  record whose code would be longer is not offered (`TOO LONG TO SHARE`).
+  About 600 shots of a run; every game a family plays fits many times over,
+  and chat apps take a few thousand characters in one message. Not chunked:
+  a code is one word, like a map's, and the reader drops whitespace, so a
+  chat wrapping it over lines does no harm.
+- **Errors a player can act on.** Not a code (`NO REPLAY CODE TO PASTE`), a
+  map's code (`THAT IS A MAP CODE - PASTE IT IN VERSUS, MAKE MAP`), damaged
+  (prefix right, but base32, the checksum or the body wrong: `COPY IT
+  AGAIN`), a newer format byte or a newer map format inside (`UPDATE TO
+  WATCH`), too long. Another epoch reads (the format byte, not the epoch,
+  says how to read the bytes) but `Record::check` refuses it with the
+  list's own OLDER/NEWER note; it is not added to the list, since an
+  unwatchable row from someone else's game helps no one. A record from
+  another epoch is not shared at all (`CANNOT SHARE`).
+- **Pasted, then watched at once; KEEP to add it.** A friend's code may be
+  one look and no more, so nothing is added unless asked. KEEP is on the
+  bar all the way through a pasted replay, not just at its end, since a
+  child may leave early. STAR at the end is offered only once it is kept
+  (owner decision, made for him: one "keep" a child sees at a time), and
+  its hint on any replay now says `STAR - NEVER LOSE IT` rather than
+  `KEEP THIS ONE`. Both go through the stars' pending write: set in
+  memory, written when the watch ends or the app is paused or closed. A
+  game already listed shows KEPT from the start, and back on the list the
+  chosen row is the replay just watched.
+- **Pasted text is searched** for the first `SR…` that reads where `SR`
+  starts a word (`codec::candidates`: zero-width spaces, a BOM and a soft
+  hyphen dropped, line breaks and spaces inside the code allowed, up to 8
+  trailing words tried off, at most 8 starts, the first 64 KiB of the
+  clipboard). A run of fewer than 10 characters after `SR` that does not
+  read is not called damaged ("SRI said…"). The map editor finds an
+  `SL…` the same way and names an `SR…` code (`PASTE IT IN REPLAYS`); a
+  map's code on REPLAYS says `PASTE IT IN VERSUS, MAKE MAP`.
+- **Room to grow.** Kinds 2 and 3 read as a newer version, not damage.
+  The opponent's 2 bits are full: a fourth AI level is a new
+  `CODE_FORMAT`.
+- **Keys.** COPY is the existing `copy` binding (`C`, pad X), read on
+  neither the list nor a watch before. PASTE is `P` and KEEP `K`, raw keys
+  like the editor's (not bindable). A controller can star a pasted replay
+  at its end to keep it; there is no pad KEEP, as a pad has no paste
+  either.
+- **Touch.** COPY sits just right of each row's star (22 by 15, 6 pixels
+  apart, widened from 3 after review): narrow because at 320 wide with a cutout's pad the 53-character
+  worst-case row leaves no more room (the width test now pins both
+  columns). PASTE CODE is a plate in the top-right corner, shown even on an
+  empty list. COPY CODE joins the end-of-replay bar after STAR; a copy or a
+  keep says so on the plate above the bar, as the stars' refusals do.
+- **Codec shared with map codes.** Base32, CRC-16, the bit writer and
+  reader and the number codes moved from `layout/code.rs` to
+  `salt_line_sim::codec`; map codes are byte-identical (the pinned share
+  code, the bundled maps and the `layout_code` fuzz target, 340,000 inputs
+  in 90 s, all unchanged).
+- **Review fixes before the PR.** A hostile offset change could overflow
+  an `i64` add (a panic in debug and fuzz builds), and a hostile day the
+  list's date arithmetic; both are now checked, and a day past 2^32 is
+  damage. KEEP decides its note after the write, which could trim the
+  record just kept from a file full of starred ones. COPY runs
+  `Record::check` first. The raw-text limit allows twice the code's, for a
+  chat's line breaks.
+- **Fuzzing.** `replay_code` decodes raw text and bodies framed with a good
+  checksum, and searches the raw text as a clipboard; whatever reads must
+  share again as itself, its line read back and its row draw. About
+  276,000 inputs in 180 s (dev build) locally after the clipboard search
+  was added, no finding.
+- **Device.** The branch build was installed on the Pixel 10 with the
+  owner's `user://` files backed up (sha256 unchanged after), but the phone
+  sat on its secure lock screen, where Godot does not render, so the
+  COPY, PASTE, watch clipboard round trip on the device is still to do.

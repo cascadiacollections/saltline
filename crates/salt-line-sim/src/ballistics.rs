@@ -7,6 +7,30 @@
 //!
 //! Semi-implicit Euler at a fixed `DT`. The render layer interpolates; the sim
 //! never does. Trig is only ever evaluated on quantized angles via `dmath`.
+//!
+//! This module is the one place that decides where a shell goes. The same
+//! [`fire`] call serves the run applying a real shot
+//! ([`crate::run::Screen::apply_shot`]), the solver proving a screen clearable
+//! ([`crate::solver`]), and the Godot layer drawing aim arcs and playing a
+//! flight back sample by sample from [`Trace::path`]. Because the solver runs
+//! the same integrator on the same integer [`Shot`] the player would dial in,
+//! a solver candidate is exactly the shot the player gets.
+//!
+//! Ballistics knows nothing about structural integrity, the economy or
+//! drafting. It takes a [`World`] (heightfield, target boxes, wind) and
+//! returns [`Trace`]s saying how each flight ended; cratering and damage are
+//! the caller's job.
+//!
+//! Units: world units are pixels, y up from the bottom of the screen buffer
+//! (y = 0); time is in
+//! seconds; velocities are units/s; gravity and wind are units/s².
+//!
+//! Each step, in order: accelerate and move, then test the Airburst fuse, the
+//! structure boxes (a swept segment test), the terrain (a point with a radius
+//! against the interpolated heightfield, refined by bisection), and finally
+//! the off-screen limits. Skipstone ricochet, Auger tunnelling and Storm Front
+//! are handled inside that loop; Cluster submunitions are spawned afterwards
+//! by [`fire`].
 
 use crate::dmath::{self, abs, clamp};
 use crate::modifiers::Loadout;
@@ -32,11 +56,16 @@ pub const CLUSTER_SPEED: f64 = 0.45;
 /// log stays three small numbers per shot (DESIGN §3).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Shot {
+    /// Elevation above horizontal in 0.05° ticks ([`dmath::TICK_DEG`]):
+    /// 0 is flat, [`dmath::MAX_ANGLE_TICKS`] (1800) is straight up.
     pub angle_ticks: i32,
+    /// Power in `0..=`[`POWER_TICKS_MAX`], mapped linearly onto
+    /// [`POWER_MIN`]..[`POWER_MAX`] units/s before loadout scaling.
     pub power_ticks: i32,
 }
 
 impl Shot {
+    /// Raw input, neither clamped nor quantized. See [`Shot::quantized`].
     pub fn new(angle_ticks: i32, power_ticks: i32) -> Self {
         Self {
             angle_ticks,
@@ -45,6 +74,11 @@ impl Shot {
     }
 
     /// Snap to what the player's instruments can actually dial in.
+    ///
+    /// The angle is rounded to the loadout's angle quantum (Vernier, DESIGN
+    /// §4) and clamped to `0..=1800`; power is clamped to
+    /// `0..=`[`POWER_TICKS_MAX`]. [`fire`] applies this itself, so callers may
+    /// pass raw input.
     pub fn quantized(self, lo: &Loadout) -> Shot {
         Shot {
             angle_ticks: clamp(
@@ -56,27 +90,34 @@ impl Shot {
         }
     }
 
-    /// Muzzle speed after loadout scaling. `power_scale` moves the whole range
-    /// (Ballast -20%, Featherweight +40%); `muzzle_scale` is Sabot.
+    /// Muzzle speed after loadout scaling, in units/s. `power_scale` moves the
+    /// whole range (Ballast -20%, Featherweight +40%); `muzzle_scale` is Sabot.
+    /// Power ticks are clamped; the angle plays no part.
     pub fn speed(self, lo: &Loadout) -> f64 {
         let t = self.power_ticks.clamp(0, POWER_TICKS_MAX) as f64 / POWER_TICKS_MAX as f64;
         (POWER_MIN + (POWER_MAX - POWER_MIN) * t) * lo.power_scale * lo.muzzle_scale
     }
 
-    /// Initial velocity. Trig only on the quantized tick count.
+    /// Initial velocity, units/s. Trig only on the integer tick count.
+    ///
+    /// Uses `angle_ticks` as given: call [`Shot::quantized`] first (or go
+    /// through [`fire`], which does) to get what the player's instruments
+    /// would actually fire.
     pub fn velocity(self, lo: &Loadout) -> Vec2 {
         let (c, s) = dmath::dir_from_ticks(self.angle_ticks);
         let v = self.speed(lo);
         Vec2::new(c * v, s * v)
     }
 
+    /// Elevation in degrees, for display.
     pub fn angle_degrees(self) -> f64 {
         self.angle_ticks as f64 * dmath::TICK_DEG
     }
 
     /// The barrel sprite frame to display: angle quantized to 5 degrees.
     /// DESIGN §5.3 — the sprite is coarse feedback, the number is the
-    /// instrument, and the gap between them is the point.
+    /// instrument, and the gap between them is the point. Rounds to the
+    /// nearest frame, `0..=18`.
     pub fn barrel_frame(self) -> usize {
         ((self.angle_ticks + crate::BARREL_FRAME_TICKS / 2) / crate::BARREL_FRAME_TICKS)
             .clamp(0, 18) as usize
@@ -84,6 +125,7 @@ impl Shot {
 }
 
 /// Lowest and highest speed the loadout can produce, for the solver's range check.
+/// Units/s, at power tick 0 and at [`POWER_TICKS_MAX`].
 pub fn speed_bounds(lo: &Loadout) -> (f64, f64) {
     (
         Shot::new(0, 0).speed(lo),
@@ -93,9 +135,12 @@ pub fn speed_bounds(lo: &Loadout) -> (f64, f64) {
 
 /// Flat-ground range at the best elevation, for the loadout's full power.
 ///
+/// This is the textbook `v²/g`: the range of a 45° shot over level ground with
+/// no wind and no drag, in world units.
+///
 /// Target placement is clamped against this: DESIGN §2.4 requires every screen
 /// to be clearable with the player's *current* loadout, and no amount of
-/// terrain reshaping can fix a target that is simply out of range. Two stacks
+/// terrain reshaping can fix a target that is out of range. Two stacks
 /// of Ballast cut the power range by 36%, which puts the band-20 distance past
 /// what the shell can physically cover.
 pub fn max_flat_range(lo: &Loadout) -> f64 {
@@ -104,8 +149,15 @@ pub fn max_flat_range(lo: &Loadout) -> f64 {
 }
 
 /// Nearest power tick to a speed, and whether it is inside the range.
+///
+/// The inverse of [`Shot::speed`]: `None` when `speed` (units/s) is outside
+/// what the loadout can fire, otherwise the tick whose speed is closest.
+/// Rounding to a tick means the returned shot is slightly faster or slower
+/// than asked; the solver re-simulates for exactly that reason.
 pub fn power_ticks_for_speed(speed: f64, lo: &Loadout) -> Option<i32> {
     let (lo_s, hi_s) = speed_bounds(lo);
+    // `hi_s <= lo_s` only for a degenerate zero-scale loadout, where the
+    // division below would be meaningless.
     if speed < lo_s || speed > hi_s || hi_s <= lo_s {
         return None;
     }
@@ -118,24 +170,37 @@ pub fn power_ticks_for_speed(speed: f64, lo: &Loadout) -> Option<i32> {
 }
 
 /// Axis-aligned box in world space, y up.
+///
+/// `(x0, y0)` is the lower-left corner and `(x1, y1)` the upper-right; every
+/// method assumes `x0 <= x1` and `y0 <= y1`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Aabb {
+    /// Left edge.
     pub x0: f64,
+    /// Bottom edge.
     pub y0: f64,
+    /// Right edge.
     pub x1: f64,
+    /// Top edge.
     pub y1: f64,
 }
 
 impl Aabb {
+    /// Box from its corners. Not normalised: pass the smaller values first.
     pub fn new(x0: f64, y0: f64, x1: f64, y1: f64) -> Self {
         Self { x0, y0, x1, y1 }
     }
+    /// Grow by `r` on every side. Growing the box by the shell's radius turns
+    /// "does a circle touch the box" into "does a point enter the bigger box"
+    /// (a Minkowski sum, with square corners standing in for round ones).
     pub fn expand(self, r: f64) -> Aabb {
         Aabb::new(self.x0 - r, self.y0 - r, self.x1 + r, self.y1 + r)
     }
+    /// Point-in-box, edges inclusive.
     pub fn contains(self, p: Vec2) -> bool {
         p.x >= self.x0 && p.x <= self.x1 && p.y >= self.y0 && p.y <= self.y1
     }
+    /// Midpoint of the box.
     pub fn centre(self) -> Vec2 {
         Vec2::new((self.x0 + self.x1) * 0.5, (self.y0 + self.y1) * 0.5)
     }
@@ -159,16 +224,26 @@ impl Aabb {
     }
 }
 
-/// Liang-Barsky segment/box overlap. A step can be up to ~3 units long, and a
+/// Liang–Barsky segment/box overlap. A step is 2.5 units at full base power,
+/// about 4.4 with Featherweight and one Sabot and about 5.5 with two, and a
 /// radio mast is 5px wide — a point-in-box test would let shells tunnel
 /// through thin structures.
+///
+/// True if any point of the segment `a`→`b` lies in the box, edges included.
 pub fn segment_hits_aabb(a: Vec2, b: Vec2, box_: Aabb) -> bool {
     if box_.contains(a) || box_.contains(b) {
         return true;
     }
+    // Parametric clipping: the segment is `a + t*(b - a)` for t in [0, 1].
+    // Each box edge trims that interval; if it empties, the segment misses.
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let mut t0 = 0.0f64;
     let mut t1 = 1.0f64;
+    // `p` is the segment's component along the edge's outward normal
+    // (negative when it crosses that edge heading in, positive heading out)
+    // and `q` the start point's distance inside the edge. `p == 0` means the
+    // segment runs parallel to the edge, so it is either wholly inside it or
+    // wholly outside.
     let clip = |p: f64, q: f64, t0: &mut f64, t1: &mut f64| -> bool {
         if p == 0.0 {
             return q >= 0.0;
@@ -200,11 +275,16 @@ pub fn segment_hits_aabb(a: Vec2, b: Vec2, box_: Aabb) -> bool {
 /// Everything a shell can interact with. Ballistics knows nothing about
 /// structures, the economy, or drafting — only boxes and a heightfield.
 pub struct World<'a> {
+    /// Terrain to collide with. Read-only: craters are applied by the caller
+    /// after the flight.
     pub field: &'a Heightfield,
     /// Target bounding boxes, in the same order as the screen's structures.
     pub targets: &'a [Aabb],
+    /// Screen width in columns. Sets the horizontal miss limits
+    /// ([`MISS_WIDTH_FACTOR`] widths beyond either edge).
     pub width: usize,
-    /// Signed wind, in world units per second squared.
+    /// Signed wind, in world units per second squared. Positive pushes toward
+    /// +x. Scaled by [`Loadout::wind_scale`] inside the integrator.
     pub wind: f64,
 }
 
@@ -213,23 +293,37 @@ pub struct World<'a> {
 pub struct FireOptions {
     /// Keep every sampled position, for rendering. The solver leaves this off.
     pub record_path: bool,
-    /// Airburst fuse, in horizontal units from the muzzle.
+    /// Airburst fuse, in horizontal units from the muzzle. Ignored unless the
+    /// loadout holds Airburst.
     pub fuse: Option<f64>,
     /// Storm Front: wind resamples once mid-flight, at the trajectory apex.
+    /// The replacement wind, units/s², takes over from the first step that
+    /// begins with the shell no longer rising.
     pub wind_after_apex: Option<f64>,
 }
 
 /// How a shell's flight ended.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum End {
+    /// Hit the ground. `pos` is the refined contact point, or where a
+    /// tunnelling shell stopped; `material` is the surface layer of that
+    /// column, or for a tunnelling shell the layer it stopped in. The run
+    /// sizes the crater from the surface layer either way.
     Terrain { pos: Vec2, material: Material },
+    /// Entered target box `index` (into [`World::targets`]). `pos` is the end
+    /// of the step that entered it, not a refined contact point.
     Structure { index: usize, pos: Vec2 },
+    /// The Airburst fuse ran out.
     Fuse { pos: Vec2 },
+    /// Left the playfield: more than [`MISS_WIDTH_FACTOR`] screen widths past
+    /// either edge, or more than a screen height below y = 0.
     OffScreen { pos: Vec2 },
+    /// Hit the [`MAX_SHELL_STEPS`] cap without ending any other way.
     Timeout { pos: Vec2 },
 }
 
 impl End {
+    /// Where the flight ended.
     pub fn pos(self) -> Vec2 {
         match self {
             End::Terrain { pos, .. }
@@ -251,21 +345,37 @@ impl End {
 /// One shell's flight.
 #[derive(Clone, Debug)]
 pub struct Trace {
+    /// Where the shell started.
     pub origin: Vec2,
+    /// How and where it stopped.
     pub end: End,
+    /// Highest sampled position. Starts at `origin`, so a shell that never
+    /// rises reports its origin.
     pub apex: Vec2,
+    /// Seconds of simulated flight, accumulated one [`DT`] per step.
     pub flight_time: f64,
+    /// Ricochets taken (Skipstone).
     pub bounces: u8,
+    /// Whether Auger engaged at any point.
     pub tunneled: bool,
     /// 1.0 for the shell the player fired, 0.4 for a cluster submunition.
     pub damage_scale: f64,
+    /// Speed after the final step, units/s. Cluster submunitions launch at a
+    /// share of it.
     pub impact_speed: f64,
+    /// Integration steps taken.
     pub steps: u32,
     /// Sampled positions, present only when `record_path` was set.
+    ///
+    /// The origin, then one sample per step, so `path.len() == steps + 1` and
+    /// `path[k]` is the position after `k` steps (`k * DT` seconds). The Godot
+    /// layer relies on this to play a flight back in real time. On a ricochet
+    /// step the sample is the pre-lift position.
     pub path: Vec<Vec2>,
 }
 
 impl Trace {
+    /// Where the shell detonated, or `None` if it left the screen or timed out.
     pub fn detonation(&self) -> Option<Vec2> {
         if self.end.detonates() {
             Some(self.end.pos())
@@ -284,6 +394,10 @@ impl Trace {
 
 /// Crater radius for a detonation. DESIGN §2.6, plus Sabot's `crater_scale`
 /// and Thermal Lance treating Steel as Rock.
+///
+/// World units. `material` is what the shell hit (Steel for a direct hit on a
+/// structure); `damage_scale` is [`Trace::damage_scale`], so submunitions dig
+/// smaller holes.
 pub fn crater_radius(material: Material, lo: &Loadout, damage_scale: f64) -> f64 {
     let m = if material == Material::Steel && lo.thermal_lance() {
         Material::Rock
@@ -294,6 +408,10 @@ pub fn crater_radius(material: Material, lo: &Loadout, damage_scale: f64) -> f64
 }
 
 /// Blast radius for structural damage overlap. Airburst widens it.
+///
+/// World units, scaled by `damage_scale` like [`crater_radius`]. The run uses
+/// it for damage falloff; the solver uses it to discard candidates that
+/// detonate too far from their target to matter.
 pub fn blast_radius(lo: &Loadout, damage_scale: f64) -> f64 {
     BASE_BLAST_RADIUS * lo.blast_scale * damage_scale
 }
@@ -310,8 +428,11 @@ fn normal_at(field: &Heightfield, x: f64) -> Vec2 {
     Vec2::new(-m / len, 1.0 / len)
 }
 
-/// Auger's travel budget: the remaining thickness of the layer it entered.
-/// Bedrock stops it outright (DESIGN §4).
+/// Auger's travel budget: the nominal thickness of the layer it entered
+/// (Sand 8 units, Rock 22). It does not subtract depth already excavated in
+/// that column, and it is spent as path length, not vertical depth.
+/// Bedrock stops it outright, on contact or wherever the tunnelling shell
+/// reaches it with budget to spare (DESIGN §4).
 fn auger_budget(material: Material) -> f64 {
     match material {
         Material::Sand => SAND_DEPTH,
@@ -321,6 +442,15 @@ fn auger_budget(material: Material) -> f64 {
 }
 
 /// Integrate one shell to termination.
+///
+/// `origin` and `velocity` are in world units and units/s. `damage_scale` is
+/// carried through to [`Trace::damage_scale`] untouched. `allow_ricochet` and
+/// `allow_tunnel` gate Skipstone and Auger even when the loadout holds them;
+/// cluster submunitions pass `false` for both.
+///
+/// Always terminates: every path through the loop either ends the flight or
+/// counts a step against [`MAX_SHELL_STEPS`]. Identical inputs give
+/// bit-identical traces on every platform.
 #[allow(clippy::too_many_arguments)]
 pub fn simulate_shell(
     world: &World,
@@ -362,6 +492,8 @@ pub fn simulate_shell(
         steps += 1;
 
         // Storm Front resamples the wind once, at the apex. DESIGN §4.
+        // The latch is set whether or not a replacement wind was supplied, so
+        // this test stops mattering after the apex.
         if !wind_switched && v.y <= 0.0 {
             if let Some(w) = opts.wind_after_apex {
                 wind = w;
@@ -370,6 +502,9 @@ pub fn simulate_shell(
         }
 
         // Semi-implicit Euler: accelerate, then move. Wind is acceleration.
+        // Explicit Euler would move with the old velocity instead. The order
+        // is part of the replay contract: swapping it shifts every trajectory
+        // slightly and so needs a `SIM_EPOCH` bump (DESIGN §9.3).
         v.x += wind * lo.wind_scale * DT;
         v.y -= GRAVITY * DT;
         let prev = p;
@@ -391,7 +526,10 @@ pub fn simulate_shell(
         }
 
         // Structures. Checked before terrain: a shell entering a structure's
-        // box has hit steel, whatever the ground under it is doing.
+        // box has hit steel, whatever the ground under it is doing. The test
+        // sweeps the whole step against each box grown by the shell radius,
+        // so a fast shell cannot step clean over a thin mast. A tunnelling
+        // shell is underground and skips it.
         if !tunneling {
             let mut hit = None;
             for (i, b) in world.targets.iter().enumerate() {
@@ -405,18 +543,27 @@ pub fn simulate_shell(
             }
         }
 
+        // A point with a collision radius against the interpolated surface
+        // under it (DESIGN §3).
         let surface = world.field.surface_at(p.x);
         let inside = p.y - SHELL_RADIUS <= surface;
 
         if tunneling {
+            // The budget is spent as distance travelled along the path.
             tunnel_left -= dmath::hypot(p.x - prev.x, p.y - prev.y);
-            let material = world.field.material_at(p.x);
-            if material == Material::Bedrock || tunnel_left <= 0.0 {
-                break End::Terrain { pos: p, material };
-            }
             if !inside {
-                // Punched through and came out the far side.
+                // Punched through and came out the far side. Checked first:
+                // a point in the air has no layer, and one over a deep crater
+                // would otherwise read as bedrock and stop the shell there.
                 tunneling = false;
+            } else {
+                // Bedrock stops it at the shell's own depth (DESIGN §4),
+                // which can come before the budget runs out when it entered
+                // Rock.
+                let material = world.field.material_below(p.x, p.y);
+                if material == Material::Bedrock || tunnel_left <= 0.0 {
+                    break End::Terrain { pos: p, material };
+                }
             }
         } else if inside {
             // Refine the contact point between the last two samples so shallow
@@ -433,13 +580,16 @@ pub fn simulate_shell(
                     // |dot| is sin(incidence) against the surface plane.
                     let sin_max = dmath::sin(RICOCHET_MAX_INCIDENCE_DEG * dmath::PI / 180.0);
                     if abs(dot) <= sin_max {
+                        // Mirror reflection about the surface, v - 2(v.n)n,
+                        // then scaled down by the retention factor.
                         let vn = v.x * n.x + v.y * n.y;
                         v.x = (v.x - 2.0 * vn * n.x) * RICOCHET_RETENTION;
                         v.y = (v.y - 2.0 * vn * n.y) * RICOCHET_RETENTION;
                         bounces_left -= 1;
                         bounces += 1;
                         // Lift clear of the surface so the next step does not
-                        // re-collide on the same sample.
+                        // re-collide on the same sample. The recorded path
+                        // keeps the pre-lift sample for this step.
                         p = Vec2::new(
                             contact.x + n.x * (SHELL_RADIUS + 0.25),
                             world.field.surface_at(contact.x)
@@ -451,7 +601,8 @@ pub fn simulate_shell(
                 }
             }
 
-            // Then tunneling.
+            // Then tunnelling: at most once per shell, and only into a layer
+            // with a budget. Bedrock and Steel fall through to detonation.
             if allow_tunnel && lo.auger() && !tunneled && material.is_tunnelable() {
                 tunnel_left = auger_budget(material);
                 if tunnel_left > 0.0 {
@@ -472,7 +623,7 @@ pub fn simulate_shell(
         if p.x < -miss_x || p.x > world.width as f64 + miss_x {
             break End::OffScreen { pos: p };
         }
-        // A shell that has fallen far below the world floor is gone.
+        // A shell that has fallen far below y = 0 is gone.
         if p.y < -(crate::SCREEN_H as f64) {
             break End::OffScreen { pos: p };
         }
@@ -494,6 +645,10 @@ pub fn simulate_shell(
 
 /// Bisect the last step to find where the shell met the surface. Linear in the
 /// sampled positions, so it stays deterministic and cheap.
+///
+/// The step is treated as a straight segment from `a` (above the surface) to
+/// `b` (touching or below it). Twelve halvings put the contact within 1/4096
+/// of a step, and returning the `hi` end means the point is always touching.
 fn refine_contact(field: &Heightfield, a: Vec2, b: Vec2) -> Vec2 {
     let mut lo = 0.0f64;
     let mut hi = 1.0f64;
@@ -511,6 +666,10 @@ fn refine_contact(field: &Heightfield, a: Vec2, b: Vec2) -> Vec2 {
 
 /// Fire one shell, including any cluster submunitions it throws.
 /// `traces[0]` is always the shell the player fired.
+///
+/// The shot is quantized to the loadout first ([`Shot::quantized`]), so raw
+/// input is safe. Submunitions follow only if the loadout holds Cluster and
+/// the primary detonated; a shell that left the screen throws nothing.
 pub fn fire(
     world: &World,
     origin: Vec2,
@@ -536,7 +695,10 @@ pub fn fire(
 
 /// Cluster split: `n` submunitions fanned across +/-15 degrees, each carrying
 /// 40% damage. DESIGN §4. Submunitions do not split again, and carry neither
-/// ricochet nor tunneling.
+/// ricochet nor tunnelling.
+///
+/// `n` is [`Loadout::cluster_submunitions`]: 3 per Cluster stack, so two
+/// stacks fan six across the same spread.
 fn submunitions(world: &World, parent: &Trace, lo: &Loadout, opts: &FireOptions) -> Vec<Trace> {
     let n = lo.cluster_submunitions as usize;
     if n == 0 {
@@ -553,8 +715,6 @@ fn submunitions(world: &World, parent: &Trace, lo: &Loadout, opts: &FireOptions)
     let base = match parent.end {
         End::Terrain { .. } => {
             let n_hat = normal_at(world.field, pos.x);
-            let last = parent.origin; // direction of travel, reconstructed below
-            let _ = last;
             // Incoming direction from the parent's terminal velocity is not
             // retained, so reflect the vector from apex to impact — the same
             // sign, and stable.
@@ -567,6 +727,8 @@ fn submunitions(world: &World, parent: &Trace, lo: &Loadout, opts: &FireOptions)
             Vec2::new(rx, ry)
         }
         _ => {
+            // The same apex-to-impact chord stands in for the incoming
+            // direction here.
             let inx = pos.x - parent.apex.x;
             let iny = pos.y - parent.apex.y;
             let len = dmath::hypot(inx, iny).max(1e-9);
@@ -587,8 +749,10 @@ fn submunitions(world: &World, parent: &Trace, lo: &Loadout, opts: &FireOptions)
         } else {
             -1.0 + 2.0 * (k as f64) / ((n - 1) as f64)
         };
+        // `f` runs evenly from -1 to 1, fanning the shells edge to edge.
         let a = f * CLUSTER_SPREAD_DEG * dmath::PI / 180.0;
         let (c, s) = (dmath::cos(a), dmath::sin(a));
+        // 2D rotation of `base` by `a`.
         let dir = Vec2::new(base.x * c - base.y * s, base.x * s + base.y * c);
         // Start just clear of the surface so the submunition gets a step.
         let start = Vec2::new(pos.x + dir.x * 1.5, pos.y + dir.y * 1.5 + 0.5);
@@ -903,6 +1067,88 @@ mod tests {
         );
         assert!(!t2.tunneled);
         assert!(t2.end.pos().y > t.end.pos().y);
+    }
+
+    #[test]
+    fn auger_stops_at_bedrock_below_the_surface() {
+        // Dug down 25 units into Rock, 5 short of bedrock. The Rock budget
+        // (22) would carry the shell well past it; bedrock must stop it
+        // where the shell reaches it, not only where it is exposed.
+        let mut f = flat(320, 60.0);
+        f.scar.fill(25.0);
+        f.material.fill(Material::Rock);
+        let mut lo = Loadout::new();
+        lo.take(crate::modifiers::Modifier::Auger);
+        let t = simulate_shell(
+            &world(&f, &[], 0.0),
+            Vec2::new(30.0, 40.0),
+            Shot::new(1400, 600).velocity(&lo),
+            &lo,
+            &FireOptions::default(),
+            1.0,
+            true,
+            true,
+        );
+        assert!(t.tunneled, "auger did not tunnel");
+        let depth = 60.0 - t.end.pos().y;
+        assert!(
+            depth < ROCK_DEPTH + 3.0,
+            "tunnelled {depth} units below the original surface, past bedrock at {ROCK_DEPTH}"
+        );
+        assert!(
+            matches!(
+                t.end,
+                End::Terrain {
+                    material: Material::Bedrock,
+                    ..
+                }
+            ),
+            "{:?}",
+            t.end
+        );
+    }
+
+    #[test]
+    fn auger_leaving_the_ground_does_not_stop_in_the_air() {
+        // A Rock ledge (dug 15 into ground at 60) drops into a pit whose
+        // columns stand on higher ground (90) dug out to 20, so a point in
+        // the pit's air is more than 30 below its column's original surface.
+        // A shell that tunnels out of the ledge must fly on into the pit,
+        // not read that air as bedrock and stop in it.
+        let mut f = flat(320, 60.0);
+        for i in 0..f.len() {
+            if i < 100 {
+                f.scar[i] = 15.0;
+                f.material[i] = Material::Rock;
+            } else {
+                f.base[i] = 90.0;
+                f.scar[i] = 70.0;
+                f.material[i] = Material::Bedrock;
+            }
+        }
+        let mut lo = Loadout::new();
+        lo.take(crate::modifiers::Modifier::Auger);
+        for k in 0..20 {
+            let t = simulate_shell(
+                &world(&f, &[], 0.0),
+                Vec2::new(80.0 + k as f64 * 0.1, 50.0),
+                Vec2::new(180.0, -40.0),
+                &lo,
+                &FireOptions::default(),
+                1.0,
+                true,
+                true,
+            );
+            assert!(t.tunneled, "offset {k}: auger did not tunnel");
+            let p = t.end.pos();
+            assert!(
+                p.y - SHELL_RADIUS <= f.surface_at(p.x) + 1e-9,
+                "offset {k}: stopped in the air at ({}, {}), surface {}",
+                p.x,
+                p.y,
+                f.surface_at(p.x)
+            );
+        }
     }
 
     #[test]

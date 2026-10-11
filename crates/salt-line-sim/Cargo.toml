@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "salt-line-sim"
 version.workspace = true
 edition.workspace = true
@@ -10,3 +11,14 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
+# Benchmarks (benches/sim.rs, `cargo bench -p salt-line-sim`).
+divan = "0.1"
+insta = "1"
+rstest = { version = "0.26", default-features = false }
+# Test-only: property tests (tests/properties.rs). The sim itself still has no
+# dependencies, so nothing here reaches a build of the game.
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[[bench]]
+name = "sim"
+harness = false

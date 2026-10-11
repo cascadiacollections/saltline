@@ -1,0 +1,53 @@
+name: development environment
+on:
+  pull_request:
+    paths:
+      - '.devcontainer/**'
+      - '.dockerignore'
+      - '.python-version'
+      - 'rust-toolchain.toml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'mise.toml'
+      - '.github/workflows/devcontainer.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.devcontainer/**'
+      - '.dockerignore'
+      - '.python-version'
+      - 'rust-toolchain.toml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'mise.toml'
+      - '.github/workflows/devcontainer.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create complete devcontainer with pinned CLI (no publication)
+        run: npx --yes @devcontainers/cli@0.89.0 up --workspace-folder .
+      - name: Smoke-test toolchain and locked bootstrap as developer
+        run: |
+          # Variables expand inside the container's bash, not on the runner.
+          # shellcheck disable=SC2016
+          npx --yes @devcontainers/cli@0.89.0 exec --workspace-folder . bash -c '
+            set -euo pipefail
+            test "$(id -u)" != 0
+            rustc --version
+            cargo --version
+            uv --version
+            bash .devcontainer/bootstrap.sh
+            uv run --locked python -c "import sys, PIL; assert sys.version_info[:3] == (3, 15, 0); print(PIL.__version__)"
+            test -z "$(find . -maxdepth 1 -name target)"
+          '

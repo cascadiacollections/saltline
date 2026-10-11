@@ -1,0 +1,34 @@
+# cargo-deny: security advisories, licences, bans and sources for the whole
+# dependency tree. The sim has no dependencies, so in practice this watches the
+# Godot bindings and the test-only dev-dependencies. CI runs `cargo deny check`.
+
+[graph]
+all-features = false
+
+[advisories]
+# RustSec advisories are errors, and so are yanked versions.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Everything here is compatible with shipping the game under MIT. MPL-2.0 is the
+# Godot bindings (file-level copyleft, fine to link).
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The Godot crate depends on the sim by path; neither is published.
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

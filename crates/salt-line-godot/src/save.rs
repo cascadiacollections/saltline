@@ -1,26 +1,93 @@
-//! Local persistence: the unlock flag and the leaderboard. Brief M6.
+//! Local persistence: settings, bindings and the leaderboard. Brief M6.
 //!
-//! This file is the engine side only — opening, writing and replacing the
-//! file. The format itself lives in `save_format`, with no engine in it, so it
-//! can be tested headless.
+//! This file is the engine side only — finding `user://` on disk. The format
+//! lives in `save_format` and the write/recovery rules in `durable`, with no
+//! engine in either, so both can be tested headless.
+//!
+//! Every write goes through [`write()`], which is `durable::write_atomic`
+//! (write the temporary file, fsync it, rename it over the real one, fsync
+//! the directory; the module docs of `durable` say why each step) wherever
+//! `user://` is a real directory. The same function writes the in-progress
+//! run file for `resume`, and [`rename`] and [`remove`] are the other two
+//! moves `resume`'s run-file protocol needs.
+//!
+//! Two rules sit on top of the atomic write, both in [`store`]:
+//!
+//! - *From the future.* A save whose `version` is newer than this build's
+//!   [`VERSION`], or whose version cannot be parsed, loads as an empty
+//!   board with `from_the_future` set, and is never written over: a player
+//!   who runs an older build for a session keeps the board the newer one
+//!   wrote. A run finished meanwhile cannot reach the board, so its line is
+//!   kept in the run file for a build that can score it
+//!   (`app::Store::Score`).
+//! - *Not after a panic.* Once the crash hook has fired, nothing replaces the
+//!   last good save (see `crash` and `app::Effect::survives_panic`).
+
+use std::path::PathBuf;
 
 use godot::classes::file_access::ModeFlags;
-use godot::classes::{DirAccess, FileAccess};
+use godot::classes::{DirAccess, FileAccess, ProjectSettings};
 use godot::prelude::*;
 
+use crate::durable::{self, Pick};
 pub use crate::save_format::{Entry, Save, KEEP, VERSION};
 
 pub const SAVE_PATH: &str = "user://salt_line.txt";
 /// Written in full, then moved over the real file. A crash or a full disk
 /// during the write costs the new record, not the existing board.
 pub const TEMP_PATH: &str = "user://salt_line.txt.new";
+pub const TRIAL_REPLAY_PATH: &str = "user://drone_trial.replay";
+pub const TRIAL_REPLAY_TEMP_PATH: &str = "user://drone_trial.replay.new";
 
-/// Read the save file. A missing file is an empty board, not an error.
+/// A `user://` path as a real filesystem path, for `std::fs`. `None` where the
+/// platform has no such thing (Godot hands the virtual path back unchanged);
+/// callers then fall back to Godot's own file API.
+pub fn on_disk(user_path: &str) -> Option<PathBuf> {
+    let global = ProjectSettings::singleton()
+        .globalize_path(user_path)
+        .to_string();
+    if global.is_empty() || global.contains("://") {
+        return None;
+    }
+    Some(PathBuf::from(global))
+}
+
+/// A `user://` file's text. `None` if it is missing or unreadable.
+pub fn read(user_path: &str) -> Option<String> {
+    match on_disk(user_path) {
+        Some(p) => std::fs::read_to_string(p).ok(),
+        None => FileAccess::open(user_path, ModeFlags::READ).map(|f| f.get_as_text().to_string()),
+    }
+}
+
+/// Whether a `user://` file is there, whether or not it can be read.
+pub fn exists(user_path: &str) -> bool {
+    match on_disk(user_path) {
+        // `symlink_metadata` errors only when there is nothing to stat (or
+        // nothing it may stat, which is as good as there for "is it gone?").
+        Some(p) => !matches!(
+            std::fs::symlink_metadata(p),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        ),
+        None => FileAccess::file_exists(user_path),
+    }
+}
+
+/// Read the save file. A missing file is an empty board, not an error. If the
+/// save is missing or damaged but the temporary file survived — the game went
+/// down between writing it and moving it into place — that is loaded instead.
+/// `durable::pick` makes the choice.
 pub fn load() -> Save {
-    let Some(f) = FileAccess::open(SAVE_PATH, ModeFlags::READ) else {
-        return Save::default();
+    let main = read(SAVE_PATH);
+    let temp = read(TEMP_PATH);
+    let save = match durable::pick(main.as_deref(), temp.as_deref()) {
+        Pick::Main => Save::parse(main.as_deref().unwrap_or_default()),
+        Pick::Temp => {
+            godot_warn!("salt-line: {SAVE_PATH} missing or damaged; recovered {TEMP_PATH}");
+            Save::parse(temp.as_deref().unwrap_or_default())
+        }
+        Pick::Empty => Save::default(),
     };
-    let save = Save::parse(&f.get_as_text().to_string());
     if save.from_the_future {
         godot_warn!(
             "salt-line: {SAVE_PATH} was written by a newer build (this one writes \
@@ -37,57 +104,92 @@ pub fn store(save: &Save) -> bool {
         // newer file with a downgraded build's understanding of it.
         return false;
     }
-    let text = save.serialize();
-    let Some(mut f) = FileAccess::open(TEMP_PATH, ModeFlags::WRITE) else {
-        godot_warn!("salt-line: could not write {TEMP_PATH}");
+    if crate::crash::panicked() {
+        // After a panic the state in memory is not trusted enough to replace
+        // the last good save with, a finished run's score included.
+        return false;
+    }
+    write(SAVE_PATH, TEMP_PATH, &save.serialize())
+}
+
+/// Replace a `user://` file with `text` by way of `temp`:
+/// `durable::write_atomic` where there is a disk path, Godot's file API where
+/// there is not. Returns whether it reached disk; on failure the old file is
+/// left as it was.
+pub fn write(main: &str, temp: &str, text: &str) -> bool {
+    if let (Some(main_disk), Some(temp_disk)) = (on_disk(main), on_disk(temp)) {
+        return match durable::write_atomic(&main_disk, &temp_disk, text) {
+            Ok(()) => true,
+            Err(e) => {
+                godot_warn!("salt-line: could not write {main} ({e}); the old file is intact");
+                false
+            }
+        };
+    }
+    write_via_engine(main, temp, text)
+}
+
+/// Move a `user://` file, replacing any file at `to`. Returns whether it
+/// moved; a missing `from` is not worth a warning.
+pub fn rename(from: &str, to: &str) -> bool {
+    if let (Some(f), Some(t)) = (on_disk(from), on_disk(to)) {
+        return match std::fs::rename(&f, &t) {
+            Ok(()) => true,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    godot_warn!("salt-line: could not move {from} to {to} ({e})");
+                }
+                false
+            }
+        };
+    }
+    let Some(mut dir) = DirAccess::open("user://") else {
         return false;
     };
-    f.store_string(&GString::from(text.as_str()));
+    FileAccess::file_exists(from) && dir.rename(from, to) == godot::global::Error::OK
+}
+
+/// Delete a `user://` file if it is there.
+pub fn remove(user_path: &str) {
+    match on_disk(user_path) {
+        Some(p) => {
+            if let Err(e) = std::fs::remove_file(&p) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    godot_warn!("salt-line: could not delete {user_path} ({e})");
+                }
+            }
+        }
+        None => {
+            if FileAccess::file_exists(user_path) {
+                if let Some(mut dir) = DirAccess::open("user://") {
+                    dir.remove(user_path);
+                }
+            }
+        }
+    }
+}
+
+/// Where `user://` has no real path: Godot's file API, write-then-rename, but
+/// with no way to flush the data before the rename.
+fn write_via_engine(main: &str, temp: &str, text: &str) -> bool {
+    let Some(mut f) = FileAccess::open(temp, ModeFlags::WRITE) else {
+        godot_warn!("salt-line: could not write {temp}");
+        return false;
+    };
+    f.store_string(&GString::from(text));
     let err = f.get_error();
     f.close();
     if err != godot::global::Error::OK {
-        godot_warn!("salt-line: {TEMP_PATH} was not written cleanly; keeping the old save");
+        godot_warn!("salt-line: {temp} was not written cleanly; keeping the old file");
         return false;
     }
     let Some(mut dir) = DirAccess::open("user://") else {
-        godot_warn!("salt-line: could not open user:// to replace {SAVE_PATH}");
+        godot_warn!("salt-line: could not open user:// to replace {main}");
         return false;
     };
-    // `rename` replaces the destination if it exists, which is what makes the
-    // swap atomic from the player's point of view.
-    if dir.rename(TEMP_PATH, SAVE_PATH) != godot::global::Error::OK {
-        godot_warn!("salt-line: could not replace {SAVE_PATH}; the old save is intact");
+    if dir.rename(temp, main) != godot::global::Error::OK {
+        godot_warn!("salt-line: could not replace {main}; the old file is intact");
         return false;
     }
     true
-}
-
-/// Record a finished run and persist. Returns its position on the board, or
-/// `None` if it did not make the cut.
-pub fn record(save: &mut Save, entry: Entry) -> Option<usize> {
-    let at = save.place(entry);
-    store(save);
-    at
-}
-
-/// Keep Trial replays separate from the existing artillery save format.
-pub fn store_trial_replay(replay: &salt_line_sim::trial::Replay) -> bool {
-    let Ok(text) = replay.encode() else {
-        return false;
-    };
-    let temporary = "user://drone_trial.replay.new";
-    let target = "user://drone_trial.replay";
-    let Some(mut file) = FileAccess::open(temporary, ModeFlags::WRITE) else {
-        return false;
-    };
-    file.store_string(&GString::from(text.as_str()));
-    let error = file.get_error();
-    file.close();
-    if error != godot::global::Error::OK {
-        return false;
-    }
-    let Some(mut dir) = DirAccess::open("user://") else {
-        return false;
-    };
-    dir.rename(temporary, target) == godot::global::Error::OK
 }

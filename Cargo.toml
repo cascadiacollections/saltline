@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/salt-line-sim", "crates/salt-line-godot"]
+# Fuzzing lives in its own workspace (fuzz/Cargo.toml) and needs nightly.
+exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/cascadiacollections/saltline"
@@ -11,3 +13,24 @@ repository = "https://github.com/cascadiacollections/saltline"
 [profile.release]
 lto = true
 codegen-units = 1
+# The default, spelled out because it is load-bearing: gdext catches a panic
+# in a Godot callback by unwinding, and the crash report and error screen
+# (salt-line-godot `crash`) depend on the game surviving to show them. With
+# `abort` a panic would take the whole process down, report unwritten.
+panic = "unwind"
+
+# cargo-mutants builds and tests with this (.cargo/mutants.toml). The test
+# suite dominates each mutant's time and runs about four times faster at
+# opt-level 1 than unoptimised, for a slightly slower rebuild. Debug
+# assertions and overflow checks stay on, as in `test`, so a mutant that
+# overflows is still caught.
+[profile.mutants]
+inherits = "test"
+opt-level = 1
+debug = "none"
+
+# The source-art software painter writes a 4x backing image. Optimize the
+# presentation crate in local builds while retaining debug assertions and
+# normal debugging for the deterministic simulation.
+[profile.dev.package.salt-line-godot]
+opt-level = 2

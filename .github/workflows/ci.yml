@@ -1,11 +1,29 @@
 name: ci
 
 on:
-  # Validate Drone Trial checkpoints across platforms while the mode develops.
-  # Other feature branches run the matrix through pull requests.
+  # Only main and release tags on push. Without the branch filter a pull
+  # request branch runs the whole matrix twice for every commit -- once for
+  # push, once for pull_request -- which is pure waste on the macOS and Windows
+  # runners. A `vX.Y.Z` tag runs everything and ends in the `release` job.
   push:
-    branches: [main, codex/drone-trial]
+    branches: [main]
+    tags: ['v*']
+    # Skip documentation-only pushes; tag releases always run (GitHub does
+    # not apply path filters to tags). Keep Markdown compiled into the game
+    # or used as a golden-test fixture covered.
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!site/assets/readme/**'
+      - 'NOTES.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
   pull_request:
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!site/assets/readme/**'
+      - 'NOTES.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
 
 # Superseded runs are not worth paying for; a new push to the same ref makes
 # the one in flight irrelevant.
@@ -13,86 +31,293 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Read-only. Nothing in this workflow writes to the repository or to the
-# Actions API; artifact upload and download authenticate with the run's own
-# runtime token, not with GITHUB_TOKEN.
+# Read-only by default; artifact upload and download authenticate with the
+# run's own runtime token, not with GITHUB_TOKEN. The two exceptions are the
+# dev-release job (pushes to main, replaces the `dev` prerelease) and the
+# release job (`v*` tags, publishes that version's release); each asks for
+# contents: write for itself, plus id-token: write and attestations: write to
+# sign build provenance and the SBOM for what it publishes. No job that runs
+# the engine, a build script or a third-party build action can mint an OIDC
+# token.
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # The Godot engine and export templates every export job installs. One
+  # place, because the SBOM records it too (the engine is a binary dependency
+  # Cargo cannot see).
+  GODOT_VERSION: 4.7.2
+
+# Every rust-cache step sets `lookup-only` on tag builds, so a build that
+# publishes a release starts from nothing cached (zizmor cache-poisoning).
+# PR caches are scoped to refs/pull/N/merge and a tag run can only restore
+# main's, so the exposure is whatever reached main's cache; a release is not
+# worth even that. Tag builds are cold and slower, and clean.
 
 jobs:
+  # Apple runners cost substantially more than Linux. Exercise every platform
+  # on main/tags, but reserve pre-merge Apple builds for platform/build changes.
+  # Gameplay-only PRs still run Linux/Windows; main catches Apple regressions.
+  platforms:
+    name: select platform coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      apple: ${{ steps.plan.outputs.apple }}
+      sim: ${{ steps.plan.outputs.sim }}
+      playable: ${{ steps.plan.outputs.playable }}
+      digests: ${{ steps.plan.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/ci_platforms.py
+
   # The sim crate must build and test with no engine present, on every
   # platform we ship to.
   sim:
+    needs: platforms
     name: sim (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.platforms.outputs.sim) }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: cargo test -p salt-line-sim (headless, no Godot installed)
-        run: cargo test -p salt-line-sim
-      - name: cargo test -p salt-line-godot (rasteriser, fonts, camera maths)
-        run: cargo test -p salt-line-godot
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-nextest
+      - name: test salt-line-sim (headless, no Godot installed)
+        run: cargo nextest run -p salt-line-sim --profile ci
+      - name: test salt-line-godot (rasteriser, fonts, camera maths)
+        run: cargo nextest run -p salt-line-godot --profile ci
+      - name: doctests
+        run: cargo test --doc --workspace
       - name: build the GDExtension
         run: cargo build -p salt-line-godot
       - name: determinism digest
         shell: bash
+        env:
+          PLATFORM: ${{ matrix.os }}
         run: |
           cargo run --release -q -p salt-line-sim --bin determinism | tee digest.txt
-          grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-${{ matrix.os }}.txt
-          cargo run --release -q -p salt-line-sim --bin trial_determinism | tee trial-digest.txt
-          grep -oE 'digest: 0x[0-9a-f]+' trial-digest.txt | cut -d' ' -f2 >> digest-${{ matrix.os }}.txt
-          cat digest-${{ matrix.os }}.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > "digest-$PLATFORM.txt"
+          cat "digest-$PLATFORM.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: digest-${{ matrix.os }}
           path: digest-${{ matrix.os }}.txt
+
+  # The phones join the determinism comparison: versus play in lockstep needs
+  # two phones to agree bit for bit, and Android brings its own libc and libm
+  # (bionic). Hosted arm64 Linux runners have no KVM, and an arm64 system image
+  # on an x86_64 host is unaccelerated and far too slow, so this runs the
+  # x86_64-linux-android build on an x86_64 emulator: real Android and real
+  # bionic, on the other shipped architecture's codegen. The arm64-v8a build the
+  # APK ships is checked on a phone with `just android-digest`; arm64 codegen
+  # itself is already in the `sim` matrix. Only the dependency-free sim crate is
+  # built, which takes seconds, so there is no rust-cache here.
+  sim-android:
+    name: sim (android x86_64 emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - name: build the determinism check for Android (x86_64)
+        run: |
+          set -eu
+          rustup target add x86_64-linux-android
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cargo build --release -q -p salt-line-sim --bin determinism --target x86_64-linux-android \
+            --config "target.x86_64-linux-android.linker=\"$bin/x86_64-linux-android24-clang\""
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # The action runs each line of `script` on its own through sh, so the
+      # whole check is one line that writes to a file; the next step reads it.
+      # aosp_atd is the headless test image, the quickest to boot.
+      - name: determinism digest (emulator)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          target: aosp_atd
+          arch: x86_64
+          disable-animations: false
+          script: bash tools/android_digest.sh target/x86_64-linux-android/release/determinism > digest.txt
+      # Shown even when the run failed: its summary, digest included, went to
+      # the file rather than the log.
+      - name: show the emulator's output
+        if: always()
+        run: cat digest.txt || true
+      - name: extract the digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^os: *android$' digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-android-x86_64.txt
+          cat digest-android-x86_64.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-android-x86_64
+          path: digest-android-x86_64.txt
+
+  # iOS on the simulator: an aarch64-apple-ios-sim binary run inside a booted
+  # iPhone simulator with `simctl spawn`, so it loads the iOS runtime's own
+  # libSystem and libm on the Apple silicon runner. That is the arm64 code the
+  # device build (aarch64-apple-ios) compiles to, against the simulator's copy
+  # of the iOS libraries; a device run needs signing, which CI does not have.
+  sim-ios:
+    needs: platforms
+    if: needs.platforms.outputs.apple == 'true'
+    name: sim (ios arm64 simulator)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - name: build the determinism check for the iOS simulator
+        run: |
+          set -eu
+          rustup target add aarch64-apple-ios-sim
+          cargo build --release -q -p salt-line-sim --bin determinism --target aarch64-apple-ios-sim
+      # The first available iPhone on the newest iOS runtime the image has.
+      # Booting it is most of this job's time.
+      - name: boot a simulator
+        id: sim
+        run: |
+          set -eu
+          udid=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          ios = sorted((r for r in runtimes if ".iOS-" in r),
+                       key=lambda r: [int(p) for p in r.rsplit(".iOS-", 1)[1].split("-")])
+          for runtime in reversed(ios):
+              phones = [d for d in runtimes[runtime] if d["name"].startswith("iPhone")]
+              if phones:
+                  print(runtime, phones[0]["name"], file=sys.stderr)
+                  print(phones[0]["udid"])
+                  break
+          else:
+              sys.exit("no available iPhone simulator")
+          ')
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl bootstatus "$udid" -b
+      - name: determinism digest (simulator)
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl spawn "$UDID" "$PWD/target/aarch64-apple-ios-sim/release/determinism" | tee digest.txt
+          grep -q '^os: *ios$' digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-ios-arm64.txt
+          cat digest-ios-arm64.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-ios-arm64
+          path: digest-ios-arm64.txt
 
   # DESIGN §3: same seed plus same input sequence produces a byte-identical
   # final state on every platform. If these digests diverge, stop and fix the
   # determinism leak — do not paper over it with tolerances.
   determinism:
     name: determinism across platforms
-    needs: sim
+    needs: [platforms, sim, sim-android, sim-ios]
+    if: ${{ !cancelled() && needs.platforms.result == 'success' && needs.sim.result == 'success' && needs.sim-android.result == 'success' && (needs.sim-ios.result == 'success' || (needs.platforms.outputs.apple == 'false' && needs.sim-ios.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: digest-*
           merge-multiple: true
       - name: compare digests
+        env:
+          EXPECTED_DIGESTS: ${{ needs.platforms.outputs.digests }}
         run: |
           set -eu
           ls -l
           found=0
           for f in digest-*.txt; do
             printf '%-28s %s\n' "$f" "$(cat "$f")"
-            found=$((found + 1))
+            # Count only a well-formed digest, so an empty or garbled file
+            # can't pass as a platform that agrees.
+            if grep -qxE '0x[0-9a-f]{16}' "$f"; then
+              found=$((found + 1))
+            else
+              echo "malformed digest in $f" >&2
+            fi
           done
-          if [ "$found" -lt 3 ]; then
-            echo "expected three platform digests, got $found" >&2
+          # One per `sim` matrix entry plus Android and iOS; keep in step
+          # with those jobs.
+          expected=$EXPECTED_DIGESTS
+          if [ "$found" -ne "$expected" ]; then
+            echo "expected $expected platform digests, got $found" >&2
             exit 1
           fi
-          for f in digest-*.txt; do
-            if [ "$(wc -l < "$f")" -ne 2 ]; then
-              echo "expected artillery and Trial digests in $f" >&2
-              exit 1
-            fi
-            if ! cmp -s digest-ubuntu-latest.txt "$f"; then
-              echo "DETERMINISM LEAK: platform digests differ" >&2
-              exit 1
-            fi
-          done
+          if [ "$(cat digest-*.txt | sort -u | wc -l)" -ne 1 ]; then
+            echo "DETERMINISM LEAK: platform digests differ" >&2
+            exit 1
+          fi
           echo "all platforms agree: $(cat digest-ubuntu-latest.txt)"
+
+  # Every place the version is written down agrees (RELEASING.md, "Version
+  # rule"), on every run so drift is caught in review. On a `v*` tag the tag
+  # must match as well and CHANGELOG.md must have that version's section,
+  # which becomes the release notes; a mismatched tag publishes nothing.
+  version:
+    name: version consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history, so a tag build can check its commit is on main.
+          fetch-depth: 0
+      # python3 on the runner is enough: the script needs only Python 3.9+.
+      - name: check versions
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -eu
+          if [ "$IS_TAG" = "true" ]; then
+            python3 tools/release_version.py check --tag "$GITHUB_REF_NAME"
+            # Releases are cut from main only, never from a side branch.
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "tag $GITHUB_REF_NAME points at ${GITHUB_SHA::7}, which is not on main" >&2
+              exit 1
+            fi
+          else
+            python3 tools/release_version.py check
+          fi
 
   # Brief M2 acceptance: every screen the generator can produce is solvable.
   solvability:
@@ -100,31 +325,62 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: 5,000 screens across 50 seeds
         run: cargo run --release -q -p salt-line-sim --bin batch
       - name: each intended build shape
         run: |
-          set -eu
+          set -euo pipefail
           for build in base drift demo precision risk; do
             cargo run --release -q -p salt-line-sim --bin batch -- \
               --seeds 20 --screens 60 --build "$build" | tail -3
           done
+      # Economy regression gate over the documented balance run (100 seeds x 40
+      # screens). The run is deterministic, so it never flakes: the bounds let
+      # small intended tuning through and trip on a larger shift in generation,
+      # refunds, the curve or batch.rs's play model. Each run prints its values
+      # next to its bounds. If a trip was intended, re-centre the bounds around
+      # the new values rather than pinning them to the exact numbers.
+      - name: shell economy stays in its band
+        run: |
+          set -uo pipefail
+          status=0
+          gate() {
+            cargo run --release -q -p salt-line-sim --bin batch -- --seeds 100 --screens 40 --fast "$@" \
+              | grep -E '^(economy gate|unsolvable screens)' || status=1
+          }
+          gate --build base --skill perfect --max-exhausted 0 --ending 58..71
+          gate --build base --skill steady --max-exhausted 2 --ending 29..37
+          gate --build evolving --skill steady --aim scaled --max-exhausted 8 --ending 43..53
+          exit "$status"
 
   lint:
     name: fmt + clippy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The opt-in profiling build is compiled nowhere else; lint it so it can't rot.
+      - run: cargo clippy -p salt-line-godot --all-targets --features profiling -- -D warnings
       - name: the sim crate must stay dependency-free
         run: |
           set -eu
@@ -139,38 +395,261 @@ jobs:
           fi
           echo "salt-line-sim has no dependencies"
 
+
+
+  art:
+    name: source art contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: verify source artwork and logical sprite contracts
+        run: |
+          python3 -m venv .venv
+          # Match the generator's locked Pillow version; no game code runs here.
+          .venv/bin/python -m pip install 'Pillow==12.3.0'
+          .venv/bin/python -m unittest discover -s tools -p test_concept_art.py -v
+          .venv/bin/python -m unittest discover -s tools -p test_sprite_pipeline.py -v
+
+  # Cheap checks on everything that is not Rust logic: spelling (typos),
+  # workflow security (zizmor) and declared-but-unused dependencies (machete).
+  hygiene:
+    name: typos + zizmor + machete
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: spelling
+        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+      - name: workflow security
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-machete
+      - name: unused dependencies
+        run: cargo machete
+
+  # Line coverage, written to the job summary and uploaded to GitHub's code
+  # coverage API so PRs and the dashboard both see it. No third-party coverage
+  # service is involved, in keeping with no telemetry.
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+          key: coverage
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: coverage
+        run: |
+          set -eu
+          cargo llvm-cov nextest --workspace --profile ci --no-report --ignore-filename-regex '/bin/'
+          cargo llvm-cov report --summary-only --ignore-filename-regex '/bin/' | tee coverage.txt
+          cargo llvm-cov report --cobertura --output-path coverage.xml --ignore-filename-regex '/bin/'
+          {
+            echo '## Coverage'
+            echo
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage artifact
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report-rust
+          path: coverage.xml
+
+  # Uploads the Cobertura report from `coverage` to GitHub's code coverage
+  # API. Split into its own job so only this step, not the test run above,
+  # holds the `code-quality: write` permission.
+  upload-coverage-rust:
+    name: upload coverage (rust)
+    needs: coverage
+    if: ${{ !cancelled() && needs.coverage.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      code-quality: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-report-rust
+      - uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: coverage.xml
+          language: Rust
+          label: code-coverage-agent
+          # A PR can merge before this job runs, making its coverage upload ineligible.
+          fail-on-error: false
+
+  # Miri interprets the tests and fails on undefined behaviour. The code has
+  # almost no unsafe today, so this is future-proofing: it covers the pure
+  # modules (trig, RNG, save format, touch, aim, icons), because the whole sim
+  # suite takes far too long interpreted. Snapshot tests opt out (insta uses a
+  # socket Miri cannot emulate).
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: nightly
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+          key: miri
+      - name: miri
+        env:
+          PROPTEST_CASES: "4"
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p salt-line-sim --lib -- dmath:: rng::
+          cargo +nightly miri test -p salt-line-godot --lib -- save_format:: touch:: aim:: icons::
+
+  # The fuzz targets only run in the weekly workflow, so a change that breaks
+  # one (a new field on a type a target builds) would otherwise go unnoticed
+  # until Monday, as would the weekly job's own build command: both rotted
+  # unseen for weeks in 2026-09. This builds every target exactly as the
+  # weekly job does (nightly, AddressSanitizer, the runner's gnu triple) but
+  # as a dev build, which is all a compile check needs, and runs nothing.
+  fuzz-build:
+    name: fuzz targets build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+          key: fuzz
+          workspaces: fuzz -> target
+      # cargo-fuzz arrives as its static musl build and would target musl by
+      # default; see the fuzz job in weekly.yml for why --target is needed.
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-fuzz
+      - name: build every fuzz target
+        working-directory: fuzz
+        run: cargo +nightly fuzz build --dev --target x86_64-unknown-linux-gnu
+
+  # Advisories, licences, bans and sources for the whole dependency tree
+  # (deny.toml). A new RustSec advisory can turn this red with no change here;
+  # that is the point, and the fix is usually a Dependabot bump.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features
+
   playable:
+    needs: platforms
     name: playable (${{ matrix.os }})
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    # Tag builds are cold (no cache) and may wait on Apple's notary service.
+    timeout-minutes: ${{ startsWith(github.ref, 'refs/tags/v') && 75 || 40 }}
+    # Tag builds run in the `release` environment, which holds the Apple
+    # signing secrets and admits only main and v* tags (RELEASING.md, "Owner
+    # action required"). An empty name means no environment at all.
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            preset: Linux
-            output: SaltLine.x86_64
-          - os: macos-latest
-            preset: macOS
-            output: SaltLine.app
-          - os: windows-latest
-            preset: Windows Desktop
-            output: SaltLine.exe
+        include: ${{ fromJSON(needs.platforms.outputs.playable) }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # v1 hard-links the macOS binary out of its .app bundle, and the kernel
       # SIGKILLs anything run through that link (Killed: 9, exit 137). Fixed in
       # v2.3.0 by using a real symlink.
       - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
         with:
-          version: 4.4.1
+          version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: runner.os == 'Linux' && !startsWith(github.ref, 'refs/tags/')
+        id: portal-cache
+        with:
+          path: |
+            addons/xdg_portals/bin
+            addons/xdg_portals/xdg_portals.gdextension
+          key: xdg-portals-${{ matrix.os }}-${{ hashFiles('tools/build_xdg_portals.sh', 'tools/xdg_portals_linux.gdextension.in') }}
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+      - name: build the Linux desktop portal bridge
+        if: runner.os == 'Linux' && steps.portal-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y cmake pkg-config libglib2.0-dev
+          bash tools/build_xdg_portals.sh editor template_release
       - name: build the release GDExtension
+        if: runner.os != 'macOS'
         run: cargo build --release -p salt-line-godot
+      - name: strip nonessential Linux release symbols
+        if: runner.os == 'Linux'
+        run: bash tools/strip_linux_release.sh
+      # The macOS export ships one universal dylib (arm64 + x86_64), which is
+      # what `macos.release` in salt_line.gdextension points at; `just
+      # macos-universal` is the same thing on a Mac. Debug builds stay
+      # host-only at target/debug, so local development is unchanged.
+      - name: build the universal macOS GDExtension
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release -p salt-line-godot --target aarch64-apple-darwin
+          cargo build --release -p salt-line-godot --target x86_64-apple-darwin
+          out=target/universal-apple-darwin/release
+          mkdir -p "$out"
+          lipo -create -output "$out/libsalt_line_godot.dylib" \
+            target/aarch64-apple-darwin/release/libsalt_line_godot.dylib \
+            target/x86_64-apple-darwin/release/libsalt_line_godot.dylib
+          lipo -info "$out/libsalt_line_godot.dylib"
+          lipo "$out/libsalt_line_godot.dylib" -verify_arch arm64 x86_64
       # The editor that drives --import and --export-release is itself a debug
       # context, so it resolves the `*.debug` entries in salt_line.gdextension
       # and only the release profile is built here. Staging a copy at the debug
@@ -182,7 +661,7 @@ jobs:
           set -eu
           mkdir -p target/debug
           for f in target/release/*salt_line_godot.so \
-                   target/release/*salt_line_godot.dylib \
+                   target/universal-apple-darwin/release/libsalt_line_godot.dylib \
                    target/release/salt_line_godot.dll; do
             if [ -e "$f" ]; then cp "$f" "target/debug/$(basename "$f")"; fi
           done
@@ -220,14 +699,20 @@ jobs:
         # A clean checkout has no .godot/ cache, so the PNGs are still PNGs.
         # Exporting without importing first ships an artifact with no art in
         # it — which exports successfully and then launches wrong.
+        #
+        # godotengine/godot#111048: the editor can quit before a deferred
+        # GDExtension doc update runs and crash (signal 11, exit 139) after the
+        # work is done. --frame-delay only narrowed that window; Windows still
+        # crashed with it. tools/godot_headless.sh removes the triggers. Drop
+        # both once the pinned Godot has the fix.
         shell: bash
         run: |
-          "$GODOT_BIN" --headless --path . --import
+          bash tools/godot_headless.sh --frame-delay 800 --import
       - name: export playable binary
         shell: bash
         run: |
           set -eu
-          "$GODOT_BIN" --headless --path . --export-release \
+          bash tools/godot_headless.sh --export-release \
             "${{ matrix.preset }}" "build/${{ matrix.output }}"
           # `--export-release` has been known to exit 0 having written nothing,
           # so the file is the gate, not the exit code.
@@ -236,6 +721,73 @@ jobs:
             ls -lR build >&2
             exit 1
           fi
+      # The export copies whatever `macos.release` points at into the bundle;
+      # check that what shipped really is universal.
+      - name: the macOS bundle carries a universal extension
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          lib=$(find build/SaltLine.app/Contents -name '*salt_line_godot*.dylib' | head -1)
+          if [ -z "$lib" ]; then
+            echo "no GDExtension inside the exported bundle" >&2
+            find build/SaltLine.app >&2
+            exit 1
+          fi
+          lipo -info "$lib"
+          lipo "$lib" -verify_arch arm64 x86_64
+          lipo -info "$(find build/SaltLine.app/Contents/MacOS -maxdepth 1 -type f | head -1)"
+
+      # Developer ID signing and notarization, for tag builds only and only when
+      # every Apple secret is set (RELEASING.md, "Owner action required").
+      # Without them the app ships unsigned, as the preview always has.
+      - name: macOS signing credentials
+        id: apple
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          if [ -n "$P12" ] && [ -n "$P12_PASSWORD" ] && [ -n "$NOTARY_KEY" ] \
+             && [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Apple signing secrets are not all set; the macOS build is unsigned and un-notarized"
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: sign the macOS app (Developer ID, hardened runtime)
+        if: steps.apple.outputs.sign == 'true'
+        env:
+          P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+        run: |
+          set -eu
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kcpass=$(uuidgen)
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security import "$RUNNER_TEMP/devid.p12" -k "$kc" -P "$P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/devid.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc" > /dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$kc" \
+                     | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
+          if [ -z "$identity" ]; then
+            echo "APPLE_DEVELOPER_ID_P12 holds no Developer ID Application identity" >&2
+            exit 1
+          fi
+          app=build/SaltLine.app
+          # Inside out: nested code first, then the bundle.
+          find "$app/Contents" -name '*.dylib' -print0 | while IFS= read -r -d '' lib; do
+            codesign --force --timestamp --options runtime --sign "$identity" "$lib"
+          done
+          codesign --force --timestamp --options runtime --sign "$identity" "$app"
+          codesign --verify --strict --deep --verbose=2 "$app"
 
       # Exporting successfully is not the same as being playable. Launch the
       # artifact itself — not the editor, not `cargo run` — and make it render
@@ -258,6 +810,12 @@ jobs:
           fi
           chmod +x "$exe" 2>/dev/null || true
           rm -f smoke.png
+          # Since Godot 4.7 an exported build no longer writes a relative path
+          # under the directory it was started from, so pass it absolute. `pwd -W`
+          # gives the Windows form (D:/...) the engine expects there.
+          shot="$(pwd -W 2>/dev/null || pwd)/smoke.png"
+          extra=""
+          if [ "${{ runner.os }}" = "Linux" ]; then extra=--salt-require-portals; fi
 
           # An exported Windows binary is GUI-subsystem too, so it detaches and
           # hands back 0 the moment it is started. Waiting on the rendered file
@@ -265,7 +823,7 @@ jobs:
           # thing on all three platforms: it launched, and it drew a screen.
           "$exe" --headless -- \
             --salt-seed 20260907 --salt-screen 12 \
-            --salt-shot smoke.png --salt-shot-at 0.5 &
+            --salt-shot "$shot" --salt-shot-at 0.5 ${extra:+$extra} &
           launcher=$!
           for _ in $(seq 1 60); do
             if [ -s smoke.png ]; then break; fi
@@ -292,6 +850,37 @@ jobs:
             exit 1
           fi
           echo "launched and rendered $(wc -c < smoke.png) bytes"
+      # After the smoke test, so a build that cannot launch is never sent to
+      # Apple; before the checksum, because stapling changes the bundle.
+      - name: notarize and staple the macOS app
+        if: steps.apple.outputs.sign == 'true'
+        env:
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          set -eu
+          key="$RUNNER_TEMP/notary.p8"
+          printf '%s' "$NOTARY_KEY" | base64 --decode > "$key"
+          ditto -c -k --keepParent build/SaltLine.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
+            --wait --timeout 30m --output-format json | tee "$RUNNER_TEMP/notary.json"
+          status=$(plutil -extract status raw -o - "$RUNNER_TEMP/notary.json")
+          if [ "$status" != "Accepted" ]; then
+            id=$(plutil -extract id raw -o - "$RUNNER_TEMP/notary.json")
+            xcrun notarytool log "$id" \
+              --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" >&2 || true
+            echo "notarization finished as '$status'" >&2
+            exit 1
+          fi
+          rm -f "$key"
+          xcrun stapler staple build/SaltLine.app
+          xcrun stapler validate build/SaltLine.app
+          spctl --assess --type execute --verbose=2 build/SaltLine.app
+      - name: remove the signing keychain
+        if: always() && steps.apple.outputs.sign == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
       - name: checksum
         shell: bash
         run: |
@@ -305,7 +894,7 @@ jobs:
               find "${{ matrix.output }}" -type f -exec shasum -a 256 {} + > "${{ matrix.output }}.sha256"
           fi
           cat "${{ matrix.output }}.sha256"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: salt-line-${{ matrix.preset }}
           # An empty upload used to pass this job silently. Never again.
@@ -313,10 +902,668 @@ jobs:
           path: |
             build/${{ matrix.output }}
             build/${{ matrix.output }}.sha256
+            build/*.so
+            build/*.dll
       - name: the smoke frame, for eyeballing a failure
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: smoke-${{ matrix.preset }}
           path: smoke.png
           if-no-files-found: warn
+      # One zip per platform for the dev and tagged releases. `ditto` keeps the macOS
+      # bundle's symlinks and permissions, and zip keeps the Linux binary's +x;
+      # a plain artifact upload keeps neither. On Linux and Windows the export
+      # writes the GDExtension libraries (on Linux the game's and the portal
+      # bridge's) beside the binary, and the binary does not start without
+      # them, so they go in too.
+      - name: package for release
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p dist
+          case "${{ runner.os }}" in
+            macOS) ditto -c -k --keepParent "build/${{ matrix.output }}" "dist/${{ matrix.zip }}" ;;
+            Windows) (cd build && 7z a -tzip "../dist/${{ matrix.zip }}" "${{ matrix.output }}" ./*.dll > /dev/null) ;;
+            Linux) (cd build && zip -q "../dist/${{ matrix.zip }}" "${{ matrix.output }}" ./*.so) ;;
+          esac
+          ls -l dist
+      # The smoke launch above runs from the checkout, where the editor-side
+      # paths (target/release/...) still resolve, so it passed while the Linux
+      # zip shipped the binary alone and could not load its extension. This
+      # unpacks the zip somewhere empty, checks every ELF in it is built for
+      # this runner's architecture (the Linux counterpart of the macOS
+      # `lipo -verify_arch`), and launches it from there.
+      - name: the Linux zip is complete and runs on its own
+        if: runner.os == 'Linux'
+        env:
+          ZIP: ${{ matrix.zip }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -eu
+          case "$RUNNER_ARCH" in
+            ARM64) want=aarch64 ;;
+            X64) want=x86-64 ;;
+            *) echo "unexpected runner arch $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          dir="$RUNNER_TEMP/unpacked"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          unzip -q "dist/$ZIP" -d "$dir"
+          cd "$dir"
+          ls -l
+          for f in "$OUTPUT" libsalt_line_godot.so libxdg_portals.linux.template_release.*.so; do
+            if [ ! -f "$f" ]; then
+              echo "$ZIP is missing $f" >&2
+              exit 1
+            fi
+            desc=$(file -b "$f")
+            echo "$f: $desc"
+            case "$desc" in
+              ELF*"$want"*) ;;
+              *) echo "$f is not an $want ELF" >&2; exit 1 ;;
+            esac
+          done
+          "./$OUTPUT" --headless -- \
+            --salt-seed 20260907 --salt-screen 12 \
+            --salt-shot "$dir/smoke.png" --salt-shot-at 0.5 --salt-require-portals &
+          launcher=$!
+          for _ in $(seq 1 60); do
+            if [ -s smoke.png ]; then break; fi
+            if ! kill -0 "$launcher" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$launcher" 2>/dev/null || true
+          sleep 2
+          kill -9 "$launcher" 2>/dev/null || true
+          wait "$launcher" 2>/dev/null || true
+          if [ ! -s smoke.png ] || [ "$(head -c 4 smoke.png | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+            echo "the unpacked $ZIP never rendered a frame" >&2
+            exit 1
+          fi
+          echo "unpacked $ZIP launched and rendered $(wc -c < smoke.png) bytes"
+      # The same for Windows: the zip used to hold SaltLine.exe without
+      # salt_line_godot.dll. tools/check_windows_zip.sh unpacks it somewhere
+      # empty, checks it holds everything the export wrote and that every PE
+      # in it is x86-64, and launches it from there.
+      - name: the Windows zip is complete and runs on its own
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          ZIP: ${{ matrix.zip }}
+          OUTPUT: ${{ matrix.output }}
+        run: bash tools/check_windows_zip.sh "dist/$ZIP" "$OUTPUT" x86_64 build
+      # The bundle carries its dylib inside it, so the macOS zip has always been
+      # whole; this keeps it that way. ditto restores the bundle's symlinks.
+      - name: the macOS zip is complete and runs on its own
+        if: runner.os == 'macOS'
+        env:
+          ZIP: ${{ matrix.zip }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/unpacked"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          ditto -x -k "dist/$ZIP" "$dir"
+          cd "$dir"
+          lib=$(find "$OUTPUT/Contents" -name 'libsalt_line_godot.dylib' | head -1)
+          if [ -z "$lib" ]; then
+            echo "$ZIP has no libsalt_line_godot.dylib in the bundle" >&2
+            find "$OUTPUT" >&2
+            exit 1
+          fi
+          lipo "$lib" -verify_arch arm64 x86_64
+          exe=$(find "$OUTPUT/Contents/MacOS" -maxdepth 1 -type f | head -1)
+          lipo -info "$exe"
+          "$exe" --headless -- \
+            --salt-seed 20260907 --salt-screen 12 \
+            --salt-shot "$dir/smoke.png" --salt-shot-at 0.5 &
+          launcher=$!
+          for _ in $(seq 1 60); do
+            if [ -s smoke.png ]; then break; fi
+            if ! kill -0 "$launcher" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$launcher" 2>/dev/null || true
+          sleep 2
+          kill -9 "$launcher" 2>/dev/null || true
+          wait "$launcher" 2>/dev/null || true
+          if [ ! -s smoke.png ] || [ "$(head -c 4 smoke.png | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+            echo "the unpacked $ZIP never rendered a frame" >&2
+            exit 1
+          fi
+          echo "unpacked $ZIP launched and rendered $(wc -c < smoke.png) bytes"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.preset }}
+          path: dist/*
+          if-no-files-found: error
+
+  # A release-optimised APK for sideloading. Pushes to main (dev builds) and
+  # v* tags are signed with the release key when its three secrets are set in
+  # the `release` environment, so dev builds and releases install over each
+  # other in versionCode order; without them they fall back to the debug key
+  # with a warning. Pull requests always use the debug key: the
+  # ANDROID_DEBUG_KEYSTORE secret (base64) when set, the same key as a local
+  # `just android`, else a throwaway key made per run.
+  # The versionCode is written into the preset per build (RELEASING.md,
+  # "Android versionCode").
+  android:
+    name: android (arm64)
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Pushes to main and v* tags run in the `release` environment, which holds
+    # the Android release key; pull requests never do, and stay on the debug
+    # key. An empty name means no environment at all.
+    environment: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+          key: android
+      - name: build the GDExtension for Android
+        run: |
+          set -eu
+          rustup target add aarch64-linux-android
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cargo build --release -p salt-line-godot --target aarch64-linux-android \
+            --config "target.aarch64-linux-android.linker=\"$bin/aarch64-linux-android24-clang\""
+          "$bin/llvm-strip" --strip-debug target/aarch64-linux-android/release/libsalt_line_godot.so
+      # Godot's CLI cannot override version/code, so the preset is edited in
+      # place in this throwaway checkout. Tags get the version's release slot;
+      # everything else gets the run number, below it (RELEASING.md).
+      - name: versionCode
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -eu
+          tool=tools/release_version.py
+          if [ "$IS_TAG" = "true" ]; then
+            code=$(python3 "$tool" android-code --run "$RUN_NUMBER" --release)
+            python3 "$tool" set-android --code "$code"
+          else
+            code=$(python3 "$tool" android-code --run "$RUN_NUMBER")
+            base=$(python3 "$tool" version)
+            python3 "$tool" set-android --code "$code" --name "$base-dev.$RUN_NUMBER"
+          fi
+      - name: signing key
+        id: key
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+          # Only main pushes and tags ask for the release key, and only they run
+          # in the `release` environment that holds it.
+          RELEASE_KEYSTORE_B64: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && secrets.ANDROID_RELEASE_KEYSTORE || '' }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD || '' }}
+          RELEASE_KEY_ALIAS: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && secrets.ANDROID_RELEASE_KEY_ALIAS || '' }}
+          WANT_RELEASE_KEY: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+        run: |
+          set -eu
+          if [ -n "$RELEASE_KEYSTORE_B64" ] && [ -n "$RELEASE_KEYSTORE_PASSWORD" ] && [ -n "$RELEASE_KEY_ALIAS" ]; then
+            ks="$RUNNER_TEMP/release.keystore"
+            printf '%s' "$RELEASE_KEYSTORE_B64" | base64 -d > "$ks"
+            {
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$ks"
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=$RELEASE_KEY_ALIAS"
+            } >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "signing with the release key"
+            exit 0
+          fi
+          if [ "$WANT_RELEASE_KEY" = "true" ]; then
+            echo "::warning::ANDROID_RELEASE_KEYSTORE, ANDROID_RELEASE_KEYSTORE_PASSWORD and ANDROID_RELEASE_KEY_ALIAS are not all set in the release environment; this APK is signed with the debug key and will not install over a release-signed build"
+          fi
+          ks="$RUNNER_TEMP/debug.keystore"
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            printf '%s' "$DEBUG_KEYSTORE_B64" | base64 -d > "$ks"
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE is not set; signing with a throwaway key"
+            keytool -genkeypair -keystore "$ks" -alias androiddebugkey -storepass android \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          {
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$ks"
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey"
+          } >> "$GITHUB_ENV"
+          echo "mode=debug" >> "$GITHUB_OUTPUT"
+      # The editor loads the host library, not the Android one. Without it the
+      # extension fails to load at startup and import hits godotengine/godot#111048
+      # (see tools/godot_headless.sh).
+      - name: build the GDExtension for the editor
+        run: cargo build -p salt-line-godot
+      - name: import assets
+        run: bash tools/godot_headless.sh --frame-delay 800 --import
+      # The stripped engine (docs/godot-templates.md): fetched from the
+      # godot-templates release that tools/godot_templates.lock.json pins and
+      # checked against its sha256. A lock written for other build inputs
+      # falls back to the official template with a warning, except on a tag,
+      # which fails. The repository variable STRIPPED_ENGINE=off is the off
+      # switch (RELEASING.md): official template everywhere, tags included.
+      - name: stripped engine template
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          STRIPPED_ENGINE: ${{ vars.STRIPPED_ENGINE }}
+        run: |
+          set -eu
+          if [ "$STRIPPED_ENGINE" = "off" ]; then
+            echo "::warning::vars.STRIPPED_ENGINE is off: this APK is exported on the official Godot template"
+            exit 0
+          fi
+          set --
+          if [ "$IS_TAG" = "true" ]; then set -- --require; fi
+          python3 tools/godot_template.py fetch --out "$RUNNER_TEMP/godot-templates" "$@"
+          engine="$RUNNER_TEMP/godot-templates/libgodot.android.template_release.arm64.so"
+          if [ -f "$engine" ]; then
+            python3 tools/godot_template.py package-android "$engine" \
+              --out "$RUNNER_TEMP/godot-templates/android_release.apk"
+            python3 tools/godot_template.py use Android "$RUNNER_TEMP/godot-templates/android_release.apk"
+          elif [ "$IS_TAG" = "true" ]; then
+            echo "::error::a release tag must export on the stripped engine, and none was fetched"
+            exit 1
+          fi
+      - name: export the APK
+        env:
+          # Kept out of GITHUB_ENV so the password lives only in this step.
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ steps.key.outputs.mode == 'release' && secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD || 'android' }}
+        run: |
+          set -eu
+          # Godot takes the SDK from ANDROID_HOME and the JDK from JAVA_HOME.
+          export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+          mkdir -p build dist
+          bash tools/godot_headless.sh --export-release "Android" build/SaltLine.apk
+          test -s build/SaltLine.apk
+          cp build/SaltLine.apk dist/SaltLine-android-arm64.apk
+          ls -l dist
+      # The certificate digest is what decides whether this APK installs over
+      # an existing one; print it so a key mix-up is visible in the log.
+      - name: signing certificate and version
+        run: |
+          set -eu
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$tools/apksigner" verify --print-certs dist/SaltLine-android-arm64.apk
+          "$tools/aapt2" dump badging dist/SaltLine-android-arm64.apk | head -1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-android
+          path: dist/*
+          if-no-files-found: error
+
+  # iOS can only be signed with a developer account, so CI stops short of that: it
+  # builds the extension, exports the Xcode project with a placeholder team, and
+  # builds the app unsigned. That still proves the export and the link, which is
+  # everything `just ios` does before signing.
+  ios:
+    needs: platforms
+    name: ios (arm64, unsigned)
+    if: needs.platforms.outputs.apple == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ios
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+      - name: build the host and iOS GDExtensions
+        run: |
+          # Godot loads the host library while importing a clean checkout. Without
+          # it the export can succeed after failing to instantiate the main scene.
+          cargo build -p salt-line-godot
+          rustup target add aarch64-apple-ios
+          cargo build -p salt-line-godot --target aarch64-apple-ios
+      - name: import assets
+        run: bash tools/godot_headless.sh --frame-delay 800 --import
+      - name: export the Xcode project
+        run: |
+          set -eu
+          sed -i '' 's/^application\/app_store_team_id=".*"$/application\/app_store_team_id="ABCDE12345"/' export_presets.cfg
+          mkdir -p build/ios
+          bash tools/godot_headless.sh --export-debug "iOS" build/ios/SaltLine.ipa
+          test -d build/ios/SaltLine.xcodeproj
+          info=build/ios/SaltLine/SaltLine-Info.plist
+          for key in NSCameraUsageDescription NSMicrophoneUsageDescription NSPhotoLibraryUsageDescription; do
+            plutil -remove "$key" "$info" 2>/dev/null || true
+          done
+          sed -i '' '/^#pragma once$/d' build/ios/SaltLine/dummy.h
+          # A missing extension library is skipped silently, so check it was wrapped.
+          find build/ios -name 'libsalt_line_godot.framework' | grep -q .
+      - name: build the app, unsigned
+        run: |
+          set -eu
+          xcodebuild -project build/ios/SaltLine.xcodeproj -configuration Debug -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO SYMROOT="$PWD/build/ios/out" -quiet build
+          app=$(ls -d build/ios/out/Debug-iphoneos/*.app | head -1)
+          echo "built $app"
+          find "$app" -maxdepth 3 \( -name '*salt_line*' -o -name '*.pck' \) | tee found.txt
+          grep -q salt_line found.txt
+
+  # Native build for Windows on ARM (e.g. Snapdragon laptops). The ARM runner
+  # both exports and launches the shipped executable, so a missing ARM
+  # extension or an engine startup failure cannot reach a release.
+  windows-arm64:
+    name: windows (arm64, native smoke)
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-11-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+          key: windows-arm64
+      - name: build the GDExtension for both architectures
+        shell: bash
+        run: |
+          set -eu
+          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          # setup-godot may provide an x64 editor under emulation. Keep the
+          # host mapping valid for that editor while the exported ARM binary
+          # resolves the explicit aarch64 mapping.
+          cargo build --release -p salt-line-godot --target x86_64-pc-windows-msvc
+          cargo build --release -p salt-line-godot --target aarch64-pc-windows-msvc
+          mkdir -p target/release target/debug target/aarch64-pc-windows-msvc/debug
+          cp target/x86_64-pc-windows-msvc/release/salt_line_godot.dll \
+             target/release/salt_line_godot.dll
+          cp target/release/salt_line_godot.dll target/debug/salt_line_godot.dll
+          cp target/aarch64-pc-windows-msvc/release/salt_line_godot.dll \
+             target/aarch64-pc-windows-msvc/debug/salt_line_godot.dll
+      - name: find a Godot that actually runs
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            main=$(find "$HOME/godot" -maxdepth 3 \
+                   \( -name 'Godot_v*_win64.exe' -o -name 'Godot_v*_windows_arm64.exe' \) \
+                   ! -name '*_console.exe' | head -1)
+            if [ -z "$main" ]; then
+              echo "no unpacked Godot found under $HOME/godot" >&2
+              ls -R "$HOME/godot" >&2 || true
+              exit 1
+            fi
+            console="${main%.exe}_console.exe"
+            # The console wrapper is not restored on a tool-cache hit, so fall
+            # back rather than fail — the output checks below are the real gate.
+            if [ -f "$console" ]; then bin="$console"; else bin="$main"; fi
+          else
+            bin=godot
+          fi
+          echo "GODOT_BIN=$bin" >> "$GITHUB_ENV"
+          "$bin" --version
+      - name: import assets
+        shell: bash
+        run: |
+          bash tools/godot_headless.sh --import
+      - name: export the arm64 binary
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p build dist
+          bash tools/godot_headless.sh --export-release "Windows Desktop ARM64" build/SaltLine-arm64.exe
+          test -s build/SaltLine-arm64.exe
+          # Keep the executable at the archive root for an Explorer launch,
+          # with the GDExtension the export wrote beside it: the .exe cannot
+          # load the game without salt_line_godot.dll.
+          (cd build && 7z a -tzip ../dist/SaltLine-windows-arm64.zip SaltLine-arm64.exe ./*.dll > /dev/null)
+          ls -l dist
+      - name: smoke launch the ARM64 artifact
+        shell: bash
+        run: |
+          set -eu
+          rm -f smoke.png
+          shot="$(pwd -W 2>/dev/null || pwd)/smoke.png"
+          ./build/SaltLine-arm64.exe --headless -- \
+            --salt-seed 20260907 --salt-screen 12 \
+            --salt-shot "$shot" --salt-shot-at 0.5 &
+          launcher=$!
+          for _ in $(seq 1 60); do
+            if [ -s smoke.png ]; then break; fi
+            if ! kill -0 "$launcher" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$launcher" 2>/dev/null || true
+          sleep 2
+          kill -9 "$launcher" 2>/dev/null || true
+          wait "$launcher" 2>/dev/null || true
+          if [ ! -s smoke.png ]; then
+            echo "the ARM64 exported build never rendered a frame" >&2
+            exit 1
+          fi
+          if [ "$(head -c 4 smoke.png | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+            echo "smoke.png is not a PNG" >&2
+            exit 1
+          fi
+          echo "ARM64 artifact launched and rendered $(wc -c < smoke.png) bytes"
+      # The smoke launch runs from the checkout, where the editor-side paths
+      # still resolve; this checks the zip a player downloads, unpacked
+      # somewhere empty, holds an ARM64 .exe and .dll and runs on its own.
+      - name: the Windows ARM64 zip is complete and runs on its own
+        shell: bash
+        run: bash tools/check_windows_zip.sh dist/SaltLine-windows-arm64.zip SaltLine-arm64.exe arm64 build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: smoke-Windows-Desktop-ARM64
+          path: smoke.png
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-windows-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  # The software bill of materials for a published build: the GDExtension's
+  # whole Cargo dependency tree (cargo-cyclonedx reads Cargo.lock; syft over the
+  # exported binaries would find nothing, since a stripped cdylib carries no
+  # crate list), plus the two binary dependencies Cargo cannot see, the Godot
+  # export templates (and the stripped Android engine when it is pinned) and
+  # the Linux XDG Portals bridge (tools/release_sbom.py).
+  # Default features only, which is what ships; every target, since the
+  # release spans seven. Dev-dependencies are left out and build-only crates
+  # (proc macros, codegen) are kept but marked `excluded`. CycloneDX JSON,
+  # uploaded as dist-sbom so the release jobs attach and attest it like any
+  # other download. It runs on pull requests too, though they never publish:
+  # it is cheap and holds no secrets, and a broken SBOM should surface in the
+  # pull request, not on the push to main or a tag.
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          # Pinned: the tool writes its own version into the SBOM, so a new
+          # release would change the bytes a commit's SBOM is meant to keep.
+          tool: cargo-cyclonedx@0.5.9
+      # SOURCE_DATE_EPOCH (the commit time) makes the timestamp the commit's,
+      # so the same commit always produces the same SBOM, byte for byte.
+      - name: generate the SBOM
+        env:
+          # The android job's off switch; the SBOM must agree with what shipped.
+          STRIPPED_ENGINE: ${{ vars.STRIPPED_ENGINE }}
+        run: |
+          set -eu
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          cargo cyclonedx --format json --spec-version 1.5 --target all -q
+          python3 tools/release_sbom.py \
+            --cargo-bom crates/salt-line-godot/salt-line-godot.cdx.json \
+            --godot "$GODOT_VERSION" --commit "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
+            --out dist/SaltLine-sbom.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-sbom
+          path: dist/SaltLine-sbom.cdx.json
+          if-no-files-found: error
+
+  # Replaces the `dev` prerelease with this commit's builds, so the latest main
+  # is one download away on any device. Only after every check has passed.
+  #
+  # It attests them exactly as `release` does (see there), so every push to
+  # main exercises the signing path a tag depends on, and a dev build can be
+  # verified with `gh attestation verify` too.
+  dev-release:
+    name: dev release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [version, determinism, solvability, lint, art, playable, android, windows-arm64, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write      # create the GitHub release and upload its files
+      id-token: write      # OIDC token for the Sigstore signing certificate
+      attestations: write  # store the provenance and SBOM attestations
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: checksums
+        working-directory: dist
+        run: |
+          set -eu
+          sha256sum -- * > SHA256SUMS
+          ls -l
+      - name: attest build provenance
+        if: vars.ATTEST != 'off'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: attest the SBOM
+        if: vars.ATTEST != 'off'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          sbom-path: dist/SaltLine-sbom.cdx.json
+          subject-path: |
+            dist/*.zip
+            dist/*.apk
+      - name: replace the dev prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd dist
+          short="${GITHUB_SHA::7}"
+          gh release delete dev --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create dev ./* \
+            --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "Development build ($short)" \
+            --notes "Latest main, built from $short. Unsigned desktop builds and an Android APK, for testing only (see RELEASING.md for how it is signed, and how to verify its provenance and SBOM attestations)."
+
+  # A `vX.Y.Z` tag publishes release vX.Y.Z: the same downloads as the dev
+  # build, as a normal (not pre-) release, with that version's CHANGELOG.md
+  # section as its notes. Only after every check has passed, including the
+  # version gate, which fails when the tag does not match the version in the
+  # tree. The tag itself is pushed by a human (RELEASING.md).
+  #
+  # Every download is attested before anything is published: one SLSA build
+  # provenance attestation over all of them (SHA256SUMS and the SBOM included),
+  # naming this workflow, the tag, the commit and the run; and one SBOM
+  # attestation binding SaltLine-sbom.cdx.json to the game files. The builds
+  # come from the export jobs of this same run, so the provenance is the run's;
+  # signing here rather than in each export job keeps the OIDC token away from
+  # Godot, the build scripts and setup-godot. The repository is internal, and
+  # attestations for private and internal repositories need GitHub Enterprise
+  # Cloud, which the organization is on; on any other plan these steps fail
+  # and nothing is published (RELEASING.md, "Verifying a download").
+  release:
+    name: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [version, determinism, solvability, lint, art, deny, playable, android, windows-arm64, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write      # create the GitHub release and upload its files
+      id-token: write      # OIDC token for the Sigstore signing certificate
+      attestations: write  # store the provenance and SBOM attestations
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            tools/release_version.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: checksums
+        working-directory: dist
+        run: |
+          set -eu
+          sha256sum -- * > SHA256SUMS
+          ls -l
+      - name: attest build provenance
+        if: vars.ATTEST != 'off'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: attest the SBOM
+        if: vars.ATTEST != 'off'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          sbom-path: dist/SaltLine-sbom.cdx.json
+          subject-path: |
+            dist/*.zip
+            dist/*.apk
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          python3 tools/release_version.py notes "$version" > "$RUNNER_TEMP/notes.md"
+          {
+            echo
+            echo '---'
+            echo
+            echo "Built from ${GITHUB_SHA::7}. Verify downloads against SHA256SUMS, or their provenance with \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`; SaltLine-sbom.cdx.json lists what is inside. RELEASING.md says which builds are signed."
+          } >> "$RUNNER_TEMP/notes.md"
+          cd dist
+          gh release create "$tag" ./* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --title "Salt Line $version" \
+            --notes-file "$RUNNER_TEMP/notes.md"

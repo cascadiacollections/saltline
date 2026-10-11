@@ -2,10 +2,11 @@
 name = "salt-line-tools"
 version = "0.1.0"
 description = "Asset and marketing-site generators for Salt Line"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
-    "Pillow>=10",
+    "Pillow>=12.3",
 ]
 
 [tool.uv]
+required-version = "==0.13.0"
 package = false

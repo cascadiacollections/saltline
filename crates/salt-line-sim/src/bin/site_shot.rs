@@ -2,15 +2,35 @@
 //!
 //! Input on stdin is:
 //! `width height wind target_x`, followed by `width` screen-space terrain heights.
+//!
+//! `tools/build_site.py` drives it. The terrain arrives in screen space (y
+//! down) and is flipped into world elevations. A leaning water tower,
+//! already at the Leaning threshold, is seated just right of `target_x`, and
+//! every solver candidate that fells it is replayed with the real damage
+//! model. The one with the highest apex that still stays at least 22 px
+//! below the top of the frame wins, so the arc fits the image.
+//!
+//! Output on stdout:
+//!
+//! ```text
+//! angle_ticks speed impact_x impact_y path_len
+//! x y                      (path_len lines, world space)
+//! SURFACE
+//! elevation                (width lines, the cratered surface)
+//! ```
+//!
+//! Panics with a message on malformed input or if no candidate fits.
 
 use std::io::{self, Read};
 
 use salt_line_sim::modifiers::Loadout;
-use salt_line_sim::run::{Screen, StructState, Structure, StructureKind};
+use salt_line_sim::run::{Rung, Screen, StructState, Structure, StructureKind};
 use salt_line_sim::solver;
 use salt_line_sim::terrain::{Heightfield, Template};
 use salt_line_sim::EMPLACEMENT_X;
 
+/// Next whitespace-separated token parsed as `T`; panics naming `name` if it
+/// is missing or malformed.
 fn value<T: std::str::FromStr>(values: &mut impl Iterator<Item = String>, name: &str) -> T {
     values
         .next()
@@ -41,6 +61,8 @@ fn main() {
         .map(|x| field.surface(x))
         .sum::<f64>()
         / kind.footprint() as f64;
+    // A hand-built screen. The index and seed are placeholders: nothing below
+    // regenerates terrain from them.
     let screen = Screen {
         index: 34,
         seed: 20260907,
@@ -63,6 +85,7 @@ fn main() {
         candidates: 0,
         attempts: 1,
         fell_back: false,
+        rung: Some(Rung::Drawn),
         supply: false,
     };
     let loadout = Loadout::new();

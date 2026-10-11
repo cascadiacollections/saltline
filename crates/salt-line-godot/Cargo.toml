@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "salt-line-godot"
 version.workspace = true
 edition.workspace = true
@@ -11,17 +12,34 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Off by default: the development preview has no paywall and nothing for sale.
-# Turning this on arms the paywall, which then requires a real storefront —
-# see `src/store.rs`.
-default = []
-monetization = []
+# A dedicated optimized profiling build. Absent from normal/release builds.
+profiling = []
 
 [dependencies]
-# `api-4-4` pins the GDExtension API level to the engine version this project
+# `api-4-7` pins the GDExtension API level to the engine version this project
 # targets (see project.godot config/features and RELEASING.md). Without it the
 # bindings build against the newest API the crate knows about, and the
-# resulting extension silently refuses to load on 4.4.1 -- the game boots to an
+# resulting extension silently refuses to load on 4.7.2 -- the game boots to an
 # empty scene and hangs. Building down-level still runs on newer engines.
-godot = { version = "0.5", features = ["api-4-4"] }
+#
+# `lazy-function-tables` looks engine methods up on first call instead of all
+# of them when the library loads. The Android release runs on an engine built
+# without the classes this game never touches (tools/godot_build_profile.json,
+# docs/godot-templates.md); an eager table would panic at startup on the first
+# missing one. Two costs:
+#   - Each engine call borrows a RefCell around the table and does a hash
+#     lookup (a few hundred calls a frame; nothing measurable next to the
+#     raster).
+#   - The table is not thread-safe: no engine call may ever be made off the
+#     main thread (gdext documents it as incompatible with
+#     `experimental-threads`).
+# `engine_classes::check` still fails at startup, by name, if the engine lacks
+# a class the game uses.
+godot = { version = "0.5", features = ["api-4-7", "lazy-function-tables"] }
 salt-line-sim = { path = "../salt-line-sim" }
+
+[dev-dependencies]
+insta = "1"
+pretty_assertions = "1"
+rstest = { version = "0.26", default-features = false }
+proptest = { version = "1", default-features = false, features = ["std"] }

@@ -1,0 +1,32 @@
+[
+  {
+    "label": "Test workspace",
+    "command": "cargo test --locked --workspace",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false
+  },
+  {
+    "label": "Clippy all targets",
+    "command": "cargo clippy --locked --workspace --all-targets -- -D warnings",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false
+  },
+  {
+    "label": "Check formatting",
+    "command": "cargo fmt --all -- --check",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false
+  },
+  {
+    "label": "Build GDExtension",
+    "command": "cargo build --locked -p salt-line-godot",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false
+  },
+  {
+    "label": "Test Python tools",
+    "command": "uv run --locked python -m unittest discover -s tools -p 'test_*.py'",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false
+  }
+]

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Salt Line — sprite + scene generator.
+"""Salt Line — scene and contact-sheet builder using exported game sprites.
 
 Renders at the spec's native internal resolution (180px tall) using the
-16-colour fixed palette. Nothing here is anti-aliased, scaled or rotated at
-runtime; every sprite is rasterised directly into the pixel grid.
+16-colour fixed palette. Exported sprites are composited without rotation
+or filtering; enlarged previews use integer nearest-neighbour scaling.
 """
 import math, os, struct
 from PIL import Image
@@ -12,7 +12,6 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.environ.get("SALT_LINE_ART", os.path.join(ROOT, "art"))
 SPR = os.path.join(OUT, "sprites")
-os.makedirs(SPR, exist_ok=True)
 
 # ---------------------------------------------------------------- palette (16)
 P = {
@@ -40,6 +39,18 @@ P = {
     "alert":     (232, 163,  61),
 }
 T = (0, 0, 0, 0)
+CONCEPT_PRODUCTS = {}
+
+
+def concept_buf(name):
+    """Native imported pixels, when generating the shipping concept art."""
+    image = CONCEPT_PRODUCTS.get(name)
+    if image is None:
+        return None
+    buf = Buf(*image.size)
+    buf.px = [list(image.crop((0, y, image.width, y + 1)).get_flattened_data())
+              for y in range(image.height)]
+    return buf
 
 
 def rgba(name, a=255):
@@ -105,6 +116,33 @@ class Buf:
         return im
 
 
+def load_sprite(name, frame=None):
+    with Image.open(os.path.join(SPR, name + ".png")) as source:
+        image = source.convert("RGBA")
+    if frame is not None:
+        if image.size != (28 * 19, 28) or not 0 <= frame < 19:
+            raise ValueError(f"{name}: expected 19 horizontal 28x28 barrel frames")
+        image = image.crop((frame * 28, 0, (frame + 1) * 28, 28))
+    b = Buf(*image.size)
+    data = list(image.get_flattened_data() if hasattr(image, "get_flattened_data")
+                else image.getdata())
+    b.px = [data[y * b.w:(y + 1) * b.w] for y in range(b.h)]
+    return b
+
+
+def load_tank(variant="base"):
+    names = {"base": "tank_base", "ballast": "tank_ballast", "forced": "tank_forced_march"}
+    return load_sprite(names[variant]), (13, 4) if variant == "ballast" else (15, 3)
+
+
+def load_barrel(angle_deg, variant="base"):
+    names = {"base": "5deg", "ballast": "ballast", "forced": "forced_march",
+             "sabot": "sabot", "cluster": "cluster", "auger": "auger"}
+    # Match the sim's nearest pre-drawn angle; never rotate an exported frame.
+    frame = min(18, max(0, math.floor(angle_deg / 5 + 0.5)))
+    return load_sprite("barrel_strip_" + names[variant], frame), BARREL_PIVOT
+
+
 # ---------------------------------------------------------------- 3x5 font
 F = {
     "A": "111 101 111 101 101", "C": "111 100 100 100 111",
@@ -127,10 +165,10 @@ F = {
 }
 
 
-def text(buf, s, x, y, c):
+def text(buf, s, x, y, c, font=F):
     cx = x
     for ch in s.upper():
-        g = F.get(ch)
+        g = font.get(ch)
         if g:
             rows = g.split()
             for j, row in enumerate(rows):
@@ -139,6 +177,84 @@ def text(buf, s, x, y, c):
                         buf.set(cx + i, y + j, c)
         cx += 4
     return cx
+
+
+
+# The game's 5x7 digits and HUD icons (crates/salt-line-godot/src/font.rs,
+# icons.rs), so the site's HUD matches the game pixel for pixel.
+BIG = {
+    "0": "01110 10001 10001 10001 10001 10001 01110",
+    "1": "00100 01100 00100 00100 00100 00100 01110",
+    "2": "01110 10001 00001 00010 00100 01000 11111",
+    "3": "11111 00010 00100 00010 00001 10001 01110",
+    "4": "00010 00110 01010 10010 11111 00010 00010",
+    "5": "11111 10000 11110 00001 00001 10001 01110",
+    "6": "00110 01000 10000 11110 10001 10001 01110",
+    "7": "11111 00001 00010 00100 01000 01000 01000",
+    "8": "01110 10001 10001 01110 10001 10001 01110",
+    "9": "01110 10001 10001 01111 00001 00010 01100",
+    "-": "00000 00000 00000 11111 00000 00000 00000",
+    ".": "00000 00000 00000 00000 00000 01100 01100",
+}
+ICON_SHELL = ".11. 1111 1111 1111 1111 3333 1111".split()
+ICON_SOCK = ("3........ 3222111.. 322211111 3222111.. "
+             "3........ 3........ 3........").split()
+ICON_SOCK_LIMP = ("3........ 32....... 322...... 321...... "
+                  "321...... 31....... 3........").split()
+
+
+def text_big(buf, s, x, y, c):
+    for k, ch in enumerate(s):
+        for j, row in enumerate(BIG[ch].split()):
+            for i, bit in enumerate(row):
+                if bit == "1":
+                    buf.set(x + k * 6 + i, y + j, c)
+
+
+def big_width(s):
+    return len(s) * 6 - 1 if s else 0
+
+
+def icon(buf, rows, x, y, colors, flip=False):
+    w = len(rows[0])
+    for j, row in enumerate(rows):
+        for i, ch in enumerate(row):
+            if ch != ".":
+                buf.set(x + (w - 1 - i if flip else i), y + j, colors[int(ch) - 1])
+
+
+def plate(buf, x, y, w, h):
+    buf.rect(x, y, w, h, rgba("ui_bg"))
+    for i in range(w):
+        buf.set(x + i, y, rgba("shadow"))
+        buf.set(x + i, y + h - 1, rgba("shadow"))
+    for j in range(h):
+        buf.set(x, y + j, rgba("shadow"))
+        buf.set(x + w - 1, y + j, rgba("shadow"))
+
+
+def hud(buf, width, height, wind, shells, screen):
+    """The in-game HUD: windsock and strength top left, shell count top right,
+    screen index bottom right. Mirrors `render_hud` in game.rs."""
+    fg, alert, dim = rgba("ui_fg"), rgba("alert"), rgba("sky_lo")
+    wt = "--" if wind is None else f"{abs(wind):.0f}"
+    calm = not any(c in "123456789" for c in wt)
+    sock = ICON_SOCK_LIMP if calm else ICON_SOCK
+    sw = len(sock[0])
+    plate(buf, 3, 3, sw + 9 + big_width(wt), 13)
+    icon(buf, sock, 6, 4, (fg, alert, dim), flip=(not calm and wind < 0))
+    text_big(buf, wt, 6 + sw + 3, 4, alert)
+
+    st = str(shells)
+    iw = len(ICON_SHELL[0])
+    pw = iw + 13 + big_width(st)
+    px = width - pw - 3
+    plate(buf, px, 3, pw, 13)
+    icon(buf, ICON_SHELL, px + 3, 4, (fg, alert, dim))
+    text(buf, "X", px + 3 + iw + 2, 6, dim)
+    text_big(buf, st, px + 3 + iw + 7, 4, alert if shells < 10 else fg)
+
+    text(buf, screen, width - len(screen) * 4 - 2, height - 8, fg)
 
 
 # ---------------------------------------------------------------- noise
@@ -181,6 +297,10 @@ def terrain(width, seed, amp=1.0, base_y=128):
 
 # ---------------------------------------------------------------- entities
 def tank(variant="base"):
+    imported = concept_buf({"base": "tank_base", "ballast": "tank_ballast",
+                            "forced": "tank_forced_march"}[variant])
+    if imported:
+        return imported, (13, 4) if variant == "ballast" else (15, 3)
     w, h = 30, 12
     b = Buf(w, h)
     wide = variant == "ballast"
@@ -207,8 +327,22 @@ def tank(variant="base"):
     return b, (x0 + 13, ty - 1)   # sprite + barrel pivot
 
 
+BARREL_PIVOT = (3, 24)   # (x, y) inside the 28px frame
+
+
 def barrel(angle_deg, variant="base"):
     """Pre-rendered frame — no runtime rotation (§5.3)."""
+    strip = CONCEPT_PRODUCTS.get({
+        "base": "barrel_strip_5deg", "ballast": "barrel_strip_ballast",
+        "forced": "barrel_strip_forced_march", "sabot": "barrel_strip_sabot",
+        "cluster": "barrel_strip_cluster", "auger": "barrel_strip_auger",
+    }[variant])
+    if strip:
+        frame = min(18, max(0, round(angle_deg / 5)))
+        image = strip.crop((frame * 28, 0, (frame + 1) * 28, 28))
+        buf = Buf(28, 28)
+        buf.px = [list(image.crop((0, y, 28, y + 1)).get_flattened_data()) for y in range(28)]
+        return buf, BARREL_PIVOT
     length, thick = 16, 3
     if variant == "sabot":
         length, thick = 22, 2
@@ -216,9 +350,17 @@ def barrel(angle_deg, variant="base"):
         length, thick = 9, 5
     elif variant == "auger":
         length, thick = 16, 3
+    elif variant == "ballast":
+        length, thick = 18, 4
+    elif variant == "forced":
+        length, thick = 14, 3
+    # Angles only run 0-90 deg (up and to the right), so the pivot sits near
+    # the frame's bottom-left corner rather than its centre: that leaves the
+    # full 28px for the barrel's length at every angle. Kept in sync with
+    # BARREL_PIVOT in crates/salt-line-godot/src/sprites.rs.
     s = 28
     b = Buf(s, s)
-    cx = cy = s // 2
+    cx, cy = BARREL_PIVOT
     a = math.radians(angle_deg)
     ex = cx + math.cos(a) * length
     ey = cy - math.sin(a) * length
@@ -226,45 +368,200 @@ def barrel(angle_deg, variant="base"):
     b.line(cx, cy, ex, ey, rgba("hull_edge"), 1)
     if variant == "auger":
         b.rect(ex - 1, ey - 1, 3, 3, rgba("hull_hi"))
+    elif variant == "ballast":
+        b.rect(ex - 1, ey - 1, 3, 2, rgba("hull_hi"))
+    elif variant == "forced":
+        b.set(ex, ey, rgba("hull_edge"))
+    # Nothing may touch the frame edge: a pixel there means the drawing ran
+    # off it and was clipped (the bug the centred pivot used to cause).
+    for i in range(s):
+        for edge in ((i, 0), (i, s - 1), (0, i), (s - 1, i)):
+            assert b.get(*edge)[3] == 0, (variant, angle_deg, edge)
     return b, (cx, cy)
 
 
 def water_tower(state="intact"):
+    """Riveted tank and open trestle, with the original canvas and footing.
+
+    The damaged tank shifts only two pixels: the old shear pushed its crown
+    outside the 17px canvas. Both trestles still meet the same ground row.
+    """
+    imported = concept_buf(f"tower_{state}")
+    if imported:
+        return imported
     w, h = 17, 34
     b = Buf(w, h)
     if state == "collapsed":
-        return rubble(17, 8)
-    lean = 0
-    if state == "leaning":
-        lean = 1
-    def sx(j):   # shear offset grows toward the top
-        return int(lean * (h - j) / 3.5)
-    # legs (9px footprint)
+        b = Buf(17, 8)
+        # Fallen cylindrical tank, torn rim and bent trestle. Same rubble
+        # canvas as before, but recognisably the wreck of this structure.
+        b.line(1, 6, 6, 4, rgba("st_dmg"))
+        b.line(11, 5, 15, 7, rgba("st_dmg"))
+        b.rect(5, 2, 8, 4, rgba("st"))
+        b.rect(6, 1, 6, 1, rgba("st_hi"))
+        b.rect(5, 5, 8, 2, rgba("st_dmg"))
+        b.line(6, 2, 6, 4, rgba("st_hi"))
+        b.line(12, 2, 12, 5, rgba("st_dmg"))
+        b.set(10, 1, T)
+        b.set(13, 3, rgba("st"))
+        b.rect(2, 7, 13, 1, rgba("st_dmg"))
+        return b
+    if state not in ("intact", "leaning"):
+        raise ValueError(f"unknown tower state: {state}")
+
+    def sx(j):
+        return min(2, (32 - j) // 9) if state == "leaning" else 0
+
+    # Nine-pixel footprint and ground row are presentation contracts.
     for j in range(18, 33):
         b.set(4 + sx(j), j, rgba("st"))
-        b.set(12 + sx(j), j, rgba("st"))
-    for j in (22, 27):
-        b.line(4 + sx(j), j, 12 + sx(j), j + 3, rgba("st_dmg"))
-        b.line(12 + sx(j), j, 4 + sx(j), j + 3, rgba("st_dmg"))
-    # bulb
-    for j in range(6, 18):
-        t = (j - 6) / 11.0
-        rad = int(8 - abs(t - 0.35) * 6)
-        o = sx(j)
-        b.rect(8 - rad + o, j, rad * 2 + 1, 1, rgba("st"))
-    b.rect(5 + sx(8), 8, 4, 1, rgba("st_hi"))
-    b.rect(4 + sx(10), 10, 3, 4, rgba("st_hi"))
-    # cap
-    b.rect(6 + sx(5), 5, 5, 1, rgba("st"))
+        b.set(12 + sx(j), j, rgba("st_dmg"))
+    for top, bottom in ((19, 25), (25, 31)):
+        b.line(4 + sx(top), top, 12 + sx(bottom), bottom, rgba("st_dmg"))
+        b.line(12 + sx(top), top, 4 + sx(bottom), bottom, rgba("st"))
+    b.line(4 + sx(19), 19, 12 + sx(19), 19, rgba("st_dmg"))
+    # Rounded cap and tapered sump; coherent left light, dark right rim.
+    for j, half in ((5, 3), (6, 5), *[(y, 6) for y in range(7, 16)],
+                    (16, 5), (17, 3), (18, 2)):
+        left, right = 8 - half + sx(j), 8 + half + sx(j)
+        b.rect(left, j, right - left + 1, 1, rgba("st"))
+        b.set(right, j, rgba("st_dmg"))
+        if 7 <= j <= 15:
+            b.set(left + 1, j, rgba("st_hi"))
+    b.line(5 + sx(6), 6, 11 + sx(6), 6, rgba("st_hi"))
+    for j in (9, 14):
+        b.line(2 + sx(j), j, 14 + sx(j), j, rgba("st_dmg"))
+        for i in (4, 8, 12):
+            b.set(i + sx(j), j, rgba("st_hi"))
+    b.rect(7 + sx(4), 4, 3, 1, rgba("st_dmg"))
     b.set(8 + sx(3), 3, rgba("st_hi"))
-    b.set(8 + sx(4), 4, rgba("st"))
     if state == "leaning":
+        # Split tank seam and buckled left support, without moving the feet.
+        b.line(10, 10, 11, 12, rgba("st_dmg"))
+        b.line(11, 12, 10, 15, rgba("st_dmg"))
         for j in range(28, 33):
             b.set(4 + sx(j), j, rgba("st_dmg"))
     return b
 
 
+def seasonal_tower(season, state="intact"):
+    """Cosmetic water-tower replacements: same canvases and 9px footing."""
+    if season not in ("halloween", "thanksgiving", "christmas"):
+        raise ValueError(f"unknown season: {season}")
+    if state == "collapsed":
+        b = Buf(17, 8)
+        b.line(1, 6, 6, 4, rgba("st_dmg"))
+        b.line(11, 5, 15, 7, rgba("st_dmg"))
+        b.rect(2, 7, 13, 1, rgba("st_dmg"))
+        if season == "halloween":
+            for x, y, w in ((3, 3, 4), (9, 2, 4), (6, 5, 5)):
+                b.rect(x, y, w, 2, rgba("st"))
+                b.line(x, y, x + w - 2, y, rgba("st_hi"))
+            b.set(10, 1, rgba("hull"))
+            b.set(4, 4, rgba("ui_bg"))
+            b.set(10, 3, rgba("ui_bg"))
+        elif season == "thanksgiving":
+            for x, y in ((2, 3), (5, 2), (12, 3)):
+                b.line(x, y, x + 2, y + 3, rgba("st"))
+                b.set(x, y, rgba("sand"))
+            b.rect(7, 4, 5, 2, rgba("st_dmg"))
+            b.set(8, 4, rgba("st_hi"))
+        else:
+            for x, y in ((3, 3), (7, 2), (10, 4)):
+                b.line(x, y, x + 4, y + 2, rgba("hull_edge"))
+                b.line(x, y, x + 3, y, rgba("hull"))
+            b.set(6, 3, rgba("sand"))
+            b.set(11, 5, rgba("st_hi"))
+        return b
+    if state not in ("intact", "leaning"):
+        raise ValueError(f"unknown state: {state}")
+    b = Buf(17, 34)
+    # Shared industrial trestle preserves the tower's identity and ground seat.
+    for y in range(19, 33):
+        b.set(4, y, rgba("st"))
+        b.set(12, y, rgba("st_dmg"))
+    for top, bottom in ((19, 25), (25, 31)):
+        b.line(4, top, 12, bottom, rgba("st_dmg"))
+        b.line(12, top, 4, bottom, rgba("st"))
+    b.rect(4, 18, 9, 1, rgba("st_dmg"))
+    if season == "halloween":
+        # Ribbed pumpkin shell, short stem, two carved eyes and a toothy grin.
+        for y, half in ((5, 3), (6, 5), *[(j, 6) for j in range(7, 15)],
+                        (15, 5), (16, 4), (17, 2)):
+            b.rect(8 - half, y, half * 2 + 1, 1, rgba("st"))
+            b.set(8 + half, y, rgba("st_dmg"))
+        b.line(7, 3, 8, 4, rgba("hull_hi"))
+        b.line(4, 7, 4, 14, rgba("st_hi"))
+        b.line(11, 6, 12, 15, rgba("st_dmg"))
+        b.set(5, 9, rgba("ui_bg")); b.rect(4, 10, 3, 1, rgba("ui_bg"))
+        b.set(10, 9, rgba("ui_bg")); b.rect(9, 10, 3, 1, rgba("ui_bg"))
+        b.set(8, 12, rgba("ui_bg"))
+        b.line(5, 13, 11, 13, rgba("ui_bg"))
+        b.rect(6, 14, 5, 1, rgba("ui_bg"))
+        b.set(7, 13, rgba("st_hi")); b.set(9, 14, rgba("st_hi"))
+    elif season == "thanksgiving":
+        # Fan of cut-metal feathers and a side-facing turkey head.
+        for x, y in ((2, 9), (3, 6), (5, 4), (8, 3), (11, 4), (13, 6), (14, 9)):
+            b.line(8, 14, x, y, rgba("st_dmg"), 2)
+            b.line(8, 13, x, y, rgba("st"))
+            b.set(x, y, rgba("sand"))
+        b.rect(5, 11, 7, 5, rgba("st_dmg"))
+        b.rect(6, 11, 4, 3, rgba("st"))
+        b.line(7, 12, 9, 12, rgba("st_hi"))
+        b.rect(11, 8, 2, 5, rgba("st"))
+        b.rect(10, 6, 4, 3, rgba("st_hi"))
+        b.set(12, 7, rgba("ui_bg")); b.set(14, 8, rgba("sand"))
+        b.line(13, 9, 13, 11, rgba("st"))
+        b.line(7, 16, 7, 17, rgba("st")); b.line(10, 16, 10, 17, rgba("st"))
+    else:
+        # Scrap-metal evergreen. Pale topper and small rust ornaments, no glow.
+        b.line(8, 4, 8, 17, rgba("hull_edge"))
+        for top, bottom, half in ((5, 8, 3), (8, 12, 5), (12, 16, 6)):
+            for y in range(top, bottom + 1):
+                radius = max(1, half * (y - top + 1) // (bottom - top + 1))
+                b.rect(8 - radius, y, radius * 2 + 1, 1, rgba("hull"))
+                b.set(8 - radius, y, rgba("hull_hi"))
+            b.line(8 - half, bottom, 8 + half, bottom, rgba("hull_edge"))
+        b.line(7, 3, 9, 3, rgba("sand")); b.line(8, 2, 8, 4, rgba("sand"))
+        for x, y in ((7, 7), (10, 10), (5, 13), (11, 15)):
+            b.set(x, y, rgba("st_hi"))
+        b.set(7, 11, rgba("sand")); b.set(9, 14, rgba("sand"))
+    if state == "leaning":
+        leaned = Buf(17, 34)
+        for y in range(34):
+            offset = min(2, max(0, (32 - y) // 9))
+            for x in range(17):
+                c = b.get(x, y)
+                if c[3]:
+                    assert x + offset < 17, (season, x, y)
+                    leaned.set(x + offset, y, c)
+        b = leaned
+        b.line(10, 10, 11, 12, rgba("st_dmg"))
+        b.line(11, 12, 10, 15, rgba("st_dmg"))
+        b.line(4, 28, 4, 32, rgba("st_dmg"))
+    return b
+
+
+def seasonal_sheet():
+    """Labelled native art-review sheet, independent of gameplay."""
+    b = Buf(180, 150, rgba("sky_hi"))
+    labels = {**F, "G": "111 100 101 101 111", "K": "101 101 110 101 101",
+              "V": "101 101 101 101 010"}
+    for row, season in enumerate(("halloween", "thanksgiving", "christmas")):
+        y = row * 50
+        text(b, season.upper(), 3, y + 2, rgba("ui_fg"), labels)
+        for col, state in enumerate(("intact", "leaning", "collapsed")):
+            x = 6 + col * 58
+            text(b, state.upper(), x, y + 10, rgba("sky_lo"), labels)
+            sprite = load_sprite(f"tower_{season}_{state}")
+            b.blit(sprite, x + 10, y + 49 - sprite.h)
+    return b
+
+
 def derrick():
+    imported = concept_buf("derrick")
+    if imported:
+        return imported
     w, h = 15, 42
     b = Buf(w, h)
     for j in range(0, 41):
@@ -282,6 +579,9 @@ def derrick():
 
 
 def radio_mast():
+    imported = concept_buf("radio_mast")
+    if imported:
+        return imported
     w, h = 13, 32
     b = Buf(w, h)
     b.rect(6, 0, 2, 31, rgba("st"))
@@ -295,6 +595,9 @@ def radio_mast():
 
 
 def silo():
+    imported = concept_buf("silo")
+    if imported:
+        return imported
     w, h = 11, 27
     b = Buf(w, h)
     b.rect(1, 4, 9, 23, rgba("st"))
@@ -307,6 +610,9 @@ def silo():
 
 
 def pylon():
+    imported = concept_buf("pylon")
+    if imported:
+        return imported
     w, h = 17, 33
     b = Buf(w, h)
     for j in range(32):
@@ -444,6 +750,12 @@ def scene(width=320, height=180, seed=20260907):
             else:
                 b.set(x, y, rgba(hi if f > th else lo))
 
+    if os.path.isfile(os.path.join(OUT, "backgrounds/salt_iron_sky_320x180.png")):
+        plate = Image.open(os.path.join(OUT, "backgrounds/salt_iron_sky_320x180.png")).convert("RGBA")
+        for y in range(height):
+            for x in range(width):
+                b.set(x, y, plate.getpixel((x % 320, y % 180)))
+
     hs = terrain(width, seed, amp=1.25)
     crater(hs, 196, 11)   # undermining hit at the tower footing
     crater(hs, 150, 7)    # ranging miss
@@ -467,18 +779,18 @@ def scene(width=320, height=180, seed=20260907):
             b.set(x, top + 1, rgba("shadow"))
 
     # structures, seated into the surface
-    tower, tx = water_tower("leaning"), 188
+    tower, tx = load_sprite("tower_leaning"), 188
     b.blit(tower, tx, seat(hs, tx, 7) - tower.h + 3)
-    m, mx = radio_mast(), 236
+    m, mx = load_sprite("radio_mast"), 236
     b.blit(m, mx, seat(hs, mx, 13) - m.h + 1)
-    d, dx = derrick(), 268
+    d, dx = load_sprite("derrick"), 268
     b.blit(d, dx, seat(hs, dx, 15) - d.h + 2)
 
     # player
-    tk, pivot = tank("base")
+    tk, pivot = load_tank("base")
     px = 20
     py = seat(hs, px, 30) - tk.h + 3
-    bar, bp = barrel(45)
+    bar, bp = load_barrel(45)
     b.blit(bar, px + pivot[0] - bp[0], py + pivot[1] - bp[1])
     b.blit(tk, px, py)
 
@@ -498,33 +810,26 @@ def scene(width=320, height=180, seed=20260907):
     b.set(cm, int(hs[cm]) - 4, rgba("alert"))
 
     # UI, same buffer, same resolution (§5.1)
-    b.rect(3, 3, 41, 9, rgba("ui_bg"))
-    text(b, "WIND +2.4", 5, 5, rgba("alert"))
-    b.rect(width - 42, 3, 39, 9, rgba("ui_bg"))
-    text(b, "SHELLS 28", width - 40, 5, rgba("ui_fg"))
-    text(b, "34", width - 11, height - 8, rgba("ui_fg"))
+    hud(b, width, height, 2.4, 28, "34")
     return b
 
 
 # ---------------------------------------------------------------- contact sheet
 def sheet():
     items = [
-        ("TANK", tank("base")[0]), ("BALLAST", tank("ballast")[0]),
-        ("FORCED", tank("forced")[0]),
-        ("TOWER", water_tower("intact")), ("LEANING", water_tower("leaning")),
-        ("COLLAPSED", water_tower("collapsed")),
+        ("TANK", load_tank("base")[0]), ("BALLAST", load_tank("ballast")[0]),
+        ("FORCED", load_tank("forced")[0]),
+        ("TOWER", load_sprite("tower_intact")), ("LEANING", load_sprite("tower_leaning")),
+        ("COLLAPSED", load_sprite("tower_collapsed")),
     ]
-    for label, make, phase in (
-        ("DERRICK", derrick, 1.7),
-        ("MAST", radio_mast, 2.3),
-        ("SILO", silo, 1.1),
-        ("PYLON", pylon, 2.9),
+    for label, name in (
+        ("DERRICK", "derrick"), ("MAST", "radio_mast"),
+        ("SILO", "silo"), ("PYLON", "pylon"),
     ):
-        src = make()
         items += [
-            (label, src),
-            ("LEANING", leaning(src)),
-            ("COLLAPSED", collapsed(src, phase)),
+            (label, load_sprite(name)),
+            ("LEANING", load_sprite(name + "_leaning")),
+            ("COLLAPSED", load_sprite(name + "_collapsed")),
         ]
     cell_w, cell_h = 46, 56
     cols = len(items)
@@ -538,7 +843,7 @@ def sheet():
     # barrel frame strip
     b2 = Buf(b.w, 34, rgba("sky_hi"))
     for k, ang in enumerate(range(0, 95, 10)):
-        br, bp = barrel(ang)
+        br, bp = load_barrel(ang)
         b2.blit(br, k * 34, 2)
     out = Buf(b.w, b.h + 36, rgba("sky_hi"))
     out.blit(b, 0, 0)
@@ -559,54 +864,31 @@ def palette_img():
     return b
 
 
-if __name__ == "__main__":
+def save_preview(image, path):
+    if os.path.isfile(path):
+        with Image.open(path) as existing:
+            if existing.size == image.size and existing.convert("RGBA").tobytes() == image.tobytes():
+                return
+    image.save(path)
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
     sc = scene()
-    sc.image(1).save(f"{OUT}/scene_native_320x180.png")
-    sc.image(4).save(f"{OUT}/scene_preview_4x.png")
+    save_preview(sc.image(1), f"{OUT}/scene_native_320x180.png")
+    save_preview(sc.image(4), f"{OUT}/scene_preview_4x.png")
 
     sh = sheet()
-    sh.image(4).save(f"{OUT}/sprite_sheet_4x.png")
+    save_preview(sh.image(4), f"{OUT}/sprite_sheet_4x.png")
 
-    palette_img().image(4).save(f"{OUT}/palette_16.png")
+    save_preview(palette_img().image(4), f"{OUT}/palette_16.png")
 
-    # clean native-resolution assets
-    tank("base")[0].image().save(f"{SPR}/tank_base.png")
-    tank("ballast")[0].image().save(f"{SPR}/tank_ballast.png")
-    tank("forced")[0].image().save(f"{SPR}/tank_forced_march.png")
-    water_tower("intact").image().save(f"{SPR}/tower_intact.png")
-    water_tower("leaning").image().save(f"{SPR}/tower_leaning.png")
-    water_tower("collapsed").image().save(f"{SPR}/tower_collapsed.png")
-    # Every structure now has all three damage states (DESIGN §5.4). The water
-    # tower is hand-drawn per state; the rest are sheared and wrecked from
-    # their intact silhouette, which keeps the drawings in lockstep with the
-    # only place their geometry is defined.
-    derrick().image().save(f"{SPR}/derrick.png")
-    radio_mast().image().save(f"{SPR}/radio_mast.png")
-    silo().image().save(f"{SPR}/silo.png")
-    pylon().image().save(f"{SPR}/pylon.png")
-    for name, make, phase in (
-        ("derrick", derrick, 1.7),
-        ("radio_mast", radio_mast, 2.3),
-        ("silo", silo, 1.1),
-        ("pylon", pylon, 2.9),
-    ):
-        src = make()
-        leaning(src).image().save(f"{SPR}/{name}_leaning.png")
-        collapsed(src, phase).image().save(f"{SPR}/{name}_collapsed.png")
-        check_lean_alignment(name, src, leaning(src))
-
-    # 19-frame barrel strips, 5° increments, packed horizontally — one per
-    # build silhouette (§5.3). Sliced at 28px by the Godot layer.
-    for variant, name in (
-        ("base", "barrel_strip_5deg"),
-        ("sabot", "barrel_strip_sabot"),
-        ("cluster", "barrel_strip_cluster"),
-        ("auger", "barrel_strip_auger"),
-    ):
-        frames = [barrel(a, variant)[0] for a in range(0, 95, 5)]
-        strip = Buf(28 * len(frames), 28)
-        for i, f in enumerate(frames):
-            strip.blit(f, i * 28, 0)
-        strip.image().save(f"{SPR}/{name}.png")
-
+    save_preview(seasonal_sheet().image(4), f"{OUT}/seasonal_sheet_4x.png")
+    if os.path.isdir(os.path.join(OUT, "detail")):
+        from build_detail_art import build_preview
+        build_preview(os.path.join(OUT, "detail"))
     print("ok")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,108 @@
+name: engine-validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/engine-validation.yml'
+      - '.github/actions/build-godot-template/**'
+      - 'tools/*engine*'
+      - 'tools/godot_*'
+      - 'tools/android_profile.py'
+      - 'tools/test_engine_tools.py'
+      - 'crates/**'
+      - 'art/**'
+      - 'godot/**'
+      - 'addons/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'project.godot'
+      - 'export_presets.cfg'
+      - 'salt_line.gdextension'
+      - 'Justfile'
+      - '!**/*.md'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/godot_build_profile.json'
+      - 'tools/godot_template.py'
+      - '.github/workflows/engine-validation.yml'
+      - '.github/actions/build-godot-template/**'
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.7.2
+  CARGO_TERM_COLOR: always
+
+jobs:
+  replay-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable # rust-toolchain.toml remains authoritative
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: engine-validation
+      - name: tooling tests
+        run: |
+          python3 -m unittest discover -s tools -p test_engine_tools.py -v
+          python3 -m unittest discover -s .github/actions/build-godot-template -p 'test_*.py' -v
+      # Test-only native engine; replay parity remains project-specific.
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config libx11-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libxi-dev libxrandr-dev libasound2-dev libpulse-dev libudev-dev
+      - name: identify Linux compiler
+        id: compiler
+        run: echo "identity=$(c++ --version | head -n 1)" >> "$GITHUB_OUTPUT"
+      - name: build stripped engine
+        uses: ./.github/actions/build-godot-template # zizmor: ignore[self-repository] -- run the explicitly checked-out PR recipe
+        with:
+          tag: 4.7.2-stable
+          commit: ed1daf0bf001b61586d9930840f2f1394092c079
+          profile: tools/godot_build_profile.json
+          platform: linux
+          arch: x86_64
+          flags: '["speechd=no", "fontconfig=no"]'
+          toolchain-id: ${{ steps.compiler.outputs.identity }}
+      - name: build and export one pack for both engines
+        run: |
+          set -eu
+          cargo build --release -p salt-line-godot
+          mkdir -p target/debug build/engine-validation
+          cp target/release/libsalt_line_godot.so target/debug/
+          touch build/.gdignore
+          bash tools/godot_headless.sh --import
+          bash tools/godot_headless.sh --export-pack Linux build/engine-validation/game.pck
+          cp target/release/libsalt_line_godot.so build/engine-validation/
+      - name: compare replays, frames and assets
+        run: |
+          set -eu
+          official="$HOME/.local/share/godot/export_templates/$GODOT_VERSION.stable/linux_release.x86_64"
+          stripped="$PWD/build/godot-templates/godot.linuxbsd.template_release.x86_64"
+          chmod +x "$official" "$stripped"
+          python3 tools/engine_validation.py --official "$official" --stripped "$stripped" --pack build/engine-validation/game.pck
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: engine-validation
+          path: build/engine-validation/results/
+          if-no-files-found: warn

@@ -7,27 +7,63 @@
 //!
 //! ```text
 //! version 2
-//! unlocked 0
 //! volume 75
 //! muted 0
 //! learned 0
 //! bind fire SPACE A
 //! run <seed> <screens> <shells> <shots> <daily>
 //! ```
+//!
+//! Optional lines (`touch_aim`, `arc_hint`, `last_arc`, `idle_demo`, `controller`) appear
+//! only once the player has chosen a value; there is one `bind` line per overridden action and
+//! one `run` line per board entry, best first.
+//!
+//! # A line-based format with forward-compatible versioning
+//!
+//! Each line is a keyword followed by whitespace-separated fields. The rules
+//! that make it robust are all in [`Save::parse`]:
+//!
+//! * **Line-level recovery.** A malformed line is skipped, never fatal, so a
+//!   torn write loses at most the record it tore. Because the last field of
+//!   a `run` line is a single character, a truncated `run` line always has
+//!   too few fields and is dropped. A truncated setting (`volume 7`) can
+//!   still misread; the rename in `save.rs` is what keeps torn files off
+//!   disk.
+//! * **Unknown keywords are ignored**, and a `run` line may carry extra
+//!   trailing fields. A newer build can add data without an older one
+//!   discarding the rest of the file.
+//! * **A newer `version` is refused, not guessed at.** The save reads as
+//!   empty with [`Save::from_the_future`] set, and `save.rs` then refuses to
+//!   write, so running an older build never clobbers a newer file.
+//! * **Missing values default.** A file with no `version` line reads as
+//!   version 1, and absent settings take the values in [`Save::default`].
+//!
+//! Durability — writing to a temporary file and renaming it over the real
+//! one — is `save.rs`'s job, not this module's. The format is pinned by an
+//! `insta` snapshot test and fuzzed by `fuzz/fuzz_targets/save_parse.rs`.
 
-/// Format version written by this build.
+/// Format version written by this build. Bump it when an older build would
+/// misread the new output; additions an older build can safely ignore (a new
+/// keyword, a trailing field) do not need a bump.
 pub const VERSION: u32 = 2;
-/// Leaderboard depth kept on disk.
+/// Leaderboard depth kept on disk. Entries past this rank are dropped when
+/// the board is sorted.
 pub const KEEP: usize = 20;
 
 /// One finished run. Score is screens cleared, tiebreak shells then shots
 /// (DESIGN §1).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
+    /// The run's seed, so a shared seed can be compared (see
+    /// [`Save::best_on`]).
     pub seed: u64,
+    /// Screens cleared: the score.
     pub screens: u32,
+    /// Shells left at the end: the first tiebreak, higher is better.
     pub shells: i32,
+    /// Shots fired: the second tiebreak, lower is better.
     pub shots: u32,
+    /// Whether this was the daily seed. Stored as `1` / `0`.
     pub daily: bool,
 }
 
@@ -38,47 +74,228 @@ impl Entry {
     }
 }
 
+/// How touch aims: on-screen buttons, or pulling back on the playfield.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TouchAim {
+    /// Plus-and-minus buttons for angle and power.
+    Buttons,
+    /// Pull back on open ground; see [`crate::aim`].
+    Drag,
+}
+
+impl TouchAim {
+    /// The word written to the save file.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Buttons => "buttons",
+            Self::Drag => "drag",
+        }
+    }
+
+    /// Inverse of [`token`](Self::token). `None` for an unknown word, which
+    /// the parser treats as "not chosen".
+    pub fn from_token(s: &str) -> Option<Self> {
+        match s {
+            "buttons" => Some(Self::Buttons),
+            "drag" => Some(Self::Drag),
+            _ => None,
+        }
+    }
+
+    /// The next option, wrapping, for a settings row that cycles on press.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Buttons => Self::Drag,
+            Self::Drag => Self::Buttons,
+        }
+    }
+}
+
+/// How much of the trajectory the drag aim previews.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArcHint {
+    /// The first stretch of the still-air arc: direction and power, never the
+    /// landing. Reading the wind stays the player's job (DESIGN §2.5).
+    /// The length drawn is chosen by [`crate::aim::short_arc_len`].
+    Short,
+    /// The whole arc in still air.
+    Full,
+    /// The whole arc with the wind as displayed.
+    Wind,
+}
+
+impl ArcHint {
+    /// The word written to the save file.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Short => "short",
+            Self::Full => "full",
+            Self::Wind => "wind",
+        }
+    }
+
+    /// Inverse of [`token`](Self::token). `None` for an unknown word.
+    pub fn from_token(s: &str) -> Option<Self> {
+        match s {
+            "short" => Some(Self::Short),
+            "full" => Some(Self::Full),
+            "wind" => Some(Self::Wind),
+            _ => None,
+        }
+    }
+
+    /// The next option, wrapping, for a settings row that cycles on press.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Short => Self::Full,
+            Self::Full => Self::Wind,
+            Self::Wind => Self::Short,
+        }
+    }
+}
+
+/// Everything the game keeps between sessions, parsed from and serialised to
+/// the text format described in the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
-    pub unlocked: bool,
+    /// The leaderboard, best first, at most [`KEEP`] entries once sorted.
     pub scores: Vec<Entry>,
     /// Master effects volume, as an integer percentage for a stable text
-    /// representation.
+    /// representation. `0..=100`: on read, any whole number over 100 is
+    /// capped to 100; anything else that is not a `u8` (a negative, a
+    /// fraction, a word) is ignored and the default stands.
     pub volume: u8,
+    /// Effects muted. Independent of `volume`.
     pub muted: bool,
-    /// Bitset of contextual lessons the player has already demonstrated.
+    /// Whether the looping title music plays. Independent of effects mute.
+    pub title_music: bool,
+    /// Bitset of contextual lessons the player has already demonstrated,
+    /// one [`presentation`](crate::presentation) `LEARN_*` bit each.
     pub learned: u32,
     /// User-editable action bindings: action, keyboard token, pad token.
-    /// Missing actions fall back to the built-in defaults.
+    /// Missing actions fall back to the built-in defaults. Tokens are
+    /// `[A-Za-z0-9_]` only; the action is stored lower-case and both input
+    /// tokens upper-case.
     pub bindings: Vec<(String, String, String)>,
+    /// Touch settings. `None` until the player picks one, so the built-in
+    /// default can change without overriding anyone's choice.
+    pub touch_aim: Option<TouchAim>,
+    /// The drag-aim trajectory preview, `None` until chosen.
+    pub arc_hint: Option<ArcHint>,
+    /// Keep the last shot's arc drawn until the next one. `None` until the
+    /// player toggles it, like the touch settings.
+    pub last_arc: Option<bool>,
+    /// The title starts the attract demo after a spell of no input (DESIGN
+    /// §12). `None` until the player toggles it in Controls, so a save from
+    /// before the demo existed reads as the default, which is on.
+    pub idle_demo: Option<bool>,
+    /// The last input device was a controller, so a phone paired with one
+    /// starts in controller mode instead of touch. `None` until a device
+    /// other than the default is used.
+    pub controller: Option<bool>,
+    /// Bundled challenges cleared: (index, most shells left over). At most
+    /// one entry per index, in index order.
+    pub challenges: Vec<(u8, u8)>,
+    /// Custom challenges cleared: (layout digest, most shells left over).
+    /// At most one entry per layout digest, in digest order.
+    pub custom_challenges: Vec<(u64, u8)>,
+    /// Cosmetic target skins. Missing or malformed settings use Auto.
+    pub seasonal: Option<crate::seasonal::Seasonal>,
     /// The file on disk was written by a newer build than this one. The save
     /// is treated as empty and, more importantly, is never overwritten — a
     /// player who downgrades for one session should not lose their board.
     pub from_the_future: bool,
 }
 
+impl Save {
+    /// Most shells left over in a cleared run of challenge `index`, or `None`
+    /// if it has not been cleared.
+    pub fn challenge_best(&self, index: usize) -> Option<u8> {
+        self.challenges
+            .iter()
+            .find(|(i, _)| usize::from(*i) == index)
+            .map(|&(_, left)| left)
+    }
+
+    /// Note a cleared challenge. Returns whether the save changed (a first
+    /// clear or a better result).
+    pub fn record_challenge(&mut self, index: u8, left: u8) -> bool {
+        match self.challenges.iter_mut().find(|(i, _)| *i == index) {
+            Some((_, best)) if *best >= left => false,
+            Some((_, best)) => {
+                *best = left;
+                true
+            }
+            None => {
+                self.challenges.push((index, left));
+                self.challenges.sort_unstable();
+                true
+            }
+        }
+    }
+
+    /// Best shells left after clearing a custom layout, or `None` if new.
+    pub fn custom_challenge_best(&self, digest: u64) -> Option<u8> {
+        self.custom_challenges
+            .iter()
+            .find(|(d, _)| *d == digest)
+            .map(|&(_, left)| left)
+    }
+
+    /// Note a cleared custom layout. Returns whether the save changed.
+    pub fn record_custom_challenge(&mut self, digest: u64, left: u8) -> bool {
+        match self
+            .custom_challenges
+            .iter_mut()
+            .find(|(d, _)| *d == digest)
+        {
+            Some((_, best)) if *best >= left => false,
+            Some((_, best)) => {
+                *best = left;
+                true
+            }
+            None => {
+                self.custom_challenges.push((digest, left));
+                self.custom_challenges.sort_unstable();
+                true
+            }
+        }
+    }
+}
+
 impl Default for Save {
     fn default() -> Self {
         Self {
-            unlocked: false,
             scores: Vec::new(),
             volume: 75,
             muted: false,
+            title_music: true,
             learned: 0,
             bindings: Vec::new(),
+            touch_aim: None,
+            arc_hint: None,
+            last_arc: None,
+            idle_demo: None,
+            controller: None,
+            challenges: Vec::new(),
+            custom_challenges: Vec::new(),
+            seasonal: None,
             from_the_future: false,
         }
     }
 }
 
 impl Save {
-    /// Parse a save file. Unparseable lines are skipped rather than fatal:
+    /// Parse a save file. Unparsable lines are skipped rather than fatal:
     /// a truncated write should cost the last record, not the whole board.
     pub fn parse(text: &str) -> Save {
         let mut save = Save::default();
         for line in text.lines() {
             let mut it = line.split_whitespace();
             match it.next() {
+                // The version is checked wherever the line appears. Lines
+                // before it have already been read into `save`, but an early
+                // return discards them, so position does not matter.
                 Some("version") => {
                     // An unreadable version is a future one by assumption; the
                     // conservative reading is the one that preserves data.
@@ -90,13 +307,60 @@ impl Save {
                         };
                     }
                 }
-                Some("unlocked") => save.unlocked = it.next() == Some("1"),
                 Some("volume") => {
-                    if let Some(v) = it.next().and_then(|s| s.parse::<u8>().ok()) {
-                        save.volume = v.min(100);
+                    // Any whole number past 100 is full volume, however far
+                    // past (not only up to 255, which is all a `u8` holds);
+                    // anything else leaves the default.
+                    match it.next().map(str::parse::<u8>) {
+                        Some(Ok(v)) => save.volume = v.min(100),
+                        Some(Err(e)) if *e.kind() == core::num::IntErrorKind::PosOverflow => {
+                            save.volume = 100;
+                        }
+                        _ => {}
                     }
                 }
                 Some("muted") => save.muted = it.next() == Some("1"),
+                Some("title_music") => save.title_music = it.next() != Some("0"),
+                Some("seasonal") => {
+                    save.seasonal = it.next().and_then(crate::seasonal::Seasonal::from_token)
+                }
+                Some("touch_aim") => save.touch_aim = it.next().and_then(TouchAim::from_token),
+                Some("arc_hint") => save.arc_hint = it.next().and_then(ArcHint::from_token),
+                Some("last_arc") => {
+                    save.last_arc = match it.next() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    }
+                }
+                Some("challenge") => {
+                    let index = it.next().and_then(|s| s.parse::<u8>().ok());
+                    let left = it.next().and_then(|s| s.parse::<u8>().ok());
+                    if let (Some(index), Some(left)) = (index, left) {
+                        save.record_challenge(index, left);
+                    }
+                }
+                Some("custom_challenge") => {
+                    let digest = it.next().and_then(|s| s.parse::<u64>().ok());
+                    let left = it.next().and_then(|s| s.parse::<u8>().ok());
+                    if let (Some(digest), Some(left)) = (digest, left) {
+                        save.record_custom_challenge(digest, left);
+                    }
+                }
+                Some("controller") => {
+                    save.controller = match it.next() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    }
+                }
+                Some("idle_demo") => {
+                    save.idle_demo = match it.next() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    }
+                }
                 Some("learned") => {
                     if let Some(v) = it.next().and_then(|s| s.parse::<u32>().ok()) {
                         save.learned = v;
@@ -118,6 +382,8 @@ impl Save {
                 }
                 Some("run") => {
                     let parts: Vec<&str> = it.collect();
+                    // `>=` rather than `==`: fields a later version appends
+                    // are ignored, not a reason to drop the entry.
                     if parts.len() >= 5 {
                         if let (Ok(seed), Ok(screens), Ok(shells), Ok(shots)) = (
                             parts[0].parse::<u64>(),
@@ -136,21 +402,54 @@ impl Save {
                     }
                 }
                 // Unknown keys are ignored so a later version can add one
-                // without this build discarding the rest of the file.
+                // without this build discarding the rest of the file. This
+                // also drops the retired `unlocked` line older builds wrote.
                 _ => {}
             }
         }
+        // Hand-edited files may list runs in any order or exceed `KEEP`.
         save.sort();
         save
     }
 
+    /// Render the save as text, always at the current [`VERSION`].
+    /// `Save::parse(&s.serialize())` gives back `s` with its board sorted and
+    /// cut to [`KEEP`] and its volume capped, for bindings already
+    /// normalised, with `from_the_future` false (a property test holds this).
     pub fn serialize(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("version {VERSION}\n"));
-        out.push_str(&format!("unlocked {}\n", if self.unlocked { 1 } else { 0 }));
         out.push_str(&format!("volume {}\n", self.volume.min(100)));
         out.push_str(&format!("muted {}\n", if self.muted { 1 } else { 0 }));
+        out.push_str(&format!(
+            "title_music {}\n",
+            if self.title_music { 1 } else { 0 }
+        ));
         out.push_str(&format!("learned {}\n", self.learned));
+        if let Some(a) = self.touch_aim {
+            out.push_str(&format!("touch_aim {}\n", a.token()));
+        }
+        if let Some(h) = self.arc_hint {
+            out.push_str(&format!("arc_hint {}\n", h.token()));
+        }
+        if let Some(on) = self.last_arc {
+            out.push_str(&format!("last_arc {}\n", on as u8));
+        }
+        if let Some(on) = self.idle_demo {
+            out.push_str(&format!("idle_demo {}\n", on as u8));
+        }
+        if let Some(on) = self.controller {
+            out.push_str(&format!("controller {}\n", on as u8));
+        }
+        for (index, left) in &self.challenges {
+            out.push_str(&format!("challenge {index} {left}\n"));
+        }
+        for (digest, left) in &self.custom_challenges {
+            out.push_str(&format!("custom_challenge {digest} {left}\n"));
+        }
+        if let Some(season) = self.seasonal {
+            out.push_str(&format!("seasonal {}\n", season.token()));
+        }
         for (action, key, pad) in &self.bindings {
             out.push_str(&format!("bind {action} {key} {pad}\n"));
         }
@@ -167,24 +466,29 @@ impl Save {
         out
     }
 
+    /// Rank the board best first and cut it to [`KEEP`]. The sort is stable,
+    /// so of two equal results the older one keeps the higher place.
     pub(crate) fn sort(&mut self) {
         self.scores.sort_by_key(|e| std::cmp::Reverse(e.rank()));
         self.scores.truncate(KEEP);
     }
 
     /// Place a finished run on the board. Returns its position, or `None` if
-    /// it did not make the cut. Persisting is the caller's job.
+    /// it did not make the cut. Persisting is the caller's job: the core
+    /// asks the node for it with `app::Effect::Store`.
     pub fn place(&mut self, entry: Entry) -> Option<usize> {
         self.scores.push(entry);
         self.sort();
         self.scores.iter().position(|e| *e == entry)
     }
 
+    /// The top of the board, if there is one.
     pub fn best(&self) -> Option<&Entry> {
         self.scores.first()
     }
 
     /// Best score on a specific seed — what a shared seed is judged against.
+    /// Only runs still on the board are considered.
     pub fn best_on(&self, seed: u64) -> Option<&Entry> {
         self.scores.iter().find(|e| e.seed == seed)
     }
@@ -193,6 +497,8 @@ impl Save {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     fn entry(screens: u32, shells: i32, shots: u32) -> Entry {
         Entry {
@@ -206,10 +512,7 @@ mod tests {
 
     #[test]
     fn a_save_survives_a_round_trip() {
-        let mut s = Save {
-            unlocked: true,
-            ..Save::default()
-        };
+        let mut s = Save::default();
         s.place(entry(9, 3, 40));
         s.place(Entry {
             seed: 12,
@@ -219,7 +522,6 @@ mod tests {
             daily: true,
         });
         let back = Save::parse(&s.serialize());
-        assert_eq!(back.unlocked, s.unlocked);
         assert_eq!(back.scores, s.scores);
         assert_eq!(back.volume, 75);
     }
@@ -273,7 +575,6 @@ mod tests {
                     \n\
                     run 5 6 7 8 1\n";
         let s = Save::parse(text);
-        assert!(s.unlocked);
         assert_eq!(s.scores.len(), 2);
         assert_eq!(s.scores[0].screens, 6);
     }
@@ -294,8 +595,20 @@ mod tests {
     fn a_version_one_file_reads_the_same_as_a_versionless_one() {
         let legacy = "unlocked 1\nrun 4 5 6 7 1\n";
         let current = "version 1\nunlocked 1\nrun 4 5 6 7 1\n";
-        assert_eq!(Save::parse(legacy).scores, Save::parse(current).scores);
-        assert!(Save::parse(legacy).unlocked);
+        assert_eq!(Save::parse(legacy), Save::parse(current));
+    }
+
+    #[test]
+    fn a_retired_unlocked_line_is_ignored_and_not_written_back() {
+        // Builds with the old paywall wrote `unlocked 0` or `unlocked 1`.
+        for flag in ["0", "1"] {
+            let text = format!("version 2\nunlocked {flag}\nvolume 40\nrun 4 5 6 7 1\n");
+            let s = Save::parse(&text);
+            assert_eq!(s.volume, 40);
+            assert_eq!(s.scores.len(), 1);
+            assert_eq!(s, Save::parse("version 2\nvolume 40\nrun 4 5 6 7 1\n"));
+            assert!(!s.serialize().contains("unlocked"));
+        }
     }
 
     #[test]
@@ -304,7 +617,6 @@ mod tests {
             let s = Save::parse(text);
             assert!(s.from_the_future, "{text:?}");
             assert!(s.scores.is_empty());
-            assert!(!s.unlocked);
         }
     }
 
@@ -357,13 +669,304 @@ mod tests {
 
     #[test]
     fn settings_and_bindings_round_trip_and_malformed_values_are_safe() {
-        let text = "version 2\nvolume 240\nmuted 1\nlearned 37\n\
+        let text = "version 2\nvolume 240\nmuted 1\ntitle_music 0\nlearned 37\n\
                     bind fire F X\nbind bad-token ! A\n";
         let s = Save::parse(text);
         assert_eq!(s.volume, 100);
+        for (line, want) in [("volume 256", 100), ("volume 99999999999999999999", 100)] {
+            assert_eq!(Save::parse(line).volume, want, "{line}");
+        }
+        for line in ["volume -1", "volume loud", "volume 1.5"] {
+            assert_eq!(Save::parse(line).volume, 75, "{line}");
+        }
         assert!(s.muted);
+        assert!(!s.title_music);
         assert_eq!(s.learned, 37);
         assert_eq!(s.bindings, vec![("fire".into(), "F".into(), "X".into())]);
         assert_eq!(Save::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn seasonal_preferences_round_trip_without_changing_old_saves() {
+        use crate::seasonal::Seasonal;
+        assert_eq!(Save::parse("seasonal nonsense\n").seasonal, None);
+        assert_eq!(Save::parse("seasonal\n").seasonal, None);
+        assert!(!Save::default().serialize().contains("seasonal"));
+        for season in [
+            Seasonal::Auto,
+            Seasonal::Off,
+            Seasonal::Halloween,
+            Seasonal::Thanksgiving,
+            Seasonal::Christmas,
+        ] {
+            let save = Save {
+                seasonal: Some(season),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&save.serialize()).seasonal, Some(season));
+        }
+    }
+
+    #[test]
+    fn title_music_defaults_on_and_remembers_either_choice() {
+        assert!(Save::parse("").title_music);
+        assert!(Save::parse("title_music 1\n").title_music);
+        assert!(!Save::parse("title_music 0\n").title_music);
+    }
+
+    #[test]
+    fn touch_settings_are_saved_only_once_chosen() {
+        let fresh = Save::default().serialize();
+        assert!(!fresh.contains("touch_aim") && !fresh.contains("arc_hint"));
+
+        let chosen = Save {
+            touch_aim: Some(TouchAim::Drag),
+            arc_hint: Some(ArcHint::Wind),
+            ..Save::default()
+        };
+        let back = Save::parse(&chosen.serialize());
+        assert_eq!(back.touch_aim, Some(TouchAim::Drag));
+        assert_eq!(back.arc_hint, Some(ArcHint::Wind));
+
+        let junk = Save::parse("touch_aim sideways\narc_hint everything\n");
+        assert_eq!((junk.touch_aim, junk.arc_hint), (None, None));
+    }
+
+    #[test]
+    fn the_last_arc_setting_is_saved_only_once_toggled() {
+        assert!(!Save::default().serialize().contains("last_arc"));
+        for on in [true, false] {
+            let chosen = Save {
+                last_arc: Some(on),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&chosen.serialize()).last_arc, Some(on));
+        }
+        assert_eq!(Save::parse("last_arc maybe\n").last_arc, None);
+    }
+
+    #[test]
+    fn challenge_bests_keep_the_best_and_round_trip() {
+        let mut save = Save::default();
+        assert!(!save.serialize().contains("challenge"));
+        assert!(save.record_challenge(2, 1));
+        assert!(save.record_challenge(0, 3));
+        assert!(!save.record_challenge(0, 2), "worse");
+        assert!(save.record_challenge(2, 2), "better");
+        assert_eq!(save.challenge_best(0), Some(3));
+        assert_eq!(save.challenge_best(1), None);
+        assert_eq!(save.challenge_best(2), Some(2));
+        assert_eq!(Save::parse(&save.serialize()), save);
+        let junk = Save::parse(
+            "challenge x 1\nchallenge 1\nchallenge 1 999\nchallenge 1 2\nchallenge 1 1\n",
+        );
+        assert_eq!(junk.challenges, vec![(1, 2)]);
+    }
+
+    #[test]
+    fn custom_challenge_bests_are_keyed_by_digest_and_round_trip() {
+        let mut save = Save::default();
+        assert!(save.record_custom_challenge(42, 2));
+        assert!(save.record_custom_challenge(7, 1));
+        assert!(!save.record_custom_challenge(42, 1), "worse");
+        assert!(save.record_custom_challenge(42, 3), "better");
+        assert_eq!(save.custom_challenge_best(42), Some(3));
+        assert_eq!(save.custom_challenge_best(99), None);
+        assert_eq!(
+            save.custom_challenges,
+            vec![(7, 1), (42, 3)],
+            "digest order"
+        );
+        assert_eq!(Save::parse(&save.serialize()), save);
+        assert_eq!(
+            Save::parse("custom_challenge invalid 2\ncustom_challenge 9 256\n").custom_challenges,
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn the_controller_preference_is_saved_only_once_chosen() {
+        assert!(!Save::default().serialize().contains("controller"));
+        for on in [true, false] {
+            let chosen = Save {
+                controller: Some(on),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&chosen.serialize()).controller, Some(on));
+        }
+        assert_eq!(Save::parse("controller maybe\n").controller, None);
+    }
+
+    #[test]
+    fn the_idle_demo_setting_defaults_for_old_saves_and_is_saved_once_toggled() {
+        // A save from before the demo has no line: not chosen, so the
+        // game's default (on) applies, and nothing new is written for it.
+        let old = Save::parse("version 2\nvolume 40\nlast_arc 0\n");
+        assert_eq!(old.idle_demo, None);
+        assert!(!old.serialize().contains("idle_demo"));
+        for on in [true, false] {
+            let chosen = Save {
+                idle_demo: Some(on),
+                ..Save::default()
+            };
+            assert_eq!(Save::parse(&chosen.serialize()).idle_demo, Some(on));
+        }
+        assert_eq!(Save::parse("idle_demo sometimes\n").idle_demo, None);
+    }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Bindings as the parser normalizes them: lowercase actions, uppercase keys.
+        fn action() -> impl Strategy<Value = String> {
+            "[a-z0-9_]{1,12}"
+        }
+
+        fn token() -> impl Strategy<Value = String> {
+            "[A-Z0-9_]{1,12}"
+        }
+
+        fn saves() -> impl Strategy<Value = Save> {
+            let entry = (
+                any::<u64>(),
+                any::<u32>(),
+                any::<i32>(),
+                any::<u32>(),
+                any::<bool>(),
+            )
+                .prop_map(|(seed, screens, shells, shots, daily)| Entry {
+                    seed,
+                    screens,
+                    shells,
+                    shots,
+                    daily,
+                });
+            let aim = prop::option::of(prop_oneof![Just(TouchAim::Buttons), Just(TouchAim::Drag)]);
+            let hint = prop::option::of(prop_oneof![
+                Just(ArcHint::Short),
+                Just(ArcHint::Full),
+                Just(ArcHint::Wind)
+            ]);
+            (
+                (
+                    prop::collection::vec(entry, 0..20),
+                    any::<u8>(),
+                    any::<bool>(),
+                ),
+                (
+                    any::<u32>(),
+                    prop::collection::vec((action(), token(), token()), 0..6),
+                ),
+                (
+                    aim,
+                    hint,
+                    prop::option::of(any::<bool>()),
+                    prop::option::of(any::<bool>()),
+                ),
+            )
+                .prop_map(
+                    |(
+                        (scores, volume, muted),
+                        (learned, bindings),
+                        (touch_aim, arc_hint, last_arc, idle_demo),
+                    )| Save {
+                        scores,
+                        volume,
+                        muted,
+                        learned,
+                        bindings,
+                        touch_aim,
+                        arc_hint,
+                        last_arc,
+                        idle_demo,
+                        ..Save::default()
+                    },
+                )
+        }
+
+        proptest! {
+            #[test]
+            fn any_text_parses_without_panicking(text in "\\PC*") {
+                let _ = Save::parse(&text);
+            }
+
+            #[test]
+            fn any_line_soup_parses_without_panicking(
+                lines in prop::collection::vec("(version|unlocked|volume|muted|title_music|learned|touch_aim|arc_hint|last_arc|idle_demo|controller|challenge|custom_challenge|bind|run)( [^\\n ]{0,24}){0,6}", 0..30)
+            ) {
+                let _ = Save::parse(&lines.join("\n"));
+            }
+
+            #[test]
+            fn any_too_loud_volume_caps_at_full(v in 101u128..) {
+                // However far past 100 a hand edit goes, it is full volume,
+                // not a reset to the default.
+                let s = Save::parse(&format!("version 2\nvolume {v}\n"));
+                prop_assert_eq!(s.volume, 100);
+            }
+
+            #[test]
+            fn a_save_reads_back_as_written(save in saves()) {
+                // What a save should come back as: volume capped, board ranked and cut.
+                let mut expected = save.clone();
+                expected.volume = expected.volume.min(100);
+                expected.sort();
+                let back = Save::parse(&save.serialize());
+                prop_assert_eq!(&back, &expected);
+                // And writing it again changes nothing.
+                prop_assert_eq!(Save::parse(&back.serialize()), back);
+            }
+        }
+    }
+
+    #[rstest]
+    #[case(TouchAim::Buttons)]
+    #[case(TouchAim::Drag)]
+    fn touch_aim_tokens_round_trip(#[case] a: TouchAim) {
+        assert_eq!(TouchAim::from_token(a.token()), Some(a));
+    }
+
+    #[rstest]
+    #[case(ArcHint::Short)]
+    #[case(ArcHint::Full)]
+    #[case(ArcHint::Wind)]
+    fn arc_hint_tokens_round_trip(#[case] h: ArcHint) {
+        assert_eq!(ArcHint::from_token(h.token()), Some(h));
+    }
+
+    /// The on-disk format, pinned. Players edit this file by hand, so a change
+    /// to it should be a deliberate one (and usually a VERSION bump).
+    #[test]
+    #[cfg_attr(miri, ignore = "insta opens a socket, which Miri cannot emulate")]
+    fn the_file_format_is_pinned() {
+        let save = Save {
+            scores: vec![
+                Entry {
+                    seed: 20260907,
+                    screens: 41,
+                    shells: 3,
+                    shots: 88,
+                    daily: true,
+                },
+                Entry {
+                    seed: 7,
+                    screens: 12,
+                    shells: 0,
+                    shots: 30,
+                    daily: false,
+                },
+            ],
+            volume: 65,
+            muted: false,
+            learned: 0b1011,
+            bindings: vec![("fire".into(), "F".into(), "X".into())],
+            touch_aim: Some(TouchAim::Drag),
+            arc_hint: Some(ArcHint::Short),
+            last_arc: Some(false),
+            idle_demo: Some(false),
+            ..Save::default()
+        };
+        insta::assert_snapshot!(save.serialize());
     }
 }

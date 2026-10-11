@@ -1,0 +1,260 @@
+{
+  "commit": "7056487374a64915a1ed9eb0df86825681fa5353",
+  "date": "2026-10-09",
+  "sweeps": [
+    {
+      "scenario": "depth-320-base",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 44,
+      "runs": 100,
+      "mean_reserve": 7.06,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-320-demo",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 46,
+      "runs": 100,
+      "mean_reserve": 7.02,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-320-drift",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 44,
+      "runs": 100,
+      "mean_reserve": 7.06,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-320-evolving",
+      "validated_screens": 10896,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 0,
+      "runs": 100,
+      "mean_reserve": 32.8,
+      "min_reserve": 15
+    },
+    {
+      "scenario": "depth-320-precision",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 44,
+      "runs": 100,
+      "mean_reserve": 7.06,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-320-risk",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 0,
+      "runs": 100,
+      "mean_reserve": 15.0,
+      "min_reserve": 15
+    },
+    {
+      "scenario": "depth-400-base",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 70,
+      "runs": 100,
+      "mean_reserve": 3.44,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-400-demo",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 70,
+      "runs": 100,
+      "mean_reserve": 3.42,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-400-drift",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 70,
+      "runs": 100,
+      "mean_reserve": 3.44,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-400-evolving",
+      "validated_screens": 10896,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 0,
+      "runs": 100,
+      "mean_reserve": 32.18,
+      "min_reserve": 15
+    },
+    {
+      "scenario": "depth-400-precision",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 70,
+      "runs": 100,
+      "mean_reserve": 3.44,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "depth-400-risk",
+      "validated_screens": 12000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 0,
+      "runs": 100,
+      "mean_reserve": 15.0,
+      "min_reserve": 15
+    },
+    {
+      "scenario": "economy-base-perfect",
+      "validated_screens": 8000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 0,
+      "runs": 200,
+      "mean_reserve": 65.1,
+      "min_reserve": 52
+    },
+    {
+      "scenario": "economy-base-rough",
+      "validated_screens": 8000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 195,
+      "runs": 200,
+      "mean_reserve": 0.15,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "economy-base-steady",
+      "validated_screens": 8000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 1,
+      "runs": 200,
+      "mean_reserve": 32.52,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "economy-evolving-perfect",
+      "validated_screens": 7770,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 0,
+      "runs": 200,
+      "mean_reserve": 66.33,
+      "min_reserve": 12
+    },
+    {
+      "scenario": "economy-evolving-rough",
+      "validated_screens": 7770,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 92,
+      "runs": 200,
+      "mean_reserve": 16.53,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "economy-evolving-steady",
+      "validated_screens": 7770,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 6,
+      "runs": 200,
+      "mean_reserve": 47.12,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "economy-risk-perfect",
+      "validated_screens": 8000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 0,
+      "runs": 200,
+      "mean_reserve": 15.0,
+      "min_reserve": 15
+    },
+    {
+      "scenario": "economy-risk-rough",
+      "validated_screens": 8000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 160,
+      "runs": 200,
+      "mean_reserve": 1.95,
+      "min_reserve": 0
+    },
+    {
+      "scenario": "economy-risk-steady",
+      "validated_screens": 8000,
+      "flat_fallbacks": 0,
+      "unsolvable": 0,
+      "exhausted_runs": 3,
+      "runs": 200,
+      "mean_reserve": 12.56,
+      "min_reserve": 0
+    }
+  ],
+  "fuzz": [
+    {
+      "target": "history_file",
+      "inputs": 1078210,
+      "seconds": 61
+    },
+    {
+      "target": "layout_code",
+      "inputs": 4150703,
+      "seconds": 61
+    },
+    {
+      "target": "layouts_file",
+      "inputs": 1008378,
+      "seconds": 61
+    },
+    {
+      "target": "match_log",
+      "inputs": 62116,
+      "seconds": 61
+    },
+    {
+      "target": "replay",
+      "inputs": 200499,
+      "seconds": 61
+    },
+    {
+      "target": "replay_code",
+      "inputs": 882359,
+      "seconds": 61
+    },
+    {
+      "target": "save_parse",
+      "inputs": 934493,
+      "seconds": 61
+    },
+    {
+      "target": "seed_parse",
+      "inputs": 18335378,
+      "seconds": 61
+    }
+  ],
+  "host_digest": "0x1b3cfe1e37a5c99b",
+  "phone_digest": "0x1b3cfe1e37a5c99b"
+}

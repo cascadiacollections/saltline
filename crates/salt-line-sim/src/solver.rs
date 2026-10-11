@@ -17,9 +17,27 @@
 //! quantized inputs the player would dial in.
 //!
 //! A candidate survives if firing it would leave the target reading
-//! `Collapsed`. With more than one target a single shell cannot clear the
-//! screen, so the requirement is per target: each standing structure needs at
+//! `Collapsed`. With more than one target a single shell is not required to
+//! clear the screen, so the requirement is per target: each standing structure needs at
 //! least `MIN_SOLUTIONS` shots that would fell it.
+//!
+//! Each target is tried from three aim points ([`aim_points`]): the box
+//! centre, which is the direct answer DESIGN §2.4 describes, plus the
+//! footprint base and the upper box for the undermining and toppling kill
+//! paths. Duplicate dialable shots are simulated once.
+//!
+//! Verification is deliberately expensive: every candidate that survives a
+//! cheap proximity filter is applied to a clone of the screen with
+//! [`Screen::apply_shot`], so the solver judges a shot by the game's own
+//! damage model rather than a copy of it. [`validate`] also stops counting at
+//! [`GATE_CAP`], which is all [`crate::run::generate_screen`] needs.
+//!
+//! The closed form is exact physics; the integrator is not. After time `t`,
+//! semi-implicit Euler lands `½·g·t·DT` lower (and `½·w·t·DT` further
+//! downwind) than the closed form, and quantizing angle and power adds more
+//! error. The closed form also knows nothing of Storm Front, Airburst,
+//! ricochet or tunnelling; only the re-simulation sees them. Hence every
+//! candidate is re-simulated.
 
 use crate::ballistics::{
     blast_radius, fire, power_ticks_for_speed, speed_bounds, End, FireOptions, Shot,
@@ -32,7 +50,9 @@ use crate::{Vec2, GRAVITY, MIN_SOLUTIONS, SOLVER_TIME_SAMPLES};
 /// A shot the player could dial in that would fell a specific target.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Candidate {
+    /// Already quantized to the loadout's input grid.
     pub shot: Shot,
+    /// Index into the screen's structures.
     pub target: usize,
     /// Flight time of the closed-form solve that produced it.
     pub solved_time: f64,
@@ -40,6 +60,12 @@ pub struct Candidate {
     pub flight_time: f64,
 }
 
+/// The outcome of validating a screen.
+///
+/// Counts stop at the cap passed to [`validate_capped`], so under
+/// [`validate`] they read at most [`GATE_CAP`]. A supply screen reports
+/// `usize::MAX` for both worst counts; a screen that fails early pads the
+/// remaining targets with 0.
 #[derive(Clone, Debug, Default)]
 pub struct SolveReport {
     /// Surviving-candidate count per structure, in structure order.
@@ -52,10 +78,12 @@ pub struct SolveReport {
     /// §2.4 asks to be logged. Out of at most `SOLVER_TIME_SAMPLES`, so it
     /// stays a readable number instead of saturating.
     pub worst_direct: usize,
+    /// Every surviving candidate, grouped by target.
     pub candidates: Vec<Candidate>,
 }
 
 impl SolveReport {
+    /// True when the hardest target has at least [`MIN_SOLUTIONS`] candidates.
     pub fn solvable(&self) -> bool {
         self.worst >= MIN_SOLUTIONS
     }
@@ -64,6 +92,12 @@ impl SolveReport {
 /// Closed-form candidate shots for a target, in loadout-quantized input space.
 /// Duplicates (distinct flight times collapsing onto the same dialable input)
 /// are dropped — three candidates must mean three distinct shots.
+///
+/// `origin` and `target` are world positions; `wind_accel` is the effective
+/// wind in units/s², already scaled by the loadout. Each result pairs the
+/// shot with the flight time, in seconds, that produced it. Quantizing angle
+/// and power moves the shot slightly off the exact solution, which is why
+/// every candidate is simulated before it counts.
 pub fn analytic_shots(
     origin: Vec2,
     target: Vec2,
@@ -75,6 +109,7 @@ pub fn analytic_shots(
     let (_, v_max) = speed_bounds(lo);
     // Longest possible flight: straight up at full power.
     let t_max = 2.0 * v_max / GRAVITY + 0.5;
+    // Keeps `t` clear of zero, where the solve below divides by it.
     let t_min = 0.15;
 
     let mut out: Vec<(Shot, f64)> = Vec::with_capacity(SOLVER_TIME_SAMPLES);
@@ -83,7 +118,8 @@ pub fn analytic_shots(
         let t = t_min + (t_max - t_min) * f;
         let vx = (dx - 0.5 * wind_accel * t * t) / t;
         let vy = (dy + 0.5 * GRAVITY * t * t) / t;
-        // The barrel elevates 0..90 degrees, so vx must be forward.
+        // The barrel elevates 0..90 degrees, so vx must be forward and vy
+        // must not point down.
         if vx <= 0.0 || vy < 0.0 {
             continue;
         }
@@ -101,8 +137,18 @@ pub fn analytic_shots(
     out
 }
 
+/// Horizontal margin, world units, either side of a target box's x-span
+/// within which a detonation passes [`fells_target`]'s cheap filter as a
+/// possible undermining shot, even outside blast range (DESIGN §2.7). Only a
+/// filter: the damage model still decides.
+const UNDERMINE_MARGIN: f64 = 8.0;
+
 /// Would this shot fell `target`? Simulated, then confirmed against the real
 /// damage model on a scratch copy of the screen.
+///
+/// Returns the primary shell's flight time when it does. The shot is
+/// simulated twice: once here for the cheap filter, and again inside
+/// `apply_shot`.
 fn fells_target(screen: &Screen, lo: &Loadout, shot: Shot, target: usize) -> Option<f64> {
     let boxes = screen.target_boxes();
     let opts = FireOptions {
@@ -130,9 +176,11 @@ fn fells_target(screen: &Screen, lo: &Loadout, shot: Shot, target: usize) -> Opt
         End::Structure { index, .. } => index == target,
         End::Terrain { pos, .. } | End::Fuse { pos } => {
             target_box.distance_to(pos) < blast_radius(lo, t.damage_scale)
-                // Undermining: a crater inside the footprint counts even when
-                // the blast never touches the structure (DESIGN §2.7).
-                || (pos.x >= target_box.x0 - 8.0 && pos.x <= target_box.x1 + 8.0)
+                // Undermining: a detonation within `UNDERMINE_MARGIN` of the
+                // box's x-span counts even when the blast never touches the
+                // structure (DESIGN §2.7).
+                || (pos.x >= target_box.x0 - UNDERMINE_MARGIN
+                    && pos.x <= target_box.x1 + UNDERMINE_MARGIN)
         }
         _ => false,
     });
@@ -158,6 +206,8 @@ fn fells_target(screen: &Screen, lo: &Loadout, shot: Shot, target: usize) -> Opt
 /// undermining, and just under the top for the top-heavy silhouettes that
 /// topple from a high hit. They also carry `Overhang`, which by construction
 /// has no direct answer at all.
+///
+/// Order is `[centre, base, top]`. `None` if `target` is out of range.
 pub fn aim_points(screen: &Screen, target: usize) -> Option<[Vec2; 3]> {
     let s = screen.structures.get(target)?;
     let b = s.aabb();
@@ -180,9 +230,8 @@ fn solve_from_aim(
     let wind_accel = screen.wind * lo.wind_scale;
     let mut found = 0usize;
     for (shot, solved_time) in analytic_shots(origin, aim, wind_accel, lo) {
-        if let Some(prior) = seen.iter().position(|s| *s == shot) {
+        if seen.contains(&shot) {
             // Already simulated: count it here if it worked.
-            let _ = prior;
             if out.iter().any(|c| c.shot == shot) {
                 found += 1;
             }
@@ -211,12 +260,22 @@ fn solve_from_aim(
 /// `cap` stops the search early once enough have been found. Screen generation
 /// only needs to know the count clears `MIN_SOLUTIONS`; the batch harness
 /// passes `usize::MAX` because it wants the whole histogram.
+///
+/// The centre aim runs first and the other two only if the cap is still
+/// unmet, so the direct count can be cut short by the cap but never inflated
+/// by the other aims.
 pub fn solve_target_capped(
     screen: &Screen,
     lo: &Loadout,
     target: usize,
     cap: usize,
 ) -> (Vec<Candidate>, usize) {
+    // Solving means changing a standing target to a downed one. A collapsed
+    // wreck may still have a hittable box, but hitting it only clears debris;
+    // it must not be reported as a fresh way to fell that target.
+    if screen.structures.get(target).is_none_or(|s| s.is_down()) {
+        return (Vec::new(), 0);
+    }
     let Some(aims) = aim_points(screen, target) else {
         return (Vec::new(), 0);
     };
@@ -234,14 +293,18 @@ pub fn solve_target_capped(
     (out, direct)
 }
 
-/// Every candidate that fells one target.
+/// Every candidate that fells one target, uncapped. Used by tests, the
+/// Godot layer and `site_shot`.
 pub fn solve_target(screen: &Screen, lo: &Loadout, target: usize) -> Vec<Candidate> {
     solve_target_capped(screen, lo, target, usize::MAX).0
 }
 
 /// Validate a whole screen. DESIGN §2.4: accept only if at least three
-/// candidates survive — per target, since one shell cannot clear a screen
-/// holding three structures.
+/// candidates survive — per target, since one shell is not expected to clear
+/// a screen holding three structures.
+///
+/// Supply screens pass trivially. A screen with no structures reports zero
+/// candidates and so is not solvable.
 pub fn validate_capped(screen: &Screen, lo: &Loadout, cap: usize) -> SolveReport {
     if screen.supply {
         return SolveReport {
@@ -334,6 +397,18 @@ mod tests {
             // Every candidate is on the loadout's input grid.
             assert_eq!(a.shot, a.shot.quantized(&lo));
         }
+    }
+
+    #[test]
+    fn a_down_target_has_no_felling_candidates() {
+        let lo = Loadout::new();
+        let mut screen = generate_screen(0xABCD, 0, 320, &lo);
+        assert!(!solve_target(&screen, &lo, 0).is_empty());
+
+        screen.structures[0].state = StructState::Collapsed;
+        assert!(solve_target(&screen, &lo, 0).is_empty());
+        screen.structures[0].state = StructState::Cleared;
+        assert!(solve_target(&screen, &lo, 0).is_empty());
     }
 
     #[test]

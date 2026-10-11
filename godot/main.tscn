@@ -1,7 +1,11 @@
-[gd_scene format=3 uid="uid://bs4lt1n3m41n0"]
+[gd_scene load_steps=2 format=3 uid="uid://bs4lt1n3m41n0"]
 
-; One node. Everything the game draws is composited into a single
-; native-resolution image buffer by `SaltLine`, which is a Rust class from
-; salt-line-godot. There is no scene tree to keep in sync with the sim.
+; The wrapper only manages optional desktop services. Everything the game
+; draws remains in SaltLine's single logical-grid image buffer with detailed source pixels.
 
-[node name="Main" type="SaltLine"]
+[ext_resource type="Script" path="res://godot/platform_services.gd" id="1_services"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_services")
+
+[node name="Game" type="SaltLine" parent="."]

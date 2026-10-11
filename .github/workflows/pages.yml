@@ -14,18 +14,24 @@ on:
       - 'tools/gen_sprites.py'
       - 'tools/build_site.py'
       - 'crates/salt-line-sim/**'
+      - 'crates/salt-line-godot/src/credits.rs'
+      - 'third_party/**'
+      - 'addons/xdg_portals/LICENSE'
+      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
+      - 'LICENSE'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/pages.yml'
+      - '!site/assets/readme/**'
   workflow_dispatch:
 
+# Read-only by default. Only the deploy job gets to publish (pages, id-token);
+# the build job, which runs the generators, never holds write access.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deploy at a time; never cancel a run that is mid-publish.
 concurrency:
@@ -35,15 +41,25 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read   # configure-pages reads the site's base URL
     steps:
-      - uses: actions/checkout@v4
-      - id: pages
-        uses: actions/configure-pages@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, pinned; the channel comes from rust-toolchain.toml
+          persist-credentials: false
+      - id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: '.python-version'
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - name: install Python tools
         run: uv sync --locked
       - name: regenerate the site's media from art/
@@ -64,22 +80,25 @@ jobs:
       - name: assets the page needs must exist
         run: |
           set -eu
-          for f in index.html style.css main.js assets/hero_wide.png \
+          for f in index.html licenses.html style.css main.js assets/hero_wide.png \
                    assets/shot.gif assets/shot_static.png assets/og.png assets/favicon.png \
                    assets/scene_4x.png assets/sprite_sheet_4x.png \
                    assets/palette_16.png assets/sprites/barrel_strip_5deg.png; do
             test -s "site/$f" || { echo "missing site/$f"; exit 1; }
           done
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

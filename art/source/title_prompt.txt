@@ -1,0 +1,16 @@
+Built-in ImageGen prompt (2026-10-09), using the Iron & Chalk concept board as
+an art-direction reference:
+
+Salt Line game title background, widescreen 16:9. Single coastal composition,
+not a concept board. Native 320x180 pixel-art composition with hard square
+pixels and a restrained 16-color look. Bleached chalk cliffs and broken layers
+on the lower coast, small golden-ochre tracked artillery at bottom left,
+rust-red water tower and skeletal dock at bottom right, blue-slate sea and
+far industrial silhouettes on a low horizon. Calm dark-navy negative space
+through the upper and central frame for cream menu text, a low pale moon far
+upper right. Quiet chalk coast at night, large silhouettes, sparse dithering.
+Navy, slate, pale blue, cream, earth, olive, rust and ochre. No letters, logos,
+UI, borders, panels, shells, trajectories, explosions or glow.
+
+Normalize with tools/build_title_art.py: nearest-neighbor 320x180 resize and
+no-dither quantization to the sixteen sampled game-palette swatches.

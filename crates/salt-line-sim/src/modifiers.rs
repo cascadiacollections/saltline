@@ -2,13 +2,21 @@
 //!
 //! Modifiers are data, not branches: every entry in `POOL` is a row of effect
 //! deltas, and `Loadout::recompute` folds the held stacks into the scalar
-//! fields that ballistics, the solver and the economy read. Adding a modifier
-//! means adding a row, never an `if` in the ballistics core.
+//! fields that ballistics, the solver and the economy read. A modifier with a
+//! scalar effect (wind, power, crater or blast scale, angle quantum, refunds)
+//! needs only a row. One whose effect is a behaviour (Airburst, Auger,
+//! Thermal Lance, Storm Front and the like) sets a flag, and the code that
+//! owns that behaviour checks it.
+//!
+//! Determinism: the fold runs in `POOL` order, not draft order, so the same
+//! held stacks always give bit-identical floats however they were drafted.
+//! Draft offers come from a seeded shuffle ([`draft_offers`]).
 
 use crate::rng::{substream, Pcg32};
 use crate::ANGLE_QUANTUM_TICKS;
 
-/// Build the modifier supports. DESIGN §4.
+/// Build the modifier supports. DESIGN §4. Display only; nothing in the sim
+/// branches on it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tag {
     Drift,
@@ -19,6 +27,7 @@ pub enum Tag {
 }
 
 impl Tag {
+    /// Upper-case label, as printed on draft cards.
     pub const fn name(self) -> &'static str {
         match self {
             Tag::Drift => "DRIFT",
@@ -39,6 +48,11 @@ pub enum Category {
     Structural,
 }
 
+/// Every modifier in DESIGN §4.
+///
+/// The discriminant is the index into [`POOL`] and into the loadout's stack
+/// array. The replay state hash writes stack counts in this order and draft
+/// offers by index, so reordering the variants changes every state hash.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Modifier {
@@ -72,44 +86,74 @@ pub enum Modifier {
     StormFront,
 }
 
+/// Number of [`Modifier`] variants, and the length of [`POOL`].
 pub const MODIFIER_COUNT: usize = 24;
 
-/// Capability flags. Bit positions are stable — they are part of the replay
-/// surface only indirectly (via the shot log's screen seeds), but keeping them
-/// fixed makes state hashes comparable across builds.
+/// Capability flags, for modifiers whose effect is a behaviour rather than a
+/// scalar.
+///
+/// Flags are derived from the held stacks by [`Loadout::recompute`] and are
+/// neither stored nor hashed (the state hash records stack counts), so the
+/// bit values are internal and need only be distinct.
 pub mod flags {
+    /// Airburst: detonate at a fuse distance.
     pub const AIRBURST: u32 = 1 << 0;
+    /// Auger: tunnel through one layer.
     pub const AUGER: u32 = 1 << 1;
+    /// Thermal Lance: Steel craters as Rock, stronger structural damage.
     pub const THERMAL_LANCE: u32 = 1 << 2;
+    /// Anemometer: wind shown to one decimal.
     pub const ANEMOMETER: u32 = 1 << 3;
+    /// Rangefinder: exact distance to the nearest target shown.
     pub const RANGEFINDER: u32 = 1 << 4;
+    /// Dead Reckoning: wind hidden until the first shot.
     pub const DEAD_RECKONING: u32 = 1 << 5;
+    /// Plumb Line: guide at the last trajectory's apex.
     pub const PLUMB_LINE: u32 = 1 << 6;
+    /// Standing Orders: one-shot streak bonus.
     pub const STANDING_ORDERS: u32 = 1 << 7;
+    /// Scavenger Rites: every fifth screen is a supply screen.
     pub const SCAVENGER_RITES: u32 = 1 << 8;
+    /// Forced March: doubled refunds, capped reserve.
     pub const FORCED_MARCH: u32 = 1 << 9;
+    /// Sapper's Eye: material layers drawn as colour bands.
     pub const SAPPERS_EYE: u32 = 1 << 10;
+    /// Long Lens: camera zoomed out one step.
     pub const LONG_LENS: u32 = 1 << 11;
+    /// Storm Front: wind resamples at the apex.
     pub const STORM_FRONT: u32 = 1 << 12;
 }
 
 /// One row of effect deltas. Multiplicative fields apply once per stack;
 /// additive fields are multiplied by the stack count.
+///
+/// The exceptions: `angle_quantum` divides once per stack, `reserve_cap`
+/// takes the minimum, `salvage_radius` the maximum, `flags` are ORed in, and
+/// `instant_shells` is not folded at all; [`Loadout::take`] returns it.
+/// [`Effect::NONE`] is the neutral row every entry starts from.
 #[derive(Clone, Copy, Debug)]
 pub struct Effect {
+    /// Multiplier on wind acceleration.
     pub wind_mult: f64,
+    /// Multiplier on the whole power range.
     pub power_mult: f64,
+    /// Multiplier on muzzle speed (Sabot).
     pub muzzle_mult: f64,
+    /// Multiplier on crater radius.
     pub crater_mult: f64,
+    /// Multiplier on blast radius.
     pub blast_mult: f64,
-    pub mass_mult: f64,
     /// Divisor applied to angle quantization per stack (`1` is neutral).
     pub angle_quantum: i32,
+    /// Ricochets allowed per shell.
     pub ricochet_bounces: u8,
+    /// Submunitions per detonation.
     pub cluster_submunitions: u8,
+    /// Past landing points kept marked.
     pub chalk_marks: u8,
     /// Added to every refund tier.
     pub refund_bonus: i32,
+    /// Multiplier on refunds.
     pub refund_mult: f64,
     /// Granted once, the moment the modifier is taken.
     pub instant_shells: i32,
@@ -117,22 +161,24 @@ pub struct Effect {
     pub shells_per_clear: i32,
     /// Hard reserve cap, if the modifier imposes one.
     pub reserve_cap: i32,
+    /// How far, in world units, the emplacement may move either way.
     pub enfilade_units: f64,
     /// Radius inside which a near miss still refunds.
     pub salvage_radius: f64,
     /// Shells refunded by a qualifying near miss, per stack.
     pub salvage_shells: i32,
+    /// [`flags`] bits this modifier sets.
     pub flags: u32,
 }
 
 impl Effect {
+    /// The neutral row: no change to anything.
     pub const NONE: Effect = Effect {
         wind_mult: 1.0,
         power_mult: 1.0,
         muzzle_mult: 1.0,
         crater_mult: 1.0,
         blast_mult: 1.0,
-        mass_mult: 1.0,
         angle_quantum: 1,
         ricochet_bounces: 0,
         cluster_submunitions: 0,
@@ -151,12 +197,19 @@ impl Effect {
 
 /// A pool entry: the modifier, its display data, and its effect row.
 pub struct Entry {
+    /// Which modifier this row describes.
     pub modifier: Modifier,
+    /// Upper-case display name.
     pub name: &'static str,
+    /// One-line effect text for the draft card.
     pub blurb: &'static str,
+    /// Build the modifier supports.
     pub tag: Tag,
+    /// Draft column.
     pub category: Category,
+    /// Most stacks a loadout may hold (DESIGN §4 "Stacks").
     pub max_stacks: u8,
+    /// What each stack does.
     pub effect: Effect,
 }
 
@@ -190,10 +243,11 @@ pub static POOL: [Entry; MODIFIER_COUNT] = [
         Tag::Drift,
         Category::Shell,
         2,
+        // The x1.6 mass is how the card explains the effect; the effect
+        // itself is the wind and power multipliers.
         Effect {
             wind_mult: 0.5,
             power_mult: 0.8,
-            mass_mult: 1.6,
             ..Effect::NONE
         },
     ),
@@ -487,57 +541,80 @@ pub static POOL: [Entry; MODIFIER_COUNT] = [
 ];
 
 impl Modifier {
+    /// Position in [`POOL`]; equal to the discriminant.
     #[inline]
     pub fn index(self) -> usize {
         self as usize
     }
+    /// The modifier's pool row.
     #[inline]
     pub fn entry(self) -> &'static Entry {
         &POOL[self.index()]
     }
+    /// Upper-case display name.
     #[inline]
     pub fn name(self) -> &'static str {
         self.entry().name
     }
+    /// Build tag.
     #[inline]
     pub fn tag(self) -> Tag {
         self.entry().tag
     }
+    /// Most stacks a loadout may hold.
     #[inline]
     pub fn max_stacks(self) -> u8 {
         self.entry().max_stacks
     }
+    /// Every modifier, in pool order.
     pub fn all() -> impl Iterator<Item = Modifier> {
         POOL.iter().map(|e| e.modifier)
-    }
-    /// Recover a modifier from its discriminant, for replay decoding.
-    pub fn from_index(i: usize) -> Option<Modifier> {
-        POOL.get(i).map(|e| e.modifier)
     }
 }
 
 /// The folded effect of everything held. Ballistics, the solver and the
 /// economy read only this — never the stack list.
+///
+/// The public fields are derived: [`Loadout::recompute`] overwrites them from
+/// the stack counts, so edit the loadout through [`Loadout::take`].
 #[derive(Clone, Debug)]
 pub struct Loadout {
     stacks: [u8; MODIFIER_COUNT],
+    /// Multiplier on wind acceleration (Ballast ×0.5, Featherweight ×2.2).
     pub wind_scale: f64,
+    /// Multiplier on the whole power range (Ballast ×0.8, Featherweight ×1.4).
     pub power_scale: f64,
+    /// Multiplier on muzzle speed (Sabot ×1.25).
     pub muzzle_scale: f64,
+    /// Multiplier on crater radius (Sabot ×0.5).
     pub crater_scale: f64,
+    /// Multiplier on blast radius (Airburst ×1.8).
     pub blast_scale: f64,
-    pub mass: f64,
+    /// Angle input step in 0.05° ticks: 10 (0.5°), then 2 (0.1°) and 1
+    /// (0.05°) with one and two Vernier stacks.
     pub angle_quantum_ticks: i32,
+    /// Ricochets allowed per primary shell (Skipstone).
     pub ricochet_bounces: u8,
+    /// Submunitions per Cluster split: 3 per stack.
     pub cluster_submunitions: u8,
+    /// Past landing points kept marked (Chalk Marks).
     pub chalk_marks: u8,
+    /// Added to every refund tier (Quartermaster).
     pub refund_bonus: i32,
+    /// Multiplier on refunds (Forced March ×2).
     pub refund_mult: f64,
+    /// Shells granted per screen cleared (Dead Reckoning).
     pub shells_per_clear: i32,
+    /// Reserve cap; `i32::MAX` means uncapped. Read it through
+    /// [`Loadout::cap`].
     pub reserve_cap: i32,
+    /// Emplacement repositioning range either way, world units (Enfilade).
     pub enfilade_units: f64,
+    /// Near-miss refund radius, world units (Salvage).
     pub salvage_radius: f64,
+    /// Shells refunded by a qualifying near miss (Salvage).
     pub salvage_shells: i32,
+    /// OR of every held modifier's [`flags`].
     pub flags: u32,
 }
 
@@ -550,7 +627,6 @@ impl Default for Loadout {
             muzzle_scale: 1.0,
             crater_scale: 1.0,
             blast_scale: 1.0,
-            mass: 1.0,
             angle_quantum_ticks: ANGLE_QUANTUM_TICKS,
             ricochet_bounces: 0,
             cluster_submunitions: 0,
@@ -570,25 +646,30 @@ impl Default for Loadout {
 }
 
 impl Loadout {
+    /// Nothing held.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Stacks held of `m`.
     #[inline]
     pub fn stacks(&self, m: Modifier) -> u8 {
         self.stacks[m.index()]
     }
 
+    /// Whether at least one stack of `m` is held.
     #[inline]
     pub fn has(&self, m: Modifier) -> bool {
         self.stacks(m) > 0
     }
 
+    /// Whether any bit of `f` (a [`flags`] constant) is set.
     #[inline]
     pub fn has_flag(&self, f: u32) -> bool {
         self.flags & f != 0
     }
 
+    /// Whether `m` is at its stack limit, and so out of the draft.
     #[inline]
     pub fn at_max(&self, m: Modifier) -> bool {
         self.stacks(m) >= m.max_stacks()
@@ -596,6 +677,9 @@ impl Loadout {
 
     /// Take a modifier. Returns the shells granted immediately (Depot, Storm
     /// Front), or 0. Refuses to exceed max stacks.
+    ///
+    /// The caller adds the returned shells to the reserve; the loadout does
+    /// not track shells.
     pub fn take(&mut self, m: Modifier) -> i32 {
         if self.at_max(m) {
             return 0;
@@ -606,6 +690,9 @@ impl Loadout {
     }
 
     /// Fold the held stacks into the derived fields.
+    ///
+    /// Resets every derived field to neutral, then applies each held
+    /// modifier in [`POOL`] order.
     pub fn recompute(&mut self) {
         let base = Loadout {
             stacks: self.stacks,
@@ -614,7 +701,6 @@ impl Loadout {
             muzzle_scale: 1.0,
             crater_scale: 1.0,
             blast_scale: 1.0,
-            mass: 1.0,
             angle_quantum_ticks: ANGLE_QUANTUM_TICKS,
             ricochet_bounces: 0,
             cluster_submunitions: 0,
@@ -643,10 +729,11 @@ impl Loadout {
                 self.muzzle_scale *= e.muzzle_mult;
                 self.crater_scale *= e.crater_mult;
                 self.blast_scale *= e.blast_mult;
-                self.mass *= e.mass_mult;
                 self.refund_mult *= e.refund_mult;
             }
             let n32 = n as i32;
+            // Integer division: Vernier's divisor of 5 takes 10 ticks to 2,
+            // then 2 to 0, which the floor of 1 turns into the finest step.
             for _ in 0..n {
                 self.angle_quantum_ticks = (self.angle_quantum_ticks / e.angle_quantum).max(1);
             }
@@ -664,38 +751,47 @@ impl Loadout {
     }
 
     // ------------------------------------------------------------ shorthands
+    /// Airburst held.
     #[inline]
     pub fn airburst(&self) -> bool {
         self.has_flag(flags::AIRBURST)
     }
+    /// Auger held.
     #[inline]
     pub fn auger(&self) -> bool {
         self.has_flag(flags::AUGER)
     }
+    /// Thermal Lance held.
     #[inline]
     pub fn thermal_lance(&self) -> bool {
         self.has_flag(flags::THERMAL_LANCE)
     }
+    /// Skipstone held (at least one ricochet).
     #[inline]
     pub fn ricochet(&self) -> bool {
         self.ricochet_bounces > 0
     }
+    /// Cluster held (shells split on detonation).
     #[inline]
     pub fn cluster(&self) -> bool {
         self.cluster_submunitions > 0
     }
+    /// Storm Front held.
     #[inline]
     pub fn storm_front(&self) -> bool {
         self.has_flag(flags::STORM_FRONT)
     }
+    /// Dead Reckoning held.
     #[inline]
     pub fn dead_reckoning(&self) -> bool {
         self.has_flag(flags::DEAD_RECKONING)
     }
+    /// Scavenger Rites held.
     #[inline]
     pub fn scavenger_rites(&self) -> bool {
         self.has_flag(flags::SCAVENGER_RITES)
     }
+    /// Standing Orders held.
     #[inline]
     pub fn standing_orders(&self) -> bool {
         self.has_flag(flags::STANDING_ORDERS)
@@ -721,6 +817,13 @@ impl Loadout {
     }
 
     /// Quantize an angle in ticks to what the player can actually dial in.
+    ///
+    /// Rounds to the nearest multiple of the quantum, halves upward. Meant for
+    /// non-negative input: integer division truncates toward zero, so
+    /// negative ticks do not round symmetrically. [`Shot::quantized`] clamps
+    /// the result.
+    ///
+    /// [`Shot::quantized`]: crate::ballistics::Shot::quantized
     #[inline]
     pub fn quantize_angle(&self, ticks: i32) -> i32 {
         let q = self.angle_quantum_ticks.max(1);
@@ -731,6 +834,12 @@ impl Loadout {
 
 /// Three offers drawn by screen seed, excluding anything already at max
 /// stacks. DESIGN §4.
+///
+/// Shuffles the eligible modifiers with a seeded [`Pcg32`] (Fisher–Yates)
+/// and keeps the first three: a draw without replacement, so the offers are
+/// distinct and each eligible modifier is equally likely. Fewer than three
+/// come back when fewer are eligible, and none when everything is maxed.
+/// The run passes the seed of the first screen of the coming band.
 pub fn draft_offers(screen_seed: u64, loadout: &Loadout) -> Vec<Modifier> {
     let mut eligible: Vec<Modifier> = Modifier::all().filter(|m| !loadout.at_max(*m)).collect();
     let mut r = Pcg32::new(substream(screen_seed, 0xD8AF_7000_0000_0001));
@@ -759,7 +868,6 @@ mod tests {
         l.take(Modifier::Ballast);
         assert_eq!(l.wind_scale, 0.5);
         assert_eq!(l.power_scale, 0.8);
-        assert_eq!(l.mass, 1.6);
         l.take(Modifier::Ballast);
         assert_eq!(l.wind_scale, 0.25);
         // Max 2 stacks — the third is refused.
