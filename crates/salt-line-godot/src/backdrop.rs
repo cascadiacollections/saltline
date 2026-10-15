@@ -163,9 +163,10 @@ pub struct Backdrop {
     patches: Vec<Patch>,
     /// Scratch canvas for `edge_patches`.
     narrow: Canvas,
-    /// The ground layer's first display row with anything on it (see
-    /// `Shown::ground_top`), found when the layer is drawn.
-    ground_top: i32,
+    /// Per column of the ground layer, its first display row with anything
+    /// on it (the layer's display height where none), found when the layer
+    /// is drawn. See [`Band`].
+    ground_tops: Vec<i32>,
     /// What this frame shows under the overlay: `None` when the overlay is
     /// the whole frame (a menu, or `layered` off).
     shown: Option<Shown>,
@@ -181,7 +182,7 @@ impl Default for Backdrop {
             outline: Kept::default(),
             patches: Vec::new(),
             narrow: Canvas::new(2, 1),
-            ground_top: 0,
+            ground_tops: Vec::new(),
             shown: None,
         }
     }
@@ -315,12 +316,31 @@ pub struct Shown {
     pub outline: bool,
     /// The buffer's width this frame: how many ground columns show.
     pub w: i32,
-    /// How many rows from the top the sky can show through: below this,
-    /// every column's ground is opaque, so the node draws the sky layer's
-    /// rows `0..sky_h` only (see `Backdrop::draw`).
+    /// What the node draws of the sky and ground, column band by band.
+    pub bands: [Band; BANDS],
+}
+
+/// How many column bands [`Shown::bands`] cuts the buffer into.
+pub const BANDS: usize = 32;
+
+/// What can show of the sky and ground in buffer columns `x0..x1`. The
+/// GPU pays for every pixel it draws, and on a weak one the layers' overlap
+/// is most of the frame, so the node draws only this much of each:
+///
+/// * the sky down to `sky_h` (buffer rows): below it every column of the
+///   band has opaque ground in front (`raster::draw_terrain` paints from
+///   the surface down), or the band has a column off the world and the sky
+///   goes all the way down;
+/// * the ground from `ground_top` (display rows of the ground layer): above
+///   it the layer is transparent in every column of the band.
+///
+/// Neither changes a pixel; [`Backdrop::composite`] mirrors both, so the
+/// tests catch a band that leaves out too much.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Band {
+    pub x0: i32,
+    pub x1: i32,
     pub sky_h: i32,
-    /// The ground layer's first display row with anything on it: the node
-    /// draws its rows from here down, the ones above being transparent.
     pub ground_top: i32,
 }
 
@@ -446,30 +466,12 @@ impl Backdrop {
         }
         self.keep_sky(view, pal, phase, biome);
         self.keep_ground(screen, guns, view.h, pal);
-        // Every GPU draw is fill the GPU pays for, a full-screen one most of
-        // all. The ground is opaque from each column's surface down
-        // (`raster::draw_terrain`), so the sky is only needed down to the
-        // lowest surface in view, or all the way where a column is off the
-        // world (the shake past its edge).
-        let len = screen.field.len() as i32;
-        let sky_h = (0..view.w)
-            .map(|x| {
-                let world_x = view.cam_x + x;
-                if (0..len).contains(&world_x) {
-                    view.sy(screen.field.surface(world_x as usize))
-                        .clamp(0, view.h)
-                } else {
-                    view.h
-                }
-            })
-            .max()
-            .unwrap_or(view.h);
+        let bands = self.bands(view, screen, canvas.scale());
         self.shown = Some(Shown {
             cam_x: view.cam_x,
             outline: false,
             w: view.w,
-            sky_h,
-            ground_top: self.ground_top,
+            bands,
         });
         self.edge_patches(view, screen, guns, pal);
         for p in &self.patches {
@@ -536,6 +538,37 @@ impl Backdrop {
         self.flat_sky.key = Some(key);
     }
 
+    /// This frame's [`Band`]s for `view` over `screen`, the ground layer
+    /// already drawn, on a canvas of scale `s`.
+    fn bands(&self, view: &View, screen: &Screen, s: i32) -> [Band; BANDS] {
+        let len = screen.field.len() as i32;
+        let ph = view.h * s;
+        std::array::from_fn(|b| {
+            let x0 = b as i32 * view.w / BANDS as i32;
+            let x1 = (b as i32 + 1) * view.w / BANDS as i32;
+            let mut band = Band {
+                x0,
+                x1,
+                sky_h: 0,
+                ground_top: ph,
+            };
+            for x in x0..x1 {
+                let world_x = view.cam_x + x;
+                let sky = if (0..len).contains(&world_x) {
+                    view.sy(screen.field.surface(world_x as usize))
+                        .clamp(0, view.h)
+                } else {
+                    view.h
+                };
+                band.sky_h = band.sky_h.max(sky);
+                let column = (world_x + GROUND_PAD) as usize;
+                let top = self.ground_tops.get(column).copied().unwrap_or(ph);
+                band.ground_top = band.ground_top.min(top);
+            }
+            band
+        })
+    }
+
     fn keep_ground(&mut self, screen: &Screen, guns: &[f64], h: i32, pal: &Palette) {
         if let Some(key) = &self.ground.key {
             if key.matches(screen, guns, h, pal) {
@@ -554,12 +587,27 @@ impl Backdrop {
         canvas.clear();
         raster::draw_terrain(canvas, &world, &screen.field, pal);
         raster::draw_ground_detail_around(canvas, &world, screen, guns, pal);
-        let stride = canvas.pixel_w() as usize * 4;
-        self.ground_top = canvas
-            .bytes()
-            .chunks_exact(stride)
-            .position(|row| row.as_chunks::<4>().0.iter().any(|p| p[3] != 0))
-            .unwrap_or(canvas.pixel_h() as usize) as i32;
+        // Each column's first painted display row, for the bands.
+        let (s, pw, ph) = (canvas.scale(), canvas.pixel_w(), canvas.pixel_h());
+        let mut first = vec![ph; pw as usize];
+        let mut left = pw as usize;
+        for (y, row) in canvas.bytes().chunks_exact(pw as usize * 4).enumerate() {
+            for (x, p) in row.as_chunks::<4>().0.iter().enumerate() {
+                if p[3] != 0 && first[x] == ph {
+                    first[x] = y as i32;
+                    left -= 1;
+                }
+            }
+            if left == 0 {
+                break;
+            }
+        }
+        self.ground_tops.clear();
+        self.ground_tops.extend(
+            first
+                .chunks_exact(s as usize)
+                .map(|c| c.iter().copied().min().unwrap_or(ph)),
+        );
         self.ground
             .key
             .get_or_insert_with(GroundKey::default)
@@ -661,14 +709,17 @@ impl Backdrop {
         let mut out = self.sky.canvas.bytes().to_vec();
         let ground = &self.ground.canvas;
         let stride = w as usize * 4;
-        // As the node draws: no sky below `sky_h`. A colour no art uses
-        // stands in for whatever the GPU's target held, so a row the ground
-        // failed to cover shows in the comparison.
-        for p in out[(shown.sky_h * s) as usize * stride..]
-            .as_chunks_mut::<4>()
-            .0
-        {
-            *p = UNDRAWN;
+        // As the node draws: no sky below each band's `sky_h`. A colour no
+        // art uses stands in for whatever the GPU's target held, so a pixel
+        // the ground failed to cover shows in the comparison.
+        for band in &shown.bands {
+            for y in band.sky_h * s..h {
+                let row = y as usize * stride;
+                out[row + (band.x0 * s) as usize * 4..row + (band.x1 * s) as usize * 4]
+                    .as_chunks_mut::<4>()
+                    .0
+                    .fill(UNDRAWN);
+            }
         }
         debug_assert_eq!(shown.w, overlay.w, "the overlay is the buffer's size");
         debug_assert_eq!(
@@ -677,12 +728,16 @@ impl Backdrop {
             "the sky is the overlay's size"
         );
         if let Some(win) = window(shown.ground_x(), shown.w, ground.w) {
-            for y in shown.ground_top..h.min(ground.pixel_h()) {
-                for i in 0..win.w * s {
-                    let c = ground.get_detail(win.src_x * s + i, y);
-                    if c[3] != 0 {
-                        let at = y as usize * stride + (win.dst_x * s + i) as usize * 4;
-                        out[at..at + 4].copy_from_slice(&c);
+            for band in &shown.bands {
+                // The band's part of the window, in buffer columns.
+                let (a, b) = (band.x0.max(win.dst_x), band.x1.min(win.dst_x + win.w));
+                for y in band.ground_top..h.min(ground.pixel_h()) {
+                    for i in a * s..b * s {
+                        let c = ground.get_detail(win.src_x * s + i - win.dst_x * s, y);
+                        if c[3] != 0 {
+                            let at = y as usize * stride + i as usize * 4;
+                            out[at..at + 4].copy_from_slice(&c);
+                        }
                     }
                 }
             }

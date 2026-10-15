@@ -73,13 +73,55 @@ pub struct Shadow {
     bytes: Vec<u8>,
     w: i32,
     h: i32,
-    /// Whether each strip's rows, as last uploaded, are wholly transparent.
-    empty: [bool; STRIPS],
+    /// Each strip's [`tiles`](Self::tiles) as last uploaded.
+    tiles: [u32; STRIPS],
 }
 
-/// Whether every pixel of `rows` (RGBA8) is transparent.
-fn transparent(rows: &[u8]) -> bool {
-    rows.as_chunks::<4>().0.iter().all(|p| p[3] == 0)
+/// How many column tiles [`Shadow::tiles`] cuts a strip into.
+pub const TILES: usize = 32;
+
+/// The columns `x0..x1` of tile `t` in a frame `w` pixels wide. Tiles cover
+/// every column exactly once, in order.
+pub fn tile_columns(w: i32, t: usize) -> (i32, i32) {
+    let (n, t) = (TILES as i32, t as i32);
+    (t * w / n, (t + 1) * w / n)
+}
+
+/// Which column tiles of `rows` (RGBA8, `w` pixels a row) hold a pixel that
+/// is not transparent, bit `t` for tile `t`.
+fn opaque_tiles(rows: &[u8], w: i32) -> u32 {
+    let mut mask = 0u32;
+    for row in rows.chunks_exact(w as usize * 4) {
+        let px = row.as_chunks::<4>().0;
+        for t in 0..TILES {
+            if mask & (1 << t) != 0 {
+                continue;
+            }
+            let (x0, x1) = tile_columns(w, t);
+            if px[x0 as usize..x1 as usize].iter().any(|p| p[3] != 0) {
+                mask |= 1 << t;
+            }
+        }
+        if mask == u32::MAX {
+            break;
+        }
+    }
+    mask
+}
+
+/// The runs of set bits in `mask`, as tile ranges `t0..t1`.
+pub fn tile_runs(mask: u32) -> impl Iterator<Item = (usize, usize)> {
+    let mut t = 0;
+    std::iter::from_fn(move || {
+        while t < TILES && mask & (1 << t) == 0 {
+            t += 1;
+        }
+        let start = t;
+        while t < TILES && mask & (1 << t) != 0 {
+            t += 1;
+        }
+        (start < TILES).then_some((start, t))
+    })
 }
 
 impl Shadow {
@@ -96,22 +138,28 @@ impl Shadow {
         self.w = w;
         self.h = h;
         let stride = w as usize * 4;
-        self.empty = std::array::from_fn(|i| {
+        self.tiles = std::array::from_fn(|i| {
             let (y0, y1) = rows(h, i);
-            transparent(&bytes[y0 as usize * stride..y1 as usize * stride])
+            opaque_tiles(&bytes[y0 as usize * stride..y1 as usize * stride], w)
         });
     }
 
-    /// Whether strip `i`, as last uploaded, is wholly transparent: the
-    /// layered frame need not draw it at all (`backdrop`), as drawing it
-    /// changes no pixel.
-    pub fn empty(&self, i: usize) -> bool {
-        self.empty[i]
+    /// Which column tiles of strip `i` ([`tile_columns`]), as last
+    /// uploaded, hold any pixel not transparent, bit `t` for tile `t`. Over
+    /// the layered frame's backdrop (`backdrop`) only these need drawing: a
+    /// transparent pixel drawn changes nothing beneath it.
+    pub fn tiles(&self, i: usize) -> u32 {
+        self.tiles[i]
     }
 
-    /// [`empty`](Self::empty) for every strip.
-    pub fn empties(&self) -> [bool; STRIPS] {
-        self.empty
+    /// Whether strip `i`, as last uploaded, is wholly transparent.
+    pub fn empty(&self, i: usize) -> bool {
+        self.tiles[i] == 0
+    }
+
+    /// [`tiles`](Self::tiles) for every strip.
+    pub fn all_tiles(&self) -> [u32; STRIPS] {
+        self.tiles
     }
 
     /// Whether strip `i` of `frame` differs from what was last uploaded. If
@@ -125,7 +173,7 @@ impl Shadow {
             return false;
         }
         self.bytes[range.clone()].copy_from_slice(&frame[range.clone()]);
-        self.empty[i] = transparent(&frame[range]);
+        self.tiles[i] = opaque_tiles(&frame[range], self.w);
         true
     }
 }
@@ -160,12 +208,12 @@ impl Layers {
     }
 
     /// The rows `[start, end)` to draw from the whole-frame texture, in runs:
-    /// those of every strip not shown and not `skip`ped. With
-    /// [`shown`](Self::shown) strips drawn from their own textures, every row
-    /// of a frame `h` tall not skipped is drawn once.
-    pub fn whole_rows(&self, h: i32, skip: [bool; STRIPS]) -> Vec<(i32, i32)> {
+    /// those of every strip not shown. With [`shown`](Self::shown) strips
+    /// drawn from their own textures, every row of a frame `h` tall is drawn
+    /// once.
+    pub fn whole_rows(&self, h: i32) -> Vec<(i32, i32)> {
         let mut runs: Vec<(i32, i32)> = Vec::new();
-        for i in (0..STRIPS).filter(|&i| !self.shown[i] && !skip[i]) {
+        for i in (0..STRIPS).filter(|&i| !self.shown[i]) {
             let (y0, y1) = rows(h, i);
             match runs.last_mut() {
                 Some(last) if last.1 == y0 => last.1 = y1,
@@ -270,7 +318,7 @@ mod tests {
             // under a hidden strip, the strip's own under a shown one.
             let h = 180;
             let mut from = vec![0; h as usize];
-            for (y0, y1) in layers.whole_rows(h, [false; STRIPS]) {
+            for (y0, y1) in layers.whole_rows(h) {
                 (y0..y1).for_each(|y| from[y as usize] += 1);
             }
             for i in (0..STRIPS).filter(|&i| layers.shown(i)) {
@@ -285,18 +333,15 @@ mod tests {
     #[test]
     fn the_whole_frame_is_drawn_in_runs_around_shown_strips() {
         let mut layers = Layers::default();
-        assert_eq!(layers.whole_rows(180, [false; STRIPS]), [(0, 180)]);
+        assert_eq!(layers.whole_rows(180), [(0, 180)]);
         let mut some = [false; STRIPS];
         some[0] = true;
         some[5] = true;
         layers.plan(some);
-        assert_eq!(
-            layers.whole_rows(180, [false; STRIPS]),
-            [(15, 75), (90, 180)]
-        );
+        assert_eq!(layers.whole_rows(180), [(15, 75), (90, 180)]);
         layers.plan([true; STRIPS]);
         assert_eq!(
-            layers.whole_rows(180, [false; STRIPS]),
+            layers.whole_rows(180),
             [(0, 180)],
             "a whole upload hides them"
         );
@@ -308,13 +353,15 @@ mod tests {
         let mut frame = vec![0u8; (w * h * 4) as usize];
         let mut shadow = Shadow::default();
         shadow.reset(&frame, w, h);
-        assert_eq!(shadow.empties(), [true; STRIPS]);
+        assert_eq!(shadow.all_tiles(), [0; STRIPS]);
         // One opaque pixel in strip 5's last row.
         let (_, y1) = rows(h, 5);
         let at = (((y1 - 1) * w + 3) * 4) as usize;
         frame[at..at + 4].copy_from_slice(&[9, 9, 9, 255]);
         assert!(shadow.take_if_changed(&frame, 5));
         assert!(!shadow.empty(5));
+        // Four columns over 32 tiles: column 3 is the last tile's.
+        assert_eq!(shadow.tiles(5), 1 << 31);
         assert!((0..STRIPS).filter(|&i| i != 5).all(|i| shadow.empty(i)));
         // Unchanged strips keep their answer; cleared again, empty again.
         frame[at + 3] = 0;
@@ -326,13 +373,32 @@ mod tests {
     }
 
     #[test]
-    fn skipped_strips_are_left_out_of_the_whole_frame_runs() {
-        let layers = Layers::default();
-        let mut skip = [false; STRIPS];
-        skip[0] = true;
-        skip[6] = true;
-        skip[11] = true;
-        assert_eq!(layers.whole_rows(180, skip), [(15, 90), (105, 165)]);
+    fn tiles_cover_every_column_once_and_mark_where_pixels_are() {
+        for w in [32, 100, 1280, 1500] {
+            let mut next = 0;
+            for t in 0..TILES {
+                let (a, b) = tile_columns(w, t);
+                assert_eq!(a, next, "w={w} tile {t}");
+                assert!(b > a, "w={w}: no tile is empty");
+                next = b;
+            }
+            assert_eq!(next, w);
+        }
+        let (w, h) = (64, 12);
+        let mut frame = vec![0u8; (w * h * 4) as usize];
+        // Strip 2 is row 2: pixels in tiles 0, 1 and 31 (2 columns a tile).
+        for x in [0, 3, 63] {
+            frame[((2 * w + x) * 4 + 3) as usize] = 255;
+        }
+        let mut shadow = Shadow::default();
+        shadow.reset(&frame, w, h);
+        assert_eq!(shadow.tiles(2), 0b11 | 1 << 31);
+        assert_eq!(
+            tile_runs(shadow.tiles(2)).collect::<Vec<_>>(),
+            [(0, 2), (31, 32)]
+        );
+        assert_eq!(tile_runs(0).count(), 0);
+        assert_eq!(tile_runs(u32::MAX).collect::<Vec<_>>(), [(0, TILES)]);
     }
 
     #[test]
