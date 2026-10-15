@@ -101,7 +101,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-nextest
       - name: test salt-line-sim (headless, no Godot installed)
@@ -120,7 +120,7 @@ jobs:
           cargo run --release -q -p salt-line-sim --bin determinism | tee digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > "digest-$PLATFORM.txt"
           cat "digest-$PLATFORM.txt"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.os }}
           path: digest-${{ matrix.os }}.txt
@@ -180,7 +180,7 @@ jobs:
           grep -q '^os: *android$' digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-android-x86_64.txt
           cat digest-android-x86_64.txt
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-android-x86_64
           path: digest-android-x86_64.txt
@@ -239,7 +239,7 @@ jobs:
           grep -q '^os: *ios$' digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-ios-arm64.txt
           cat digest-ios-arm64.txt
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-ios-arm64
           path: digest-ios-arm64.txt
@@ -254,7 +254,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: digest-*
           merge-multiple: true
@@ -424,12 +424,12 @@ jobs:
         with:
           persist-credentials: false
       - name: spelling
-        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
       - name: workflow security
         uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
           advanced-security: false
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-machete
       - name: unused dependencies
@@ -454,7 +454,7 @@ jobs:
         with:
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
           key: coverage
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: coverage
@@ -472,7 +472,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage artifact
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report-rust
           path: coverage.xml
@@ -490,7 +490,7 @@ jobs:
       contents: read
       code-quality: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-report-rust
       - uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
@@ -555,7 +555,7 @@ jobs:
           workspaces: fuzz -> target
       # cargo-fuzz arrives as its static musl build and would target musl by
       # default; see the fuzz job in weekly.yml for why --target is needed.
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-fuzz
       - name: build every fuzz target
@@ -600,7 +600,7 @@ jobs:
       # v1 hard-links the macOS binary out of its .app bundle, and the kernel
       # SIGKILLs anything run through that link (Killed: 9, exit 137). Fixed in
       # v2.3.0 by using a real symlink.
-      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
         with:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
@@ -611,7 +611,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: runner.os == 'Linux' && !startsWith(github.ref, 'refs/tags/')
         id: portal-cache
         with:
@@ -894,7 +894,7 @@ jobs:
               find "${{ matrix.output }}" -type f -exec shasum -a 256 {} + > "${{ matrix.output }}.sha256"
           fi
           cat "${{ matrix.output }}.sha256"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: salt-line-${{ matrix.preset }}
           # An empty upload used to pass this job silently. Never again.
@@ -906,7 +906,7 @@ jobs:
             build/*.dll
       - name: the smoke frame, for eyeballing a failure
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-${{ matrix.preset }}
           path: smoke.png
@@ -1034,7 +1034,7 @@ jobs:
             exit 1
           fi
           echo "unpacked $ZIP launched and rendered $(wc -c < smoke.png) bytes"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.preset }}
           path: dist/*
@@ -1062,7 +1062,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
         with:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
@@ -1197,7 +1197,7 @@ jobs:
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$tools/apksigner" verify --print-certs dist/SaltLine-android-arm64.apk
           "$tools/aapt2" dump badging dist/SaltLine-android-arm64.apk | head -1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-android
           path: dist/*
@@ -1217,7 +1217,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
         with:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
@@ -1274,7 +1274,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
         with:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
@@ -1374,13 +1374,13 @@ jobs:
       - name: the Windows ARM64 zip is complete and runs on its own
         shell: bash
         run: bash tools/check_windows_zip.sh dist/SaltLine-windows-arm64.zip SaltLine-arm64.exe arm64 build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: smoke-Windows-Desktop-ARM64
           path: smoke.png
           if-no-files-found: warn
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-windows-arm64
           path: dist/*
@@ -1410,7 +1410,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           # Pinned: the tool writes its own version into the SBOM, so a new
           # release would change the bytes a commit's SBOM is meant to keep.
@@ -1430,7 +1430,7 @@ jobs:
             --cargo-bom crates/salt-line-godot/salt-line-godot.cdx.json \
             --godot "$GODOT_VERSION" --commit "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
             --out dist/SaltLine-sbom.cdx.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-sbom
           path: dist/SaltLine-sbom.cdx.json
@@ -1453,7 +1453,7 @@ jobs:
       id-token: write      # OIDC token for the Sigstore signing certificate
       attestations: write  # store the provenance and SBOM attestations
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           merge-multiple: true
@@ -1524,7 +1524,7 @@ jobs:
             CHANGELOG.md
             tools/release_version.py
           sparse-checkout-cone-mode: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           merge-multiple: true
