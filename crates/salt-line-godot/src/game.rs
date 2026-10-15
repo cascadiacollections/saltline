@@ -150,6 +150,8 @@ pub struct SaltLine {
     backdrop_versions: (u64, u64, u64),
     /// What `draw` last drew under the overlay, to know when to draw again.
     backdrop_drawn: Option<Shown>,
+    /// The strips `draw` last left out (`skipped_strips`), likewise.
+    skipped_drawn: [bool; STRIPS],
     /// Whether this frame needs drawing at all. See `frame::Redraw`.
     redraw: Redraw,
     /// The engine's frame cap as the project set it, restored in play.
@@ -234,6 +236,7 @@ impl INode2D for SaltLine {
             outline: None,
             backdrop_versions: (0, 0, 0),
             backdrop_drawn: None,
+            skipped_drawn: [false; STRIPS],
             redraw: Redraw::default(),
             project_fps: 0,
             fps_cap: 0,
@@ -335,10 +338,9 @@ impl INode2D for SaltLine {
         let fx = self.g.fit_display(window, self.cutout);
         self.apply(fx);
         let args = DevArgs::parse(&Self::cmdline_all());
-        // Detailed source art is composited in the flat painter so all draw
-        // ordering, terrain occlusion and translucent arcs share one surface.
-        // The cached native path remains available to engine tests/profiling.
-        self.cache.backdrop.layered = self.canvas.scale() == 1 && !args.flat;
+        // Layered at either scale: the layers carry the detailed art too
+        // (backdrop). `--salt-flat` draws the reference frame instead.
+        self.cache.backdrop.layered = !args.flat;
         #[cfg(feature = "profiling")]
         let args = {
             let mut args = args;
@@ -482,38 +484,65 @@ impl INode2D for SaltLine {
         // Texture storage is physical; destination rectangles remain logical.
         // Detailed flat frames draw at 1/4 their pixel dimensions, and Godot's
         // canvas_items stretch retains those pixels at window resolution.
-        // The native cached path keeps sky/ground/outline before the overlay,
-        // in the same order as Backdrop::composite.
+        // The layered frame draws sky/ground/outline before the overlay,
+        // in the same order as Backdrop::composite; they are stored at the
+        // frame's scale like it, and drawn at their logical size.
+        let scale = self.canvas.scale();
         if let Some(shown) = self.cache.backdrop.shown() {
+            // Only the rows that can show (`Shown::sky_h`,
+            // `Backdrop::ground_top`): each is fill the GPU pays for.
+            let s = scale as f32;
             if let Some(sky) = &self.sky {
                 let tex = sky.texture.clone();
-                self.base_mut().draw_texture(&tex, Vector2::ZERO);
-            }
-            if let Some(ground) = &self.ground {
-                let tex = ground.texture.clone();
-                let h = ground.h as f32;
-                if let Some(win) = backdrop::window(shown.ground_x(), shown.w, ground.w) {
-                    let (dst_x, src_x, w) = (win.dst_x as f32, win.src_x as f32, win.w as f32);
+                let rows = shown.sky_h.min(sky.h / scale) as f32;
+                let w = (sky.w / scale) as f32;
+                if rows > 0.0 {
                     self.base_mut().draw_texture_rect_region(
                         &tex,
-                        Rect2::new(Vector2::new(dst_x, 0.0), Vector2::new(w, h)),
-                        Rect2::new(Vector2::new(src_x, 0.0), Vector2::new(w, h)),
+                        Rect2::new(Vector2::ZERO, Vector2::new(w, rows)),
+                        Rect2::new(Vector2::ZERO, Vector2::new(w * s, rows * s)),
                     );
+                }
+            }
+            let top = shown.ground_top;
+            if let Some(ground) = &self.ground {
+                let tex = ground.texture.clone();
+                let rows = (ground.h - top) as f32;
+                if let Some(win) = backdrop::window(shown.ground_x(), shown.w, ground.w / scale) {
+                    let (dst_x, src_x, w) = (win.dst_x as f32, win.src_x as f32, win.w as f32);
+                    if rows > 0.0 {
+                        self.base_mut().draw_texture_rect_region(
+                            &tex,
+                            Rect2::new(
+                                Vector2::new(dst_x, top as f32 / s),
+                                Vector2::new(w, rows / s),
+                            ),
+                            Rect2::new(
+                                Vector2::new(src_x * s, top as f32),
+                                Vector2::new(w * s, rows),
+                            ),
+                        );
+                    }
                 }
             }
             if let Some(outline) = self.outline.as_ref().filter(|_| shown.outline) {
                 let tex = outline.texture.clone();
-                self.base_mut().draw_texture(&tex, Vector2::ZERO);
+                let size = Vector2::new(outline.w as f32, outline.h as f32) / scale as f32;
+                self.base_mut()
+                    .draw_texture_rect(&tex, Rect2::new(Vector2::ZERO, size), false);
             }
         }
         // Each row from one texture only (`Layers::whole_rows`): the frame
         // may be transparent, and a strip must not let the whole-frame
-        // texture's older pixels show through it.
+        // texture's older pixels show through it. Layered, a strip with
+        // nothing on it is not drawn at all: drawing it would change no
+        // pixel, and every full-width draw is fill the GPU pays for.
+        let skip = self.skipped_strips();
         if let Some(whole) = &self.whole {
             let tex = whole.texture.clone();
             let scale = self.canvas.scale() as f32;
             let w = whole.w as f32;
-            for (y0, y1) in self.layers.whole_rows(whole.h) {
+            for (y0, y1) in self.layers.whole_rows(whole.h, skip) {
                 let rows = Rect2::new(
                     Vector2::new(0.0, y0 as f32),
                     Vector2::new(w, (y1 - y0) as f32),
@@ -527,7 +556,7 @@ impl INode2D for SaltLine {
             .strips
             .iter()
             .enumerate()
-            .filter(|&(i, _)| self.layers.shown(i))
+            .filter(|&(i, _)| self.layers.shown(i) && !skip[i])
             .map(|(_, l)| (l.texture.clone(), l.y, l.w, l.h))
             .collect();
         for (tex, y, w, h) in strips {
@@ -1507,9 +1536,23 @@ impl SaltLine {
             whole_n,
             backdrop_uploads.0,
         );
-        let redraw = redraw || backdrop_uploads.1;
+        let skip = self.skipped_strips();
+        let redraw = redraw || backdrop_uploads.1 || skip != self.skipped_drawn;
+        self.skipped_drawn = skip;
         if redraw {
             self.base_mut().queue_redraw();
+        }
+    }
+
+    /// The overlay strips `draw` leaves out: layered, those with nothing on
+    /// them as uploaded (`Shadow::empty`), since the layers beneath show
+    /// through a transparent strip unchanged. Flat, none: the frame is the
+    /// whole picture.
+    fn skipped_strips(&self) -> [bool; STRIPS] {
+        if self.cache.backdrop.shown().is_some() {
+            self.shadow.empties()
+        } else {
+            [false; STRIPS]
         }
     }
 
@@ -1741,11 +1784,11 @@ impl Layer {
         })
     }
 
-    /// Make `layer` hold all of `canvas`: updated in place if it is the
-    /// same size, else made anew (and `draw` must then draw the new
-    /// texture).
+    /// Make `layer` hold all of `canvas`, in display pixels: updated in
+    /// place if it is the same size, else made anew (and `draw` must then
+    /// draw the new texture).
     fn keep(layer: &mut Option<Layer>, canvas: &Canvas) -> Kept {
-        let (w, h) = (canvas.w, canvas.h);
+        let (w, h) = (canvas.pixel_w(), canvas.pixel_h());
         match layer {
             Some(l) if l.w == w && l.h == h => {
                 l.update(canvas.bytes(), w);

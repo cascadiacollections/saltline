@@ -73,6 +73,13 @@ pub struct Shadow {
     bytes: Vec<u8>,
     w: i32,
     h: i32,
+    /// Whether each strip's rows, as last uploaded, are wholly transparent.
+    empty: [bool; STRIPS],
+}
+
+/// Whether every pixel of `rows` (RGBA8) is transparent.
+fn transparent(rows: &[u8]) -> bool {
+    rows.as_chunks::<4>().0.iter().all(|p| p[3] == 0)
 }
 
 impl Shadow {
@@ -88,6 +95,23 @@ impl Shadow {
         self.bytes.extend_from_slice(bytes);
         self.w = w;
         self.h = h;
+        let stride = w as usize * 4;
+        self.empty = std::array::from_fn(|i| {
+            let (y0, y1) = rows(h, i);
+            transparent(&bytes[y0 as usize * stride..y1 as usize * stride])
+        });
+    }
+
+    /// Whether strip `i`, as last uploaded, is wholly transparent: the
+    /// layered frame need not draw it at all (`backdrop`), as drawing it
+    /// changes no pixel.
+    pub fn empty(&self, i: usize) -> bool {
+        self.empty[i]
+    }
+
+    /// [`empty`](Self::empty) for every strip.
+    pub fn empties(&self) -> [bool; STRIPS] {
+        self.empty
     }
 
     /// Whether strip `i` of `frame` differs from what was last uploaded. If
@@ -100,7 +124,8 @@ impl Shadow {
         if frame[range.clone()] == self.bytes[range.clone()] {
             return false;
         }
-        self.bytes[range.clone()].copy_from_slice(&frame[range]);
+        self.bytes[range.clone()].copy_from_slice(&frame[range.clone()]);
+        self.empty[i] = transparent(&frame[range]);
         true
     }
 }
@@ -135,12 +160,12 @@ impl Layers {
     }
 
     /// The rows `[start, end)` to draw from the whole-frame texture, in runs:
-    /// those of every strip not shown. With [`shown`](Self::shown) strips
-    /// drawn from their own textures, every row of a frame `h` tall is drawn
-    /// once.
-    pub fn whole_rows(&self, h: i32) -> Vec<(i32, i32)> {
+    /// those of every strip not shown and not `skip`ped. With
+    /// [`shown`](Self::shown) strips drawn from their own textures, every row
+    /// of a frame `h` tall not skipped is drawn once.
+    pub fn whole_rows(&self, h: i32, skip: [bool; STRIPS]) -> Vec<(i32, i32)> {
         let mut runs: Vec<(i32, i32)> = Vec::new();
-        for i in (0..STRIPS).filter(|&i| !self.shown[i]) {
+        for i in (0..STRIPS).filter(|&i| !self.shown[i] && !skip[i]) {
             let (y0, y1) = rows(h, i);
             match runs.last_mut() {
                 Some(last) if last.1 == y0 => last.1 = y1,
@@ -245,7 +270,7 @@ mod tests {
             // under a hidden strip, the strip's own under a shown one.
             let h = 180;
             let mut from = vec![0; h as usize];
-            for (y0, y1) in layers.whole_rows(h) {
+            for (y0, y1) in layers.whole_rows(h, [false; STRIPS]) {
                 (y0..y1).for_each(|y| from[y as usize] += 1);
             }
             for i in (0..STRIPS).filter(|&i| layers.shown(i)) {
@@ -260,18 +285,54 @@ mod tests {
     #[test]
     fn the_whole_frame_is_drawn_in_runs_around_shown_strips() {
         let mut layers = Layers::default();
-        assert_eq!(layers.whole_rows(180), [(0, 180)]);
+        assert_eq!(layers.whole_rows(180, [false; STRIPS]), [(0, 180)]);
         let mut some = [false; STRIPS];
         some[0] = true;
         some[5] = true;
         layers.plan(some);
-        assert_eq!(layers.whole_rows(180), [(15, 75), (90, 180)]);
+        assert_eq!(
+            layers.whole_rows(180, [false; STRIPS]),
+            [(15, 75), (90, 180)]
+        );
         layers.plan([true; STRIPS]);
         assert_eq!(
-            layers.whole_rows(180),
+            layers.whole_rows(180, [false; STRIPS]),
             [(0, 180)],
             "a whole upload hides them"
         );
+    }
+
+    #[test]
+    fn the_shadow_knows_which_strips_are_wholly_transparent() {
+        let (w, h) = (4, 24);
+        let mut frame = vec![0u8; (w * h * 4) as usize];
+        let mut shadow = Shadow::default();
+        shadow.reset(&frame, w, h);
+        assert_eq!(shadow.empties(), [true; STRIPS]);
+        // One opaque pixel in strip 5's last row.
+        let (_, y1) = rows(h, 5);
+        let at = (((y1 - 1) * w + 3) * 4) as usize;
+        frame[at..at + 4].copy_from_slice(&[9, 9, 9, 255]);
+        assert!(shadow.take_if_changed(&frame, 5));
+        assert!(!shadow.empty(5));
+        assert!((0..STRIPS).filter(|&i| i != 5).all(|i| shadow.empty(i)));
+        // Unchanged strips keep their answer; cleared again, empty again.
+        frame[at + 3] = 0;
+        assert!(shadow.take_if_changed(&frame, 5));
+        assert!(shadow.empty(5));
+        frame[at + 3] = 255;
+        shadow.reset(&frame, w, h);
+        assert!(!shadow.empty(5) && shadow.empty(4));
+    }
+
+    #[test]
+    fn skipped_strips_are_left_out_of_the_whole_frame_runs() {
+        let layers = Layers::default();
+        let mut skip = [false; STRIPS];
+        skip[0] = true;
+        skip[6] = true;
+        skip[11] = true;
+        assert_eq!(layers.whole_rows(180, skip), [(15, 90), (105, 165)]);
     }
 
     #[test]
