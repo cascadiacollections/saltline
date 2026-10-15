@@ -412,6 +412,8 @@ jobs:
           .venv/bin/python -m pip install 'Pillow==12.3.0'
           .venv/bin/python -m unittest discover -s tools -p test_concept_art.py -v
           .venv/bin/python -m unittest discover -s tools -p test_sprite_pipeline.py -v
+      - name: test the device profiling runner's log reading
+        run: python3 -m unittest discover -s tools -p test_android_profile_run.py -v
 
   # Cheap checks on everything that is not Rust logic: spelling (typos),
   # workflow security (zizmor) and declared-but-unused dependencies (machete).
