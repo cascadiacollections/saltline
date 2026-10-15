@@ -148,6 +148,29 @@ impl Canvas {
         self.px[i..i + 4].copy_from_slice(&c);
     }
 
+    /// Copy display columns `src_x..src_x + w` of every row of `src` over
+    /// display columns `dst_x..` of this canvas. Both must be the same
+    /// height in display pixels, and the columns within both.
+    pub fn copy_columns(&mut self, src: &Canvas, src_x: i32, dst_x: i32, w: i32) {
+        assert_eq!(
+            self.pixel_h(),
+            src.pixel_h(),
+            "copy_columns between heights"
+        );
+        assert!(src_x >= 0 && dst_x >= 0 && w >= 0);
+        assert!(src_x + w <= src.pixel_w() && dst_x + w <= self.pixel_w());
+        if w == 0 {
+            return;
+        }
+        self.mark(0, self.pixel_h());
+        let (ds, ss) = (self.pixel_w() as usize * 4, src.pixel_w() as usize * 4);
+        let (sx, dx, n) = (src_x as usize * 4, dst_x as usize * 4, w as usize * 4);
+        for y in 0..self.pixel_h() as usize {
+            self.px[y * ds + dx..y * ds + dx + n]
+                .copy_from_slice(&src.px[y * ss + sx..y * ss + sx + n]);
+        }
+    }
+
     /// Display row `py` (within the buffer) as RGBA8 bytes, to write whole.
     pub fn row_mut(&mut self, py: i32) -> &mut [u8] {
         self.mark(py, py + 1);

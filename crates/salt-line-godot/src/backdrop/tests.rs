@@ -583,3 +583,82 @@ fn the_ground_window_never_reads_outside_the_layer() {
     assert_eq!(window(400, 320, 322), None);
     assert_eq!(window(-320, 320, 322), None);
 }
+
+/// A landing redraws only the ground columns about it
+/// (`redraw_ground_columns`); the layer must come out exactly as drawn
+/// whole, as must each column's first painted row, at both scales: craters
+/// at the world's edges and middle, one after another, and a gun moving
+/// far enough to clear or grow tufts.
+#[test]
+fn the_ground_redrawn_about_a_landing_is_the_ground_drawn_whole() {
+    let pal = Palette::default();
+    let mut partial_redraws = 0;
+    for canvas in [Canvas::new as fn(i32, i32) -> Canvas, Canvas::detailed] {
+        for (name, run) in Game::gallery(320) {
+            let Some(run) = run else { continue };
+            let mut screen = run.screen.clone();
+            let len = screen.field.len();
+            let mut guns = [screen.muzzle_x];
+            let view = View {
+                cam_x: 0,
+                w: 320,
+                h: 180,
+            };
+            let mut kept = Backdrop {
+                layered: true,
+                ..Backdrop::default()
+            };
+            let mut c = canvas(320, 180);
+            let draw = |b: &mut Backdrop, c: &mut Canvas, screen: &Screen, guns: &[f64]| {
+                b.begin_frame();
+                b.draw(
+                    c,
+                    &view,
+                    &pal,
+                    sky::Phase::Day,
+                    crate::biome::Biome::Salt,
+                    1,
+                    0.0,
+                    screen,
+                    guns,
+                );
+            };
+            draw(&mut kept, &mut c, &screen, &guns);
+            let steps: [(usize, f64, f64); 5] = [
+                (0, 4.0, 0.0),
+                (len / 2, 3.0, 0.0),
+                (len - 1, 5.0, 0.0),
+                (len / 3, 0.0, 30.0),
+                (12, 2.0, -45.0),
+            ];
+            for (step, &(at, depth, gun_shift)) in steps.iter().enumerate() {
+                for c in at.saturating_sub(3)..(at + 4).min(len) {
+                    screen.field.scar[c] += depth;
+                }
+                guns[0] += gun_shift;
+                let before = kept.ground.version;
+                draw(&mut kept, &mut c, &screen, &guns);
+                partial_redraws += usize::from(kept.ground.version != before);
+                let mut fresh = Backdrop {
+                    layered: true,
+                    ..Backdrop::default()
+                };
+                let mut fc = canvas(320, 180);
+                draw(&mut fresh, &mut fc, &screen, &guns);
+                assert!(
+                    kept.ground.canvas.bytes() == fresh.ground.canvas.bytes(),
+                    "{name}, step {step}, scale {}: the ground layer",
+                    c.scale()
+                );
+                assert_eq!(
+                    kept.ground_tops, fresh.ground_tops,
+                    "{name}, step {step}: tops"
+                );
+            }
+        }
+    }
+    assert!(
+        partial_redraws > 20,
+        "the partial path ran: {partial_redraws}"
+    );
+}
