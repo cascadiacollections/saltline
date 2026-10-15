@@ -274,6 +274,8 @@ pub struct GpuCheck {
     /// The first few wrong pixels: x, y, read back, newest flat frame.
     samples: Vec<(i32, i32, [u8; 3], [u8; 3])>,
     sizes: Option<(i32, i32, i32, i32)>,
+    /// Pixels skipped as texel-edge ties (`texel`), last frame compared.
+    ties: u64,
     /// Where in the viewport image the frame was last expected, so a
     /// report of nothing compared says where it looked.
     destination: Option<Rect2>,
@@ -281,12 +283,20 @@ pub struct GpuCheck {
 
 /// The texel a viewport pixel centre `offset` pixels into a destination
 /// `size` wide falls in, of a texture `n` texels wide, and whether it sits
-/// on the edge with the texel before (to 1e-4 of a texel), where each draw's
+/// on an edge between two texels (to 1e-4 of a texel), where each draw's
 /// rounding may go either way.
+///
+/// Skipping ties loses no texel: at any scale of at least one pixel per
+/// texel, centres are less than a texel apart, so every texel holds a centre
+/// that is not on its edge, and the check still compares every texel of the
+/// frame (the test below holds this at the ratios the game meets).
 fn texel(offset: f64, n: i32, size: f64) -> (i32, bool) {
     let t = offset * n as f64 / size;
     let i = t.floor();
-    ((i as i32).clamp(0, n - 1), t - i < 1e-4 && i >= 1.0)
+    // Within 1e-4 of the edge before or the edge after (a centre a hair
+    // short of a whole number, as fractional transforms give).
+    let tie = (t - i < 1e-4 && i >= 1.0) || (i + 1.0 - t < 1e-4 && i + 1.0 < n as f64);
+    ((i as i32).clamp(0, n - 1), tie)
 }
 
 /// How many recent flat frames a read is compared with.
@@ -346,7 +356,9 @@ impl GpuCheck {
         let (iw, ih) = (image.get_width(), image.get_height());
         let got = image.get_data();
         let got = got.as_slice();
+        let ties = std::cell::Cell::new(0u64);
         let wrong = |want: &[u8], w: i32, h: i32| -> Vec<(i32, i32, [u8; 3], [u8; 3])> {
+            ties.set(0);
             let Rect2 { position, size } = destination;
             if size.x <= 0.0
                 || size.y <= 0.0
@@ -372,6 +384,7 @@ impl GpuCheck {
                     // layers may not agree, so it has no single right
                     // answer. Skip it; every other pixel must be exact.
                     if x_tie || y_tie {
+                        ties.set(ties.get() + 1);
                         continue;
                     }
                     let a = ((y * iw + x) * 4) as usize;
@@ -398,6 +411,7 @@ impl GpuCheck {
                 first_wrong = bad;
             }
         }
+        self.ties = ties.get();
         let shown = self.recent.front().and_then(|f| f.3);
         self.frames += 1;
         self.layered += u64::from(shown.is_some());
@@ -418,11 +432,11 @@ impl GpuCheck {
             let pass = self.newest == self.frames;
             let grounds = self.ground_versions.map_or(0, |(a, b)| b - a);
             format!(
-                "salt-profile: gpu check scene={} {} frames={} layered={} shaken_or_panned={} outlined={} ground_uploads={} exact_newest={} exact_older_only={} matching_none={} buffer_and_viewport={:?} destination={:?} samples(x,y,got,want)={:?}",
+                "salt-profile: gpu check scene={} {} frames={} layered={} shaken_or_panned={} outlined={} ground_uploads={} exact_newest={} exact_older_only={} matching_none={} buffer_and_viewport={:?} destination={:?} tie_pixels_skipped_per_frame={} samples(x,y,got,want)={:?}",
                 self.scene,
                 if pass { "PASS" } else { "FAIL" },
                 self.frames, self.layered, self.shaken, self.outlined, grounds,
-                self.newest, self.older, self.none, self.sizes, self.destination, self.samples
+                self.newest, self.older, self.none, self.sizes, self.destination, self.ties, self.samples
             )
         })
     }
@@ -431,6 +445,39 @@ impl GpuCheck {
 #[cfg(test)]
 mod tests {
     use super::texel;
+
+    #[test]
+    fn skipping_ties_still_compares_every_texel() {
+        // Texels over pixels: the tablet's 4x frame and Long Lens, a 1.5x
+        // phone, 2x, and ratios that just miss whole numbers.
+        for (n, size) in [
+            (1280, 2370.0),
+            (864, 1600.0),
+            (720, 1080.0),
+            (1280, 1920.0),
+            (1280, 2560.0),
+            (1280, 1281.0),
+            (720, 2399.0),
+        ] {
+            let mut seen = vec![false; n as usize];
+            let mut ties = 0;
+            for x in 0..size as i32 {
+                let (t, tie) = texel(x as f64 + 0.5, n, size);
+                if tie {
+                    ties += 1;
+                } else {
+                    seen[t as usize] = true;
+                }
+            }
+            assert!(
+                seen.iter().all(|&s| s),
+                "{n} over {size}: a texel never compared"
+            );
+            assert!(ties * 2 < size as i32, "{n} over {size}: {ties} ties");
+        }
+        // A centre a hair short of an edge is a tie too.
+        assert!(texel(575.99996 * 2370.0 / 1280.0, 1280, 2370.0).1);
+    }
 
     #[test]
     fn a_pixel_centre_on_a_texel_edge_is_a_tie_and_nothing_else_is() {
