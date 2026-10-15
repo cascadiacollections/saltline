@@ -108,6 +108,8 @@ jobs:
         run: cargo nextest run -p salt-line-sim --profile ci
       - name: test salt-line-godot (rasteriser, fonts, camera maths)
         run: cargo nextest run -p salt-line-godot --profile ci
+      - name: test the profiling build's own logic (GPU check sampling)
+        run: cargo nextest run -p salt-line-godot --profile ci --features profiling -E 'test(/^profiling::/)'
       - name: doctests
         run: cargo test --doc --workspace
       - name: build the GDExtension
