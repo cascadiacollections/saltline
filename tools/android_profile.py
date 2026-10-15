@@ -150,7 +150,16 @@ def build(engine_kind: str, godot: str, sdk: Path, ndk: Path, java: Path) -> Non
         run(bash, "tools/godot_headless.sh", "--export-release", "Android", str(apk))
         with zipfile.ZipFile(apk) as archive:
             actual = hashlib.sha256(archive.read("lib/arm64-v8a/libgodot_android.so")).hexdigest()
-        if actual != expected:
+        accepted = {expected}
+        if engine_kind == "pinned":
+            # The Gradle build (use_gradle_build) strips native libraries as
+            # it packages them, so the pinned engine arrives as
+            # `llvm-strip --strip-unneeded` of itself.
+            with tempfile.TemporaryDirectory() as scratch:
+                stripped = Path(scratch) / "libgodot_android.so"
+                run(str(strip), "--strip-unneeded", "-o", str(stripped), str(engine))
+                accepted.add(templates.sha256(stripped))
+        if actual not in accepted:
             raise RuntimeError("exported APK does not contain the selected engine")
         info = {"engine": engine_kind, "godot": templates.GODOT_VERSION,
                 "sha256": actual, "package": PACKAGE,

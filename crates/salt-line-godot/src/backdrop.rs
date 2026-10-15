@@ -143,6 +143,9 @@ pub struct Backdrop {
     /// Draw frames in layers. Off (the default) draws the flat frame.
     pub layered: bool,
     sky: Kept<SkyKey>,
+    /// The flat frame's still sky (`keep_flat_sky`), also keyed on the
+    /// canvas's own size and scale, which it is copied into whole.
+    flat_sky: Kept<(SkyKey, i32, i32, i32)>,
     ground: Kept<GroundKey>,
     outline: Kept<(i32, i32, Rgba)>,
     /// The overlay pixels that put the ground's edge columns right. See
@@ -160,6 +163,7 @@ impl Default for Backdrop {
         Backdrop {
             layered: false,
             sky: Kept::default(),
+            flat_sky: Kept::default(),
             ground: Kept::default(),
             outline: Kept::default(),
             patches: Vec::new(),
@@ -388,7 +392,12 @@ impl Backdrop {
         guns: &[f64],
     ) {
         if !self.layered {
-            sky::draw(canvas, view, pal, phase, biome, seed, time);
+            // `sky::draw`, with its still part copied from the last frame's:
+            // on a detailed canvas that plate is most of the frame's work.
+            self.keep_flat_sky(canvas, view, pal, phase, biome);
+            canvas.copy_from(&self.flat_sky.canvas);
+            sky::draw_stars(canvas, view, pal, phase, seed, time, |_, _| true);
+            sky::draw_biome(canvas, view, pal, biome, seed, time, |_, _| true);
             raster::draw_terrain(canvas, view, &screen.field, pal);
             raster::draw_ground_detail_around(canvas, view, screen, guns, pal);
             return;
@@ -431,6 +440,37 @@ impl Backdrop {
         sky::draw_still(&mut self.sky.canvas, view, pal, phase);
         self.sky.key = Some(key);
         self.sky.version += 1;
+    }
+
+    /// The flat frame's still sky, drawn at `canvas`'s size and scale; it
+    /// never reaches a texture of its own.
+    fn keep_flat_sky(
+        &mut self,
+        canvas: &Canvas,
+        view: &View,
+        pal: &Palette,
+        phase: sky::Phase,
+        biome: Biome,
+    ) {
+        let key = (
+            SkyKey {
+                phase,
+                biome,
+                w: view.w,
+                h: view.h,
+                pal: pal.colours,
+            },
+            canvas.w,
+            canvas.h,
+            canvas.scale(),
+        );
+        if self.flat_sky.key.as_ref() == Some(&key) {
+            return;
+        }
+        let mut still = canvas.blank_like();
+        sky::draw_still(&mut still, view, pal, phase);
+        self.flat_sky.canvas = still;
+        self.flat_sky.key = Some(key);
     }
 
     fn keep_ground(&mut self, screen: &Screen, guns: &[f64], h: i32, pal: &Palette) {

@@ -372,6 +372,28 @@ impl Canvas {
         &self.px
     }
 
+    /// A transparent canvas the same size and scale as this one.
+    pub fn blank_like(&self) -> Canvas {
+        if self.scale == 1 {
+            Canvas::new(self.w, self.h)
+        } else {
+            let mut canvas = Canvas::new(self.w, self.h);
+            canvas.scale = self.scale;
+            canvas.px = vec![0; (canvas.pixel_w() * canvas.pixel_h() * 4) as usize];
+            canvas
+        }
+    }
+
+    /// Every pixel from `src`, which must be the same size and scale: one
+    /// copy of the whole buffer.
+    pub fn copy_from(&mut self, src: &Canvas) {
+        assert!(
+            (self.w, self.h, self.scale) == (src.w, src.h, src.scale),
+            "copy_from between canvases of different shapes"
+        );
+        self.px.copy_from_slice(&src.px);
+    }
+
     pub fn to_packed(&self) -> PackedByteArray {
         PackedByteArray::from(self.px.as_slice())
     }
