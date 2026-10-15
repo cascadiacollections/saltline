@@ -334,7 +334,11 @@ impl GroundKey {
         }
         let now: Vec<f64> = screen.structures.iter().map(|s| s.centre_x()).collect();
         if now != self.structures {
-            // `raster::grass_grows`: no grass within 10 columns of one.
+            // `raster::grass_grows`: no grass within 10 columns of one. The
+            // tuft comparison below already names every column this can
+            // change (structures reach the ground layer only through its
+            // grass); this keeps a change that moves no tuft a partial
+            // redraw rather than the whole-layer fallback.
             for &x in now.iter().chain(&self.structures) {
                 let x = x.round() as i32;
                 add(x - 11, x + 11);
