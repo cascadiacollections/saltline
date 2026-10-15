@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2.4.2
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
         with:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
@@ -100,7 +100,7 @@ jobs:
           stripped="$PWD/build/godot-templates/godot.linuxbsd.template_release.x86_64"
           chmod +x "$official" "$stripped"
           python3 tools/engine_validation.py --official "$official" --stripped "$stripped" --pack build/engine-validation/game.pck
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: engine-validation
