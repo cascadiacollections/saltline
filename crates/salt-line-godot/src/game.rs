@@ -144,9 +144,9 @@ pub struct SaltLine {
     shadow: Shadow,
     /// The sky and ground layers on the GPU, and which of the cache's
     /// versions of each they hold. See `backdrop` and `upload_backdrop`.
-    sky: Option<Layer>,
-    ground: Option<Layer>,
-    outline: Option<Layer>,
+    sky: Option<Backing>,
+    ground: Option<Backing>,
+    outline: Option<Backing>,
     backdrop_versions: (u64, u64, u64),
     /// What `draw` last drew under the overlay, to know when to draw again.
     backdrop_drawn: Option<Shown>,
@@ -1615,13 +1615,13 @@ impl SaltLine {
         let mut uploads = 0;
         let mut failed = false;
         let mut keep =
-            |layer: &mut Option<Layer>, uploaded: &mut u64, (canvas, v): (&Canvas, u64)| {
+            |layer: &mut Option<Backing>, uploaded: &mut u64, (canvas, v): (&Canvas, u64)| {
                 if v == *uploaded && layer.is_some() {
                     return;
                 }
                 *uploaded = v;
                 uploads += 1;
-                match Layer::keep(layer, canvas) {
+                match Backing::keep(layer, canvas) {
                     Kept::Updated => {}
                     Kept::Made => redraw = true,
                     Kept::Failed => failed = true,
@@ -1790,7 +1790,57 @@ fn core_pad(button: JoyButton) -> Option<input::Pad> {
     PADS.iter().find(|(_, b)| *b == button).map(|(c, _)| *c)
 }
 
-/// What [`Layer::keep`] did.
+/// One of the backdrop's layers on the GPU (`backdrop`): the sky, the
+/// ground or the outline. Unlike a [`Layer`], it keeps no copy of its
+/// pixels on the CPU between uploads. These change rarely (a landing, a
+/// new screen), and on a phone short of memory a copy kept for the next
+/// upload is swapped out by then, so bringing it back costs more than
+/// making a new image would.
+struct Backing {
+    w: i32,
+    h: i32,
+    texture: Gd<ImageTexture>,
+}
+
+impl Backing {
+    /// `canvas` as an image, its pixels copied once; dropped by the caller
+    /// once the texture has it.
+    fn image(canvas: &Canvas) -> Option<Gd<Image>> {
+        let (w, h) = (canvas.pixel_w(), canvas.pixel_h());
+        Image::create_from_data(
+            w,
+            h,
+            false,
+            Layer::FORMAT,
+            &PackedByteArray::from(canvas.bytes()),
+        )
+    }
+
+    /// Make `layer` hold all of `canvas`, in display pixels: updated in
+    /// place if it is the same size, else made anew (and `draw` must then
+    /// draw the new texture).
+    fn keep(layer: &mut Option<Backing>, canvas: &Canvas) -> Kept {
+        let (w, h) = (canvas.pixel_w(), canvas.pixel_h());
+        let Some(image) = Self::image(canvas) else {
+            return Kept::Failed;
+        };
+        match layer {
+            Some(l) if l.w == w && l.h == h => {
+                l.texture.update(&image);
+                Kept::Updated
+            }
+            _ => match ImageTexture::create_from_image(&image) {
+                Some(texture) => {
+                    *layer = Some(Backing { w, h, texture });
+                    Kept::Made
+                }
+                None => Kept::Failed,
+            },
+        }
+    }
+}
+
+/// What [`Backing::keep`] did.
 enum Kept {
     Updated,
     Made,
@@ -1802,7 +1852,6 @@ enum Kept {
 /// made from it: the whole frame, or one strip of it. See `strips`.
 struct Layer {
     y: i32,
-    w: i32,
     h: i32,
     image: Gd<Image>,
     texture: Gd<ImageTexture>,
@@ -1822,34 +1871,12 @@ impl Layer {
         let texture = ImageTexture::create_from_image(&image)?;
         Some(Self {
             y: y0,
-            w,
             h: y1 - y0,
             image,
             texture,
             bufs,
             flip: 1,
         })
-    }
-
-    /// Make `layer` hold all of `canvas`, in display pixels: updated in
-    /// place if it is the same size, else made anew (and `draw` must then
-    /// draw the new texture).
-    fn keep(layer: &mut Option<Layer>, canvas: &Canvas) -> Kept {
-        let (w, h) = (canvas.pixel_w(), canvas.pixel_h());
-        match layer {
-            Some(l) if l.w == w && l.h == h => {
-                l.update(canvas.bytes(), w);
-                Kept::Updated
-            }
-            _ => {
-                *layer = Layer::new(canvas.bytes(), w, 0, h);
-                if layer.is_some() {
-                    Kept::Made
-                } else {
-                    Kept::Failed
-                }
-            }
-        }
     }
 
     /// Send this layer's rows of `frame` to its texture.
