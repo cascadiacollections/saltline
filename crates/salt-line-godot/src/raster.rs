@@ -148,6 +148,13 @@ impl Canvas {
         self.px[i..i + 4].copy_from_slice(&c);
     }
 
+    /// Display row `py` (within the buffer) as RGBA8 bytes, to write whole.
+    pub fn row_mut(&mut self, py: i32) -> &mut [u8] {
+        self.mark(py, py + 1);
+        let stride = self.pixel_w() as usize * 4;
+        &mut self.px[py as usize * stride..(py as usize + 1) * stride]
+    }
+
     /// Fill display columns `px0..px1` of display rows `py0..py1` with
     /// `c`, clipped to the buffer.
     fn fill_detail(&mut self, px0: i32, py0: i32, px1: i32, py1: i32, c: Rgba) {

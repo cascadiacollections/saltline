@@ -223,11 +223,13 @@ impl<K> Default for Kept<K> {
     }
 }
 
-/// What the sky layer was drawn from.
+/// What the sky layer was drawn from: everything [`sky::draw_still`]
+/// reads. Not the biome, which only the moving part draws: a new screen of
+/// another biome keeps the sky, a 4x plate the weakest phones take a dozen
+/// milliseconds to redraw.
 #[derive(PartialEq)]
 struct SkyKey {
     phase: sky::Phase,
-    biome: Biome,
     w: i32,
     h: i32,
     pal: [Rgba; 16],
@@ -453,7 +455,7 @@ impl Backdrop {
         if !self.layered {
             // `sky::draw`, with its still part copied from the last frame's:
             // on a detailed canvas that plate is most of the frame's work.
-            self.keep_flat_sky(canvas, view, pal, phase, biome);
+            self.keep_flat_sky(canvas, view, pal, phase);
             canvas.copy_from(&self.flat_sky.canvas);
             sky::draw_stars(canvas, view, pal, phase, seed, time, |_, _| true);
             sky::draw_biome(canvas, view, pal, biome, seed, time, |_, _| true);
@@ -469,7 +471,7 @@ impl Backdrop {
         if self.narrow.scale() != canvas.scale() {
             self.narrow = canvas.blank_like();
         }
-        self.keep_sky(view, pal, phase, biome);
+        self.keep_sky(view, pal, phase);
         self.keep_ground(screen, guns, view.h, pal);
         let bands = self.bands(view, screen, canvas.scale());
         self.shown = Some(Shown {
@@ -505,10 +507,9 @@ impl Backdrop {
         });
     }
 
-    fn keep_sky(&mut self, view: &View, pal: &Palette, phase: sky::Phase, biome: Biome) {
+    fn keep_sky(&mut self, view: &View, pal: &Palette, phase: sky::Phase) {
         let key = SkyKey {
             phase,
-            biome,
             w: view.w,
             h: view.h,
             pal: pal.colours,
@@ -524,18 +525,10 @@ impl Backdrop {
 
     /// The flat frame's still sky, drawn at `canvas`'s size and scale; it
     /// never reaches a texture of its own.
-    fn keep_flat_sky(
-        &mut self,
-        canvas: &Canvas,
-        view: &View,
-        pal: &Palette,
-        phase: sky::Phase,
-        biome: Biome,
-    ) {
+    fn keep_flat_sky(&mut self, canvas: &Canvas, view: &View, pal: &Palette, phase: sky::Phase) {
         let key = (
             SkyKey {
                 phase,
-                biome,
                 w: view.w,
                 h: view.h,
                 pal: pal.colours,
