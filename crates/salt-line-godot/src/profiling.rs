@@ -274,6 +274,9 @@ pub struct GpuCheck {
     /// The first few wrong pixels: x, y, read back, newest flat frame.
     samples: Vec<(i32, i32, [u8; 3], [u8; 3])>,
     sizes: Option<(i32, i32, i32, i32)>,
+    /// Where in the viewport image the frame was last expected, so a
+    /// report of nothing compared says where it looked.
+    destination: Option<Rect2>,
 }
 
 /// How many recent flat frames a read is compared with.
@@ -371,6 +374,7 @@ impl GpuCheck {
         let mut first_wrong = Vec::new();
         for (lag, (want, w, h, _)) in self.recent.iter().enumerate() {
             self.sizes = Some((*w, *h, iw, ih));
+            self.destination = Some(destination);
             let bad = wrong(want, *w, *h);
             if bad.is_empty() {
                 matched = Some(lag);
@@ -400,11 +404,11 @@ impl GpuCheck {
             let pass = self.newest == self.frames;
             let grounds = self.ground_versions.map_or(0, |(a, b)| b - a);
             format!(
-                "salt-profile: gpu check scene={} {} frames={} layered={} shaken_or_panned={} outlined={} ground_uploads={} exact_newest={} exact_older_only={} matching_none={} buffer_and_viewport={:?} samples(x,y,got,want)={:?}",
+                "salt-profile: gpu check scene={} {} frames={} layered={} shaken_or_panned={} outlined={} ground_uploads={} exact_newest={} exact_older_only={} matching_none={} buffer_and_viewport={:?} destination={:?} samples(x,y,got,want)={:?}",
                 self.scene,
                 if pass { "PASS" } else { "FAIL" },
                 self.frames, self.layered, self.shaken, self.outlined, grounds,
-                self.newest, self.older, self.none, self.sizes, self.samples
+                self.newest, self.older, self.none, self.sizes, self.destination, self.samples
             )
         })
     }

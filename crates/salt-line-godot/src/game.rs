@@ -402,9 +402,20 @@ impl INode2D for SaltLine {
         }
         #[cfg(feature = "profiling")]
         if self.gpu_check.pending() {
-            // The viewport now holds the last frame drawn.
-            let transform =
-                self.base().get_viewport_transform() * self.base().get_global_transform();
+            // The viewport now holds the last frame drawn. Map the frame into
+            // the viewport's own render target: its stretch and canvas
+            // transforms, but not `get_viewport_transform`, which for the
+            // root window also moves by the letterbox margin (Godot's
+            // `Window::get_final_transform`). The render target holds only
+            // the content area, so on a screen wider or taller than the
+            // buffer's aspect that margin put the frame off the image.
+            let transform = self
+                .base()
+                .get_viewport()
+                .map_or(self.base().get_viewport_transform(), |v| {
+                    v.get_stretch_transform() * v.get_canvas_transform()
+                })
+                * self.base().get_global_transform();
             let origin = transform * Vector2::ZERO;
             let end = transform * Vector2::new(self.canvas.w as f32, self.canvas.h as f32);
             let destination = Rect2::new(origin, end - origin);
