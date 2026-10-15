@@ -771,3 +771,88 @@ fn a_landing_marks_only_its_ground_chunks() {
         .collect();
     assert_eq!(marked, [6], "only the crater's chunk");
 }
+
+/// Structures keep grass off the ground within 10 columns of them
+/// (`raster::grass_grows`): one that goes, comes back elsewhere, or moves
+/// redraws only the columns about it, and the layer must still be the
+/// layer drawn whole, at both scales.
+#[test]
+fn the_ground_redrawn_about_a_structure_is_the_ground_drawn_whole() {
+    let pal = Palette::default();
+    let mut checked = 0;
+    for canvas in [Canvas::new as fn(i32, i32) -> Canvas, Canvas::detailed] {
+        for (name, run) in Game::gallery(320) {
+            let Some(run) = run else { continue };
+            let mut screen = run.screen.clone();
+            if screen.structures.is_empty() {
+                continue;
+            }
+            let guns = [-1000.0];
+            let view = View {
+                cam_x: 0,
+                w: 320,
+                h: 180,
+            };
+            let mut kept = Backdrop {
+                layered: true,
+                ..Backdrop::default()
+            };
+            let mut c = canvas(320, 180);
+            let draw = |b: &mut Backdrop, c: &mut Canvas, screen: &Screen| {
+                b.begin_frame();
+                b.draw(
+                    c,
+                    &view,
+                    &pal,
+                    sky::Phase::Day,
+                    crate::biome::Biome::Salt,
+                    1,
+                    0.0,
+                    screen,
+                    &guns,
+                );
+            };
+            draw(&mut kept, &mut c, &screen);
+            let len = screen.field.len();
+            let moved = screen.structures[0].clone();
+            let steps: [&dyn Fn(&mut Screen); 3] = [
+                // It goes.
+                &|s: &mut Screen| {
+                    s.structures.remove(0);
+                },
+                // Another stands far along the field.
+                &|s: &mut Screen| {
+                    let mut far = moved.clone();
+                    far.x0 = (len * 3 / 4).min(len - 12);
+                    s.structures.push(far);
+                },
+                // And moves.
+                &|s: &mut Screen| {
+                    let last = s.structures.len() - 1;
+                    s.structures[last].x0 = s.structures[last].x0.saturating_sub(17);
+                },
+            ];
+            for (step, change) in steps.iter().enumerate() {
+                change(&mut screen);
+                draw(&mut kept, &mut c, &screen);
+                let mut fresh = Backdrop {
+                    layered: true,
+                    ..Backdrop::default()
+                };
+                let mut fc = canvas(320, 180);
+                draw(&mut fresh, &mut fc, &screen);
+                assert!(
+                    kept.ground.canvas.bytes() == fresh.ground.canvas.bytes(),
+                    "{name}, step {step}, scale {}: the ground layer",
+                    c.scale()
+                );
+                assert_eq!(
+                    kept.ground_tops, fresh.ground_tops,
+                    "{name}, step {step}: tops"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 6, "structures were exercised: {checked}");
+}
