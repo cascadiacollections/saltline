@@ -437,6 +437,53 @@ fn every_camera_over_every_ground_is_the_same_layered() {
     assert!(patched > 0, "the sweep exercised the edge patches");
 }
 
+/// The flat frame keeps its still sky from frame to frame: one backdrop and
+/// one canvas, reused as the node reuses them, must paint what `sky::draw`
+/// and the ground paint from scratch, through phase, biome, size and scale
+/// changes and a moving shooting-star clock.
+#[test]
+fn the_flat_sky_kept_across_frames_is_the_sky_drawn_afresh() {
+    use crate::biome::Biome;
+    let pal = Palette::default();
+    let run = Game::gallery(320).into_iter().find_map(|(_, r)| r).unwrap();
+    let screen = &run.screen;
+    let guns = [screen.muzzle_x];
+    // One backdrop per canvas: sharing one would change the key every call
+    // and never use what it kept.
+    let mut detailed = (Backdrop::default(), Canvas::detailed(1, 1));
+    let mut native = (Backdrop::default(), Canvas::new(1, 1));
+    let mut copied = 0;
+    let steps = [
+        (sky::Phase::Day, Biome::Salt, 320, 180),
+        (sky::Phase::Day, Biome::Salt, 320, 180),
+        (sky::Phase::Night, Biome::Salt, 320, 180),
+        (sky::Phase::Night, Biome::Desert, 320, 180),
+        (sky::Phase::Dusk, Biome::Desert, 400, 216),
+        (sky::Phase::Dawn, Biome::Salt, 400, 180),
+        (sky::Phase::Dawn, Biome::Salt, 400, 180),
+    ];
+    for (i, &(phase, biome, w, h)) in steps.iter().enumerate() {
+        let view = View { cam_x: 0, w, h };
+        let time = i as f64 * 7.5;
+        for (kept, canvas) in [&mut detailed, &mut native] {
+            canvas.resize(w, h);
+            let before = kept.flat_sky.key.is_some();
+            kept.draw(canvas, &view, &pal, phase, biome, 9, time, screen, &guns);
+            copied += usize::from(before && i > 0 && steps[i - 1] == steps[i]);
+            let mut fresh = canvas.blank_like();
+            sky::draw(&mut fresh, &view, &pal, phase, biome, 9, time);
+            raster::draw_terrain(&mut fresh, &view, &screen.field, &pal);
+            raster::draw_ground_detail_around(&mut fresh, &view, screen, &guns, &pal);
+            assert!(
+                canvas.bytes() == fresh.bytes(),
+                "step {i} ({phase:?}, {biome:?}, {w}x{h}) at scale {}",
+                canvas.scale()
+            );
+        }
+    }
+    assert_eq!(copied, 4, "repeated steps drew from the kept sky");
+}
+
 /// A layer is drawn again only when what it shows changes.
 #[test]
 fn layers_are_redrawn_only_when_their_inputs_change() {

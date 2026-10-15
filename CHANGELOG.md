@@ -15,6 +15,10 @@ second. See RELEASING.md for the release steps.
 - On a controller, d-pad up on the title started the challenge course and
   REPLAYS could not be reached, because both were bound to it. CHALLENGES is
   now d-pad left.
+- Play took about twice the CPU it needed on every frame, because the sky
+  picture was painted again from scratch each time. It is now painted once
+  per screen; on a Lenovo Tab (MediaTek MT8755) frame time halves and play
+  holds the display's 90 Hz.
 
 ## [0.2.0] - 2026-10-09
 
