@@ -235,7 +235,8 @@ struct SkyKey {
     phase: sky::Phase,
     w: i32,
     h: i32,
-    pal: [Rgba; 16],
+    /// Only when the sky reads it (`sky::still_reads_palette`).
+    pal: Option<[Rgba; 16]>,
 }
 
 /// What the ground layer was drawn from: everything `raster::draw_terrain`
@@ -574,16 +575,16 @@ impl Backdrop {
     }
 
     fn keep_sky(&mut self, view: &View, pal: &Palette, phase: sky::Phase) {
+        self.sky.canvas.resize(view.w, view.h);
         let key = SkyKey {
             phase,
             w: view.w,
             h: view.h,
-            pal: pal.colours,
+            pal: sky::still_reads_palette(&self.sky.canvas, view).then_some(pal.colours),
         };
         if self.sky.key.as_ref() == Some(&key) {
             return;
         }
-        self.sky.canvas.resize(view.w, view.h);
         sky::draw_still(&mut self.sky.canvas, view, pal, phase);
         self.sky.key = Some(key);
         self.sky.version += 1;
@@ -597,7 +598,7 @@ impl Backdrop {
                 phase,
                 w: view.w,
                 h: view.h,
-                pal: pal.colours,
+                pal: sky::still_reads_palette(canvas, view).then_some(pal.colours),
             },
             canvas.w,
             canvas.h,

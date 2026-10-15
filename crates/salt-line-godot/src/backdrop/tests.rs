@@ -662,3 +662,62 @@ fn the_ground_redrawn_about_a_landing_is_the_ground_drawn_whole() {
         "the partial path ran: {partial_redraws}"
     );
 }
+
+/// A new screen's biome brings its own palette. The detailed sky never
+/// reads it (`sky::still_reads_palette`), so it is kept, and must still be
+/// the sky drawn afresh; the native sky is palette-indexed and is drawn
+/// again.
+#[test]
+fn a_new_palette_redraws_only_a_sky_that_reads_it() {
+    let run = Game::gallery(320).into_iter().find_map(|(_, r)| r).unwrap();
+    let screen = &run.screen;
+    let a = Palette::default();
+    let mut b = Palette::default();
+    for c in &mut b.colours {
+        *c = [c[2], c[0], c[1], c[3]];
+    }
+    let view = View {
+        cam_x: 0,
+        w: 320,
+        h: 180,
+    };
+    for (canvas, redraws) in [
+        (Canvas::new as fn(i32, i32) -> Canvas, true),
+        (Canvas::detailed, false),
+    ] {
+        let mut kept = Backdrop {
+            layered: true,
+            ..Backdrop::default()
+        };
+        let mut c = canvas(320, 180);
+        let guns = [screen.muzzle_x];
+        let mut draw = |b: &mut Backdrop, pal: &Palette| {
+            b.begin_frame();
+            b.draw(
+                &mut c,
+                &view,
+                pal,
+                sky::Phase::Dusk,
+                crate::biome::Biome::Salt,
+                1,
+                0.0,
+                screen,
+                &guns,
+            );
+            b.sky().1
+        };
+        let first = draw(&mut kept, &a);
+        let second = draw(&mut kept, &b);
+        assert_eq!(second != first, redraws, "scale {}", canvas(1, 1).scale());
+        let mut fresh = Backdrop {
+            layered: true,
+            ..Backdrop::default()
+        };
+        draw(&mut fresh, &b);
+        assert!(
+            kept.sky().0.bytes() == fresh.sky().0.bytes(),
+            "scale {}",
+            canvas(1, 1).scale()
+        );
+    }
+}

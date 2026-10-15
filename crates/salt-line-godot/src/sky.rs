@@ -61,6 +61,14 @@ pub fn draw(
     draw_biome(canvas, view, pal, biome, seed, time, |_, _| true);
 }
 
+/// Whether [`draw_still`] into `canvas` for `view` reads the palette. The
+/// native plate is palette-indexed; the detailed plate is source colour,
+/// and the palette only fills what it does not cover. A biome's palette
+/// then cannot change the sky, and a new screen need not draw it again.
+pub fn still_reads_palette(canvas: &Canvas, view: &View) -> bool {
+    canvas.scale() != 4 || view.w * 4 < canvas.pixel_w() || view.h * 4 < canvas.pixel_h()
+}
+
 /// The part of [`draw`] that holds still for a whole screen: the imported
 /// Salt & Iron harbour plate. It depends only on the phase and the buffer's
 /// size, which is what lets `backdrop` keep it in a texture of its own.
