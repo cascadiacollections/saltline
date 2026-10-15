@@ -279,6 +279,16 @@ pub struct GpuCheck {
     destination: Option<Rect2>,
 }
 
+/// The texel a viewport pixel centre `offset` pixels into a destination
+/// `size` wide falls in, of a texture `n` texels wide, and whether it sits
+/// on the edge with the texel before (to 1e-4 of a texel), where each draw's
+/// rounding may go either way.
+fn texel(offset: f64, n: i32, size: f64) -> (i32, bool) {
+    let t = offset * n as f64 / size;
+    let i = t.floor();
+    ((i as i32).clamp(0, n - 1), t - i < 1e-4 && i >= 1.0)
+}
+
 /// How many recent flat frames a read is compared with.
 const GPU_CHECK_LAG: usize = 3;
 
@@ -354,12 +364,16 @@ impl GpuCheck {
             let y1 = (position.y + size.y - 0.5).ceil().min(ih as f32) as i32;
             for y in y0..y1 {
                 for x in x0..x1 {
-                    let sx = (((x as f64 + 0.5 - position.x as f64) * w as f64 / size.x as f64)
-                        .floor() as i32)
-                        .clamp(0, w - 1);
-                    let sy = (((y as f64 + 0.5 - position.y as f64) * h as f64 / size.y as f64)
-                        .floor() as i32)
-                        .clamp(0, h - 1);
+                    let (sx, x_tie) = texel(x as f64 + 0.5 - position.x as f64, w, size.x as f64);
+                    let (sy, y_tie) = texel(y as f64 + 0.5 - position.y as f64, h, size.y as f64);
+                    // A pixel centre exactly on a texel edge (a scale that
+                    // is not a whole number puts a few there) is ambiguous:
+                    // each layer's draw may round to either texel, and the
+                    // layers may not agree, so it has no single right
+                    // answer. Skip it; every other pixel must be exact.
+                    if x_tie || y_tie {
+                        continue;
+                    }
                     let a = ((y * iw + x) * 4) as usize;
                     let b = ((sy * w + sx) * 4) as usize;
                     if got[a..a + 3] != want[b..b + 3] {
@@ -411,5 +425,26 @@ impl GpuCheck {
                 self.newest, self.older, self.none, self.sizes, self.destination, self.samples
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::texel;
+
+    #[test]
+    fn a_pixel_centre_on_a_texel_edge_is_a_tie_and_nothing_else_is() {
+        // 2x: centres fall mid-texel, never on an edge.
+        assert!((0..2560).all(|x| !texel(x as f64 + 0.5, 1280, 2560.0).1));
+        // The tablet's Long Lens viewport: 1280 texels over 2370 pixels.
+        // Pixel 1066's centre is 576 texels in exactly.
+        assert_eq!(texel(1066.5, 1280, 2370.0), (576, true));
+        assert!(!texel(1067.5, 1280, 2370.0).1);
+        let ties = (0..2370)
+            .filter(|&x| texel(x as f64 + 0.5, 1280, 2370.0).1)
+            .count();
+        assert!(ties > 0 && ties < 20, "ties are rare: {ties}");
+        // The first texel has no edge before it.
+        assert_eq!(texel(0.0, 1280, 2370.0), (0, false));
     }
 }
