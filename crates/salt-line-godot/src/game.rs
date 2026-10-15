@@ -145,7 +145,9 @@ pub struct SaltLine {
     /// The sky and ground layers on the GPU, and which of the cache's
     /// versions of each they hold. See `backdrop` and `upload_backdrop`.
     sky: Option<Backing>,
-    ground: Option<Backing>,
+    /// The ground layer in `backdrop::GROUND_CHUNK`-column chunks, each
+    /// with the chunk version it holds (`Backdrop::ground_chunks`).
+    ground: Vec<(Option<Backing>, u64)>,
     outline: Option<Backing>,
     backdrop_versions: (u64, u64, u64),
     /// What `draw` last drew under the overlay, to know when to draw again.
@@ -232,7 +234,7 @@ impl INode2D for SaltLine {
             layers: Layers::default(),
             shadow: Shadow::default(),
             sky: None,
-            ground: None,
+            ground: Vec::new(),
             outline: None,
             backdrop_versions: (0, 0, 0),
             backdrop_drawn: None,
@@ -516,22 +518,43 @@ impl INode2D for SaltLine {
                     }
                 }
             }
-            let ground = self.ground.as_ref().map(|l| (l.texture.clone(), l.w, l.h));
-            if let Some((tex, ground_w, ground_h)) = ground {
-                if let Some(win) = backdrop::window(shown.ground_x(), shown.w, ground_w / scale) {
-                    for band in shown.bands {
-                        // The band's part of the window, in buffer columns.
-                        let (a, b) = (band.x0.max(win.dst_x), band.x1.min(win.dst_x + win.w));
-                        let rows = (ground_h - band.ground_top) as f32;
-                        if rows <= 0.0 || b <= a {
+            // The ground in chunks: each band's part of the window, cut where
+            // the chunks meet, from each chunk's texture.
+            let chunks: Vec<_> = self
+                .ground
+                .iter()
+                .map(|(l, _)| l.as_ref().map(|l| (l.texture.clone(), l.h)))
+                .collect();
+            let layer_w = self.cache.backdrop.ground().0.w;
+            if let Some(win) = backdrop::window(shown.ground_x(), shown.w, layer_w) {
+                let chunk = backdrop::GROUND_CHUNK;
+                for band in shown.bands {
+                    // The band's part of the window, in buffer columns, and
+                    // the layer columns it shows.
+                    let (a, b) = (band.x0.max(win.dst_x), band.x1.min(win.dst_x + win.w));
+                    if b <= a {
+                        continue;
+                    }
+                    let la = win.src_x + a - win.dst_x;
+                    let lb = la + (b - a);
+                    for i in la / chunk..=(lb - 1) / chunk {
+                        let Some(Some((tex, h))) = chunks.get(i as usize).cloned() else {
+                            continue;
+                        };
+                        let rows = (h - band.ground_top) as f32;
+                        if rows <= 0.0 {
                             continue;
                         }
+                        let (p0, p1) = (la.max(i * chunk), lb.min((i + 1) * chunk));
+                        let (dst_x, src_x, w) = (
+                            (a + p0 - la) as f32,
+                            (p0 - i * chunk) as f32,
+                            (p1 - p0) as f32,
+                        );
                         let top = band.ground_top as f32;
-                        let src_x = (win.src_x + a - win.dst_x) as f32;
-                        let w = (b - a) as f32;
                         self.base_mut().draw_texture_rect_region(
                             &tex,
-                            Rect2::new(Vector2::new(a as f32, top / s), Vector2::new(w, rows / s)),
+                            Rect2::new(Vector2::new(dst_x, top / s), Vector2::new(w, rows / s)),
                             Rect2::new(Vector2::new(src_x * s, top), Vector2::new(w * s, rows)),
                         );
                     }
@@ -1629,13 +1652,34 @@ impl SaltLine {
             };
         if let Some(shown) = shown {
             keep(&mut self.sky, &mut self.backdrop_versions.0, b.sky());
-            keep(&mut self.ground, &mut self.backdrop_versions.1, b.ground());
             if shown.outline {
                 keep(
                     &mut self.outline,
                     &mut self.backdrop_versions.2,
                     b.outline_layer(),
                 );
+            }
+            // The ground chunk by chunk: a landing sends up only the chunks
+            // it changed, not the whole world's layer.
+            let (canvas, _) = b.ground();
+            let versions = b.ground_chunks();
+            if self.ground.len() != versions.len() {
+                self.ground = versions.iter().map(|_| (None, 0)).collect();
+            }
+            let (chunk, s) = (backdrop::GROUND_CHUNK, canvas.scale());
+            for (i, (layer, held)) in self.ground.iter_mut().enumerate() {
+                if *held == versions[i] && layer.is_some() {
+                    continue;
+                }
+                *held = versions[i];
+                uploads += 1;
+                let x0 = i as i32 * chunk;
+                let x1 = (x0 + chunk).min(canvas.w);
+                match Backing::keep_columns(layer, canvas, x0 * s, x1 * s) {
+                    Kept::Updated => {}
+                    Kept::Made => redraw = true,
+                    Kept::Failed => failed = true,
+                }
             }
         }
         if failed {
@@ -1803,17 +1847,10 @@ struct Backing {
 }
 
 impl Backing {
-    /// `canvas` as an image, its pixels copied once; dropped by the caller
-    /// once the texture has it.
-    fn image(canvas: &Canvas) -> Option<Gd<Image>> {
-        let (w, h) = (canvas.pixel_w(), canvas.pixel_h());
-        Image::create_from_data(
-            w,
-            h,
-            false,
-            Layer::FORMAT,
-            &PackedByteArray::from(canvas.bytes()),
-        )
+    /// `w` by `h` RGBA8 `bytes` as an image; dropped by the caller once the
+    /// texture has it.
+    fn image(bytes: &[u8], w: i32, h: i32) -> Option<Gd<Image>> {
+        Image::create_from_data(w, h, false, Layer::FORMAT, &PackedByteArray::from(bytes))
     }
 
     /// Make `layer` hold all of `canvas`, in display pixels: updated in
@@ -1821,9 +1858,30 @@ impl Backing {
     /// draw the new texture).
     fn keep(layer: &mut Option<Backing>, canvas: &Canvas) -> Kept {
         let (w, h) = (canvas.pixel_w(), canvas.pixel_h());
-        let Some(image) = Self::image(canvas) else {
-            return Kept::Failed;
-        };
+        match Self::image(canvas.bytes(), w, h) {
+            Some(image) => Self::hold(layer, image, w, h),
+            None => Kept::Failed,
+        }
+    }
+
+    /// Make `layer` hold display columns `x0..x1` of `canvas`, as
+    /// [`keep`](Self::keep) does the whole of it.
+    fn keep_columns(layer: &mut Option<Backing>, canvas: &Canvas, x0: i32, x1: i32) -> Kept {
+        let (w, h) = (x1 - x0, canvas.pixel_h());
+        let stride = canvas.pixel_w() as usize * 4;
+        let mut bytes = Vec::with_capacity((w * h * 4) as usize);
+        for row in canvas.bytes().chunks_exact(stride) {
+            bytes.extend_from_slice(&row[x0 as usize * 4..x1 as usize * 4]);
+        }
+        match Self::image(&bytes, w, h) {
+            Some(image) => Self::hold(layer, image, w, h),
+            None => Kept::Failed,
+        }
+    }
+
+    /// Put `image`, `w` by `h`, in `layer`'s texture, making the texture
+    /// anew if it is another size.
+    fn hold(layer: &mut Option<Backing>, image: Gd<Image>, w: i32, h: i32) -> Kept {
         match layer {
             Some(l) if l.w == w && l.h == h => {
                 l.texture.update(&image);

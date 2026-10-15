@@ -165,6 +165,10 @@ pub struct Backdrop {
     narrow: Canvas,
     /// Scratch canvas for `redraw_ground_columns`.
     scratch: Canvas,
+    /// A version per [`GROUND_CHUNK`] columns of the ground layer, bumped
+    /// when any of its columns is drawn again, so the node uploads only
+    /// the chunks a landing changed.
+    ground_chunks: Vec<u64>,
     /// What `patches` were found for: the ground layer's version, the
     /// camera column and the buffer's size and scale. They depend on nothing
     /// else, so most frames (a still camera) keep them.
@@ -189,6 +193,7 @@ impl Default for Backdrop {
             patches: Vec::new(),
             narrow: Canvas::new(2, 1),
             scratch: Canvas::new(1, 1),
+            ground_chunks: Vec::new(),
             patch_key: None,
             ground_tops: Vec::new(),
             shown: None,
@@ -394,6 +399,11 @@ pub struct Shown {
     pub bands: [Band; BANDS],
 }
 
+/// The ground layer's columns per chunk: the node keeps one texture per
+/// chunk and uploads only those drawn again ([`Backdrop::ground_chunks`]).
+/// At 4x a chunk is 128 display columns, ~370 KB a 720-row layer.
+pub const GROUND_CHUNK: i32 = 32;
+
 /// How many column bands [`Shown::bands`] cuts the buffer into.
 pub const BANDS: usize = 32;
 
@@ -468,6 +478,12 @@ impl Backdrop {
     /// The ground layer, and how many times it has been drawn.
     pub fn ground(&self) -> (&Canvas, u64) {
         (&self.ground.canvas, self.ground.version)
+    }
+
+    /// For each [`GROUND_CHUNK`] columns of the ground layer, the version
+    /// of [`ground`](Self::ground) that last drew any of them.
+    pub fn ground_chunks(&self) -> &[u64] {
+        &self.ground_chunks
     }
 
     /// The outline layer, and how many times it has been drawn.
@@ -673,6 +689,15 @@ impl Backdrop {
                 0..world.w
             }
         };
+        let chunks = (world.w + GROUND_CHUNK - 1) / GROUND_CHUNK;
+        if self.ground_chunks.len() != chunks as usize {
+            self.ground_chunks = vec![0; chunks as usize];
+        }
+        let next = self.ground.version + 1;
+        let touched = columns.start / GROUND_CHUNK..(columns.end + GROUND_CHUNK - 1) / GROUND_CHUNK;
+        for v in &mut self.ground_chunks[touched.start as usize..touched.end as usize] {
+            *v = next;
+        }
         // Each layer column's first painted display row, for the bands.
         let canvas = &self.ground.canvas;
         let (s, pw, ph) = (canvas.scale(), canvas.pixel_w() as usize, canvas.pixel_h());

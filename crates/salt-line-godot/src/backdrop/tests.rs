@@ -721,3 +721,53 @@ fn a_new_palette_redraws_only_a_sky_that_reads_it() {
         );
     }
 }
+
+/// A landing bumps the version of only the ground chunks it redrew, so
+/// the node sends up only those (`Backdrop::ground_chunks`).
+#[test]
+fn a_landing_marks_only_its_ground_chunks() {
+    let pal = Palette::default();
+    let run = Game::gallery(320).into_iter().find_map(|(_, r)| r).unwrap();
+    let mut screen = run.screen.clone();
+    let guns = [-1000.0];
+    let view = View {
+        cam_x: 0,
+        w: 320,
+        h: 180,
+    };
+    let mut b = Backdrop {
+        layered: true,
+        ..Backdrop::default()
+    };
+    let mut c = Canvas::detailed(320, 180);
+    let mut draw = |b: &mut Backdrop, screen: &Screen| {
+        b.begin_frame();
+        b.draw(
+            &mut c,
+            &view,
+            &pal,
+            sky::Phase::Day,
+            crate::biome::Biome::Salt,
+            1,
+            0.0,
+            screen,
+            &guns,
+        );
+    };
+    draw(&mut b, &screen);
+    let first = b.ground().1;
+    assert!(
+        b.ground_chunks().iter().all(|&v| v == first),
+        "a whole layer marks every chunk"
+    );
+    // A crater at world column 200: layer column 201, chunk 6 of 32.
+    for x in 198..203 {
+        screen.field.scar[x] += 4.0;
+    }
+    draw(&mut b, &screen);
+    let now = b.ground().1;
+    let marked: Vec<usize> = (0..b.ground_chunks().len())
+        .filter(|&i| b.ground_chunks()[i] == now)
+        .collect();
+    assert_eq!(marked, [6], "only the crater's chunk");
+}
