@@ -189,6 +189,12 @@ android-profile: android-profile-apk
     "{{ adb }}" shell am force-stop com.cascadiacollections.saltline.profile
     "{{ adb }}" shell monkey -p com.cascadiacollections.saltline.profile -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 
+# Run the profiling build on the attached device to the end and print its
+# timings (and, with --gpu-check, each GPU check scene's verdict). Pass an APK
+# to install it first, e.g. `just android-profile-run build/SaltLine-profile.apk --gpu-check`.
+android-profile-run *args:
+    python3 tools/android_profile_run.py --adb "{{ adb }}" {{ args }}
+
 # Follow the profiling build's timing output on the attached device.
 android-profile-log:
     "{{ adb }}" logcat --pid="$("{{ adb }}" shell pidof com.cascadiacollections.saltline.profile)"
