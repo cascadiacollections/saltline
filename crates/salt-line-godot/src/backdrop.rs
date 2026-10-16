@@ -163,6 +163,12 @@ pub struct Backdrop {
     patches: Vec<Patch>,
     /// Scratch canvas for `edge_patches`.
     narrow: Canvas,
+    /// Scratch canvas for `redraw_ground_columns`.
+    scratch: Canvas,
+    /// A version per [`GROUND_CHUNK`] columns of the ground layer, bumped
+    /// when any of its columns is drawn again, so the node uploads only
+    /// the chunks a landing changed.
+    ground_chunks: Vec<u64>,
     /// What `patches` were found for: the ground layer's version, the
     /// camera column and the buffer's size and scale. They depend on nothing
     /// else, so most frames (a still camera) keep them.
@@ -186,6 +192,8 @@ impl Default for Backdrop {
             outline: Kept::default(),
             patches: Vec::new(),
             narrow: Canvas::new(2, 1),
+            scratch: Canvas::new(1, 1),
+            ground_chunks: Vec::new(),
             patch_key: None,
             ground_tops: Vec::new(),
             shown: None,
@@ -223,14 +231,17 @@ impl<K> Default for Kept<K> {
     }
 }
 
-/// What the sky layer was drawn from.
+/// What the sky layer was drawn from: everything [`sky::draw_still`]
+/// reads. Not the biome, which only the moving part draws: a new screen of
+/// another biome keeps the sky, a 4x plate the weakest phones take a dozen
+/// milliseconds to redraw.
 #[derive(PartialEq)]
 struct SkyKey {
     phase: sky::Phase,
-    biome: Biome,
     w: i32,
     h: i32,
-    pal: [Rgba; 16],
+    /// Only when the sky reads it (`sky::still_reads_palette`).
+    pal: Option<[Rgba; 16]>,
 }
 
 /// What the ground layer was drawn from: everything `raster::draw_terrain`
@@ -283,6 +294,73 @@ impl GroundKey {
                 .eq(self.tufts.iter().map(|&x| cleared(x, guns)))
     }
 
+    /// The world columns `c0..=c1` whose ground pixels may differ between
+    /// the field this key was taken from and `screen`, `guns`: columns whose
+    /// height or scar changed, every column a structure that came, went or
+    /// moved keeps clear of grass, and each tuft that grows or is cleared
+    /// differently. `None` asks for the whole layer: the size, palette,
+    /// seed or world's width changed, or no column did (a change this does
+    /// not know how to place).
+    fn changed_columns(
+        &self,
+        screen: &Screen,
+        guns: &[f64],
+        h: i32,
+        pal: &Palette,
+    ) -> Option<(i32, i32)> {
+        let field = &screen.field;
+        if self.seed != screen.seed
+            || self.h != h
+            || self.pal != pal.colours
+            || self.base.len() != field.base.len()
+            || self.scar.len() != field.scar.len()
+        {
+            return None;
+        }
+        let mut range: Option<(i32, i32)> = None;
+        let mut add = |a: i32, b: i32| {
+            range = Some(range.map_or((a, b), |(x0, x1)| (x0.min(a), x1.max(b))));
+        };
+        for (c, ((b0, b1), (s0, s1))) in self
+            .base
+            .iter()
+            .zip(&field.base)
+            .zip(self.scar.iter().zip(&field.scar))
+            .enumerate()
+        {
+            if b0 != b1 || s0 != s1 {
+                add(c as i32, c as i32);
+            }
+        }
+        let now: Vec<f64> = screen.structures.iter().map(|s| s.centre_x()).collect();
+        if now != self.structures {
+            // `raster::grass_grows`: no grass within 10 columns of one. The
+            // tuft comparison below already names every column this can
+            // change (structures reach the ground layer only through its
+            // grass); this keeps a change that moves no tuft a partial
+            // redraw rather than the whole-layer fallback.
+            for &x in now.iter().chain(&self.structures) {
+                let x = x.round() as i32;
+                add(x - 11, x + 11);
+            }
+        }
+        // A tuft drawn before and not now, or now and not before.
+        let before = |x: i32| {
+            self.tufts
+                .iter()
+                .position(|&t| t == x)
+                .is_some_and(|i| !self.cleared[i])
+        };
+        let tufts: Vec<i32> = raster::tuft_columns(screen, h).collect();
+        for &x in tufts.iter().chain(&self.tufts) {
+            let after = tufts.contains(&x) && !cleared(x, guns);
+            if after != before(x) {
+                add(x, x);
+            }
+        }
+        range
+    }
+
     fn refresh(&mut self, screen: &Screen, guns: &[f64], h: i32, pal: &Palette) {
         self.base.clone_from(&screen.field.base);
         self.scar.clone_from(&screen.field.scar);
@@ -324,6 +402,11 @@ pub struct Shown {
     /// What the node draws of the sky and ground, column band by band.
     pub bands: [Band; BANDS],
 }
+
+/// The ground layer's columns per chunk: the node keeps one texture per
+/// chunk and uploads only those drawn again ([`Backdrop::ground_chunks`]).
+/// At 4x a chunk is 128 display columns, ~370 KB a 720-row layer.
+pub const GROUND_CHUNK: i32 = 32;
 
 /// How many column bands [`Shown::bands`] cuts the buffer into.
 pub const BANDS: usize = 32;
@@ -401,6 +484,12 @@ impl Backdrop {
         (&self.ground.canvas, self.ground.version)
     }
 
+    /// For each [`GROUND_CHUNK`] columns of the ground layer, the version
+    /// of [`ground`](Self::ground) that last drew any of them.
+    pub fn ground_chunks(&self) -> &[u64] {
+        &self.ground_chunks
+    }
+
     /// The outline layer, and how many times it has been drawn.
     pub fn outline_layer(&self) -> (&Canvas, u64) {
         (&self.outline.canvas, self.outline.version)
@@ -453,7 +542,7 @@ impl Backdrop {
         if !self.layered {
             // `sky::draw`, with its still part copied from the last frame's:
             // on a detailed canvas that plate is most of the frame's work.
-            self.keep_flat_sky(canvas, view, pal, phase, biome);
+            self.keep_flat_sky(canvas, view, pal, phase);
             canvas.copy_from(&self.flat_sky.canvas);
             sky::draw_stars(canvas, view, pal, phase, seed, time, |_, _| true);
             sky::draw_biome(canvas, view, pal, biome, seed, time, |_, _| true);
@@ -469,7 +558,7 @@ impl Backdrop {
         if self.narrow.scale() != canvas.scale() {
             self.narrow = canvas.blank_like();
         }
-        self.keep_sky(view, pal, phase, biome);
+        self.keep_sky(view, pal, phase);
         self.keep_ground(screen, guns, view.h, pal);
         let bands = self.bands(view, screen, canvas.scale());
         self.shown = Some(Shown {
@@ -505,18 +594,17 @@ impl Backdrop {
         });
     }
 
-    fn keep_sky(&mut self, view: &View, pal: &Palette, phase: sky::Phase, biome: Biome) {
+    fn keep_sky(&mut self, view: &View, pal: &Palette, phase: sky::Phase) {
+        self.sky.canvas.resize(view.w, view.h);
         let key = SkyKey {
             phase,
-            biome,
             w: view.w,
             h: view.h,
-            pal: pal.colours,
+            pal: sky::still_reads_palette(&self.sky.canvas, view).then_some(pal.colours),
         };
         if self.sky.key.as_ref() == Some(&key) {
             return;
         }
-        self.sky.canvas.resize(view.w, view.h);
         sky::draw_still(&mut self.sky.canvas, view, pal, phase);
         self.sky.key = Some(key);
         self.sky.version += 1;
@@ -524,21 +612,13 @@ impl Backdrop {
 
     /// The flat frame's still sky, drawn at `canvas`'s size and scale; it
     /// never reaches a texture of its own.
-    fn keep_flat_sky(
-        &mut self,
-        canvas: &Canvas,
-        view: &View,
-        pal: &Palette,
-        phase: sky::Phase,
-        biome: Biome,
-    ) {
+    fn keep_flat_sky(&mut self, canvas: &Canvas, view: &View, pal: &Palette, phase: sky::Phase) {
         let key = (
             SkyKey {
                 phase,
-                biome,
                 w: view.w,
                 h: view.h,
-                pal: pal.colours,
+                pal: sky::still_reads_palette(canvas, view).then_some(pal.colours),
             },
             canvas.w,
             canvas.h,
@@ -585,11 +665,11 @@ impl Backdrop {
     }
 
     fn keep_ground(&mut self, screen: &Screen, guns: &[f64], h: i32, pal: &Palette) {
-        if let Some(key) = &self.ground.key {
-            if key.matches(screen, guns, h, pal) {
-                return;
-            }
-        }
+        let changed = match &self.ground.key {
+            Some(key) if key.matches(screen, guns, h, pal) => return,
+            Some(key) => key.changed_columns(screen, guns, h, pal),
+            None => None,
+        };
         // Drawn with `guns` as given: the key says the grass comes out the
         // same for any gun positions that clear the same tufts.
         let world = View {
@@ -597,37 +677,88 @@ impl Backdrop {
             w: screen.field.len() as i32 + 2 * GROUND_PAD,
             h,
         };
-        let canvas = &mut self.ground.canvas;
-        canvas.resize(world.w, h);
-        canvas.clear();
-        raster::draw_terrain(canvas, &world, &screen.field, pal);
-        raster::draw_ground_detail_around(canvas, &world, screen, guns, pal);
-        // Each column's first painted display row, for the bands.
-        let (s, pw, ph) = (canvas.scale(), canvas.pixel_w(), canvas.pixel_h());
-        let mut first = vec![ph; pw as usize];
-        let mut left = pw as usize;
-        for (y, row) in canvas.bytes().chunks_exact(pw as usize * 4).enumerate() {
-            for (x, p) in row.as_chunks::<4>().0.iter().enumerate() {
-                if p[3] != 0 && first[x] == ph {
-                    first[x] = y as i32;
-                    left -= 1;
-                }
+        let whole = (self.ground.canvas.w, self.ground.canvas.h) != (world.w, h)
+            || self.ground_tops.len() != world.w as usize;
+        let columns = match changed.filter(|_| !whole) {
+            // A shell lands: only the columns about the crater, which on a
+            // slow phone is a few milliseconds of a frame against a dozen.
+            Some((c0, c1)) => self.redraw_ground_columns(&world, c0, c1, screen, guns, pal),
+            None => {
+                let canvas = &mut self.ground.canvas;
+                canvas.resize(world.w, h);
+                canvas.clear();
+                raster::draw_terrain(canvas, &world, &screen.field, pal);
+                raster::draw_ground_detail_around(canvas, &world, screen, guns, pal);
+                self.ground_tops.resize(world.w as usize, 0);
+                0..world.w
             }
-            if left == 0 {
-                break;
-            }
+        };
+        let chunks = (world.w + GROUND_CHUNK - 1) / GROUND_CHUNK;
+        if self.ground_chunks.len() != chunks as usize {
+            self.ground_chunks = vec![0; chunks as usize];
         }
-        self.ground_tops.clear();
-        self.ground_tops.extend(
-            first
-                .chunks_exact(s as usize)
-                .map(|c| c.iter().copied().min().unwrap_or(ph)),
-        );
+        let next = self.ground.version + 1;
+        let touched = columns.start / GROUND_CHUNK..(columns.end + GROUND_CHUNK - 1) / GROUND_CHUNK;
+        for v in &mut self.ground_chunks[touched.start as usize..touched.end as usize] {
+            *v = next;
+        }
+        // Each layer column's first painted display row, for the bands.
+        let canvas = &self.ground.canvas;
+        let (s, pw, ph) = (canvas.scale(), canvas.pixel_w() as usize, canvas.pixel_h());
+        let px = canvas.bytes().as_chunks::<4>().0;
+        for c in columns {
+            self.ground_tops[c as usize] = (0..ph)
+                .find(|&y| {
+                    let row = y as usize * pw;
+                    (c * s..(c + 1) * s).any(|x| px[row + x as usize][3] != 0)
+                })
+                .unwrap_or(ph);
+        }
         self.ground
             .key
             .get_or_insert_with(GroundKey::default)
             .refresh(screen, guns, h, pal);
         self.ground.version += 1;
+    }
+
+    /// Draw again the ground layer's columns about world columns `c0..=c1`:
+    /// those, their neighbours (a crater's rim reads the columns either
+    /// side) and the columns a tuft spills into, drawn as a narrow view
+    /// with a margin, so every column copied back had all its neighbours
+    /// drawn, and copied over the layer. Returns the layer columns replaced.
+    fn redraw_ground_columns(
+        &mut self,
+        world: &View,
+        c0: i32,
+        c1: i32,
+        screen: &Screen,
+        guns: &[f64],
+        pal: &Palette,
+    ) -> std::ops::Range<i32> {
+        const REACH: i32 = 3;
+        const MARGIN: i32 = 2;
+        let l0 = (c0 - REACH + GROUND_PAD).max(0);
+        let l1 = (c1 + REACH + GROUND_PAD + 1).min(world.w);
+        if l1 <= l0 {
+            return 0..0;
+        }
+        let view = View {
+            cam_x: l0 - GROUND_PAD - MARGIN,
+            w: l1 - l0 + 2 * MARGIN,
+            h: world.h,
+        };
+        if self.scratch.scale() != self.ground.canvas.scale() {
+            self.scratch = self.ground.canvas.blank_like();
+        }
+        self.scratch.resize(view.w, view.h);
+        self.scratch.clear();
+        raster::draw_terrain(&mut self.scratch, &view, &screen.field, pal);
+        raster::draw_ground_detail_around(&mut self.scratch, &view, screen, guns, pal);
+        let s = self.scratch.scale();
+        self.ground
+            .canvas
+            .copy_columns(&self.scratch, MARGIN * s, l0 * s, (l1 - l0) * s);
+        l0..l1
     }
 
     /// Find where the ground layer, seen through this view, differs from the

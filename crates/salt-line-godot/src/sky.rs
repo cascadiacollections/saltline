@@ -61,39 +61,69 @@ pub fn draw(
     draw_biome(canvas, view, pal, biome, seed, time, |_, _| true);
 }
 
+/// Whether [`draw_still`] into `canvas` for `view` reads the palette. The
+/// native plate is palette-indexed; the detailed plate is source colour,
+/// and the palette only fills what it does not cover. A biome's palette
+/// then cannot change the sky, and a new screen need not draw it again.
+pub fn still_reads_palette(canvas: &Canvas, view: &View) -> bool {
+    canvas.scale() != 4 || view.w * 4 < canvas.pixel_w() || view.h * 4 < canvas.pixel_h()
+}
+
 /// The part of [`draw`] that holds still for a whole screen: the imported
 /// Salt & Iron harbour plate. It depends only on the phase and the buffer's
 /// size, which is what lets `backdrop` keep it in a texture of its own.
 pub fn draw_still(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase) {
-    canvas.fill(pal.get(slot::SKY_HI));
     let top = view.h - 180;
     if canvas.scale() == 4 {
-        for y in 0..view.h * 4 {
+        // Row by row: the plate's 1280 columns, alternate panels mirrored,
+        // each channel dimmed for the phase through a table.
+        let (w, h) = (
+            (view.w * 4).min(canvas.pixel_w()),
+            (view.h * 4).min(canvas.pixel_h()),
+        );
+        if w < canvas.pixel_w() || h < canvas.pixel_h() {
+            canvas.fill(pal.get(slot::SKY_HI));
+        }
+        let brightness = match phase {
+            Phase::Night => 45,
+            Phase::Dusk => 75,
+            Phase::Dawn => 90,
+            Phase::Day => 100,
+        };
+        let dim: [u8; 256] = std::array::from_fn(|v| (v as u32 * brightness / 100) as u8);
+        for y in 0..h {
             // Long Lens adds sky matching the source plate, rather than a
             // different palette-color band above the detailed background.
             let sy = (y - top * 4).max(0) as usize;
-            for x in 0..view.w * 4 {
-                let sx = if (x / 1280) % 2 == 0 {
-                    x % 1280
+            let source = DETAIL_SKY[sy * 1280 * 4..(sy + 1) * 1280 * 4]
+                .as_chunks::<4>()
+                .0;
+            let row = canvas.row_mut(y);
+            let row = row[..w as usize * 4].as_chunks_mut::<4>().0;
+            for (panel, out) in row.chunks_mut(1280).enumerate() {
+                let n = out.len();
+                let put = |o: &mut [u8; 4], c: &[u8; 4]| {
+                    *o = [
+                        dim[c[0] as usize],
+                        dim[c[1] as usize],
+                        dim[c[2] as usize],
+                        c[3],
+                    ];
+                };
+                if panel % 2 == 0 {
+                    out.iter_mut()
+                        .zip(&source[..n])
+                        .for_each(|(o, c)| put(o, c));
                 } else {
-                    1279 - x % 1280
-                };
-                let at = (sy * 1280 + sx as usize) * 4;
-                let mut c: [u8; 4] = DETAIL_SKY[at..at + 4].try_into().unwrap();
-                let brightness = match phase {
-                    Phase::Night => 45,
-                    Phase::Dusk => 75,
-                    Phase::Dawn => 90,
-                    Phase::Day => 100,
-                };
-                for v in &mut c[..3] {
-                    *v = (*v as u32 * brightness / 100) as u8;
+                    out.iter_mut()
+                        .zip(source.iter().rev())
+                        .for_each(|(o, c)| put(o, c));
                 }
-                canvas.put_detail(x, y, c);
             }
         }
         return;
     }
+    canvas.fill(pal.get(slot::SKY_HI));
     for y in top.max(0)..view.h {
         let source_y = (y - top) as usize;
         for x in 0..view.w {
@@ -480,6 +510,62 @@ mod tests {
                 let at = ((y * 1600 + x) * 4) as usize;
                 let source = ((sy * 1280 + sx) * 4) as usize;
                 assert_eq!(&canvas.bytes()[at..at + 4], &DETAIL_SKY[source..source + 4]);
+            }
+        }
+    }
+
+    /// The detailed plate as first written, a pixel at a time: the
+    /// reference the row-wise `draw_still` must match.
+    fn draw_still_reference(canvas: &mut Canvas, view: &View, pal: &Palette, phase: Phase) {
+        canvas.fill(pal.get(slot::SKY_HI));
+        let top = view.h - 180;
+        for y in 0..view.h * 4 {
+            let sy = (y - top * 4).max(0) as usize;
+            for x in 0..view.w * 4 {
+                let sx = if (x / 1280) % 2 == 0 {
+                    x % 1280
+                } else {
+                    1279 - x % 1280
+                };
+                let at = (sy * 1280 + sx as usize) * 4;
+                let mut c: [u8; 4] = DETAIL_SKY[at..at + 4].try_into().unwrap();
+                let brightness = match phase {
+                    Phase::Night => 45,
+                    Phase::Dusk => 75,
+                    Phase::Dawn => 90,
+                    Phase::Day => 100,
+                };
+                for v in &mut c[..3] {
+                    *v = (*v as u32 * brightness / 100) as u8;
+                }
+                canvas.put_detail(x, y, c);
+            }
+        }
+    }
+
+    #[test]
+    fn the_detailed_plate_drawn_by_rows_is_the_plate_drawn_by_pixels() {
+        let pal = Palette::default();
+        // Phone and desktop widths, the 1280-pixel mirror seam crossed, the
+        // taller Long Lens buffer, and a canvas larger than the view.
+        for (canvas_w, canvas_h, w, h) in [
+            (320, 180, 320, 180),
+            (375, 180, 375, 180),
+            (400, 216, 400, 216),
+            (700, 180, 700, 180),
+            (330, 190, 320, 180),
+            (320, 170, 320, 170),
+        ] {
+            for phase in [Phase::Day, Phase::Dusk, Phase::Night, Phase::Dawn] {
+                let view = View { cam_x: 9, w, h };
+                let mut fast = Canvas::detailed(canvas_w, canvas_h);
+                let mut slow = Canvas::detailed(canvas_w, canvas_h);
+                draw_still(&mut fast, &view, &pal, phase);
+                draw_still_reference(&mut slow, &view, &pal, phase);
+                assert!(
+                    fast.bytes() == slow.bytes(),
+                    "{canvas_w}x{canvas_h} view {w}x{h} {phase:?}"
+                );
             }
         }
     }
