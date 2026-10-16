@@ -66,7 +66,15 @@ pub struct Canvas {
     /// Physical pixels, row by row, four bytes each; `pixel_w() * pixel_h()`.
     px: Vec<u8>,
     scale: i32,
+    /// Which of [`BANDS`] row bands of display rows have been written since
+    /// the canvas was last all transparent, bit `b` for band `b`. Every
+    /// band not marked is wholly transparent, so [`Canvas::clear`] clears
+    /// only the marked ones and [`Canvas::touched`] can vouch for the rest.
+    dirty: u64,
 }
+
+/// How many row bands [`Canvas`] tracks writes in.
+const BANDS: i32 = 64;
 
 impl Canvas {
     /// A transparent buffer of `w` by `h` buffer pixels, at least 1 by 1.
@@ -77,6 +85,7 @@ impl Canvas {
             h,
             px: vec![0; (w * h * 4) as usize],
             scale: 1,
+            dirty: 0,
         }
     }
 
@@ -99,13 +108,62 @@ impl Canvas {
         self.h * self.scale
     }
 
+    /// The row band display row `py` is in.
+    #[inline]
+    fn band(&self, py: i32) -> i32 {
+        py * BANDS / self.pixel_h()
+    }
+
+    /// The first display row of band `b` (the buffer's height for `BANDS`).
+    fn band_start(&self, b: i32) -> i32 {
+        (b * self.pixel_h() + BANDS - 1) / BANDS
+    }
+
+    /// Note a write to display rows `py0..py1` (within the buffer).
+    #[inline]
+    fn mark(&mut self, py0: i32, py1: i32) {
+        let (b0, b1) = (self.band(py0), self.band(py1 - 1));
+        self.dirty |= (u64::MAX >> (63 - b1)) & (u64::MAX << b0);
+    }
+
+    /// Whether any of display rows `py0..py1` may have been written since
+    /// the canvas was last all transparent. False means every pixel in them
+    /// is transparent black.
+    pub fn touched(&self, py0: i32, py1: i32) -> bool {
+        let (py0, py1) = (py0.max(0), py1.min(self.pixel_h()));
+        if py1 <= py0 {
+            return false;
+        }
+        let (b0, b1) = (self.band(py0), self.band(py1 - 1));
+        self.dirty & (u64::MAX >> (63 - b1)) & (u64::MAX << b0) != 0
+    }
+
     /// Write a display pixel without changing the logical drawing grid.
     pub fn put_detail(&mut self, x: i32, y: i32, c: Rgba) {
         if x < 0 || y < 0 || x >= self.pixel_w() || y >= self.pixel_h() {
             return;
         }
+        self.mark(y, y + 1);
         let i = ((y * self.pixel_w() + x) * 4) as usize;
         self.px[i..i + 4].copy_from_slice(&c);
+    }
+
+    /// Fill display columns `px0..px1` of display rows `py0..py1` with
+    /// `c`, clipped to the buffer.
+    fn fill_detail(&mut self, px0: i32, py0: i32, px1: i32, py1: i32, c: Rgba) {
+        let (px0, px1) = (px0.max(0), px1.min(self.pixel_w()));
+        let (py0, py1) = (py0.max(0), py1.min(self.pixel_h()));
+        if px1 <= px0 || py1 <= py0 {
+            return;
+        }
+        self.mark(py0, py1);
+        let stride = self.pixel_w() as usize * 4;
+        for y in py0 as usize..py1 as usize {
+            let row = &mut self.px[y * stride + px0 as usize * 4..y * stride + px1 as usize * 4];
+            for p in row.as_chunks_mut::<4>().0 {
+                *p = c;
+            }
+        }
     }
 
     /// Change size, clearing the buffer only if the size actually changed.
@@ -115,19 +173,36 @@ impl Canvas {
             self.w = w;
             self.h = h;
             self.px = vec![0; (self.pixel_w() * self.pixel_h() * 4) as usize];
+            self.dirty = 0;
         }
     }
 
     /// Every pixel to transparent black, which `Canvas::palette_text`
-    /// shows as `.`.
+    /// shows as `.`. Only the row bands written since the last clear
+    /// (`dirty`) hold anything else, so only they are cleared.
     pub fn clear(&mut self) {
-        self.px.fill(0);
+        if self.dirty == u64::MAX {
+            self.px.fill(0);
+        } else {
+            let stride = self.pixel_w() as usize * 4;
+            let mut bits = self.dirty;
+            while bits != 0 {
+                // A run of marked bands, cleared as one span.
+                let b0 = bits.trailing_zeros() as i32;
+                let run = (bits >> b0).trailing_ones() as i32;
+                let (y0, y1) = (self.band_start(b0), self.band_start(b0 + run));
+                self.px[y0 as usize * stride..y1 as usize * stride].fill(0);
+                bits &= !((u64::MAX >> (64 - run)) << b0);
+            }
+        }
+        self.dirty = 0;
     }
 
     pub fn fill(&mut self, c: Rgba) {
         for p in self.px.chunks_exact_mut(c.len()) {
             p.copy_from_slice(&c);
         }
+        self.dirty = u64::MAX;
     }
 
     /// Set one pixel. Anything off the buffer is dropped, so every drawing
@@ -137,11 +212,8 @@ impl Canvas {
         if x < 0 || y < 0 || x >= self.w || y >= self.h {
             return;
         }
-        for dy in 0..self.scale {
-            for dx in 0..self.scale {
-                self.put_detail(x * self.scale + dx, y * self.scale + dy, c);
-            }
-        }
+        let s = self.scale;
+        self.fill_detail(x * s, y * s, (x + 1) * s, (y + 1) * s, c);
     }
 
     /// Alpha-blended write, for the one translucent mark (the last arc).
@@ -172,6 +244,7 @@ impl Canvas {
         if x < 0 || y < 0 || x >= self.w || y >= self.h || alpha == 0 {
             return;
         }
+        self.mark(y * self.scale, (y + 1) * self.scale);
         let a = alpha as u32;
         for dy in 0..self.scale {
             for dx in 0..self.scale {
@@ -213,11 +286,14 @@ impl Canvas {
     }
 
     pub fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
-        for j in y..y + h {
-            for i in x..x + w {
-                self.put(i, j, c);
-            }
+        if w <= 0 || h <= 0 {
+            return;
         }
+        // Clip in buffer pixels first, as `put` would pixel by pixel.
+        let (x0, y0) = (x.max(0), y.max(0));
+        let (x1, y1) = ((x + w).min(self.w), (y + h).min(self.h));
+        let s = self.scale;
+        self.fill_detail(x0 * s, y0 * s, x1 * s, y1 * s, c);
     }
 
     pub fn rect_outline(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
@@ -404,6 +480,7 @@ impl Canvas {
             "copy_from between canvases of different shapes"
         );
         self.px.copy_from_slice(&src.px);
+        self.dirty = src.dirty;
     }
 
     pub fn to_packed(&self) -> PackedByteArray {
@@ -955,6 +1032,84 @@ mod tests {
     use super::*;
     use salt_line_sim::rng::screen_seed;
     use salt_line_sim::terrain::{self, ShapeParams, Template};
+
+    mod dirty_bands {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// One drawing call, in buffer pixels unless it says detail.
+        #[derive(Clone, Debug)]
+        enum Op {
+            Put(i32, i32),
+            Detail(i32, i32),
+            Rect(i32, i32, i32, i32),
+            Blend(i32, i32),
+            Clear,
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                (-3i32..60, -3i32..40).prop_map(|(x, y)| Op::Put(x, y)),
+                (-5i32..240, -5i32..160).prop_map(|(x, y)| Op::Detail(x, y)),
+                (-5i32..60, -5i32..40, -2i32..30, -2i32..30)
+                    .prop_map(|(x, y, w, h)| Op::Rect(x, y, w, h)),
+                (-3i32..60, -3i32..40).prop_map(|(x, y)| Op::Blend(x, y)),
+                Just(Op::Clear),
+            ]
+        }
+
+        proptest! {
+            /// Whatever was drawn, a clear leaves every pixel transparent
+            /// black, and a row range never written since is transparent
+            /// black: what lets `clear` skip clean bands and `strips` skip
+            /// comparing them.
+            #[test]
+            fn clear_and_touched_agree_with_the_pixels(
+                ops in prop::collection::vec(op(), 0..40),
+                detailed in any::<bool>(),
+                h in prop::sample::select(vec![1, 7, 36, 37]),
+            ) {
+                let mut c = if detailed { Canvas::detailed(52, h) } else { Canvas::new(52, h) };
+                let ink = [9, 8, 7, 255];
+                for op in &ops {
+                    match *op {
+                        Op::Put(x, y) => c.put(x, y, ink),
+                        Op::Detail(x, y) => c.put_detail(x, y, ink),
+                        Op::Rect(x, y, w, h) => c.rect(x, y, w, h, ink),
+                        Op::Blend(x, y) => c.put_blend_on(x, y, ink, 100, |_, _| [1, 2, 3, 255]),
+                        Op::Clear => c.clear(),
+                    }
+                    let stride = c.pixel_w() as usize * 4;
+                    for y in 0..c.pixel_h() {
+                        let row = &c.bytes()[y as usize * stride..(y as usize + 1) * stride];
+                        if !c.touched(y, y + 1) {
+                            prop_assert!(row.iter().all(|&b| b == 0), "row {y} untouched but painted");
+                        }
+                    }
+                }
+                c.clear();
+                prop_assert!(c.bytes().iter().all(|&b| b == 0));
+                prop_assert!(!c.touched(0, c.pixel_h()));
+            }
+
+            /// `rect` paints exactly the pixels `put` would, one by one.
+            #[test]
+            fn rect_is_put_over_the_rectangle(
+                x in -5i32..60, y in -5i32..40, w in -2i32..30, h in -2i32..30,
+                detailed in any::<bool>(),
+            ) {
+                let new = |detailed: bool| if detailed { Canvas::detailed(52, 36) } else { Canvas::new(52, 36) };
+                let (mut a, mut b) = (new(detailed), new(detailed));
+                a.rect(x, y, w, h, [4, 5, 6, 255]);
+                for j in y..y + h {
+                    for i in x..x + w {
+                        b.put(i, j, [4, 5, 6, 255]);
+                    }
+                }
+                prop_assert!(a.bytes() == b.bytes());
+            }
+        }
+    }
 
     #[test]
     fn detail_retains_logical_coordinates_and_resizes_physical_storage() {

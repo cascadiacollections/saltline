@@ -1546,7 +1546,16 @@ impl SaltLine {
         }
         #[cfg(feature = "profiling")]
         let update_started = std::time::Instant::now();
-        let changed = std::array::from_fn(|i| self.shadow.take_if_changed(bytes, i));
+        // A strip nothing was drawn in since the canvas was last cleared is
+        // transparent black (`Canvas::touched`); if it went up wholly
+        // transparent too, there is nothing to compare.
+        let changed = std::array::from_fn(|i| {
+            let (y0, y1) = strips::rows(h, i);
+            if !self.canvas.touched(y0, y1) && self.shadow.empty(i) {
+                return false;
+            }
+            self.shadow.take_if_changed(bytes, i)
+        });
         let (plan, redraw) = self.layers.plan(changed);
         #[cfg(feature = "profiling")]
         let (changed_n, whole_n) = (

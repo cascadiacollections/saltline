@@ -163,6 +163,10 @@ pub struct Backdrop {
     patches: Vec<Patch>,
     /// Scratch canvas for `edge_patches`.
     narrow: Canvas,
+    /// What `patches` were found for: the ground layer's version, the
+    /// camera column and the buffer's size and scale. They depend on nothing
+    /// else, so most frames (a still camera) keep them.
+    patch_key: Option<(u64, i32, i32, i32, i32)>,
     /// Per column of the ground layer, its first display row with anything
     /// on it (the layer's display height where none), found when the layer
     /// is drawn. See [`Band`].
@@ -182,6 +186,7 @@ impl Default for Backdrop {
             outline: Kept::default(),
             patches: Vec::new(),
             narrow: Canvas::new(2, 1),
+            patch_key: None,
             ground_tops: Vec::new(),
             shown: None,
         }
@@ -473,7 +478,17 @@ impl Backdrop {
             w: view.w,
             bands,
         });
-        self.edge_patches(view, screen, guns, pal);
+        let key = (
+            self.ground.version,
+            view.cam_x,
+            view.w,
+            view.h,
+            canvas.scale(),
+        );
+        if self.patch_key != Some(key) {
+            self.edge_patches(view, screen, guns, pal);
+            self.patch_key = Some(key);
+        }
         for p in &self.patches {
             // No ground here per view: the sky shows, so the overlay must
             // show it too, over the ground layer's stray pixel.
