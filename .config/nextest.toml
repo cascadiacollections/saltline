@@ -8,3 +8,11 @@ fail-fast = false
 # the job with a name attached instead of timing the runner out.
 slow-timeout = { period = "60s", terminate-after = 5 }
 failure-output = "immediate-final"
+
+# The flat-vs-layered scenes draw every frame of an autopiloted run, match or
+# demo four times over (flat and layered, at 1x and the detailed 4x). Under
+# coverage instrumentation the slowest pass five minutes on a CI runner;
+# give them ten before calling them hung.
+[[profile.ci.overrides]]
+filter = 'test(/^backdrop::tests::/)'
+slow-timeout = { period = "60s", terminate-after = 10 }

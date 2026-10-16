@@ -140,7 +140,12 @@ profiling`) and launches it beside the normal app as
 `com.cascadiacollections.saltline.profile`. It auto-plays a fixed-seed run and,
 about 34 seconds in, logs CPU timings for the frame upload with the texture
 updated and frozen in turn; `just android-profile-log` follows them. Keep the
-screen awake: an asleep device never renders. It is signed with a throwaway
+screen awake: an asleep device never renders. `just android-profile-run
+[apk] [--gpu-check]` runs a capture to the end and prints the summary instead:
+it reads the log in a way a flood of other apps' messages cannot outrun, waits
+for the GPU check's verdict on each scene, warns when a lock screen or
+notification shade took focus mid-run (the game pauses, spoiling the timings)
+and fails on a GPU check failure. It is signed with a throwaway
 key generated under `build/`; delete `build/` and the next install needs
 `adb uninstall com.cascadiacollections.saltline.profile` first.
 
