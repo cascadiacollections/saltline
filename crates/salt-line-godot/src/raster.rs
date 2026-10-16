@@ -149,7 +149,8 @@ impl Canvas {
     /// and its colour is off the palette unless `alpha` is 255.
     ///
     /// A pixel this canvas has not painted (transparent) is blended with
-    /// `under(x, y)`: the colour a layer beneath shows there
+    /// `under(px, py)`, in display pixels (`put_detail`'s coordinates, the
+    /// logical ones at scale 1): the colour a layer beneath shows there
     /// (`backdrop::Backdrop::under`). The layered frame leaves the sky and
     /// the ground out of this canvas, so a translucent mark over them needs
     /// their colour to come out as in the flat frame, and to stay opaque:
@@ -174,10 +175,10 @@ impl Canvas {
         let a = alpha as u32;
         for dy in 0..self.scale {
             for dx in 0..self.scale {
-                let i =
-                    (((y * self.scale + dy) * self.pixel_w() + x * self.scale + dx) * 4) as usize;
+                let (px, py) = (x * self.scale + dx, y * self.scale + dy);
+                let i = ((py * self.pixel_w() + px) * 4) as usize;
                 if self.px[i + 3] == 0 {
-                    let u = under(x, y);
+                    let u = under(px, py);
                     self.px[i..i + 3].copy_from_slice(&u[..3]);
                 }
                 for (dst, src) in self.px[i..i + 3].iter_mut().zip(c.iter()) {
@@ -197,6 +198,17 @@ impl Canvas {
         let i =
             (((y * self.scale + self.scale / 2) * self.pixel_w() + x * self.scale + self.scale / 2)
                 * 4) as usize;
+        [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
+    }
+
+    /// The display pixel at `(px, py)` (`put_detail`'s coordinates),
+    /// transparent if off the buffer or unpainted.
+    #[inline]
+    pub fn get_detail(&self, px: i32, py: i32) -> Rgba {
+        if px < 0 || py < 0 || px >= self.pixel_w() || py >= self.pixel_h() {
+            return [0; 4];
+        }
+        let i = ((py * self.pixel_w() + px) * 4) as usize;
         [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
     }
 
@@ -698,7 +710,7 @@ pub fn draw_trajectory_inked(
 
 /// The last shot's arc, left behind as a faint dotted line until the next shot
 /// (or the next screen) replaces it, over layers whose colour at a pixel is
-/// `under(x, y)`: see [`Canvas::put_blend_on`].
+/// `under(px, py)` in display pixels: see [`Canvas::put_blend_on`].
 pub fn draw_last_arc_on(
     canvas: &mut Canvas,
     view: &View,

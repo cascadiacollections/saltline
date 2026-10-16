@@ -82,10 +82,20 @@
 //!   over the whole-frame texture would show that texture's older pixel
 //!   (`strips::Layers::whole_rows`, and the test there).
 //!
+//! * at the detailed scale (`Canvas::detailed`, the source art at 4 display
+//!   pixels per buffer pixel) the layers are drawn at the frame's scale, so
+//!   they carry the same detailed sky and soil. Every ground pixel is still
+//!   painted a whole buffer pixel at a time, so whether ground shows (for
+//!   the stars) is one sample per buffer pixel; but a buffer pixel's display
+//!   pixels differ in colour, so everything that copies a colour from a
+//!   layer, the edge patches, [`Backdrop::under`] and
+//!   [`Backdrop::composite`], works display pixel by display pixel.
+//!
 //! The tests below hold the layered frame to this: [`Backdrop::composite`]
 //! puts the three layers together on the CPU as the node does on the GPU,
 //! and every frame of autopiloted runs, versus matches, the editor and the
-//! demo, at several buffer sizes, must equal the flat frame byte for byte.
+//! demo, at several buffer sizes and at both scales, must equal the flat
+//! frame byte for byte.
 //! The profiling build checks the GPU's side on the device itself: it reads
 //! the viewport back and compares it with the flat frame (`profiling`).
 //!
@@ -153,6 +163,10 @@ pub struct Backdrop {
     patches: Vec<Patch>,
     /// Scratch canvas for `edge_patches`.
     narrow: Canvas,
+    /// Per column of the ground layer, its first display row with anything
+    /// on it (the layer's display height where none), found when the layer
+    /// is drawn. See [`Band`].
+    ground_tops: Vec<i32>,
     /// What this frame shows under the overlay: `None` when the overlay is
     /// the whole frame (a menu, or `layered` off).
     shown: Option<Shown>,
@@ -168,6 +182,7 @@ impl Default for Backdrop {
             outline: Kept::default(),
             patches: Vec::new(),
             narrow: Canvas::new(2, 1),
+            ground_tops: Vec::new(),
             shown: None,
         }
     }
@@ -180,6 +195,17 @@ struct Kept<K> {
     /// Bumped each time the canvas is drawn again, so the node can tell it
     /// needs uploading.
     version: u64,
+}
+
+impl<K> Kept<K> {
+    /// Start the layer again if it is not at `like`'s scale: a layer is
+    /// always drawn at the scale of the frame it goes under.
+    fn match_scale(&mut self, like: &Canvas) {
+        if self.canvas.scale() != like.scale() {
+            self.canvas = like.blank_like();
+            self.key = None;
+        }
+    }
 }
 
 impl<K> Default for Kept<K> {
@@ -269,8 +295,9 @@ impl GroundKey {
     }
 }
 
-/// A pixel of the overlay at `(x, y)` that corrects the ground there: the
-/// ground's colour per view, or `None` where per view there is no ground.
+/// A display pixel of the overlay at `(x, y)` (`Canvas::put_detail`'s
+/// coordinates) that corrects the ground there: the ground's colour per
+/// view, or `None` where per view there is no ground.
 #[derive(Clone, Copy, Debug)]
 struct Patch {
     x: i32,
@@ -289,6 +316,32 @@ pub struct Shown {
     pub outline: bool,
     /// The buffer's width this frame: how many ground columns show.
     pub w: i32,
+    /// What the node draws of the sky and ground, column band by band.
+    pub bands: [Band; BANDS],
+}
+
+/// How many column bands [`Shown::bands`] cuts the buffer into.
+pub const BANDS: usize = 32;
+
+/// What can show of the sky and ground in buffer columns `x0..x1`. The
+/// GPU pays for every pixel it draws, and on a weak one the layers' overlap
+/// is most of the frame, so the node draws only this much of each:
+///
+/// * the sky down to `sky_h` (buffer rows): below it every column of the
+///   band has opaque ground in front (`raster::draw_terrain` paints from
+///   the surface down), or the band has a column off the world and the sky
+///   goes all the way down;
+/// * the ground from `ground_top` (display rows of the ground layer): above
+///   it the layer is transparent in every column of the band.
+///
+/// Neither changes a pixel; [`Backdrop::composite`] mirrors both, so the
+/// tests catch a band that leaves out too much.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Band {
+    pub x0: i32,
+    pub x1: i32,
+    pub sky_h: i32,
+    pub ground_top: i32,
 }
 
 impl Shown {
@@ -362,6 +415,7 @@ impl Backdrop {
         };
         shown.outline = true;
         canvas.rect_outline(1, 1, w - 2, h - 2, [0; 4]);
+        self.outline.match_scale(canvas);
         let key = (w, h, colour);
         if self.outline.key != Some(key) {
             let layer = &mut self.outline.canvas;
@@ -403,19 +457,30 @@ impl Backdrop {
             return;
         }
         canvas.clear();
+        // The layers are drawn at the frame's own scale, so a detailed
+        // frame's layers carry the detailed art.
+        self.sky.match_scale(canvas);
+        self.ground.match_scale(canvas);
+        if self.narrow.scale() != canvas.scale() {
+            self.narrow = canvas.blank_like();
+        }
         self.keep_sky(view, pal, phase, biome);
         self.keep_ground(screen, guns, view.h, pal);
+        let bands = self.bands(view, screen, canvas.scale());
         self.shown = Some(Shown {
             cam_x: view.cam_x,
             outline: false,
             w: view.w,
+            bands,
         });
         self.edge_patches(view, screen, guns, pal);
         for p in &self.patches {
             // No ground here per view: the sky shows, so the overlay must
             // show it too, over the ground layer's stray pixel.
-            let c = p.ground.unwrap_or_else(|| self.sky.canvas.get(p.x, p.y));
-            canvas.put(p.x, p.y, c);
+            let c = p
+                .ground
+                .unwrap_or_else(|| self.sky.canvas.get_detail(p.x, p.y));
+            canvas.put_detail(p.x, p.y, c);
         }
         sky::draw_stars(canvas, view, pal, phase, seed, time, |x, y| {
             self.ground_at(x, y).is_none()
@@ -473,6 +538,37 @@ impl Backdrop {
         self.flat_sky.key = Some(key);
     }
 
+    /// This frame's [`Band`]s for `view` over `screen`, the ground layer
+    /// already drawn, on a canvas of scale `s`.
+    fn bands(&self, view: &View, screen: &Screen, s: i32) -> [Band; BANDS] {
+        let len = screen.field.len() as i32;
+        let ph = view.h * s;
+        std::array::from_fn(|b| {
+            let x0 = b as i32 * view.w / BANDS as i32;
+            let x1 = (b as i32 + 1) * view.w / BANDS as i32;
+            let mut band = Band {
+                x0,
+                x1,
+                sky_h: 0,
+                ground_top: ph,
+            };
+            for x in x0..x1 {
+                let world_x = view.cam_x + x;
+                let sky = if (0..len).contains(&world_x) {
+                    view.sy(screen.field.surface(world_x as usize))
+                        .clamp(0, view.h)
+                } else {
+                    view.h
+                };
+                band.sky_h = band.sky_h.max(sky);
+                let column = (world_x + GROUND_PAD) as usize;
+                let top = self.ground_tops.get(column).copied().unwrap_or(ph);
+                band.ground_top = band.ground_top.min(top);
+            }
+            band
+        })
+    }
+
     fn keep_ground(&mut self, screen: &Screen, guns: &[f64], h: i32, pal: &Palette) {
         if let Some(key) = &self.ground.key {
             if key.matches(screen, guns, h, pal) {
@@ -491,6 +587,27 @@ impl Backdrop {
         canvas.clear();
         raster::draw_terrain(canvas, &world, &screen.field, pal);
         raster::draw_ground_detail_around(canvas, &world, screen, guns, pal);
+        // Each column's first painted display row, for the bands.
+        let (s, pw, ph) = (canvas.scale(), canvas.pixel_w(), canvas.pixel_h());
+        let mut first = vec![ph; pw as usize];
+        let mut left = pw as usize;
+        for (y, row) in canvas.bytes().chunks_exact(pw as usize * 4).enumerate() {
+            for (x, p) in row.as_chunks::<4>().0.iter().enumerate() {
+                if p[3] != 0 && first[x] == ph {
+                    first[x] = y as i32;
+                    left -= 1;
+                }
+            }
+            if left == 0 {
+                break;
+            }
+        }
+        self.ground_tops.clear();
+        self.ground_tops.extend(
+            first
+                .chunks_exact(s as usize)
+                .map(|c| c.iter().copied().min().unwrap_or(ph)),
+        );
         self.ground
             .key
             .get_or_insert_with(GroundKey::default)
@@ -520,45 +637,62 @@ impl Backdrop {
             self.narrow.clear();
             raster::draw_terrain(&mut self.narrow, &narrow_view, &screen.field, pal);
             raster::draw_ground_detail_around(&mut self.narrow, &narrow_view, screen, guns, pal);
-            for y in 0..h {
-                let per_view = opaque(self.narrow.get(col, y));
-                let layer = opaque(ground.get(x + view.cam_x + GROUND_PAD, y));
-                if per_view != layer {
-                    self.patches.push(Patch {
-                        x,
-                        y,
-                        ground: per_view,
-                    });
+            // Display pixel by display pixel: a detailed column is `s`
+            // pixels wide, and each must agree.
+            let s = self.narrow.scale();
+            let layer_x = (x + view.cam_x + GROUND_PAD) * s;
+            for py in 0..h * s {
+                for dx in 0..s {
+                    let per_view = opaque(self.narrow.get_detail(col * s + dx, py));
+                    let layer = opaque(ground.get_detail(layer_x + dx, py));
+                    if per_view != layer {
+                        self.patches.push(Patch {
+                            x: x * s + dx,
+                            y: py,
+                            ground: per_view,
+                        });
+                    }
                 }
             }
         }
     }
 
-    /// The ground's colour at buffer pixel `(x, y)` as this frame shows it,
-    /// patches included; `None` where the sky shows.
-    fn ground_at(&self, x: i32, y: i32) -> Option<Rgba> {
-        if let Some(p) = self.patches.iter().find(|p| p.x == x && p.y == y) {
+    /// The ground's colour at display pixel `(px, py)` as this frame shows
+    /// it, patches included; `None` where the sky shows.
+    fn ground_at_detail(&self, px: i32, py: i32) -> Option<Rgba> {
+        if let Some(p) = self.patches.iter().find(|p| p.x == px && p.y == py) {
             return p.ground;
         }
-        let left = self.shown.map_or(0, Shown::ground_x);
-        opaque(self.ground.canvas.get(x + left, y))
+        let s = self.ground.canvas.scale();
+        let left = self.shown.map_or(0, Shown::ground_x) * s;
+        opaque(self.ground.canvas.get_detail(px + left, py))
     }
 
-    /// The colour the layers beneath the overlay show at buffer pixel
-    /// `(x, y)`: the ground's, or else the sky's. For a translucent write
-    /// over a pixel the overlay has not painted ([`Canvas::put_blend_on`]).
-    /// Flat, there is nothing beneath: the canvas holds every colour itself.
-    pub fn under(&self, x: i32, y: i32) -> Rgba {
+    /// Whether ground shows at buffer pixel `(x, y)`, sampled where
+    /// `Canvas::get` samples. Every ground pixel is painted a whole buffer
+    /// pixel at a time (`raster::draw_terrain`), so one sample answers for
+    /// all of its display pixels.
+    fn ground_at(&self, x: i32, y: i32) -> Option<Rgba> {
+        let s = self.ground.canvas.scale();
+        self.ground_at_detail(x * s + s / 2, y * s + s / 2)
+    }
+
+    /// The colour the layers beneath the overlay show at display pixel
+    /// `(px, py)` (`Canvas::put_detail`'s coordinates): the ground's, or
+    /// else the sky's. For a translucent write over a pixel the overlay has
+    /// not painted ([`Canvas::put_blend_on`]). Flat, there is nothing
+    /// beneath: the canvas holds every colour itself.
+    pub fn under(&self, px: i32, py: i32) -> Rgba {
         let Some(shown) = self.shown else {
             return [0; 4];
         };
         if shown.outline {
-            if let Some(c) = opaque(self.outline.canvas.get(x, y)) {
+            if let Some(c) = opaque(self.outline.canvas.get_detail(px, py)) {
                 return c;
             }
         }
-        self.ground_at(x, y)
-            .unwrap_or_else(|| self.sky.canvas.get(x, y))
+        self.ground_at_detail(px, py)
+            .unwrap_or_else(|| self.sky.canvas.get_detail(px, py))
     }
 
     /// The finished frame from `overlay`, this frame's canvas: the layers put
@@ -570,18 +704,40 @@ impl Backdrop {
         let Some(shown) = self.shown else {
             return overlay.bytes().to_vec();
         };
-        let (w, h) = (overlay.w, overlay.h);
+        let s = overlay.scale();
+        let (w, h) = (overlay.pixel_w(), overlay.pixel_h());
         let mut out = self.sky.canvas.bytes().to_vec();
         let ground = &self.ground.canvas;
         let stride = w as usize * 4;
-        debug_assert_eq!(shown.w, w, "the overlay is the buffer's size");
+        // As the node draws: no sky below each band's `sky_h`. A colour no
+        // art uses stands in for whatever the GPU's target held, so a pixel
+        // the ground failed to cover shows in the comparison.
+        for band in &shown.bands {
+            for y in band.sky_h * s..h {
+                let row = y as usize * stride;
+                out[row + (band.x0 * s) as usize * 4..row + (band.x1 * s) as usize * 4]
+                    .as_chunks_mut::<4>()
+                    .0
+                    .fill(UNDRAWN);
+            }
+        }
+        debug_assert_eq!(shown.w, overlay.w, "the overlay is the buffer's size");
+        debug_assert_eq!(
+            out.len(),
+            overlay.bytes().len(),
+            "the sky is the overlay's size"
+        );
         if let Some(win) = window(shown.ground_x(), shown.w, ground.w) {
-            for y in 0..h.min(ground.h) {
-                for i in 0..win.w {
-                    let c = ground.get(win.src_x + i, y);
-                    if c[3] != 0 {
-                        let at = y as usize * stride + (win.dst_x + i) as usize * 4;
-                        out[at..at + 4].copy_from_slice(&c);
+            for band in &shown.bands {
+                // The band's part of the window, in buffer columns.
+                let (a, b) = (band.x0.max(win.dst_x), band.x1.min(win.dst_x + win.w));
+                for y in band.ground_top..h.min(ground.pixel_h()) {
+                    for i in a * s..b * s {
+                        let c = ground.get_detail(win.src_x * s + i - win.dst_x * s, y);
+                        if c[3] != 0 {
+                            let at = y as usize * stride + i as usize * 4;
+                            out[at..at + 4].copy_from_slice(&c);
+                        }
                     }
                 }
             }
@@ -607,6 +763,9 @@ impl Backdrop {
         out
     }
 }
+
+/// What [`Backdrop::composite`] puts where no layer is drawn.
+const UNDRAWN: Rgba = [255, 0, 255, 255];
 
 /// `c` if it is painted, `None` if transparent.
 fn opaque(c: Rgba) -> Option<Rgba> {

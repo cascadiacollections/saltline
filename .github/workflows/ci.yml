@@ -95,7 +95,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -108,6 +108,8 @@ jobs:
         run: cargo nextest run -p salt-line-sim --profile ci
       - name: test salt-line-godot (rasteriser, fonts, camera maths)
         run: cargo nextest run -p salt-line-godot --profile ci
+      - name: test the profiling build's own logic (GPU check sampling)
+        run: cargo nextest run -p salt-line-godot --profile ci --features profiling -E 'test(/^profiling::/)'
       - name: doctests
         run: cargo test --doc --workspace
       - name: build the GDExtension
@@ -142,7 +144,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - name: build the determinism check for Android (x86_64)
@@ -200,7 +202,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - name: build the determinism check for the iOS simulator
@@ -328,7 +330,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -370,7 +372,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
           components: rustfmt, clippy
@@ -417,6 +419,47 @@ jobs:
 
   # Cheap checks on everything that is not Rust logic: spelling (typos),
   # workflow security (zizmor) and declared-but-unused dependencies (machete).
+  # The layered frame must equal the flat one on a real GPU, not only on the
+  # CPU: the node's draw rectangles (sky and ground bands, ground chunks,
+  # overlay tile runs) are only ever checked by reading the viewport back
+  # (crates/salt-line-godot/src/profiling.rs, GpuCheck). Mesa's llvmpipe under
+  # Xvfb is a real GL implementation; the same check passes on a Mali phone
+  # GPU, desktop radeonsi and the Android emulator.
+  gpu-check:
+    name: gpu check (llvmpipe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
+      - name: install a virtual display and Mesa's software GL
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y xvfb xauth libgl1 libegl1 libgl1-mesa-dri
+      - name: build the profiling GDExtension
+        run: cargo build -p salt-line-godot --features profiling
+      - name: import the project
+        run: bash tools/godot_headless.sh --frame-delay 800 --import
+      - name: compare every frame on the GPU with the flat frame on the CPU
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: xvfb-run -a -s "-screen 0 1280x720x24" bash tools/gpu_check_desktop.sh gpu-check.log
+      - name: show the game's log
+        if: always()
+        run: cat gpu-check.log || true
+
   hygiene:
     name: typos + zizmor + machete
     runs-on: ubuntu-latest
@@ -448,7 +491,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
           components: llvm-tools-preview
@@ -516,7 +559,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: nightly
           components: miri, rust-src
@@ -547,7 +590,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -607,7 +650,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1069,7 +1112,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1224,7 +1267,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1281,7 +1324,7 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1409,7 +1452,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26

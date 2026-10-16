@@ -150,6 +150,8 @@ pub struct SaltLine {
     backdrop_versions: (u64, u64, u64),
     /// What `draw` last drew under the overlay, to know when to draw again.
     backdrop_drawn: Option<Shown>,
+    /// The overlay tiles `draw` last drew (`overlay_spans`), likewise.
+    spans_drawn: [u32; STRIPS],
     /// Whether this frame needs drawing at all. See `frame::Redraw`.
     redraw: Redraw,
     /// The engine's frame cap as the project set it, restored in play.
@@ -234,6 +236,7 @@ impl INode2D for SaltLine {
             outline: None,
             backdrop_versions: (0, 0, 0),
             backdrop_drawn: None,
+            spans_drawn: [0; STRIPS],
             redraw: Redraw::default(),
             project_fps: 0,
             fps_cap: 0,
@@ -335,10 +338,9 @@ impl INode2D for SaltLine {
         let fx = self.g.fit_display(window, self.cutout);
         self.apply(fx);
         let args = DevArgs::parse(&Self::cmdline_all());
-        // Detailed source art is composited in the flat painter so all draw
-        // ordering, terrain occlusion and translucent arcs share one surface.
-        // The cached native path remains available to engine tests/profiling.
-        self.cache.backdrop.layered = self.canvas.scale() == 1 && !args.flat;
+        // Layered at either scale: the layers carry the detailed art too
+        // (backdrop). `--salt-flat` draws the reference frame instead.
+        self.cache.backdrop.layered = !args.flat;
         #[cfg(feature = "profiling")]
         let args = {
             let mut args = args;
@@ -400,9 +402,20 @@ impl INode2D for SaltLine {
         }
         #[cfg(feature = "profiling")]
         if self.gpu_check.pending() {
-            // The viewport now holds the last frame drawn.
-            let transform =
-                self.base().get_viewport_transform() * self.base().get_global_transform();
+            // The viewport now holds the last frame drawn. Map the frame into
+            // the viewport's own render target: its stretch and canvas
+            // transforms, but not `get_viewport_transform`, which for the
+            // root window also moves by the letterbox margin (Godot's
+            // `Window::get_final_transform`). The render target holds only
+            // the content area, so on a screen wider or taller than the
+            // buffer's aspect that margin put the frame off the image.
+            let transform = self
+                .base()
+                .get_viewport()
+                .map_or(self.base().get_viewport_transform(), |v| {
+                    v.get_stretch_transform() * v.get_canvas_transform()
+                })
+                * self.base().get_global_transform();
             let origin = transform * Vector2::ZERO;
             let end = transform * Vector2::new(self.canvas.w as f32, self.canvas.h as f32);
             let destination = Rect2::new(origin, end - origin);
@@ -482,64 +495,117 @@ impl INode2D for SaltLine {
         // Texture storage is physical; destination rectangles remain logical.
         // Detailed flat frames draw at 1/4 their pixel dimensions, and Godot's
         // canvas_items stretch retains those pixels at window resolution.
-        // The native cached path keeps sky/ground/outline before the overlay,
-        // in the same order as Backdrop::composite.
+        // The layered frame draws sky/ground/outline before the overlay,
+        // in the same order as Backdrop::composite; they are stored at the
+        // frame's scale like it, and drawn at their logical size.
+        let scale = self.canvas.scale();
         if let Some(shown) = self.cache.backdrop.shown() {
-            if let Some(sky) = &self.sky {
-                let tex = sky.texture.clone();
-                self.base_mut().draw_texture(&tex, Vector2::ZERO);
+            // Band by band, only what can show (`backdrop::Band`): each
+            // pixel drawn is fill the GPU pays for.
+            let s = scale as f32;
+            if let Some((tex, sky_h)) = self.sky.as_ref().map(|l| (l.texture.clone(), l.h)) {
+                for band in shown.bands {
+                    let rows = band.sky_h.min(sky_h / scale) as f32;
+                    let (x0, w) = (band.x0 as f32, (band.x1 - band.x0) as f32);
+                    if rows > 0.0 && w > 0.0 {
+                        self.base_mut().draw_texture_rect_region(
+                            &tex,
+                            Rect2::new(Vector2::new(x0, 0.0), Vector2::new(w, rows)),
+                            Rect2::new(Vector2::new(x0 * s, 0.0), Vector2::new(w * s, rows * s)),
+                        );
+                    }
+                }
             }
-            if let Some(ground) = &self.ground {
-                let tex = ground.texture.clone();
-                let h = ground.h as f32;
-                if let Some(win) = backdrop::window(shown.ground_x(), shown.w, ground.w) {
-                    let (dst_x, src_x, w) = (win.dst_x as f32, win.src_x as f32, win.w as f32);
-                    self.base_mut().draw_texture_rect_region(
-                        &tex,
-                        Rect2::new(Vector2::new(dst_x, 0.0), Vector2::new(w, h)),
-                        Rect2::new(Vector2::new(src_x, 0.0), Vector2::new(w, h)),
-                    );
+            let ground = self.ground.as_ref().map(|l| (l.texture.clone(), l.w, l.h));
+            if let Some((tex, ground_w, ground_h)) = ground {
+                if let Some(win) = backdrop::window(shown.ground_x(), shown.w, ground_w / scale) {
+                    for band in shown.bands {
+                        // The band's part of the window, in buffer columns.
+                        let (a, b) = (band.x0.max(win.dst_x), band.x1.min(win.dst_x + win.w));
+                        let rows = (ground_h - band.ground_top) as f32;
+                        if rows <= 0.0 || b <= a {
+                            continue;
+                        }
+                        let top = band.ground_top as f32;
+                        let src_x = (win.src_x + a - win.dst_x) as f32;
+                        let w = (b - a) as f32;
+                        self.base_mut().draw_texture_rect_region(
+                            &tex,
+                            Rect2::new(Vector2::new(a as f32, top / s), Vector2::new(w, rows / s)),
+                            Rect2::new(Vector2::new(src_x * s, top), Vector2::new(w * s, rows)),
+                        );
+                    }
                 }
             }
             if let Some(outline) = self.outline.as_ref().filter(|_| shown.outline) {
+                // The outline is one buffer pixel just inside the edge
+                // (`Backdrop::outline`): draw the layer's two-pixel border,
+                // not the transparent middle.
                 let tex = outline.texture.clone();
-                self.base_mut().draw_texture(&tex, Vector2::ZERO);
+                let (w, h) = (outline.w / scale, outline.h / scale);
+                let edges = [
+                    (0, 0, w, 2),
+                    (0, h - 2, w, 2),
+                    (0, 2, 2, h - 4),
+                    (w - 2, 2, 2, h - 4),
+                ];
+                for (x, y, ew, eh) in edges {
+                    if ew <= 0 || eh <= 0 {
+                        continue;
+                    }
+                    let (x, y, ew, eh) = (x as f32, y as f32, ew as f32, eh as f32);
+                    self.base_mut().draw_texture_rect_region(
+                        &tex,
+                        Rect2::new(Vector2::new(x, y), Vector2::new(ew, eh)),
+                        Rect2::new(Vector2::new(x * s, y * s), Vector2::new(ew * s, eh * s)),
+                    );
+                }
             }
         }
-        // Each row from one texture only (`Layers::whole_rows`): the frame
-        // may be transparent, and a strip must not let the whole-frame
-        // texture's older pixels show through it.
-        if let Some(whole) = &self.whole {
-            let tex = whole.texture.clone();
-            let scale = self.canvas.scale() as f32;
-            let w = whole.w as f32;
-            for (y0, y1) in self.layers.whole_rows(whole.h) {
-                let rows = Rect2::new(
-                    Vector2::new(0.0, y0 as f32),
-                    Vector2::new(w, (y1 - y0) as f32),
-                );
-                let destination = Rect2::new(rows.position / scale, rows.size / scale);
-                self.base_mut()
-                    .draw_texture_rect_region(&tex, destination, rows);
-            }
-        }
+        // Strip by strip, each from one texture only: its own if shown
+        // (`Layers`), else the whole-frame texture. The frame may be
+        // transparent, and a strip must not let the whole-frame texture's
+        // older pixels show through it. Layered, only a strip's tiles with
+        // anything on them are drawn (`overlay_spans`): every pixel drawn
+        // is fill the GPU pays for, and a transparent one changes nothing.
+        let spans = self.overlay_spans();
+        let s = self.canvas.scale() as f32;
+        let whole = self.whole.as_ref().map(|l| (l.texture.clone(), l.h));
         let strips: Vec<_> = self
             .strips
             .iter()
-            .enumerate()
-            .filter(|&(i, _)| self.layers.shown(i))
-            .map(|(_, l)| (l.texture.clone(), l.y, l.w, l.h))
+            .map(|l| (l.texture.clone(), l.y, l.h))
             .collect();
-        for (tex, y, w, h) in strips {
-            let scale = self.canvas.scale() as f32;
-            self.base_mut().draw_texture_rect(
-                &tex,
-                Rect2::new(
-                    Vector2::new(0.0, y as f32 / scale),
-                    Vector2::new(w as f32 / scale, h as f32 / scale),
-                ),
-                false,
-            );
+        let frame_w = self.canvas.pixel_w();
+        for (i, tiles) in spans.into_iter().enumerate() {
+            if tiles == 0 {
+                continue;
+            }
+            let (tex, y, h, src_y) = if self.layers.shown(i) {
+                let Some((tex, y, h)) = strips.get(i).cloned() else {
+                    continue;
+                };
+                (tex, y, h, 0)
+            } else {
+                let Some((tex, whole_h)) = whole.clone() else {
+                    continue;
+                };
+                let (y0, y1) = strips::rows(whole_h, i);
+                (tex, y0, y1 - y0, y0)
+            };
+            let (y, h) = (y as f32, h as f32);
+            for (t0, t1) in strips::tile_runs(tiles) {
+                let (x0, x1) = (
+                    strips::tile_columns(frame_w, t0).0,
+                    strips::tile_columns(frame_w, t1 - 1).1,
+                );
+                let (x0, w) = (x0 as f32, (x1 - x0) as f32);
+                self.base_mut().draw_texture_rect_region(
+                    &tex,
+                    Rect2::new(Vector2::new(x0 / s, y / s), Vector2::new(w / s, h / s)),
+                    Rect2::new(Vector2::new(x0, src_y as f32), Vector2::new(w, h)),
+                );
+            }
         }
     }
 
@@ -1507,9 +1573,24 @@ impl SaltLine {
             whole_n,
             backdrop_uploads.0,
         );
-        let redraw = redraw || backdrop_uploads.1;
+        let spans = self.overlay_spans();
+        let redraw = redraw || backdrop_uploads.1 || spans != self.spans_drawn;
+        self.spans_drawn = spans;
         if redraw {
             self.base_mut().queue_redraw();
+        }
+    }
+
+    /// The column tiles of each overlay strip `draw` draws
+    /// (`strips::tile_columns`), bit `t` for tile `t`. Layered, those
+    /// holding any opaque pixel as uploaded (`Shadow::tiles`): the layers
+    /// beneath show through the rest unchanged. Flat, every tile: the frame
+    /// is the whole picture.
+    fn overlay_spans(&self) -> [u32; STRIPS] {
+        if self.cache.backdrop.shown().is_some() {
+            self.shadow.all_tiles()
+        } else {
+            [u32::MAX; STRIPS]
         }
     }
 
@@ -1741,11 +1822,11 @@ impl Layer {
         })
     }
 
-    /// Make `layer` hold all of `canvas`: updated in place if it is the
-    /// same size, else made anew (and `draw` must then draw the new
-    /// texture).
+    /// Make `layer` hold all of `canvas`, in display pixels: updated in
+    /// place if it is the same size, else made anew (and `draw` must then
+    /// draw the new texture).
     fn keep(layer: &mut Option<Layer>, canvas: &Canvas) -> Kept {
-        let (w, h) = (canvas.w, canvas.h);
+        let (w, h) = (canvas.pixel_w(), canvas.pixel_h());
         match layer {
             Some(l) if l.w == w && l.h == h => {
                 l.update(canvas.bytes(), w);

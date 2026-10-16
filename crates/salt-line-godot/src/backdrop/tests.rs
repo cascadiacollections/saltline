@@ -13,14 +13,16 @@ use salt_line_sim::Vec2;
 
 const DESKTOP: (i32, i32) = (1280, 720);
 
-/// One game drawn both ways every frame, with a canvas and a cache for
-/// each kept across frames as the node keeps them, so stale pixels and
-/// stale layers would show.
+/// One game drawn both ways every frame, at both canvas scales (the
+/// native 1x and the detailed 4x the game draws), with a canvas and a
+/// cache for each kept across frames as the node keeps them, so stale
+/// pixels and stale layers would show.
 struct Both {
     art: Art,
-    flat: (Canvas, Cache, Vec<Button>),
-    layered: (Canvas, Cache, Vec<Button>),
-    /// Frames checked, and how many of them were layered.
+    /// Per scale: the flat frame and the layered one.
+    pairs: Vec<[(Canvas, Cache, Vec<Button>); 2]>,
+    /// Frames checked (at the first scale), and how many of them were
+    /// layered.
     frames: usize,
     shown: usize,
     outlined: usize,
@@ -28,59 +30,72 @@ struct Both {
 
 impl Both {
     fn new() -> Self {
-        let mut layered = Cache::default();
-        layered.backdrop.layered = true;
+        let pair = |canvas: fn(i32, i32) -> Canvas| {
+            let mut layered = Cache::default();
+            layered.backdrop.layered = true;
+            [
+                (canvas(1, 1), Cache::default(), Vec::new()),
+                (canvas(1, 1), layered, Vec::new()),
+            ]
+        };
         Both {
             art: Art::default(),
-            flat: (Canvas::new(1, 1), Cache::default(), Vec::new()),
-            layered: (Canvas::new(1, 1), layered, Vec::new()),
+            pairs: vec![pair(Canvas::new), pair(Canvas::detailed)],
             frames: 0,
             shown: 0,
             outlined: 0,
         }
     }
 
-    /// Draw `g` both ways and insist they agree.
+    /// The layered cache at the first scale.
+    fn layered(&self) -> &Backdrop {
+        &self.pairs[0][1].1.backdrop
+    }
+
+    /// Draw `g` both ways at each scale and insist they agree.
     fn check(&mut self, g: &Game, what: &str) {
         let (w, h) = (g.display.buffer_w, g.display.buffer_h);
-        let (fc, fcache, fb) = &mut self.flat;
-        fc.resize(w, h);
-        frame(g, &self.art, fc, fb, fcache);
-        let (lc, lcache, lb) = &mut self.layered;
-        lc.resize(w, h);
-        frame(g, &self.art, lc, lb, lcache);
+        for [(fc, fcache, fb), (lc, lcache, lb)] in &mut self.pairs {
+            let scale = fc.scale();
+            fc.resize(w, h);
+            frame(g, &self.art, fc, fb, fcache);
+            lc.resize(w, h);
+            frame(g, &self.art, lc, lb, lcache);
 
-        let backdrop = &lcache.backdrop;
-        assert!(
-            lc.bytes()
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .all(|p| p[3] == 0 || p[3] == 255),
-            "{what}: the overlay has a pixel neither transparent nor opaque"
-        );
-        let got = backdrop.composite(lc);
-        if got != fc.bytes() {
-            let i = got
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(fc.bytes().as_chunks::<4>().0)
-                .position(|(a, b)| a != b)
-                .unwrap_or(0) as i32;
-            panic!(
-                "{what}, frame {}: layered differs from flat first at ({}, {}) in a {w}x{h} buffer \
-                 (cam_x {:?})",
-                self.frames,
-                i % w,
-                i / w,
-                backdrop.shown(),
+            let backdrop = &lcache.backdrop;
+            assert!(
+                lc.bytes()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|p| p[3] == 0 || p[3] == 255),
+                "{what} at scale {scale}: the overlay has a pixel neither transparent nor opaque"
             );
+            let got = backdrop.composite(lc);
+            if got != fc.bytes() {
+                let pw = fc.pixel_w();
+                let i = got
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(fc.bytes().as_chunks::<4>().0)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0) as i32;
+                panic!(
+                    "{what} at scale {scale}, frame {}: layered differs from flat first at \
+                     display pixel ({}, {}) in a {w}x{h} buffer (shown {:?})",
+                    self.frames,
+                    i % pw,
+                    i / pw,
+                    backdrop.shown(),
+                );
+            }
+            assert_eq!(fb.len(), lb.len(), "{what}: the same buttons");
         }
-        assert_eq!(fb.len(), lb.len(), "{what}: the same buttons");
+        let shown = self.layered().shown();
         self.frames += 1;
-        self.shown += usize::from(backdrop.shown().is_some());
-        self.outlined += usize::from(backdrop.shown().is_some_and(|s| s.outline));
+        self.shown += usize::from(shown.is_some());
+        self.outlined += usize::from(shown.is_some_and(|s| s.outline));
     }
 }
 
@@ -281,7 +296,7 @@ fn every_mode_is_the_same_layered_and_menus_are_drawn_whole() {
         g.start_dev(&args, 20_000);
         g.mode = mode;
         both.check(&g, &format!("{mode:?}"));
-        let shown = both.layered.1.backdrop.shown();
+        let shown = both.layered().shown();
         match mode {
             Mode::Playing | Mode::Paused => assert!(shown.is_some(), "{mode:?}"),
             // No match or draft to show: these draw nothing of a playfield.
@@ -380,7 +395,11 @@ fn a_rolling_gun_redraws_the_ground_only_when_a_tuft_changes() {
 fn every_camera_over_every_ground_is_the_same_layered() {
     let pal = Palette::default();
     let mut patched = 0;
-    for w in [320, 400] {
+    for (w, canvas) in [
+        (320, Canvas::new as fn(i32, i32) -> Canvas),
+        (400, Canvas::new),
+        (320, Canvas::detailed),
+    ] {
         for (name, run) in Game::gallery(w as usize) {
             let Some(run) = run else { continue };
             let screen = &run.screen;
@@ -396,7 +415,7 @@ fn every_camera_over_every_ground_is_the_same_layered() {
             for cam_x in -3..=(len - w + 3) {
                 let view = View { cam_x, w, h: 180 };
                 let phase = sky::Phase::for_screen(cam_x.unsigned_abs() % 12);
-                let mut flat = Canvas::new(w, 180);
+                let mut flat = canvas(w, 180);
                 Backdrop::default().draw(
                     &mut flat,
                     &view,
@@ -410,7 +429,7 @@ fn every_camera_over_every_ground_is_the_same_layered() {
                 );
                 raster::draw_last_arc_on(&mut flat, &view, &arc, &pal, |_, _| [0; 4]);
 
-                let mut overlay = Canvas::new(w, 180);
+                let mut overlay = canvas(w, 180);
                 backdrop.begin_frame();
                 backdrop.draw(
                     &mut overlay,
@@ -429,7 +448,8 @@ fn every_camera_over_every_ground_is_the_same_layered() {
                 });
                 assert!(
                     backdrop.composite(&overlay) == flat.bytes(),
-                    "{name} at width {w}, cam_x {cam_x}"
+                    "{name} at width {w}, scale {}, cam_x {cam_x}",
+                    overlay.scale()
                 );
             }
         }
