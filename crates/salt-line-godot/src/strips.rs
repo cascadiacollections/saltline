@@ -51,6 +51,14 @@ pub const STRIPS: usize = 12;
 /// are within noise of each other. Re-measure on a phone before changing it;
 /// a weaker GPU or driver may move the break-even.
 ///
+/// A weaker one did, and it did not matter: on a Lenovo TB336FU (MT8755,
+/// Mali-G57 MC2) a strip upload costs ~0.3 ms and a whole one ~2.3 ms, so
+/// they break even near eight strips; yet a sweep there (2026-10, the
+/// layered 4x frame, three interleaved rounds) gave a mean process time of
+/// 2.84 ms at 4, 2.74 at 6, 2.83 at 8 and 2.80 at 12, within its ~0.2 ms
+/// run-to-run spread. The layered overlay rarely changes more than four
+/// strips at once, so the threshold seldom comes into play.
+///
 /// Power did not separate them: a Perfetto power-rail capture of 0, 4 and 12
 /// (three interleaved rounds) showed CPU, GPU and memory rails within a few mW
 /// of each other (~100 mW per rail) and no consistent direction, while

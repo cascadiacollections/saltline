@@ -982,12 +982,44 @@ impl Canvas {
         let Some(detail) = sprite.detail.as_ref().filter(|_| self.scale == 4) else {
             return false;
         };
-        for j in 0..src.h * 4 {
-            for i in 0..src.w * 4 {
-                if let Some(c) = detail.pixel(src.x * 4 + i, src.y * 4 + j) {
-                    let dx = if flipped { src.w * 4 - 1 - i } else { i };
-                    self.put_detail(x * 4 + dx, y * 4 + j, c);
+        // In display pixels: the region of the detail art, and where its
+        // first column and row land. Every pixel of the region the art has
+        // and the canvas has room for, opaque in the art, is written opaque,
+        // a row at a time.
+        let (w, h) = (src.w * 4, src.h * 4);
+        let (sx0, sy0) = (src.x * 4, src.y * 4);
+        let (dx0, dy0) = (x * 4, y * 4);
+        // Region columns `i` whose source column is in the art and whose
+        // destination column is on the canvas.
+        let mut i0 = (-sx0).max(0);
+        let mut i1 = w.min(detail.w - sx0);
+        let (lo, hi) = if flipped {
+            // Destination dx0 + w - 1 - i must be in 0..pixel_w.
+            (dx0 + w - self.pixel_w(), dx0 + w)
+        } else {
+            (-dx0, self.pixel_w() - dx0)
+        };
+        i0 = i0.max(lo);
+        i1 = i1.min(hi);
+        let j0 = (-sy0).max(0).max(-dy0);
+        let j1 = h.min(detail.h - sy0).min(self.pixel_h() - dy0);
+        if i1 <= i0 || j1 <= j0 {
+            return true;
+        }
+        self.mark(dy0 + j0, dy0 + j1);
+        let stride = self.pixel_w() as usize * 4;
+        let art_stride = detail.w as usize * 4;
+        for j in j0..j1 {
+            let art = &detail.px[(sy0 + j) as usize * art_stride..][..art_stride];
+            let row = &mut self.px[(dy0 + j) as usize * stride..][..stride];
+            for i in i0..i1 {
+                let a = ((sx0 + i) * 4) as usize;
+                if art[a + 3] == 0 {
+                    continue;
                 }
+                let dx = if flipped { dx0 + w - 1 - i } else { dx0 + i };
+                let d = dx as usize * 4;
+                row[d..d + 4].copy_from_slice(&[art[a], art[a + 1], art[a + 2], 255]);
             }
         }
         true
@@ -1120,6 +1152,47 @@ mod tests {
                 c.clear();
                 prop_assert!(c.bytes().iter().all(|&b| b == 0));
                 prop_assert!(!c.touched(0, c.pixel_h()));
+            }
+
+            /// `blit_detail` paints exactly what the pixel-at-a-time version
+            /// it replaced did, wherever the sprite and its region land.
+            #[test]
+            fn blit_detail_is_the_pixel_at_a_time_blit(
+                x in -12i32..60, y in -12i32..40,
+                rx in -2i32..7, ry in -2i32..7, rw in 0i32..9, rh in 0i32..9,
+                flipped in any::<bool>(),
+                seed in any::<u64>(),
+            ) {
+                // A 6x5 sprite with 24x20 detail art, some of it transparent.
+                let mut art = vec![0u8; 24 * 20 * 4];
+                let mut r = seed | 1;
+                for p in art.as_chunks_mut::<4>().0 {
+                    r ^= r << 13; r ^= r >> 7; r ^= r << 17;
+                    p.copy_from_slice(&[(r >> 8) as u8, (r >> 16) as u8, (r >> 24) as u8, if r & 3 == 0 { 0 } else { (r >> 32) as u8 | 1 }]);
+                }
+                let sprite = Sprite {
+                    w: 6,
+                    h: 5,
+                    px: vec![255; 6 * 5 * 4],
+                    detail: Some(Box::new(Sprite { w: 24, h: 20, px: art, detail: None })),
+                };
+                let src = Rect { x: rx, y: ry, w: rw, h: rh };
+                let mut fast = Canvas::detailed(52, 36);
+                let mut slow = Canvas::detailed(52, 36);
+                fast.blit_detail(&sprite, x, y, src, flipped);
+                let detail = sprite.detail.as_ref().unwrap();
+                for j in 0..src.h * 4 {
+                    for i in 0..src.w * 4 {
+                        if let Some(c) = detail.pixel(src.x * 4 + i, src.y * 4 + j) {
+                            let dx = if flipped { src.w * 4 - 1 - i } else { i };
+                            slow.put_detail(x * 4 + dx, y * 4 + j, c);
+                        }
+                    }
+                }
+                prop_assert!(fast.bytes() == slow.bytes());
+                // And it marks what it wrote, so a clear wipes it.
+                fast.clear();
+                prop_assert!(fast.bytes().iter().all(|&b| b == 0));
             }
 
             /// `rect` paints exactly the pixels `put` would, one by one.
