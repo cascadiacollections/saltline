@@ -145,7 +145,21 @@ screen awake: an asleep device never renders. `just android-profile-run
 it reads the log in a way a flood of other apps' messages cannot outrun, waits
 for the GPU check's verdict on each scene, warns when a lock screen or
 notification shade took focus mid-run (the game pauses, spoiling the timings)
-and fails on a GPU check failure. It is signed with a throwaway
+and fails on a GPU check failure.
+
+The profiling APK takes developer flags only from a file, because Godot drops
+launch arguments sent to its launcher activity. Write them, whitespace
+separated, to `salt-profile-args.txt` in the app's external files directory:
+
+```sh
+adb shell 'mkdir -p /sdcard/Android/data/com.cascadiacollections.saltline.profile/files &&
+  echo --salt-free > /sdcard/Android/data/com.cascadiacollections.saltline.profile/files/salt-profile-args.txt'
+```
+
+`--salt-free` skips the forced fixed-seed autopilot run, so the build starts at
+the title like the shipping game: menus can be profiled or stress-tested
+(`adb shell monkey -p com.cascadiacollections.saltline.profile ...`) without
+touching the real game's saves. Delete the file to get the default run back. It is signed with a throwaway
 key generated under `build/`; delete `build/` and the next install needs
 `adb uninstall com.cascadiacollections.saltline.profile` first.
 
