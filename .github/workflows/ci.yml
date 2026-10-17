@@ -452,6 +452,9 @@ jobs:
         run: cargo build -p salt-line-godot --features profiling
       - name: import the project
         run: bash tools/godot_headless.sh --frame-delay 800 --import
+      # Rides on this job's Godot and import rather than paying for its own.
+      - name: device_power addon tests
+        run: godot --headless --path . --script res://addons/device_power/tests/test_device_power.gd
       - name: compare every frame on the GPU with the flat frame on the CPU
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

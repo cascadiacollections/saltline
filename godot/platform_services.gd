@@ -2,6 +2,8 @@ extends Node2D
 
 # GameMode is a Linux desktop hint, not a rule or a prerequisite for play.
 # Pausing releases it so an idle Steam Deck can return to its normal profile.
+# DevicePower (addons/device_power) caps play by power source: the display's
+# full rate on a charger, 60 on battery, and an Android game mode over both.
 @onready var game: SaltLine = $Game
 var _active := false
 var _attempted := false
@@ -16,30 +18,27 @@ func _ready() -> void:
 		get_tree().quit(1)
 		return
 	DesktopServices.capabilities_changed.connect(_on_capabilities_changed)
-	_refresh_android_game_mode()
+	DevicePower.changed.connect(_apply_power_cap)
+	_apply_power_cap()
 
 
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_APPLICATION_RESUMED:
-		_refresh_android_game_mode()
-
-
-func _refresh_android_game_mode() -> void:
-	if OS.get_name() != "Android" or not is_instance_valid(game):
+func _apply_power_cap() -> void:
+	if not is_instance_valid(game):
 		return
-	var mode := 1
-	var runtime = Engine.get_singleton("AndroidRuntime")
-	if runtime:
-		var version = JavaClassWrapper.wrap("android.os.Build$VERSION")
-		if JavaClassWrapper.get_exception() == null and version and version.SDK_INT >= 31:
-			var context = runtime.getApplicationContext()
-			if JavaClassWrapper.get_exception() == null and context:
-				var manager = context.getSystemService("game")
-				if JavaClassWrapper.get_exception() == null and manager:
-					var queried = manager.getGameMode()
-					if JavaClassWrapper.get_exception() == null:
-						mode = queried
-	game.set_android_game_mode(mode, DisplayServer.screen_get_refresh_rate())
+	# Checked, not trusted: in a release export a script error anywhere in the
+	# call returns null, and a null into the typed Rust method is a crash.
+	var cap = DevicePower.recommended_fps_cap(DisplayServer.screen_get_refresh_rate())
+	if cap is int:
+		game.set_platform_fps_cap(cap)
+	print(
+		"Device power: source=%d saver=%s game_mode=%d rates=%s"
+		% [
+			DevicePower.get_power_source(),
+			DevicePower.is_power_saver_enabled(),
+			DevicePower.get_game_mode(),
+			DevicePower.get_refresh_rates(),
+		]
+	)
 
 
 func _process(_delta: float) -> void:

@@ -96,21 +96,15 @@ pub fn frame_cap(on_menu: bool, project_cap: i32) -> i32 {
     }
 }
 
-/// Android GameManager values: 2 = Performance, 3 = Battery.
-/// Keep Standard/unsupported modes unchanged and respect tighter project caps.
-pub fn game_mode_cap(mode: i32, refresh_rate: f64, project_cap: i32) -> i32 {
-    let cap = match mode {
-        2 if refresh_rate.is_finite() && refresh_rate > 0.0 => {
-            (refresh_rate.round() as i32).clamp(1, 120)
-        }
-        2 => 60,
-        3 => IDLE_FPS,
-        _ => return project_cap,
-    };
-    if project_cap > 0 {
-        cap.min(project_cap)
-    } else {
-        cap
+/// The tighter of two frame caps where 0 means "no cap": the project's own
+/// and the platform's power policy (the `device_power` addon, which also
+/// owns Android Game Mode).
+pub fn tighter_cap(a: i32, b: i32) -> i32 {
+    match (a > 0, b > 0) {
+        (true, true) => a.min(b),
+        (true, false) => a,
+        (false, true) => b,
+        (false, false) => 0,
     }
 }
 
@@ -207,27 +201,16 @@ mod tests {
     }
 
     #[test]
-    fn android_modes_keep_standard_and_bound_rendering_work() {
-        for mode in [0, 1, 4, -1] {
-            for project in [0, 20, 144] {
-                assert_eq!(game_mode_cap(mode, 120.0, project), project);
-            }
-        }
-        assert_eq!(game_mode_cap(3, 120.0, 0), 30);
-        assert_eq!(game_mode_cap(3, 120.0, 20), 20);
-        for (refresh, expected) in [
-            (60.0, 60),
-            (90.0, 90),
-            (120.0, 120),
-            (144.0, 120),
-            (59.94, 60),
-            (-1.0, 60),
-            (f64::NAN, 60),
-        ] {
-            assert_eq!(game_mode_cap(2, refresh, 0), expected);
-        }
-        assert_eq!(game_mode_cap(2, 120.0, 45), 45);
-        assert_eq!(frame_cap(true, game_mode_cap(2, 120.0, 0)), 30);
+    fn the_tighter_cap_wins_and_zero_is_no_cap() {
+        assert_eq!(tighter_cap(0, 0), 0);
+        assert_eq!(tighter_cap(0, 60), 60);
+        assert_eq!(tighter_cap(144, 0), 144);
+        assert_eq!(tighter_cap(45, 60), 45);
+        assert_eq!(tighter_cap(120, 60), 60);
+        assert_eq!(tighter_cap(-1, 60), 60);
+        // Menus still drop below a platform cap.
+        assert_eq!(frame_cap(true, tighter_cap(0, 60)), IDLE_FPS);
+        assert_eq!(frame_cap(false, tighter_cap(0, 60)), 60);
     }
 
     #[test]

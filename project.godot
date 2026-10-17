@@ -32,6 +32,7 @@ config/quit_on_go_back=false
 [autoload]
 
 DesktopServices="*res://addons/xdg_portals/desktop_services.gd"
+DevicePower="*res://addons/device_power/device_power.gd"
 
 [audio]
 
