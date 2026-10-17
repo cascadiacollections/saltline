@@ -29,6 +29,10 @@ config/features=PackedStringArray("4.7", "GL Compatibility")
 ; menu, quit from the title) instead of closing the app from anywhere.
 config/quit_on_go_back=false
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/device_power/plugin.cfg")
+
 [autoload]
 
 DesktopServices="*res://addons/xdg_portals/desktop_services.gd"

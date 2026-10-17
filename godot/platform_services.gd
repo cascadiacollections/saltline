@@ -31,11 +31,14 @@ func _apply_power_cap() -> void:
 	if cap is int:
 		game.set_platform_fps_cap(cap)
 	print(
-		"Device power: source=%d saver=%s game_mode=%d rates=%s"
+		"Device power: backend=%s source=%d saver=%s game_mode=%d thermal=%d back_off=%d rates=%s"
 		% [
+			DevicePower.get_backend_name(),
 			DevicePower.get_power_source(),
 			DevicePower.is_power_saver_enabled(),
 			DevicePower.get_game_mode(),
+			DevicePower.get_thermal_status(),
+			DevicePower.get_thermal_back_off(),
 			DevicePower.get_refresh_rates(),
 		]
 	)
