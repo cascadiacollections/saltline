@@ -116,8 +116,20 @@ func get_refresh_rates() -> PackedFloat32Array:
 		var r = mode.getRefreshRate()
 		if not _ok() or w == null or h == null or r == null:
 			return PackedFloat32Array()
-		if int(w) == int(width) and int(h) == int(height) and float(r) > 0.0:
+		if int(w) != int(width) or int(h) != int(height):
+			continue
+		if float(r) > 0.0:
 			rates.append(float(r))
+		# A panel can also run a mode at lower rates it switches to seamlessly
+		# (Galaxy A16: one 90 Hz mode, 60 as an alternative).
+		if _sdk >= 31:
+			var alternatives = mode.getAlternativeRefreshRates()
+			if not _ok():
+				return PackedFloat32Array()
+			if alternatives != null:
+				for alt in alternatives:
+					if float(alt) > 0.0 and not rates.has(float(alt)):
+						rates.append(float(alt))
 	return rates
 
 
