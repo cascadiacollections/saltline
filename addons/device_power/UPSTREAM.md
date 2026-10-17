@@ -1,16 +1,17 @@
-# Vendored: godot-device-power
+# Vendored: godot-device-power 0.1.0
 
-This directory is a copy of `addons/device_power` from
-<https://github.com/KevinTCoughlin/godot-device-power> at commit
-`40f357f2322e55e76ebf2df380a54405e54e9f29`. Change it there first, then copy it here again and update this file.
-
-The AARs in `bin/` were built from `android-plugin/` at that commit with
-`scripts/build_android.sh` (JDK 21, AGP 8.6.1, Kotlin 2.1.21):
+This directory is `addons/device_power` from the
+[godot-device-power v0.1.0 release](https://github.com/KevinTCoughlin/godot-device-power/releases/tag/v0.1.0)
+(tag `v0.1.0`, commit `cb8a8e4a86905316c95adb987d8cf4775afa9fa3`), unpacked
+from `godot-device-power-0.1.0.zip`. Change it upstream first, then replace
+this directory with a newer release's and update this file.
 
 | File | sha256 |
 |---|---|
-| `bin/debug/device_power-debug.aar` | `3aadb6099484abc43af61b9f865d7b159440e2f2027c09cd660a92541a59c21a` |
-| `bin/release/device_power-release.aar` | `95264e16e992ea44f1de84c1a10f8aa2a4d593aeabef78386e10990b110c3605` |
+| `godot-device-power-0.1.0.zip` (release asset) | `f052d1c9a8da57b3acff975e4a8a59f4247f2088bf5eb448696a4c05dcc17e99` |
+| `bin/debug/device_power-debug.aar` | `f93f24678000fa5996b0798e398016f7ea950d564c9a5e675fc61ae47332c4dc` |
+| `bin/release/device_power-release.aar` | `8483941b0179880ed5bd323dcea2f2ef12a886ba39e73bd42f331794fdce9d53` |
 
-The addon's tests (GDScript suite, JVM unit tests, Android lint) run in the
-upstream repository's CI, not here.
+The AARs were built by the upstream release workflow from `android-plugin/`
+at that tag. The addon's tests (GDScript suite, JVM unit tests, Android lint)
+run in the upstream repository's CI, not here.
