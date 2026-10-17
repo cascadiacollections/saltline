@@ -13,10 +13,6 @@ build-release:
 run: build
     godot --path .
 
-# Headless tests for the device_power addon (frame-cap policy and polling).
-test-addons:
-    godot --headless --path . --script res://addons/device_power/tests/test_device_power.gd
-
 gen-art: export-sprites
     uv run python tools/gen_sprites.py
 

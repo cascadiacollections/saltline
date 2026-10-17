@@ -7,13 +7,36 @@ extends RefCounted
 ## Backend contract used by the [code]DevicePower[/code] facade.
 ##
 ## Every read has an honest default meaning "unknown". Concrete backends are
-## [DevicePowerAndroidBackend], [DevicePowerNullBackend] and
-## [DevicePowerMockBackend]. Reads are polled, so they must be cheap.
+## [DevicePowerAndroidPluginBackend], [DevicePowerAndroidBackend],
+## [DevicePowerNullBackend] and [DevicePowerMockBackend].
+##
+## A backend either is polled ([method pushes_changes] is [code]false[/code];
+## reads must then be cheap) or emits [signal changed] itself.
+
+## Emitted by a backend that [method pushes_changes] when something it
+## reports may have changed. The facade then reads it again.
+@warning_ignore("unused_signal")
+signal changed
+
+## Refresh rates closer than this are one rate.
+const SAME_RATE_HZ := 0.5
 
 
-## Short identifier used for diagnostics, e.g. [code]"android"[/code].
+## Short identifier used for diagnostics, e.g. [code]"android_plugin"[/code].
 func get_backend_name() -> String:
 	return "abstract"
+
+
+## Whether this backend emits [signal changed]. A pushing backend is polled
+## only as a slow safety net ([member DevicePower.safety_poll_interval]).
+func pushes_changes() -> bool:
+	return false
+
+
+## Asks the backend to re-read the platform now, for a backend that caches.
+## Called when the app resumes or regains focus.
+func request_update() -> void:
+	pass
 
 
 ## A [code]DevicePower.PowerSource[/code] value.
@@ -31,10 +54,32 @@ func get_game_mode() -> int:
 	return 0
 
 
+## A [code]DevicePower.ThermalStatus[/code] value (Android's own numbering),
+## [code]-1[/code] when unknown.
+func get_thermal_status() -> int:
+	return -1
+
+
 ## The refresh rates the display can switch to at its current resolution,
 ## or an empty array when unknown.
 func get_refresh_rates() -> PackedFloat32Array:
 	return PackedFloat32Array()
+
+
+## Adds [param rate] to [param rates] unless it is not a usable rate (not
+## finite, or not positive) or one already there is within
+## [constant SAME_RATE_HZ]. Display rates carry float noise (60.0000038,
+## 120.0000076), and the same rate can come from several modes and their
+## alternative rates, so exact equality is not enough. Returns whether the
+## rate was added.
+static func merge_refresh_rate(rates: PackedFloat32Array, rate: float) -> bool:
+	if not is_finite(rate) or rate <= 0.0:
+		return false
+	for known in rates:
+		if absf(known - rate) < SAME_RATE_HZ:
+			return false
+	rates.append(rate)
+	return true
 
 
 ## Asks the platform to run the game's surface at [param rate] frames per
