@@ -57,10 +57,13 @@ func _policy() -> void:
 	var tablet := PackedFloat32Array([90.0])
 	_eq(paced.call(60, pixel), 60, "60 on a 60/120 Hz panel")
 	_eq(paced.call(30, pixel), 30, "30 on a 60/120 Hz panel")
-	_eq(paced.call(60, tablet), 45, "60 on a fixed 90 Hz panel paces at 45")
+	_eq(paced.call(60, tablet), 90, "60 on a fixed 90 Hz panel rounds up to 90")
 	_eq(paced.call(30, tablet), 30, "30 on a fixed 90 Hz panel")
 	_eq(paced.call(90, tablet), 90, "the panel's own rate")
-	_eq(paced.call(60, PackedFloat32Array([144.0])), 48, "60 on 144 Hz")
+	_eq(paced.call(60, PackedFloat32Array([144.0])), 72, "60 on 144 Hz rounds up to 72")
+	_eq(paced.call(45, tablet), 45, "45 on 90 Hz")
+	_eq(paced.call(100, tablet), 100, "a cap above every rate is left alone")
+	_eq(paced.call(60, PackedFloat32Array([90.0, 60.0])), 60, "a panel that can switch to 60")
 	_eq(paced.call(60, PackedFloat32Array([59.94])), 60, "59.94 Hz counts as 60")
 	_eq(paced.call(0, tablet), 0, "no cap stays no cap")
 	_eq(paced.call(60, PackedFloat32Array()), 60, "unknown rates leave the cap")
@@ -171,13 +174,19 @@ func _facade() -> void:
 	_eq(plain.recommended_fps_cap(120.0), 0, "null backend imposes nothing")
 	_eq(plain.get_peak_refresh_rate(), 0.0, "null backend knows no peak")
 
-	# The recommendation is paced to the panel: a fixed 90 Hz tablet on battery.
+	# The recommendation is paced to the panel: a fixed 90 Hz tablet on battery
+	# keeps 90 (60 cannot be paced there), Battery game mode still gets 30.
 	var tab: Node = DevicePowerScript.new()
 	var tab_mock := DevicePowerMockBackend.new()
 	tab_mock.refresh_rates = PackedFloat32Array([90.0])
 	tab_mock.power_source = S.BATTERY
 	tab.set_backend(tab_mock)
-	_eq(tab.recommended_fps_cap(90.0), 45, "battery on a fixed 90 Hz panel")
+	_eq(tab.recommended_fps_cap(90.0), 90, "battery on a fixed 90 Hz panel")
+	tab_mock.game_mode = M.BATTERY
+	tab._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
+	_eq(tab.recommended_fps_cap(90.0), 30, "battery mode on it")
+	tab_mock.game_mode = M.STANDARD
+	tab._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
 	tab_mock.power_source = S.EXTERNAL
 	tab.refresh()
 	_eq(tab.recommended_fps_cap(90.0), 0, "external on it, uncapped")

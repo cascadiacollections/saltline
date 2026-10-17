@@ -171,11 +171,13 @@ func recommended_fps_cap(refresh_rate: float) -> int:
 	return paced_cap(cap, _refresh_rates)
 
 
-## The highest frame rate at or below [param cap] that the display can show
-## evenly: a rate it can switch to, or one divided by a whole number. A 60
-## cap on a panel fixed at 90 Hz cannot be paced (frames land on alternate
-## vsyncs, then every third), so it becomes 45; on a 60/120 Hz panel it
-## stays 60. [code]0[/code] (no cap), or no known rates, is returned as is.
+## The lowest frame rate at or above [param cap] that the display can show
+## evenly: a rate it can switch to, or one divided by a whole number. A cap
+## the panel cannot pace is rounded up, never down, so a cap never costs
+## more smoothness than it asked for: 60 stays 60 on a 60/120 Hz panel,
+## becomes 90 (no saving) on a panel fixed at 90 Hz, and 72 on 144 Hz; 30
+## on 90 Hz stays 30. [code]0[/code] (no cap), no known rates, or a cap
+## above every rate is returned as is.
 static func paced_cap(cap: int, refresh_rates: PackedFloat32Array) -> int:
 	if cap <= 0 or refresh_rates.is_empty():
 		return cap
@@ -184,8 +186,10 @@ static func paced_cap(cap: int, refresh_rates: PackedFloat32Array) -> int:
 		if not is_finite(rate) or rate <= 0.0:
 			continue
 		# Display rates are not whole (59.94, 120.00001): allow half a frame.
-		var divisor := maxi(1, ceili((rate - 0.5) / cap))
-		best = maxi(best, roundi(rate / divisor))
+		var divisor := maxi(1, floori((rate + 0.5) / cap))
+		var paced := rate / divisor
+		if paced >= cap - 0.5 and (best == 0 or roundi(paced) < best):
+			best = roundi(paced)
 	return best if best > 0 else cap
 
 
