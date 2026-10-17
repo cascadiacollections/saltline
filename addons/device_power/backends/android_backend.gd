@@ -20,21 +20,24 @@ extends DevicePowerBackend
 ## ([code]android:appCategory="game"[/code]).
 ##
 ## [b]Frame rate vote[/b] is [code]Surface.setFrameRate()[/code] (API 31+) on
-## Godot's render surface. It is how a game asks for more than Android's game
-## default frame rate (60 on Pixels) while staying a game, and how it lets the
-## panel drop to a lower rate on battery. The user's peak refresh setting
-## (Smooth Display) and battery saver still clamp it.
+## Godot's render surface, with [code]CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS[/code]
+## so a change of plan mid-game (a charger, a menu) never blanks the screen
+## for a mode switch. It is how a game asks for more than Android's game
+## default frame rate while staying a game, and how it lets the panel drop to
+## a lower rate. The user's peak refresh rate setting still caps it.
 ##
 ## Every Java call is checked with [method JavaClassWrapper.get_exception]; a
 ## failure reads as "unknown", never as a guess.
 
 const _BATTERY_CHANGED := "android.intent.action.BATTERY_CHANGED"
 const _FRAME_RATE_COMPATIBILITY_DEFAULT := 0
-const _CHANGE_FRAME_RATE_ALWAYS := 1
+const _CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS := 0
 
 var _runtime: Object
 var _sdk: int = 0
 var _filter: Object = null
+var _power_manager: Object = null
+var _game_manager: Object = null
 
 
 func _init(runtime: Object) -> void:
@@ -63,19 +66,16 @@ func get_power_source() -> int:
 	var status = context.registerReceiver(null, _filter)
 	if not _ok() or status == null:
 		return -1
-	var plugged: int = status.getIntExtra("plugged", -1)
-	if not _ok() or plugged < 0:
+	var plugged = status.getIntExtra("plugged", -1)
+	if not _ok() or not (plugged is int) or plugged < 0:
 		return -1
 	# 0 is on battery; AC, USB, wireless and dock are all bit flags above it.
 	return 1 if plugged > 0 else 0
 
 
 func is_power_saver_enabled() -> Variant:
-	var context = _context()
-	if context == null:
-		return null
-	var power = context.getSystemService("power")
-	if not _ok() or not power:
+	var power = _service("power")
+	if power == null:
 		return null
 	var saver = power.isPowerSaveMode()
 	# The wrapper hands a Java boolean back as an int; the contract is a bool.
@@ -85,14 +85,11 @@ func is_power_saver_enabled() -> Variant:
 func get_game_mode() -> int:
 	if _sdk < 31:
 		return 0
-	var context = _context()
-	if context == null:
-		return 0
-	var manager = context.getSystemService("game")
-	if not _ok() or not manager:
+	var manager = _service("game")
+	if manager == null:
 		return 0
 	var mode = manager.getGameMode()
-	return mode if _ok() else 0
+	return int(mode) if _ok() and mode != null else 0
 
 
 func get_peak_refresh_rate() -> float:
@@ -106,13 +103,23 @@ func get_peak_refresh_rate() -> float:
 	var modes = display.getSupportedModes()
 	if not _ok() or not current or modes == null:
 		return 0.0
-	var width: int = current.getPhysicalWidth()
-	var height: int = current.getPhysicalHeight()
-	var peak: float = current.getRefreshRate()
+	var width = current.getPhysicalWidth()
+	var height = current.getPhysicalHeight()
+	var rate = current.getRefreshRate()
+	if not _ok() or width == null or height == null or rate == null:
+		return 0.0
+	var peak := float(rate)
 	for mode in modes:
-		if mode.getPhysicalWidth() == width and mode.getPhysicalHeight() == height:
-			peak = maxf(peak, mode.getRefreshRate())
-	return peak if _ok() else 0.0
+		if mode == null:
+			continue
+		var w = mode.getPhysicalWidth()
+		var h = mode.getPhysicalHeight()
+		var r = mode.getRefreshRate()
+		if not _ok() or w == null or h == null or r == null:
+			return 0.0
+		if int(w) == int(width) and int(h) == int(height):
+			peak = maxf(peak, float(r))
+	return peak
 
 
 func vote_frame_rate(rate: float) -> bool:
@@ -121,7 +128,7 @@ func vote_frame_rate(rate: float) -> bool:
 	var surface = _surface()
 	if surface == null:
 		return false
-	surface.setFrameRate(rate, _FRAME_RATE_COMPATIBILITY_DEFAULT, _CHANGE_FRAME_RATE_ALWAYS)
+	surface.setFrameRate(rate, _FRAME_RATE_COMPATIBILITY_DEFAULT, _CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS)
 	return _ok()
 
 
@@ -149,6 +156,24 @@ func _surface() -> Object:
 	if not _ok() or not surface or not surface.isValid():
 		return null
 	return surface
+
+
+## A system service, fetched once.
+func _service(name: String) -> Object:
+	var cached: Object = _power_manager if name == "power" else _game_manager
+	if cached:
+		return cached
+	var context = _context()
+	if context == null:
+		return null
+	var service = context.getSystemService(name)
+	if not _ok() or not service:
+		return null
+	if name == "power":
+		_power_manager = service
+	else:
+		_game_manager = service
+	return service
 
 
 func _context() -> Object:

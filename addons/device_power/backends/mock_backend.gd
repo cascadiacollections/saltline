@@ -11,6 +11,8 @@ var power_source: int = -1
 var power_saver: Variant = null
 var game_mode: int = 0
 var peak_refresh_rate: float = 0.0
+## Whether [method vote_frame_rate] succeeds, as a missing surface would not.
+var vote_ok: bool = true
 ## Every rate passed to [method vote_frame_rate], oldest first.
 var votes: Array[float] = []
 
@@ -37,4 +39,4 @@ func get_peak_refresh_rate() -> float:
 
 func vote_frame_rate(rate: float) -> bool:
 	votes.append(rate)
-	return true
+	return vote_ok

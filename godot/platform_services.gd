@@ -25,7 +25,11 @@ func _ready() -> void:
 func _apply_power_cap() -> void:
 	if not is_instance_valid(game):
 		return
-	game.set_platform_fps_cap(DevicePower.recommended_fps_cap(DisplayServer.screen_get_refresh_rate()))
+	# Checked, not trusted: in a release export a script error anywhere in the
+	# call returns null, and a null into the typed Rust method is a crash.
+	var cap = DevicePower.recommended_fps_cap(DisplayServer.screen_get_refresh_rate())
+	if cap is int:
+		game.set_platform_fps_cap(cap)
 	print(
 		"Device power: source=%d saver=%s game_mode=%d"
 		% [DevicePower.get_power_source(), DevicePower.is_power_saver_enabled(), DevicePower.get_game_mode()]
