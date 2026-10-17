@@ -21,11 +21,13 @@ extends Node
 ##     Engine.max_fps = DevicePower.recommended_fps_cap(DisplayServer.screen_get_refresh_rate())
 ## [/codeblock]
 ##
-## [b]Android's own cap.[/b] An app classified as a game can still be held
-## below the panel's refresh rate by the platform (Android's game default
-## frame rate, 60 on Pixels). That cap outranks anything the app asks for,
-## and is the price of keeping OS game modes; this addon only ever lowers a
-## game's rate, it cannot raise it past the platform's.
+## [b]Asking the display.[/b] With [member vote_frame_rate] on (the default),
+## the addon also tells the platform what rate it wants: the panel's peak
+## when uncapped, the cap otherwise. On Android that is
+## [code]Surface.setFrameRate()[/code], which lifts Android's game default
+## frame rate (60 on Pixels) for an app that stays a game, and lets the panel
+## itself drop to 60 Hz on battery. The user's peak refresh setting and
+## battery saver still clamp it.
 
 ## Emitted after a poll finds a different power source, battery saver state
 ## or game mode, and once after a backend is set.
@@ -52,11 +54,23 @@ enum GameMode {
 ## polls at once.
 @export var poll_interval: float = 2.0
 
+## Whether to ask the platform for the recommended rate (see the class
+## description). Off leaves the display to the platform's defaults.
+@export var vote_frame_rate: bool = true
+
+## [member Engine.max_fps]-style numbers the vote is derived from; keep them
+## in step with what the game passes to [method recommended_fps_cap].
+@export var battery_fps: int = 60
+@export var saver_fps: int = 30
+
 var _backend: DevicePowerBackend = null
 var _power_source: int = PowerSource.UNKNOWN
 var _power_saver: Variant = null
 var _game_mode: int = GameMode.UNSUPPORTED
 var _clock: float = 0.0
+var _peak_refresh_rate: float = 0.0
+## The last vote the platform accepted, or -1.0 when one is due.
+var _voted: float = -1.0
 
 
 func _ready() -> void:
@@ -73,6 +87,8 @@ func _process(delta: float) -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_RESUMED or what == NOTIFICATION_APPLICATION_FOCUS_IN:
+		# A resumed app may draw into a new surface, which has no vote yet.
+		_voted = -1.0
 		refresh()
 
 
@@ -81,7 +97,10 @@ func _notification(what: int) -> void:
 func set_backend(backend: DevicePowerBackend) -> void:
 	assert(backend != null, "DevicePower.set_backend() requires a backend; use DevicePowerNullBackend.new().")
 	_backend = backend
+	_peak_refresh_rate = backend.get_peak_refresh_rate()
+	_voted = -1.0
 	_read()
+	_vote()
 	changed.emit()
 
 
@@ -91,7 +110,11 @@ func get_backend_name() -> String:
 
 ## Reads the backend now; emits [signal changed] if anything differs.
 func refresh() -> void:
-	if _backend and _read():
+	if not _backend:
+		return
+	var differs := _read()
+	_vote()
+	if differs:
 		changed.emit()
 
 
@@ -111,9 +134,32 @@ func get_game_mode() -> GameMode:
 	return _game_mode as GameMode
 
 
-## [method fps_cap] for the current state.
-func recommended_fps_cap(refresh_rate: float, battery_fps: int = 60, saver_fps: int = 30) -> int:
-	return fps_cap(_power_source, _power_saver, _game_mode, refresh_rate, battery_fps, saver_fps)
+## The display's highest refresh rate, or [code]0.0[/code] when unknown.
+func get_peak_refresh_rate() -> float:
+	return _peak_refresh_rate
+
+
+## [method fps_cap] for the current state. [param refresh_rate] is used for
+## Performance mode when the peak rate is unknown.
+func recommended_fps_cap(refresh_rate: float, p_battery_fps: int = -1, p_saver_fps: int = -1) -> int:
+	var peak := _peak_refresh_rate if _peak_refresh_rate > 0.0 else refresh_rate
+	return fps_cap(
+		_power_source,
+		_power_saver,
+		_game_mode,
+		peak,
+		battery_fps if p_battery_fps < 0 else p_battery_fps,
+		saver_fps if p_saver_fps < 0 else p_saver_fps,
+	)
+
+
+## The rate to ask the display for under a frame cap: the peak when
+## uncapped, the cap otherwise, [code]0.0[/code] (no request) when neither is
+## known.
+static func frame_rate_vote(cap: int, peak_refresh_rate: float) -> float:
+	if cap > 0:
+		return float(cap)
+	return maxf(peak_refresh_rate, 0.0)
 
 
 ## The frame cap for a power state, for [member Engine.max_fps]: 0 means
@@ -156,6 +202,14 @@ func _read() -> bool:
 	_power_saver = saver
 	_game_mode = mode
 	return differs
+
+
+func _vote() -> void:
+	if not vote_frame_rate:
+		return
+	var rate := frame_rate_vote(recommended_fps_cap(0.0), _peak_refresh_rate)
+	if rate != _voted and _backend.vote_frame_rate(rate):
+		_voted = rate
 
 
 func _create_default_backend() -> DevicePowerBackend:

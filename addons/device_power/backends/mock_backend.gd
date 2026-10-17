@@ -10,6 +10,9 @@ extends DevicePowerBackend
 var power_source: int = -1
 var power_saver: Variant = null
 var game_mode: int = 0
+var peak_refresh_rate: float = 0.0
+## Every rate passed to [method vote_frame_rate], oldest first.
+var votes: Array[float] = []
 
 
 func get_backend_name() -> String:
@@ -26,3 +29,12 @@ func is_power_saver_enabled() -> Variant:
 
 func get_game_mode() -> int:
 	return game_mode
+
+
+func get_peak_refresh_rate() -> float:
+	return peak_refresh_rate
+
+
+func vote_frame_rate(rate: float) -> bool:
+	votes.append(rate)
+	return true

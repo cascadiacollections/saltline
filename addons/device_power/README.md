@@ -1,7 +1,7 @@
 # Device Power
 
 A Godot 4 addon that tells a game where its power comes from and turns that
-into a frame cap: full refresh rate on a charger, a lower cap on battery, and
+into a frame cap (and a display refresh request): full refresh rate on a charger, a lower cap on battery, and
 the player's OS game mode respected over both.
 
 It is game-agnostic and has no native code: on Android it reads the platform
@@ -50,10 +50,13 @@ cap on top (the tighter of the two wins).
   (`android:appCategory="game"`) and Android 12+. Declaring
   `supportsPerformanceGameMode` / `supportsBatteryGameMode` in a
   `game_mode_config` lets the player pick them from the Game Dashboard.
-- **Android's own cap.** A game can be held below the panel's refresh rate
-  by the platform's game default frame rate (60 on Pixels), and the user's
-  peak refresh setting (Smooth Display) caps every app. Both outrank anything
-  an app asks for. This addon only lowers a game's rate.
+- **Asking for the rate.** With `vote_frame_rate` on (the default), the addon
+  calls `Surface.setFrameRate()` (Android 12+) on Godot's render surface:
+  the panel's peak rate when uncapped, the cap otherwise. That lifts
+  Android's game default frame rate (60 fps for games on Pixels since
+  Android 15) while the app stays a game, so OS game modes keep working,
+  and lets the panel drop to 60 Hz on battery. The user's peak refresh
+  setting (Smooth Display) and battery saver still clamp it.
 - Polling costs a few binder calls every `poll_interval` (2 s) and on resume.
 
 ## Tests

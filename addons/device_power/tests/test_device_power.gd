@@ -48,18 +48,24 @@ func _policy() -> void:
 	# The game's own numbers are used.
 	_eq(cap.call(S.BATTERY, false, M.STANDARD, 120.0, 45, 20), 45, "custom battery_fps")
 	_eq(cap.call(S.BATTERY, false, M.BATTERY, 120.0, 45, 20), 20, "custom saver_fps")
+	var vote := DevicePowerScript.frame_rate_vote
+	_eq(vote.call(0, 120.0), 120.0, "uncapped votes the peak")
+	_eq(vote.call(60, 120.0), 60.0, "a cap votes the cap")
+	_eq(vote.call(0, 0.0), 0.0, "nothing known, no request")
 	_finished.append("policy")
 
 
 func _facade() -> void:
 	var power: Node = DevicePowerScript.new()
 	var mock := DevicePowerMockBackend.new()
+	mock.peak_refresh_rate = 120.0
 	var seen := [0]
 	power.changed.connect(func() -> void: seen[0] += 1)
 	power.set_backend(mock)
 	_eq(seen[0], 1, "set_backend emits once")
 	_eq(power.get_backend_name(), "mock", "backend name")
 	_eq(power.recommended_fps_cap(120.0), 0, "unknown state, no cap")
+	_eq(mock.votes, [120.0] as Array[float], "votes the peak at once")
 
 	power.refresh()
 	_eq(seen[0], 1, "an unchanged poll is silent")
@@ -69,20 +75,31 @@ func _facade() -> void:
 	_eq(seen[0], 2, "unplugging emits")
 	_eq(power.get_power_source(), S.BATTERY, "reads the source")
 	_eq(power.recommended_fps_cap(120.0), 60, "battery cap")
+	_eq(mock.votes.back(), 60.0, "votes the battery cap")
 
 	mock.power_source = S.EXTERNAL
 	power.refresh()
 	_eq(seen[0], 3, "plugging in emits")
 	_eq(power.recommended_fps_cap(120.0), 0, "external, uncapped")
+	var before := mock.votes.size()
+	power.refresh()
+	_eq(mock.votes.size(), before, "an unchanged vote is not resent")
+	power._notification(Node.NOTIFICATION_APPLICATION_RESUMED)
+	_eq(mock.votes.size(), before + 1, "resuming resends the vote")
 
 	mock.game_mode = M.BATTERY
 	power.refresh()
 	_eq(seen[0], 4, "a game mode change emits")
 	_eq(power.recommended_fps_cap(120.0), 30, "battery mode")
+	mock.game_mode = M.PERFORMANCE
+	power.refresh()
+	_eq(power.recommended_fps_cap(0.0), 120, "performance uses the peak")
+	mock.game_mode = M.BATTERY
+	power.refresh()
 
 	mock.power_saver = true
 	power.refresh()
-	_eq(seen[0], 5, "a saver change emits")
+	_eq(seen[0], 7, "a saver change emits")
 	_eq(power.is_power_saver_enabled(), true, "reads the saver")
 	power.free()
 
@@ -91,6 +108,7 @@ func _facade() -> void:
 	_eq(plain.get_power_source(), S.UNKNOWN, "null backend is unknown")
 	_eq(plain.get_game_mode(), M.UNSUPPORTED, "null backend has no game mode")
 	_eq(plain.recommended_fps_cap(120.0), 0, "null backend imposes nothing")
+	_eq(plain.get_peak_refresh_rate(), 0.0, "null backend knows no peak")
 	plain.free()
 	_finished.append("facade")
 
