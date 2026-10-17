@@ -78,7 +78,8 @@ func is_power_saver_enabled() -> Variant:
 	if not _ok() or not power:
 		return null
 	var saver = power.isPowerSaveMode()
-	return saver if _ok() else null
+	# The wrapper hands a Java boolean back as an int; the contract is a bool.
+	return bool(saver) if _ok() and saver != null else null
 
 
 func get_game_mode() -> int:

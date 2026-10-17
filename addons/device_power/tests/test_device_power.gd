@@ -38,6 +38,10 @@ func _policy() -> void:
 	# Battery saver counts as battery, even on a charger.
 	_eq(cap.call(S.EXTERNAL, true, M.STANDARD, 120.0), 60, "saver on a charger")
 	_eq(cap.call(S.UNKNOWN, true, M.STANDARD, 120.0), 60, "saver, source unknown")
+	# A saver value that is not a bool (an int, as Java booleans can arrive) is
+	# unknown, not a script error; release exports would turn that error into null.
+	_eq(cap.call(S.EXTERNAL, 0, M.STANDARD, 120.0), 0, "int saver is unknown")
+	_eq(cap.call(S.EXTERNAL, 1, M.STANDARD, 120.0), 0, "int saver is unknown even if truthy")
 	# An explicit OS game mode is the player's choice and wins over the power source.
 	_eq(cap.call(S.BATTERY, false, M.PERFORMANCE, 120.0), 120, "performance on battery")
 	_eq(cap.call(S.EXTERNAL, true, M.PERFORMANCE, 90.0), 90, "performance beats saver")

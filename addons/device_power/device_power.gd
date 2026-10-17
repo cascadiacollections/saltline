@@ -187,7 +187,10 @@ static func fps_cap(
 			return battery_fps
 		GameMode.BATTERY:
 			return saver_fps
-	if power_saver == true or power_source == PowerSource.BATTERY:
+	# Only a real true counts. `==` between an int and a bool is a script
+	# error, and in a release export a failed call quietly returns null.
+	var saver_on: bool = power_saver is bool and power_saver
+	if saver_on or power_source == PowerSource.BATTERY:
 		return battery_fps
 	return 0
 
