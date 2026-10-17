@@ -52,6 +52,19 @@ func _policy() -> void:
 	# The game's own numbers are used.
 	_eq(cap.call(S.BATTERY, false, M.STANDARD, 120.0, 45, 20), 45, "custom battery_fps")
 	_eq(cap.call(S.BATTERY, false, M.BATTERY, 120.0, 45, 20), 20, "custom battery_mode_fps")
+	var paced := DevicePowerScript.paced_cap
+	var pixel := PackedFloat32Array([60.000004, 120.00001])
+	var tablet := PackedFloat32Array([90.0])
+	_eq(paced.call(60, pixel), 60, "60 on a 60/120 Hz panel")
+	_eq(paced.call(30, pixel), 30, "30 on a 60/120 Hz panel")
+	_eq(paced.call(60, tablet), 45, "60 on a fixed 90 Hz panel paces at 45")
+	_eq(paced.call(30, tablet), 30, "30 on a fixed 90 Hz panel")
+	_eq(paced.call(90, tablet), 90, "the panel's own rate")
+	_eq(paced.call(60, PackedFloat32Array([144.0])), 48, "60 on 144 Hz")
+	_eq(paced.call(60, PackedFloat32Array([59.94])), 60, "59.94 Hz counts as 60")
+	_eq(paced.call(0, tablet), 0, "no cap stays no cap")
+	_eq(paced.call(60, PackedFloat32Array()), 60, "unknown rates leave the cap")
+	_eq(paced.call(60, PackedFloat32Array([NAN, -1.0])), 60, "garbage rates leave the cap")
 	var vote := DevicePowerScript.frame_rate_vote
 	_eq(vote.call(0, 120.0), 120.0, "uncapped votes the peak")
 	_eq(vote.call(60, 120.0), 60.0, "a cap votes the cap")
@@ -64,7 +77,7 @@ func _facade() -> void:
 	Engine.max_fps = 0
 	var power: Node = DevicePowerScript.new()
 	var mock := DevicePowerMockBackend.new()
-	mock.peak_refresh_rate = 120.0
+	mock.refresh_rates = PackedFloat32Array([60.0, 120.0])
 	var seen := [0]
 	power.changed.connect(func() -> void: seen[0] += 1)
 	power.set_backend(mock)
@@ -144,9 +157,10 @@ func _facade() -> void:
 	# A broken peak read leaves the peak unknown; nothing else breaks.
 	var broken: Node = DevicePowerScript.new()
 	var bad := DevicePowerMockBackend.new()
-	bad.peak_refresh_rate = NAN
+	bad.refresh_rates = PackedFloat32Array([NAN, -5.0])
 	broken.set_backend(bad)
-	_eq(broken.get_peak_refresh_rate(), 0.0, "a garbage peak is unknown")
+	_eq(broken.get_peak_refresh_rate(), 0.0, "garbage rates are unknown")
+	_eq(broken.get_refresh_rates().size(), 0, "and are dropped")
 	_eq(bad.votes, [0.0] as Array[float], "nothing known: the vote is withdrawn")
 	broken.free()
 
@@ -156,6 +170,18 @@ func _facade() -> void:
 	_eq(plain.get_game_mode(), M.UNSUPPORTED, "null backend has no game mode")
 	_eq(plain.recommended_fps_cap(120.0), 0, "null backend imposes nothing")
 	_eq(plain.get_peak_refresh_rate(), 0.0, "null backend knows no peak")
+
+	# The recommendation is paced to the panel: a fixed 90 Hz tablet on battery.
+	var tab: Node = DevicePowerScript.new()
+	var tab_mock := DevicePowerMockBackend.new()
+	tab_mock.refresh_rates = PackedFloat32Array([90.0])
+	tab_mock.power_source = S.BATTERY
+	tab.set_backend(tab_mock)
+	_eq(tab.recommended_fps_cap(90.0), 45, "battery on a fixed 90 Hz panel")
+	tab_mock.power_source = S.EXTERNAL
+	tab.refresh()
+	_eq(tab.recommended_fps_cap(90.0), 0, "external on it, uncapped")
+	tab.free()
 	plain.free()
 	Engine.max_fps = saved_max_fps
 	_finished.append("facade")

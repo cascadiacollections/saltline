@@ -92,23 +92,22 @@ func get_game_mode() -> int:
 	return int(mode) if _ok() and mode != null else 0
 
 
-func get_peak_refresh_rate() -> float:
+func get_refresh_rates() -> PackedFloat32Array:
+	var rates := PackedFloat32Array()
 	var activity = _runtime.getActivity()
-	if not _ok() or not activity:
-		return 0.0
-	var display = activity.getDisplay() if _sdk >= 30 else null
+	if not _ok() or not activity or _sdk < 30:
+		return rates
+	var display = activity.getDisplay()
 	if not _ok() or not display:
-		return 0.0
+		return rates
 	var current = display.getMode()
 	var modes = display.getSupportedModes()
 	if not _ok() or not current or modes == null:
-		return 0.0
+		return rates
 	var width = current.getPhysicalWidth()
 	var height = current.getPhysicalHeight()
-	var rate = current.getRefreshRate()
-	if not _ok() or width == null or height == null or rate == null:
-		return 0.0
-	var peak := float(rate)
+	if not _ok() or width == null or height == null:
+		return rates
 	for mode in modes:
 		if mode == null:
 			continue
@@ -116,10 +115,10 @@ func get_peak_refresh_rate() -> float:
 		var h = mode.getPhysicalHeight()
 		var r = mode.getRefreshRate()
 		if not _ok() or w == null or h == null or r == null:
-			return 0.0
-		if int(w) == int(width) and int(h) == int(height):
-			peak = maxf(peak, float(r))
-	return peak
+			return PackedFloat32Array()
+		if int(w) == int(width) and int(h) == int(height) and float(r) > 0.0:
+			rates.append(float(r))
+	return rates
 
 
 func vote_frame_rate(rate: float) -> bool:

@@ -72,6 +72,7 @@ var _power_saver: Variant = null
 var _game_mode: int = GameMode.UNSUPPORTED
 var _clock: float = 0.0
 var _peak_refresh_rate: float = 0.0
+var _refresh_rates := PackedFloat32Array()
 ## The last vote the platform accepted, or -1.0 when one is due.
 var _voted: float = -1.0
 ## The last rate tried, so a failed vote is retried on polls, not every frame.
@@ -108,10 +109,12 @@ func _notification(what: int) -> void:
 func set_backend(backend: DevicePowerBackend) -> void:
 	assert(backend != null, "DevicePower.set_backend() requires a backend; use DevicePowerNullBackend.new().")
 	_backend = backend
+	_refresh_rates = PackedFloat32Array()
 	_peak_refresh_rate = 0.0
-	var peak: Variant = backend.get_peak_refresh_rate()
-	if peak is float and is_finite(peak):
-		_peak_refresh_rate = maxf(peak, 0.0)
+	for rate in backend.get_refresh_rates():
+		if is_finite(rate) and rate > 0.0:
+			_refresh_rates.append(rate)
+			_peak_refresh_rate = maxf(_peak_refresh_rate, rate)
 	_voted = -1.0
 	_read(true)
 	_vote()
@@ -153,12 +156,37 @@ func get_peak_refresh_rate() -> float:
 	return _peak_refresh_rate
 
 
+## The refresh rates the display can switch to (empty when unknown).
+func get_refresh_rates() -> PackedFloat32Array:
+	return _refresh_rates
+
+
 ## [method fps_cap] for the current state, with [member battery_fps] and
-## [member battery_mode_fps]. [param refresh_rate] stands in for the peak
-## refresh rate in Performance mode when the peak is unknown.
+## [member battery_mode_fps], then [method paced_cap] for this display.
+## [param refresh_rate] stands in for the peak refresh rate in Performance
+## mode when the peak is unknown.
 func recommended_fps_cap(refresh_rate: float) -> int:
 	var peak := _peak_refresh_rate if _peak_refresh_rate > 0.0 else refresh_rate
-	return fps_cap(_power_source, _power_saver, _game_mode, peak, battery_fps, battery_mode_fps)
+	var cap := fps_cap(_power_source, _power_saver, _game_mode, peak, battery_fps, battery_mode_fps)
+	return paced_cap(cap, _refresh_rates)
+
+
+## The highest frame rate at or below [param cap] that the display can show
+## evenly: a rate it can switch to, or one divided by a whole number. A 60
+## cap on a panel fixed at 90 Hz cannot be paced (frames land on alternate
+## vsyncs, then every third), so it becomes 45; on a 60/120 Hz panel it
+## stays 60. [code]0[/code] (no cap), or no known rates, is returned as is.
+static func paced_cap(cap: int, refresh_rates: PackedFloat32Array) -> int:
+	if cap <= 0 or refresh_rates.is_empty():
+		return cap
+	var best := 0
+	for rate in refresh_rates:
+		if not is_finite(rate) or rate <= 0.0:
+			continue
+		# Display rates are not whole (59.94, 120.00001): allow half a frame.
+		var divisor := maxi(1, ceili((rate - 0.5) / cap))
+		best = maxi(best, roundi(rate / divisor))
+	return best if best > 0 else cap
 
 
 ## The rate to ask the display for under a frame cap: the cap, or the peak

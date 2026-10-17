@@ -10,7 +10,7 @@ extends DevicePowerBackend
 var power_source: int = -1
 var power_saver: Variant = null
 var game_mode: int = 0
-var peak_refresh_rate: float = 0.0
+var refresh_rates: PackedFloat32Array = PackedFloat32Array()
 ## Whether [method vote_frame_rate] succeeds, as a missing surface would not.
 var vote_ok: bool = true
 ## Every rate passed to [method vote_frame_rate], oldest first.
@@ -33,8 +33,8 @@ func get_game_mode() -> int:
 	return game_mode
 
 
-func get_peak_refresh_rate() -> float:
-	return peak_refresh_rate
+func get_refresh_rates() -> PackedFloat32Array:
+	return refresh_rates
 
 
 func vote_frame_rate(rate: float) -> bool:

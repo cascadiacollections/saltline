@@ -31,10 +31,10 @@ func get_game_mode() -> int:
 	return 0
 
 
-## The display's highest refresh rate at its current resolution, or
-## [code]0.0[/code] when unknown.
-func get_peak_refresh_rate() -> float:
-	return 0.0
+## The refresh rates the display can switch to at its current resolution,
+## or an empty array when unknown.
+func get_refresh_rates() -> PackedFloat32Array:
+	return PackedFloat32Array()
 
 
 ## Asks the platform to run the game's surface at [param rate] frames per

@@ -37,6 +37,12 @@ current state with the `battery_fps` and `battery_mode_fps` exports.
 | On external power | 0 (no cap: V-Sync and the display decide) |
 | Unknown (no bridge) | 0 |
 
+Every cap is then paced to the panel (`paced_cap()`): the highest rate at or
+below it that the display can show evenly, either a rate it can switch to
+or one divided by a whole number. On a 60/120 Hz phone the battery cap
+stays 60; on a tablet fixed at 90 Hz it becomes 45, because 60 frames a
+second cannot land evenly on 90 Hz vsyncs.
+
 "External power" means plugged in (`plugged` is non-zero), not that the
 battery is gaining charge: a weak port or a charge limit still counts.
 
