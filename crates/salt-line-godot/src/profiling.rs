@@ -19,6 +19,39 @@ const PHASES: [Mode; 4] = [Mode::Updated, Mode::Frozen, Mode::Frozen, Mode::Upda
 /// Stable seed for comparing profiling APKs built from different commits.
 pub const FIXED_SEED: u64 = 20261004;
 
+/// The profiling APK's package (tools/android_profile.py sets it).
+const PACKAGE: &str = "com.cascadiacollections.saltline.profile";
+
+/// Extra developer flags for the profiling APK, read from
+/// `salt-profile-args.txt` in its external files directory, whitespace
+/// separated. Godot drops command-line extras from intents aimed at an
+/// exported (launcher) activity, so `am start` cannot pass them; adb can
+/// write this file and the app can read it:
+///
+/// ```text
+/// adb shell 'mkdir -p /sdcard/Android/data/com.cascadiacollections.saltline.profile/files && echo --salt-free > /sdcard/Android/data/com.cascadiacollections.saltline.profile/files/salt-profile-args.txt'
+/// ```
+///
+/// Empty everywhere but Android, where the command line already works.
+pub fn launch_args() -> Vec<String> {
+    if !cfg!(target_os = "android") {
+        return Vec::new();
+    }
+    let path = format!("/sdcard/Android/data/{PACKAGE}/files/salt-profile-args.txt");
+    std::fs::read_to_string(path)
+        .map(|text| split_args(&text))
+        .unwrap_or_default()
+}
+
+/// The flags in an args file: whitespace separated, `#` to the end of a line
+/// a comment.
+fn split_args(text: &str) -> Vec<String> {
+    text.lines()
+        .flat_map(|line| line.split('#').next().unwrap_or("").split_whitespace())
+        .map(str::to_owned)
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
     Updated,
@@ -444,7 +477,16 @@ impl GpuCheck {
 
 #[cfg(test)]
 mod tests {
-    use super::texel;
+    use super::{split_args, texel};
+
+    #[test]
+    fn an_args_file_is_whitespace_separated_with_comments() {
+        assert_eq!(
+            split_args("--salt-free\n# a note\n--salt-seed 42  # trailing\n\n"),
+            ["--salt-free", "--salt-seed", "42"]
+        );
+        assert!(split_args("").is_empty());
+    }
 
     #[test]
     fn skipping_ties_still_compares_every_texel() {

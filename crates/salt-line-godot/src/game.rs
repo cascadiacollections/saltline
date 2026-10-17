@@ -345,15 +345,28 @@ impl INode2D for SaltLine {
         self.cache.backdrop.layered = !args.flat;
         #[cfg(feature = "profiling")]
         let args = {
-            let mut args = args;
-            // A profiling APK is deliberately self-driving so every install
-            // starts from the same simulation seed without launch arguments.
-            args.seed = Some(crate::profiling::FIXED_SEED);
-            args.auto = true;
-            godot_print!(
-                "salt-profile: deterministic profiling run; seed={}",
-                crate::profiling::FIXED_SEED
-            );
+            // Flags from the args file (`profiling::launch_args`), the only
+            // way to pass any to the APK.
+            let extra = crate::profiling::launch_args();
+            let mut args = if extra.is_empty() {
+                args
+            } else {
+                godot_print!("salt-profile: launch args {extra:?}");
+                DevArgs::parse(&[Self::cmdline_all(), extra].concat())
+            };
+            if args.free {
+                godot_print!("salt-profile: free play; no forced run");
+            } else {
+                // A profiling APK is deliberately self-driving so every
+                // install starts from the same simulation seed without
+                // launch arguments.
+                args.seed = Some(crate::profiling::FIXED_SEED);
+                args.auto = true;
+                godot_print!(
+                    "salt-profile: deterministic profiling run; seed={}",
+                    crate::profiling::FIXED_SEED
+                );
+            }
             args
         };
         self.g.today = Self::today();

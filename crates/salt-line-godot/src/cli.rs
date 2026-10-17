@@ -88,6 +88,10 @@ pub struct DevArgs {
     /// are compared with, and a developer fallback for telling a layering
     /// bug from any other; not a player setting.
     pub flat: bool,
+    /// `--salt-free`: in the profiling build, skip its forced fixed-seed
+    /// autopilot run and start at the title like the shipping game, so menus
+    /// can be profiled or stress-tested. No effect outside that build.
+    pub free: bool,
     /// `--salt-fork-run <seed>:<screen>`: print the share code of that run
     /// screen forked into a layout, and quit (`custom::fork_report`).
     pub fork_run: Option<String>,
@@ -124,6 +128,7 @@ impl DevArgs {
             setup: flag(args, "--salt-setup"),
             phone: flag(args, "--salt-phone"),
             flat: flag(args, "--salt-flat"),
+            free: flag(args, "--salt-free"),
             fork_run: value(args, "--salt-fork-run"),
             fork_duel: value(args, "--salt-fork-duel"),
         }
@@ -200,10 +205,17 @@ mod tests {
                 setup: false,
                 phone: false,
                 flat: false,
+                free: false,
                 fork_run: None,
                 fork_duel: None,
             }
         );
+    }
+
+    #[test]
+    fn free_play_is_its_own_flag() {
+        assert!(DevArgs::parse(&args("-- --salt-free")).free);
+        assert!(!DevArgs::parse(&args("-- --salt-flat")).free);
     }
 
     #[test]
