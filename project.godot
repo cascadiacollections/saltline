@@ -1,31 +1,49 @@
-; Engine configuration file.
-; It's best edited using the editor UI and not directly,
-; since the parameters that go here are not all obvious.
+; Salt Line — Godot 4 project.
 ;
-; Format:
-;   [section] ; section goes between []
-;   param=value ; assign values to parameters
+; The project root is the repository root so that `res://art/...` is the same
+; path the sprite generator writes to. There is no asset copy step.
+;
+; Every setting under [display] and [rendering] here is load-bearing for
+; DESIGN §5.1. Logical coordinates stay fixed while source art retains detail:
+;
+;   stretch/mode = "canvas_items" render source textures at window resolution
+;   stretch/aspect = "keep"     center the complete buffer at any window ratio
+;   default_texture_filter = 0  nearest, project-wide — one missed material is
+;                               the whole illusion
+;
+; The logical buffer is 320x180; artwork has a 4x backing image. It is resized to
+; `clamp(round(180 * device_aspect), 320, 400) x 180` (216 tall under Long
+; Lens), which is what "fix the height, let the width float" means in practice.
 
 config_version=5
 
 [application]
 
 config/name="Salt Line"
-config/description="Single-player artillery roguelike. Endless procedural horizon, persistent terrain damage."
 config/version="0.2.0-preview"
-run/main_scene="res://godot/main.tscn"
-config/quit_on_go_back=false
-config/features=PackedStringArray("4.7", "GL Compatibility")
+config/description="Single-player artillery roguelike. Endless procedural horizon, persistent terrain damage."
 config/icon="res://art/icon_1024.png"
+run/main_scene="res://godot/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+; Android's back gesture arrives as the game's `back` action (pause, leave a
+; menu, quit from the title) instead of closing the app from anywhere.
+config/quit_on_go_back=false
 
-[audio]
+[editor_plugins]
 
-general/ios/session_category=3
+enabled=PackedStringArray("res://addons/device_power/plugin.cfg")
 
 [autoload]
 
 DesktopServices="*res://addons/xdg_portals/desktop_services.gd"
-DevicePower="*uid://dxqsth8b8ss50"
+DevicePower="*res://addons/device_power/device_power.gd"
+
+[audio]
+
+; Salt Line is a game, so its soundtrack and effects use iOS's Playback
+; category rather than Ambient. Playback remains audible when the hardware
+; silent switch is on; the in-game mute and title-music toggles stay in charge.
+general/ios/session_category=3
 
 [display]
 
@@ -33,23 +51,39 @@ window/size/viewport_width=320
 window/size/viewport_height=180
 window/size/window_width_override=1280
 window/size/window_height_override=720
-window/energy_saving/keep_screen_on=false
 window/stretch/mode="canvas_items"
-
-[editor_plugins]
-
-enabled=PackedStringArray("res://addons/device_power/plugin.cfg")
+window/stretch/aspect="keep"
+window/vsync/vsync_mode=1
+; Off, so the operating system's screen timeout applies on the title and in
+; menus. The game holds the screen on itself while it is being watched: live
+; play, a versus match, a demo chosen from the menu (Effect::ScreenAwake,
+; DESIGN §12.4).
+window/energy_saving/keep_screen_on=false
 
 [input_devices]
 
+; Desktop mouse press, drag and release feed the same touch path as a phone.
+; The game only handles ScreenTouch/ScreenDrag for pointer aiming.
 pointing/emulate_touch_from_mouse=true
 
 [rendering]
 
-textures/canvas_textures/default_texture_filter=0
+; One software-composited texture needs no Forward+ features. On the measured
+; Windows ARM64/x64 setup this cut process private memory by about 190 MiB.
 renderer/rendering_method="gl_compatibility"
-renderer/rendering_method.mobile="gl_compatibility"
+textures/canvas_textures/default_texture_filter=0
+; Required to export for arm64 or universal macOS, which refuses to build
+; without an ETC2/ASTC path available. Every texture here is imported
+; lossless (compress/mode=0), so nothing actually gets VRAM-compressed and
+; the nearest-neighbour presentation is unaffected.
 textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_2d=0
+anti_aliasing/quality/screen_space_aa=0
 textures/default_filters/use_nearest_mipmap_filter=true
 textures/default_filters/anisotropic_filtering_level=0
+; Window ratios outside the generated 320..400px width (and Long Lens)
+; letterbox around the complete playfield instead of exposing unused sky.
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
+; Phones use the same low-overhead renderer; it also works on emulators where
+; Vulkan presentation fails.
+renderer/rendering_method.mobile="gl_compatibility"
