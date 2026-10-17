@@ -159,7 +159,9 @@ pub struct SaltLine {
     /// The engine's frame cap as the project set it, restored in play.
     project_fps: i32,
     fps_cap: i32,
-    android_fps: Option<i32>,
+    /// The project cap tightened by the platform's power policy
+    /// (`DevicePower`, set from `platform_services.gd`): the cap in play.
+    play_fps: Option<i32>,
     /// When to read the display's safe area again, and what it last said.
     display: DisplayPoll,
     cutout: (i32, i32),
@@ -242,7 +244,7 @@ impl INode2D for SaltLine {
             redraw: Redraw::default(),
             project_fps: 0,
             fps_cap: 0,
-            android_fps: None,
+            play_fps: None,
             display: DisplayPoll::default(),
             cutout: (0, 0),
             cache: Cache::default(),
@@ -782,17 +784,19 @@ impl INode2D for SaltLine {
 
 #[godot_api]
 impl SaltLine {
+    /// The platform's frame cap from its power state (0 is none): see the
+    /// `device_power` addon. The tighter of it and the project's cap is used
+    /// in play; menus still drop to `frame::IDLE_FPS`.
     #[func]
-    fn set_android_game_mode(&mut self, mode: i32, refresh_rate: f64) {
-        if !Os::singleton().has_feature("android") {
+    fn set_platform_fps_cap(&mut self, cap: i32) {
+        let play = frame::tighter_cap(self.project_fps, cap);
+        if self.play_fps == Some(play) {
             return;
         }
-        self.android_fps = Some(frame::game_mode_cap(mode, refresh_rate, self.project_fps));
+        self.play_fps = Some(play);
         self.apply_frame_cap();
         godot_print!(
-            "Android Game Mode: mode={}, play_cap={}, effective_cap={}",
-            mode,
-            self.android_fps.unwrap_or(self.project_fps),
+            "Power frame cap: platform={cap}, play_cap={play}, effective_cap={}",
             self.fps_cap
         );
     }
@@ -1419,8 +1423,8 @@ impl SaltLine {
     }
 
     /// Menus, overlays, the error screen and the attract demo run at
-    /// `frame::IDLE_FPS`; play keeps the project cap unless Android Game Mode
-    /// supplies a tighter limit. The demo is watched, not played, and may run unattended
+    /// `frame::IDLE_FPS`; play keeps the project cap unless the platform's
+    /// power policy (`set_platform_fps_cap`) supplies a tighter limit. The demo is watched, not played, and may run unattended
     /// for hours on a phone: 30 frames a second shows a shell's flight well
     /// enough, at half the work. `Engine` max FPS
     /// rather than low-processor mode, which would also throttle play and
@@ -1428,7 +1432,7 @@ impl SaltLine {
     fn apply_frame_cap(&mut self) {
         let cap = frame::frame_cap(
             self.g.idle() || self.g.in_demo(),
-            self.android_fps.unwrap_or(self.project_fps),
+            self.play_fps.unwrap_or(self.project_fps),
         );
         if cap != self.fps_cap {
             self.fps_cap = cap;
