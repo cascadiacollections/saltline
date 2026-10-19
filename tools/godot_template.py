@@ -245,7 +245,7 @@ def official_templates() -> Path:
         base = Path(os.environ["APPDATA"]) / "Godot"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "godot"
-    return base / "export_templates" / f"{GODOT_VERSION}.stable"
+    return base / "export_templates" / os.environ.get("GODOT_TEMPLATES_DIR", f"{GODOT_VERSION}.stable")
 
 
 def elf_comment(data: bytes) -> list[str]:
@@ -363,7 +363,7 @@ def prepare_android(debug: bool = False) -> None:
                 fail("Android source template contains an unsafe path")
         archive.extractall(directory)
     (directory / ".gdignore").touch()
-    (directory.parent / ".build_version").write_text(f"{GODOT_VERSION}.stable\n")
+    (directory.parent / ".build_version").write_text(os.environ.get("GODOT_TEMPLATES_DIR", f"{GODOT_VERSION}.stable") + "\n")
     (directory / "gradlew").chmod(0o755)
 
     android = "http://schemas.android.com/apk/res/android"
