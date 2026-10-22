@@ -83,7 +83,10 @@ def isolated_editor(godot: str, sdk: Path, java: Path):
         version = ".".join(templates.GODOT_VERSION.split(".")[:2])
         settings = ('[gd_resource type="EditorSettings" format=3]\n\n[resource]\n'
                     f'export/android/android_sdk_path = {json.dumps(sdk.as_posix())}\n'
-                    f'export/android/java_sdk_path = {json.dumps(java.as_posix())}\n')
+                    f'export/android/java_sdk_path = {json.dumps(java.as_posix())}\n'
+                    # The editor otherwise kills the adb server on exit, cutting off
+                    # any other adb session (a logcat, another device's capture).
+                    'export/android/shutdown_adb_on_exit = false\n')
         (config / f"editor_settings-{version}.tres").write_text(settings, encoding="utf-8")
         yield str(stage / executable.name)
 

@@ -813,6 +813,23 @@ fills the sky and redraws the ground each frame.
   equivalent.
 - `--salt-flat` draws the old single canvas: the tests' reference and a
   developer fallback, not a player setting.
+- **Galaxy A16 (Exynos 1330, Mali-G68, 1560x720 detailed frame), October
+  2026.** simpleperf put a third of the GL thread's own work in three
+  places: copying sprites each frame (7.6%), clearing the overlay (8.7%)
+  and comparing it with the uploaded copy (9.3%), the last two over the
+  whole 4.4 MB buffer though the overlay draws in about 1.25 MB of it. The
+  canvas now keeps each row's written columns, and clear and compare stay
+  within them; sprites are drawn from by reference. Profiling build, same
+  engine, 5–8 interleaved runs a build: process time, updated frames
+  3.13 → 2.39 ms (p50 2.68 → 1.89), frozen 1.58 → 1.14 ms; GL thread
+  instructions per frame 2.81M → 2.53M; 90 fps and frame pacing unchanged.
+  GPU check exact on all three scenes.
+- **Rejected: more strips.** 24 and 32 strips (and `WHOLE_ABOVE` scaled)
+  cut the timed process time further on the A16 (2.39 → 2.23 and 2.19 ms),
+  but the GL thread's instructions per frame rose (2.53M → 2.60M and 2.66M)
+  and its cycles did not fall: the saving moved into drawing more strip
+  quads, outside the timer. Judge strip changes by whole-thread counters
+  (`simpleperf stat --per-thread`), not `process` alone.
 
 ## 12. Run history and WATCH (DESIGN §9), stage 1
 
