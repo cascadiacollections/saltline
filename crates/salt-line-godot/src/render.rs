@@ -1319,7 +1319,7 @@ impl Painter<'_> {
                         .unwrap_or_default()
                         .resolve(self.g.today);
                     let (spr, faithful) = s.seasonal_structure(st.kind, state, season);
-                    (spr.cloned(), faithful)
+                    (spr, faithful)
                 }
                 None => (None, false),
             };
@@ -1347,10 +1347,10 @@ impl Painter<'_> {
                     let lean = st.lean as i32;
                     let x = view.sx(st.x0 as f64) + (footprint - sprite.w) / 2 + lean;
                     let y = view.sy(ground) - sprite.h + Sprites::seat_offset(st.kind);
-                    self.canvas.blit(&sprite, x, y);
+                    self.canvas.blit(sprite, x, y);
                     if state != StructState::Collapsed {
                         if let Some((colour, depth)) = biome.cap() {
-                            self.canvas.cap_sprite(&sprite, x, y, colour, depth);
+                            self.canvas.cap_sprite(sprite, x, y, colour, depth);
                         }
                     }
                 }
@@ -1385,7 +1385,7 @@ impl Painter<'_> {
         let (tank, pivot, barrel) = match self.sprites {
             Some(s) => {
                 let (t, p) = s.tank(loadout);
-                (t.cloned(), p, s.barrel(loadout).cloned())
+                (t, p, s.barrel(loadout))
             }
             None => (None, PIVOT_BASE, None),
         };
@@ -1397,7 +1397,7 @@ impl Painter<'_> {
         if let Some(barrel) = barrel {
             let sx = Sprites::barrel_frame_x(frame);
             self.canvas.blit_region(
-                &barrel,
+                barrel,
                 pivot_x - BARREL_PIVOT.0,
                 pivot_y - BARREL_PIVOT.1,
                 crate::raster::Rect {
@@ -1409,8 +1409,7 @@ impl Painter<'_> {
             );
         }
         if let Some(tank) = tank {
-            self.canvas
-                .blit(&tank, pivot_x - pivot.0, pivot_y - pivot.1);
+            self.canvas.blit(tank, pivot_x - pivot.0, pivot_y - pivot.1);
         }
     }
 

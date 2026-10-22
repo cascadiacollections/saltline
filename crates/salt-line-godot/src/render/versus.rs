@@ -524,7 +524,7 @@ impl Painter<'_> {
             return;
         };
         let (tank, pivot) = s.tank(&lo);
-        let (tank, barrel) = (tank.cloned(), s.barrel(&lo).cloned());
+        let barrel = s.barrel(&lo);
         let (px, py) = (view.sx(muzzle.x), view.sy(muzzle.y));
         let strip = crate::raster::Rect {
             x: Sprites::barrel_frame_x(frame),
@@ -539,20 +539,20 @@ impl Painter<'_> {
             Side::Left => {
                 if let Some(barrel) = barrel {
                     self.canvas.blit_region(
-                        &barrel,
+                        barrel,
                         px - BARREL_PIVOT.0,
                         py - BARREL_PIVOT.1,
                         strip,
                     );
                 }
                 if let Some(tank) = tank {
-                    self.canvas.blit(&tank, px - pivot.0, py - pivot.1);
+                    self.canvas.blit(tank, px - pivot.0, py - pivot.1);
                 }
             }
             Side::Right => {
                 if let Some(barrel) = barrel {
                     self.canvas.blit_region_flipped(
-                        &barrel,
+                        barrel,
                         px + BARREL_PIVOT.0 - BARREL_FRAME + 1,
                         py - BARREL_PIVOT.1,
                         strip,
@@ -560,7 +560,7 @@ impl Painter<'_> {
                 }
                 if let Some(tank) = tank {
                     self.canvas
-                        .blit_flipped(&tank, px + pivot.0 - tank.w + 1, py - pivot.1);
+                        .blit_flipped(tank, px + pivot.0 - tank.w + 1, py - pivot.1);
                 }
             }
         }
