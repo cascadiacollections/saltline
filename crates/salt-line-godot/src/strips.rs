@@ -76,6 +76,13 @@ pub fn rows(h: i32, i: usize) -> (i32, i32) {
 }
 
 /// A copy of the frame as last uploaded, to tell which strips changed.
+///
+/// Comparing every byte of a detailed frame (1560x720 on a phone) reads
+/// 4.5 MB twice a frame, which on a Galaxy A16 was most of the strip pass.
+/// The frame says which columns of each row it may have drawn in
+/// (`Canvas::written`), and the shadow remembers the same of what it holds:
+/// outside both, both are transparent black, so only their union is
+/// compared and copied.
 #[derive(Default)]
 pub struct Shadow {
     bytes: Vec<u8>,
@@ -83,6 +90,19 @@ pub struct Shadow {
     h: i32,
     /// Each strip's [`tiles`](Self::tiles) as last uploaded.
     tiles: [u32; STRIPS],
+    /// Per row, columns `x0..x1` outside which the row as held is
+    /// transparent black (empty when it is all transparent).
+    cols: Vec<(i32, i32)>,
+}
+
+/// The columns two rows' `x0..x1` bounds cover between them.
+fn union((a0, a1): (i32, i32), (b0, b1): (i32, i32)) -> (i32, i32) {
+    match (a1 > a0, b1 > b0) {
+        (false, false) => (0, 0),
+        (true, false) => (a0, a1),
+        (false, true) => (b0, b1),
+        (true, true) => (a0.min(b0), a1.max(b1)),
+    }
 }
 
 /// How many column tiles [`Shadow::tiles`] cuts a strip into.
@@ -145,6 +165,8 @@ impl Shadow {
         self.bytes.extend_from_slice(bytes);
         self.w = w;
         self.h = h;
+        self.cols.clear();
+        self.cols.resize(h.max(0) as usize, (0, w));
         let stride = w as usize * 4;
         self.tiles = std::array::from_fn(|i| {
             let (y0, y1) = rows(h, i);
@@ -172,17 +194,41 @@ impl Shadow {
 
     /// Whether strip `i` of `frame` differs from what was last uploaded. If
     /// it does, the shadow takes the new rows, as the caller is about to
-    /// upload them. `frame` must be the size the shadow [`fits`](Self::fits).
-    pub fn take_if_changed(&mut self, frame: &[u8], i: usize) -> bool {
+    /// upload them. `frame` must be the size the shadow [`fits`](Self::fits),
+    /// and `written(y)` must bound row `y` of it: every pixel outside those
+    /// columns transparent black (`Canvas::written`; `(0, w)` always does).
+    pub fn take_if_changed(
+        &mut self,
+        frame: &[u8],
+        i: usize,
+        written: impl Fn(i32) -> (i32, i32),
+    ) -> bool {
         let stride = self.w as usize * 4;
         let (y0, y1) = rows(self.h, i);
-        let range = y0 as usize * stride..y1 as usize * stride;
-        if frame[range.clone()] == self.bytes[range.clone()] {
-            return false;
+        let span = |y: i32, (x0, x1): (i32, i32)| {
+            y as usize * stride + x0 as usize * 4..y as usize * stride + x1 as usize * 4
+        };
+        let changed = (y0..y1).any(|y| {
+            let r = span(y, union(written(y), self.cols[y as usize]));
+            frame[r.clone()] != self.bytes[r]
+        });
+        for y in y0..y1 {
+            let now = written(y);
+            if changed {
+                // Outside the union both rows are transparent black, so
+                // copying it makes the rows equal.
+                let r = span(y, union(now, self.cols[y as usize]));
+                self.bytes[r.clone()].copy_from_slice(&frame[r]);
+            }
+            // Equal or now copied, the row held is the frame's, which
+            // `written` bounds.
+            self.cols[y as usize] = now;
         }
-        self.bytes[range.clone()].copy_from_slice(&frame[range.clone()]);
-        self.tiles[i] = opaque_tiles(&frame[range], self.w);
-        true
+        if changed {
+            let range = y0 as usize * stride..y1 as usize * stride;
+            self.tiles[i] = opaque_tiles(&frame[range], self.w);
+        }
+        changed
     }
 }
 
@@ -366,14 +412,14 @@ mod tests {
         let (_, y1) = rows(h, 5);
         let at = (((y1 - 1) * w + 3) * 4) as usize;
         frame[at..at + 4].copy_from_slice(&[9, 9, 9, 255]);
-        assert!(shadow.take_if_changed(&frame, 5));
+        assert!(shadow.take_if_changed(&frame, 5, |_| (0, w)));
         assert!(!shadow.empty(5));
         // Four columns over 32 tiles: column 3 is the last tile's.
         assert_eq!(shadow.tiles(5), 1 << 31);
         assert!((0..STRIPS).filter(|&i| i != 5).all(|i| shadow.empty(i)));
         // Unchanged strips keep their answer; cleared again, empty again.
         frame[at + 3] = 0;
-        assert!(shadow.take_if_changed(&frame, 5));
+        assert!(shadow.take_if_changed(&frame, 5, |_| (0, w)));
         assert!(shadow.empty(5));
         frame[at + 3] = 255;
         shadow.reset(&frame, w, h);
@@ -426,6 +472,42 @@ mod tests {
         assert_eq!(layers.plan([true; STRIPS]), (Plan::Whole, false));
     }
 
+    proptest::proptest! {
+        /// Comparing and copying only within the frame's and the shadow's
+        /// written columns finds exactly the strips a whole comparison
+        /// does, and leaves the shadow holding the frame.
+        #[test]
+        fn comparing_written_columns_is_comparing_everything(
+            frames in proptest::collection::vec(
+                proptest::collection::vec((0i32..20, 0i32..24, 0u8..3), 0..12), 1..8),
+        ) {
+            let (w, h) = (20, 24);
+            let mut shadow = Shadow::default();
+            let mut whole = Shadow::default();
+            shadow.reset(&vec![0; (w * h * 4) as usize], w, h);
+            whole.reset(&vec![0; (w * h * 4) as usize], w, h);
+            for pixels in frames {
+                // A frame of a few pixels, and per row the columns it was
+                // drawn in, a little wider than what it holds.
+                let mut f = vec![0u8; (w * h * 4) as usize];
+                let mut cols = vec![(0, 0); h as usize];
+                for (x, y, v) in pixels {
+                    let at = ((y * w + x) * 4) as usize;
+                    f[at..at + 4].copy_from_slice(&[v, v, v, if v == 0 { 0 } else { 255 }]);
+                    let c = &mut cols[y as usize];
+                    *c = union(*c, ((x - 1).max(0), (x + 2).min(w)));
+                }
+                for i in 0..STRIPS {
+                    let a = shadow.take_if_changed(&f, i, |y| cols[y as usize]);
+                    let b = whole.take_if_changed(&f, i, |_| (0, w));
+                    proptest::prop_assert_eq!(a, b, "strip {}", i);
+                    proptest::prop_assert_eq!(shadow.tiles(i), whole.tiles(i));
+                }
+                proptest::prop_assert!(shadow.bytes == f);
+            }
+        }
+    }
+
     fn frame(w: i32, h: i32, fill: u8) -> Vec<u8> {
         vec![fill; (w * h * 4) as usize]
     }
@@ -443,10 +525,10 @@ mod tests {
         // One pixel on row 9: 24 rows / 12 strips = 2 rows each, so strip 4.
         f[(9 * w as usize + 3) * 4] = 255;
         let dirty: Vec<usize> = (0..STRIPS)
-            .filter(|&i| shadow.take_if_changed(&f, i))
+            .filter(|&i| shadow.take_if_changed(&f, i, |_| (0, w)))
             .collect();
         assert_eq!(dirty, [4]);
         // Taken: the same frame again changes nothing.
-        assert!((0..STRIPS).all(|i| !shadow.take_if_changed(&f, i)));
+        assert!((0..STRIPS).all(|i| !shadow.take_if_changed(&f, i, |_| (0, w))));
     }
 }

@@ -71,6 +71,12 @@ pub struct Canvas {
     /// band not marked is wholly transparent, so [`Canvas::clear`] clears
     /// only the marked ones and [`Canvas::touched`] can vouch for the rest.
     dirty: u64,
+    /// For each display row, the columns `x0..x1` it has been written in
+    /// since the canvas was last all transparent (empty if none): every
+    /// pixel of the row outside them is transparent black too, so a clear
+    /// and the strip comparison (`strips::Shadow`) need look only within
+    /// them.
+    cols: Vec<(i32, i32)>,
 }
 
 /// How many row bands [`Canvas`] tracks writes in.
@@ -86,6 +92,7 @@ impl Canvas {
             px: vec![0; (w * h * 4) as usize],
             scale: 1,
             dirty: 0,
+            cols: vec![(0, 0); h as usize],
         }
     }
 
@@ -95,6 +102,7 @@ impl Canvas {
         let mut canvas = Self::new(w, h);
         canvas.scale = 4;
         canvas.px = vec![0; (canvas.pixel_w() * canvas.pixel_h() * 4) as usize];
+        canvas.cols = vec![(0, 0); canvas.pixel_h() as usize];
         canvas
     }
 
@@ -119,11 +127,28 @@ impl Canvas {
         (b * self.pixel_h() + BANDS - 1) / BANDS
     }
 
-    /// Note a write to display rows `py0..py1` (within the buffer).
+    /// Note a write to display columns `px0..px1` of display rows
+    /// `py0..py1` (within the buffer).
     #[inline]
-    fn mark(&mut self, py0: i32, py1: i32) {
+    fn mark(&mut self, px0: i32, px1: i32, py0: i32, py1: i32) {
         let (b0, b1) = (self.band(py0), self.band(py1 - 1));
+        for cols in &mut self.cols[py0 as usize..py1 as usize] {
+            *cols = if cols.1 <= cols.0 {
+                (px0, px1)
+            } else {
+                (cols.0.min(px0), cols.1.max(px1))
+            };
+        }
         self.dirty |= (u64::MAX >> (63 - b1)) & (u64::MAX << b0);
+    }
+
+    /// The display columns `x0..x1` of display row `py` that may have been
+    /// written since the canvas was last all transparent; every pixel of
+    /// the row outside them is transparent black. Empty (`x0 == x1`) for a
+    /// row not written, or one off the buffer.
+    #[inline]
+    pub fn written(&self, py: i32) -> (i32, i32) {
+        self.cols.get(py as usize).copied().unwrap_or((0, 0))
     }
 
     /// Whether any of display rows `py0..py1` may have been written since
@@ -143,7 +168,7 @@ impl Canvas {
         if x < 0 || y < 0 || x >= self.pixel_w() || y >= self.pixel_h() {
             return;
         }
-        self.mark(y, y + 1);
+        self.mark(x, x + 1, y, y + 1);
         let i = ((y * self.pixel_w() + x) * 4) as usize;
         self.px[i..i + 4].copy_from_slice(&c);
     }
@@ -162,7 +187,7 @@ impl Canvas {
         if w == 0 {
             return;
         }
-        self.mark(0, self.pixel_h());
+        self.mark(dst_x, dst_x + w, 0, self.pixel_h());
         let (ds, ss) = (self.pixel_w() as usize * 4, src.pixel_w() as usize * 4);
         let (sx, dx, n) = (src_x as usize * 4, dst_x as usize * 4, w as usize * 4);
         for y in 0..self.pixel_h() as usize {
@@ -173,7 +198,7 @@ impl Canvas {
 
     /// Display row `py` (within the buffer) as RGBA8 bytes, to write whole.
     pub fn row_mut(&mut self, py: i32) -> &mut [u8] {
-        self.mark(py, py + 1);
+        self.mark(0, self.pixel_w(), py, py + 1);
         let stride = self.pixel_w() as usize * 4;
         &mut self.px[py as usize * stride..(py as usize + 1) * stride]
     }
@@ -186,7 +211,7 @@ impl Canvas {
         if px1 <= px0 || py1 <= py0 {
             return;
         }
-        self.mark(py0, py1);
+        self.mark(px0, px1, py0, py1);
         let stride = self.pixel_w() as usize * 4;
         for y in py0 as usize..py1 as usize {
             let row = &mut self.px[y * stride + px0 as usize * 4..y * stride + px1 as usize * 4];
@@ -204,25 +229,25 @@ impl Canvas {
             self.h = h;
             self.px = vec![0; (self.pixel_w() * self.pixel_h() * 4) as usize];
             self.dirty = 0;
+            self.cols = vec![(0, 0); self.pixel_h() as usize];
         }
     }
 
     /// Every pixel to transparent black, which `Canvas::palette_text`
     /// shows as `.`. Only the row bands written since the last clear
-    /// (`dirty`) hold anything else, so only they are cleared.
+    /// (`dirty`) hold anything else, and only in the columns written
+    /// (`cols`), so only those are cleared.
     pub fn clear(&mut self) {
-        if self.dirty == u64::MAX {
-            self.px.fill(0);
-        } else {
-            let stride = self.pixel_w() as usize * 4;
-            let mut bits = self.dirty;
-            while bits != 0 {
-                // A run of marked bands, cleared as one span.
-                let b0 = bits.trailing_zeros() as i32;
-                let run = (bits >> b0).trailing_ones() as i32;
-                let (y0, y1) = (self.band_start(b0), self.band_start(b0 + run));
-                self.px[y0 as usize * stride..y1 as usize * stride].fill(0);
-                bits &= !((u64::MAX >> (64 - run)) << b0);
+        let stride = self.pixel_w() as usize * 4;
+        let mut bits = self.dirty;
+        while bits != 0 {
+            let b = bits.trailing_zeros() as i32;
+            bits &= bits - 1;
+            for y in self.band_start(b) as usize..self.band_start(b + 1) as usize {
+                let (x0, x1) = std::mem::take(&mut self.cols[y]);
+                if x1 > x0 {
+                    self.px[y * stride + x0 as usize * 4..y * stride + x1 as usize * 4].fill(0);
+                }
             }
         }
         self.dirty = 0;
@@ -233,6 +258,8 @@ impl Canvas {
             p.copy_from_slice(&c);
         }
         self.dirty = u64::MAX;
+        let pw = self.pixel_w();
+        self.cols.fill((0, pw));
     }
 
     /// Set one pixel. Anything off the buffer is dropped, so every drawing
@@ -274,7 +301,12 @@ impl Canvas {
         if x < 0 || y < 0 || x >= self.w || y >= self.h || alpha == 0 {
             return;
         }
-        self.mark(y * self.scale, (y + 1) * self.scale);
+        self.mark(
+            x * self.scale,
+            (x + 1) * self.scale,
+            y * self.scale,
+            (y + 1) * self.scale,
+        );
         let a = alpha as u32;
         for dy in 0..self.scale {
             for dx in 0..self.scale {
@@ -498,6 +530,7 @@ impl Canvas {
             let mut canvas = Canvas::new(self.w, self.h);
             canvas.scale = self.scale;
             canvas.px = vec![0; (canvas.pixel_w() * canvas.pixel_h() * 4) as usize];
+            canvas.cols = vec![(0, 0); canvas.pixel_h() as usize];
             canvas
         }
     }
@@ -511,6 +544,7 @@ impl Canvas {
         );
         self.px.copy_from_slice(&src.px);
         self.dirty = src.dirty;
+        self.cols.clone_from(&src.cols);
     }
 
     pub fn to_packed(&self) -> PackedByteArray {
@@ -1006,7 +1040,14 @@ impl Canvas {
         if i1 <= i0 || j1 <= j0 {
             return true;
         }
-        self.mark(dy0 + j0, dy0 + j1);
+        // Columns written: `dx0 + i`, or mirrored `dx0 + w - 1 - i`, for i
+        // in `i0..i1`.
+        let (x0, x1) = if flipped {
+            (dx0 + w - i1, dx0 + w - i0)
+        } else {
+            (dx0 + i0, dx0 + i1)
+        };
+        self.mark(x0, x1, dy0 + j0, dy0 + j1);
         let stride = self.pixel_w() as usize * 4;
         let art_stride = detail.w as usize * 4;
         for j in j0..j1 {
@@ -1106,7 +1147,26 @@ mod tests {
             Detail(i32, i32),
             Rect(i32, i32, i32, i32),
             Blend(i32, i32),
+            /// A whole display row, through `row_mut`.
+            Row(i32),
+            /// Display columns of a painted canvas, through `copy_columns`.
+            Columns(i32, i32, i32),
             Clear,
+        }
+
+        /// Every painted pixel of `c` is within its row's `written`
+        /// columns.
+        fn written_bounds_the_paint(c: &Canvas) -> bool {
+            let stride = c.pixel_w() as usize * 4;
+            (0..c.pixel_h()).all(|y| {
+                let (x0, x1) = c.written(y);
+                let row = &c.bytes()[y as usize * stride..(y as usize + 1) * stride];
+                row.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .all(|(x, p)| *p == [0; 4] || (x0..x1).contains(&(x as i32)))
+            })
         }
 
         fn op() -> impl Strategy<Value = Op> {
@@ -1116,6 +1176,8 @@ mod tests {
                 (-5i32..60, -5i32..40, -2i32..30, -2i32..30)
                     .prop_map(|(x, y, w, h)| Op::Rect(x, y, w, h)),
                 (-3i32..60, -3i32..40).prop_map(|(x, y)| Op::Blend(x, y)),
+                (0i32..1000).prop_map(Op::Row),
+                (0i32..208, 0i32..208, 0i32..208).prop_map(|(a, b, w)| Op::Columns(a, b, w)),
                 Just(Op::Clear),
             ]
         }
@@ -1123,8 +1185,9 @@ mod tests {
         proptest! {
             /// Whatever was drawn, a clear leaves every pixel transparent
             /// black, and a row range never written since is transparent
-            /// black: what lets `clear` skip clean bands and `strips` skip
-            /// comparing them.
+            /// black, as is every pixel of a row outside its `written`
+            /// columns: what lets `clear` skip clean bands and columns and
+            /// `strips` skip comparing them.
             #[test]
             fn clear_and_touched_agree_with_the_pixels(
                 ops in prop::collection::vec(op(), 0..40),
@@ -1139,13 +1202,29 @@ mod tests {
                         Op::Detail(x, y) => c.put_detail(x, y, ink),
                         Op::Rect(x, y, w, h) => c.rect(x, y, w, h, ink),
                         Op::Blend(x, y) => c.put_blend_on(x, y, ink, 100, |_, _| [1, 2, 3, 255]),
+                        Op::Row(y) => {
+                            let y = y % c.pixel_h();
+                            for p in c.row_mut(y).as_chunks_mut::<4>().0.iter_mut().step_by(3) {
+                                *p = ink;
+                            }
+                        }
+                        Op::Columns(a, b, w) => {
+                            let pw = c.pixel_w();
+                            let (a, b) = (a % pw, b % pw);
+                            let w = w.min(pw - a).min(pw - b);
+                            let mut src = c.blank_like();
+                            src.fill(ink);
+                            c.copy_columns(&src, a, b, w);
+                        }
                         Op::Clear => c.clear(),
                     }
+                    prop_assert!(written_bounds_the_paint(&c));
                     let stride = c.pixel_w() as usize * 4;
                     for y in 0..c.pixel_h() {
                         let row = &c.bytes()[y as usize * stride..(y as usize + 1) * stride];
                         if !c.touched(y, y + 1) {
                             prop_assert!(row.iter().all(|&b| b == 0), "row {y} untouched but painted");
+                            prop_assert_eq!(c.written(y), (0, 0));
                         }
                     }
                 }
@@ -1191,6 +1270,7 @@ mod tests {
                 }
                 prop_assert!(fast.bytes() == slow.bytes());
                 // And it marks what it wrote, so a clear wipes it.
+                prop_assert!(written_bounds_the_paint(&fast));
                 fast.clear();
                 prop_assert!(fast.bytes().iter().all(|&b| b == 0));
             }
