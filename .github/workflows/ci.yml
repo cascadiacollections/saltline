@@ -1107,6 +1107,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Godot's Gradle build (Gradle 8.11) needs JDK 17: the ubuntu-26.04
+      # image behind ubuntu-latest ships no JDK 17 any more, and its default
+      # JDK 25 fails Gradle ("Unsupported class file major version 69").
+      # Before any Godot step: the editor saves JAVA_HOME as its Java SDK path
+      # (export/android/java_sdk_path) the first time it runs, and the export
+      # uses that, not JAVA_HOME.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
       - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
         with:
           version: ${{ env.GODOT_VERSION }}
@@ -1221,13 +1231,6 @@ jobs:
             echo "::error::a release tag must export on the stripped engine, and none was fetched"
             exit 1
           fi
-      # Godot's Gradle build (Gradle 8.11) needs JDK 17: the ubuntu-26.04
-      # image behind ubuntu-latest ships no JDK 17 any more, and its default
-      # JDK 25 fails Gradle ("Unsupported class file major version 69").
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: '17'
       - name: export the APK
         env:
           # Kept out of GITHUB_ENV so the password lives only in this step.
