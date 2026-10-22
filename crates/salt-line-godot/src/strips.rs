@@ -37,6 +37,10 @@
 /// change across most of the frame (a camera pan) takes the whole-frame path
 /// instead, see [`WHOLE_ABOVE`]. A buffer must be at least `STRIPS` rows
 /// tall, so no strip is empty.
+///
+/// More strips send fewer bytes but draw more quads: on a Galaxy A16, 24 and
+/// 32 shortened the timed process time yet left the GL thread's whole work
+/// per frame no lower (NOTES §11), so 12 stays.
 pub const STRIPS: usize = 12;
 
 /// Above this many changed strips, one whole-frame upload is cheaper than the
