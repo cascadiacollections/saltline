@@ -1112,6 +1112,16 @@ jobs:
           version: ${{ env.GODOT_VERSION }}
           use-dotnet: false
           include-templates: true
+      # Godot saves the detected JDK on first import and overrides JAVA_HOME
+      # with it during export. Gradle 8.11.1 cannot run on the runner's Java 25.
+      - name: configure Android SDK and Java 17 for Godot
+        run: |
+          set -eu
+          config="${XDG_CONFIG_HOME:-$HOME/.config}/godot"
+          mkdir -p "$config"
+          printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\nexport/android/android_sdk_path = "%s"\nexport/android/java_sdk_path = "%s"\n' \
+            "$ANDROID_HOME" "${JAVA_HOME_17_X64:?Java 17 is required}" \
+            > "$config/editor_settings-${GODOT_VERSION%.*}.tres"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
@@ -1227,8 +1237,6 @@ jobs:
           GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ steps.key.outputs.mode == 'release' && secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD || 'android' }}
         run: |
           set -eu
-          # Godot takes the SDK from ANDROID_HOME and the JDK from JAVA_HOME.
-          export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"
           mkdir -p build dist
           bash tools/godot_headless.sh --export-release "Android" build/SaltLine.apk
           test -s build/SaltLine.apk
