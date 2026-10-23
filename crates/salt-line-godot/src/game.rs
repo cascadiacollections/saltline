@@ -1594,7 +1594,8 @@ impl SaltLine {
             if !self.canvas.touched(y0, y1) && self.shadow.empty(i) {
                 return false;
             }
-            self.shadow.take_if_changed(bytes, i)
+            self.shadow
+                .take_if_changed(bytes, i, |y| self.canvas.written(y))
         });
         let (plan, redraw) = self.layers.plan(changed);
         #[cfg(feature = "profiling")]
