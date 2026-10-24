@@ -38,5 +38,9 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # First match wins. ty is 0.0.x and most releases change its diagnostics,
+      # so it is kept out of the weekly group a Pillow bump may ride in.
+      ty:
+        patterns: ["ty"]
       python:
         patterns: ["*"]

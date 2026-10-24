@@ -28,7 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PIL import Image
+from PIL import GifImagePlugin, Image
 
 import gen_sprites as G
 from gen_sprites import BAYER, Buf, hud, rgba, text
@@ -451,7 +451,8 @@ def main():
 
     ang, speed, err = shot_gif(path_out=os.path.join(OUT, "shot.gif"))
     with Image.open(os.path.join(OUT, "shot.gif")) as animation:
-        animation.seek(getattr(animation, "n_frames", 1) - 1)
+        assert isinstance(animation, GifImagePlugin.GifImageFile)
+        animation.seek(animation.n_frames - 1)
         animation.convert("RGB").save(os.path.join(OUT, "shot_static.png"))
     print(f"shot.gif (angle {ang} deg, muzzle {speed}, impact error {err:.2f}px)")
 

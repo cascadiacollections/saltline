@@ -18,7 +18,9 @@ allowed-unresolved-imports = ["bpy", "mathutils"]
 required-version = ">=0.13.5,<0.14"
 package = false
 
+# Not "dev": uv installs that group by default, and the Pages deploy, the
+# devcontainer and the Justfile recipes have no use for a type checker.
 [dependency-groups]
-dev = [
+lint = [
     "ty>=0.0.91",
 ]
