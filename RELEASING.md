@@ -24,7 +24,7 @@ Supported toolchain, pinned and checked in:
 |---|---|
 | Rust | `1.99.0` — `rust-toolchain.toml` |
 | Godot | `4.7.2` — `project.godot` `config/features`, `GODOT_VERSION` in `.github/workflows/ci.yml` (every export job, and the SBOM), and the `api-4-7` feature on the `godot` crate |
-| Python | 3.12+ (development pin 3.15.0) with Pillow, managed by `uv` 0.13.0, to regenerate `art/` and the site; `tools/release_version.py` needs only a stock Python 3.9+ |
+| Python | 3.12+ (development pin 3.15.0) with Pillow, managed by `uv` 0.13.5, to regenerate `art/` and the site; `tools/release_version.py` needs only a stock Python 3.9+ |
 
 ## Build it
 

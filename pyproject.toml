@@ -4,9 +4,12 @@ version = "0.1.0"
 description = "Asset and marketing-site generators for Salt Line"
 requires-python = ">=3.12"
 dependencies = [
-    "Pillow>=12.3",
+    "Pillow>=13.0",
 ]
 
 [tool.uv]
-required-version = "==0.13.0"
+# A range, not an exact pin: Dependabot runs its own uv (0.13.5 when this was
+# written) and refuses to update anything when required-version excludes it.
+# mise.toml and CI still pin the exact version.
+required-version = ">=0.13.5,<0.14"
 package = false

@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B)](LICENSE)
 
 [![Rust 1.99.0](https://img.shields.io/badge/Rust-1.99.0-CE422B?logo=rust)](rust-toolchain.toml)
-[![uv 0.13.0](https://img.shields.io/badge/uv-0.13.0-DE5FE9?logo=uv)](pyproject.toml)
+[![uv 0.13.5](https://img.shields.io/badge/uv-0.13.5-DE5FE9?logo=uv)](pyproject.toml)
 [![Python 3.15.0](https://img.shields.io/badge/Python-3.15.0-3776AB?logo=python&logoColor=white)](.python-version)
 [![Godot 4.7.2](https://img.shields.io/badge/Godot-4.7.2-478CBF?logo=godotengine&logoColor=white)](project.godot)
 [![Zed](https://img.shields.io/badge/Zed-ready-084CCF?logo=zedindustries)](.zed/tasks.json)
@@ -53,7 +53,7 @@ the website.
 ## Build prerequisites
 
 Requires Rust `1.99.0` (pinned in `rust-toolchain.toml`), Godot `4.7.2`, and
-`uv` 0.13.0 and Python 3.15.0 for the Python asset tools. `just` is optional
+`uv` 0.13.5 and Python 3.15.0 for the Python asset tools. `just` is optional
 but provides the documented shortcuts below.
 If you use mise, `mise install` reads the Rust version from the existing
 `rust-toolchain.toml`; run commands with `mise exec -- cargo ...`.
