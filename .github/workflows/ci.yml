@@ -411,7 +411,7 @@ jobs:
         run: |
           python3 -m venv .venv
           # Match the generator's locked Pillow version; no game code runs here.
-          .venv/bin/python -m pip install 'Pillow==12.3.0'
+          .venv/bin/python -m pip install 'Pillow==13.0.0'
           .venv/bin/python -m unittest discover -s tools -p test_concept_art.py -v
           .venv/bin/python -m unittest discover -s tools -p test_sprite_pipeline.py -v
       - name: test the device profiling runner's log reading

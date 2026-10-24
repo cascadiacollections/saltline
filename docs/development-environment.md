@@ -11,7 +11,7 @@ and uv pins and reads Rust from `rust-toolchain.toml`.
 | Tool | Pin | Reason |
 | --- | --- | --- |
 | Rust | 1.99.0 | Stable release; rustfmt and clippy included |
-| uv | 0.13.0 | Exact version in mise, container, Python metadata and CI |
+| uv | 0.13.5 | Exact in mise and CI; a 0.13 range in pyproject.toml so Dependabot's own uv still runs |
 | Python | 3.15.0 | Current stable release; `.python-version` is the development default |
 | Godot | 4.7.2 | Current stable; keep `api-4-7` and template lock aligned |
 

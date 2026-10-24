@@ -2,5 +2,5 @@
 idiomatic_version_file_enable_tools = ["rust"]
 
 [tools]
-uv = "0.13.0"
+uv = "0.13.5"
 python = "3.15.0"
