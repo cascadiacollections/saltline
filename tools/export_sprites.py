@@ -97,6 +97,8 @@ def source_errors(path, size=None):
 
 
 def export(src, dst):
+    if ASEPRITE is None:
+        raise RuntimeError("Aseprite CLI not found; install it or set ASEPRITE=/path/to/aseprite")
     subprocess.run(
         [ASEPRITE, "-b", src, "--sheet", dst, "--sheet-type", "horizontal"],
         check=True,
@@ -123,12 +125,13 @@ def validate(path, pal, size=None):
         if name.startswith("barrel_strip_") and image.size == size:
             width = size[1]
             margin = width // 28
+            alpha = rgba.getchannel("A")
             for frame in range(19):
                 x = frame * width
                 borders = list(range(margin)) + list(range(width - margin, width))
                 edge = [(x + i, y) for i in range(width) for y in borders]
                 edge += [(x + i, y) for i in borders for y in range(width)]
-                if any(rgba.getpixel(point)[3] for point in edge):
+                if any(alpha.getpixel(point) for point in edge):
                     errs.add(f"barrel frame {frame}: opaque edge pixels risk clipping")
     return sorted(errs)
 

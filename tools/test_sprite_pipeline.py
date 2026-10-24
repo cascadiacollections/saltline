@@ -74,9 +74,10 @@ class SpritePipelineTests(unittest.TestCase):
                 path = sprites / (name + ".png")
                 with Image.open(path) as source:
                     image = source.convert("RGBA")
+                alpha = image.getchannel("A")
                 for y in range(image.height):
                     for x in range(image.width):
-                        if image.getpixel((x, y))[3]:
+                        if alpha.getpixel((x, y)):
                             image.putpixel((x, y), (*art.P["alert"], 255))
                 image.save(path)
             for index, build in enumerate(builders):

@@ -112,7 +112,7 @@ class Buf:
         im = Image.new("RGBA", (self.w, self.h))
         im.putdata([self.px[j][i] for j in range(self.h) for i in range(self.w)])
         if scale != 1:
-            im = im.resize((self.w * scale, self.h * scale), Image.NEAREST)
+            im = im.resize((self.w * scale, self.h * scale), Image.Resampling.NEAREST)
         return im
 
 
