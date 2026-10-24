@@ -23,6 +23,31 @@ wheels and the Python tooling suite are validated with that interpreter. See the
 [uv releases](https://github.com/astral-sh/uv/releases), and
 [Godot release archive](https://godotengine.org/download/archive/).
 
+### Bumping uv
+
+Change every exact pin in one PR: `mise.toml`, `.github/workflows/pages.yml`
+and the devcontainer's `ghcr.io/astral-sh/uv:<version>@sha256:<digest>` image,
+plus the version in README.md, RELEASING.md, `site/index.html` and the table
+above. `rg` skips hidden directories by default, so search with
+`rg --hidden '<old version>' --glob '!uv.lock'` or the devcontainer pin is
+missed and the `smoke` job's bootstrap fails `required-version`. The image digest
+is the multi-architecture index digest:
+
+```sh
+skopeo inspect --raw docker://ghcr.io/astral-sh/uv:<version> | sha256sum
+```
+
+Keep `[tool.uv] required-version` in `pyproject.toml` a range within the
+current minor (`>=X.Y.Z,<X.(Y+1)`), not an exact pin. Dependabot runs its own
+uv, and an exact pin that excludes it fails every uv update job with
+`tool_version_not_supported`, security updates included.
+
+Leave `.github/actions/build-godot-template/action.yml` on its own uv version
+unless the template is being rebuilt anyway. That file is hashed into the
+template lock key (`tools/godot_template.py`, `PORTABLE_RECIPE`), so editing it
+forces a full engine template rebuild and a new lock pin. Its uvx runs in
+`runner.temp`, outside the repository, so `required-version` never applies to it.
+
 Container creation only runs `uv sync --locked`; it does not compile the game,
 generate media, download Godot templates, or provision Android/Xcode/Blender.
 The editor uses the unprivileged `developer` account, mapped to the local UID by the devcontainer
