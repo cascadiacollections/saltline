@@ -22,10 +22,12 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "astral-sh.ty",
         "rust-lang.rust-analyzer",
         "tamasfe.even-better-toml"
       ],
       "settings": {
+        "ty.experimental.useUv": "on",
         "rust-analyzer.check.command": "clippy",
         "rust-analyzer.cargo.allTargets": false,
         "rust-analyzer.check.extraArgs": [
