@@ -19,3 +19,5 @@ The default command creates a signed release archive under `build/testflight/<UT
 Xcode manages signing and provisioning through its existing account. No credentials or signing keys are committed. These commands do not publish an App Store release. For quick device development, open the exported Xcode project and run on your connected iPhone.
 
 References: [Apple TestFlight](https://developer.apple.com/testflight/), [add internal testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers).
+
+Initial upload verified on October 25, 2026: build `2489.23.7`. Apple accepted the signed archive for internal TestFlight processing. Upload reported a non-blocking missing dSYM warning for the Rust GDExtension, so Rust crash reports may lack symbol names. Device installation has not yet been verified.
