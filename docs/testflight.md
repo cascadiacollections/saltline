@@ -21,3 +21,9 @@ Xcode manages signing and provisioning through its existing account. No credenti
 References: [Apple TestFlight](https://developer.apple.com/testflight/), [add internal testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers).
 
 Initial upload verified on October 25, 2026: build `2489.23.7`. Apple accepted the signed archive for internal TestFlight processing. Upload reported a non-blocking missing dSYM warning for the Rust GDExtension, so Rust crash reports may lack symbol names. Device installation has not yet been verified.
+
+## Public beta
+
+Upload with `just testflight --upload --external` to allow external testing. The default upload remains internal-only. After Apple processing, add the build to the **Public Beta** external group and submit it for Beta App Review. External testers can install after approval.
+
+Public invitation: https://testflight.apple.com/join/PgjfndD9

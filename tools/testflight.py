@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a signed iOS archive; optionally upload for internal TestFlight testing."""
+"""Build a signed iOS archive; optionally upload for TestFlight testing."""
 import argparse
 import datetime
 import os
@@ -26,7 +26,8 @@ def default_build_number():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--upload", action="store_true", help="upload the archive as internal TestFlight only")
+    parser.add_argument("--upload", action="store_true", help="upload the archive to TestFlight (internal-only unless --external is set)")
+    parser.add_argument("--external", action="store_true", help="allow an uploaded build to be submitted for external beta review")
     parser.add_argument("--check", action="store_true", help="check local prerequisites without building or contacting Apple")
     parser.add_argument("--build-number", default=default_build_number())
     args = parser.parse_args()
@@ -85,11 +86,11 @@ def main():
         options = stage / "ExportOptions.plist"
         with options.open("wb") as f:
             plistlib.dump(dict(method="app-store-connect", destination="upload", teamID=team,
-                              signingStyle="automatic", testFlightInternalTestingOnly=True,
+                              signingStyle="automatic", testFlightInternalTestingOnly=not args.external,
                               manageAppVersionAndBuildNumber=False, uploadSymbols=True), f)
         run("xcodebuild", "-exportArchive", "-archivePath", archive,
             "-exportOptionsPlist", options, "-exportPath", stage / "upload", "-allowProvisioningUpdates")
-        print("Uploaded for internal testing. Wait for Apple processing, then assign the build to your internal group.")
+        print("Uploaded. Wait for Apple processing, then assign the build to a TestFlight group.")
 
 if __name__ == "__main__":
     main()
