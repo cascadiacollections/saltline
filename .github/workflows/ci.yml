@@ -101,7 +101,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest
       - name: test salt-line-sim (headless, no Godot installed)
@@ -482,7 +482,7 @@ jobs:
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
           advanced-security: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-machete
       - name: unused dependencies
@@ -507,7 +507,7 @@ jobs:
         with:
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
           key: coverage
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: coverage
@@ -608,7 +608,7 @@ jobs:
           workspaces: fuzz -> target
       # cargo-fuzz arrives as its static musl build and would target musl by
       # default; see the fuzz job in weekly.yml for why --target is needed.
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-fuzz
       - name: build every fuzz target
@@ -1481,7 +1481,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           # Pinned: the tool writes its own version into the SBOM, so a new
           # release would change the bytes a commit's SBOM is meant to keep.
