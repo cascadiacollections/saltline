@@ -20,6 +20,7 @@
 <link rel="icon" href="assets/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/favicon.png">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="testflight-promo.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -42,6 +43,16 @@
 </header>
 
 <main id="main">
+<section class="halloween-promo" aria-labelledby="testflight-promo-title" hidden>
+  <div>
+    <p class="promo-dates"><span aria-hidden="true">🎃</span> Halloween week · October 25–31, 2026</p>
+    <h2 id="testflight-promo-title">One more shot before midnight.</h2>
+    <p>Bring your aim to the Salt Line iOS beta.</p>
+    <p class="promo-note">Free to test with Apple TestFlight. Public builds unlock after Apple beta approval. Promo ends November 1 at 12:00 a.m. Pacific.</p>
+  </div>
+  <a class="promo-link" href="https://testflight.apple.com/join/PgjfndD9" aria-label="Join the Salt Line iOS beta on TestFlight">Join the iOS beta <span aria-hidden="true">↗</span></a>
+</section>
+
 
 <section id="top" class="hero">
   <div class="hero-art" aria-hidden="true">
@@ -64,12 +75,13 @@
     </ul>
 
     <div class="cta">
+      <a class="btn" href="https://testflight.apple.com/join/PgjfndD9">Join the iOS TestFlight beta</a>
       <a class="btn primary" href="#download">Download a dev build</a>
       <a class="btn" href="https://github.com/cascadiacollections/saltline">Get the source</a>
       <a class="btn ghost" href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Read the design doc</a>
     </div>
 
-    <p class="fineprint">Android · Windows · macOS · Linux &nbsp;—&nbsp; rolling dev builds, a proper release when the alpha stops moving.
+    <p class="fineprint">iOS via TestFlight after Apple beta review · Android · Windows · macOS · Linux &nbsp;—&nbsp; rolling dev builds, a proper release when the alpha stops moving.
       Downloads and source currently require access to the GitHub repository.</p>
   </div>
 </section>
@@ -413,5 +425,6 @@ godot --path .                   # play</code></pre>
 </footer>
 
 <script src="main.js" defer></script>
+<script src="testflight-promo.js" defer></script>
 </body>
 </html>
