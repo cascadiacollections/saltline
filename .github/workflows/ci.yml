@@ -422,6 +422,8 @@ jobs:
       # ty's version comes from uv.lock and Dependabot bumps it in its own
       # group, so a release with new diagnostics turns only that PR red. This
       # job gates releases, so do not merge that PR red.
+      # Not `uv check`: it uses the locked ty only when ty is in the default
+      # dev group, and would otherwise run the newest ty release.
       - name: type check the Python tools
         run: uv run --locked --group lint ty check --output-format github
 
