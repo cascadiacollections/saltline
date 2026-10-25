@@ -1,10 +1,12 @@
 # Personal TestFlight testing
 
-Bundle ID: `com.cascadiacollections.saltline`.
+Bundle ID: `com.cascadiacollections.saltline`. Apple team: `9L45FNA7XM`.
+
+App Store Connect record: [Saltline Dev](https://appstoreconnect.apple.com/apps/6826944922/distribution) (Apple ID `6826944922`). The **Personal Testing** internal group has automatic distribution enabled and includes the account-holder Apple Account.
 
 Use a paid Apple Developer Program team, Xcode signed into that account in Settings > Accounts, Rust via rustup, and Godot **4.7.2** with matching iOS export templates. Set `GODOT_BIN` if your default Godot differs. Set `IOS_TEAM` to override the preset team.
 
-In App Store Connect, create an iOS app with this bundle ID, then create an internal testing group containing your App Store Connect user. Enable automatic distribution for the group. Complete any Apple agreements yourself and answer export compliance based on the app's actual use of encryption.
+The app record and internal group are already registered. For another Apple team, create an iOS app with the matching bundle ID and an internal group containing your App Store Connect user, with automatic distribution enabled. Complete any Apple agreements yourself and answer export compliance based on the app's actual use of encryption.
 
 ```sh
 just testflight --check

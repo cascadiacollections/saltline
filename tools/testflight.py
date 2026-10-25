@@ -78,7 +78,8 @@ def main():
     run("xcodebuild", "-project", project / f"{APP}.xcodeproj", "-scheme", APP,
         "-configuration", "Release", "-destination", "generic/platform=iOS",
         "-archivePath", archive, "-allowProvisioningUpdates", f"DEVELOPMENT_TEAM={team}",
-        f"PRODUCT_BUNDLE_IDENTIFIER={BUNDLE}", "CODE_SIGN_STYLE=Automatic", "archive")
+        f"PRODUCT_BUNDLE_IDENTIFIER={BUNDLE}", "CODE_SIGN_STYLE=Automatic", "CODE_SIGN_IDENTITY=Apple Development",
+        "PROVISIONING_PROFILE_SPECIFIER=", "archive")
     print(f"Archive: {archive}", flush=True)
     if args.upload:
         options = stage / "ExportOptions.plist"
