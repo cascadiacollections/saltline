@@ -12,7 +12,7 @@ just testflight
 just testflight --upload
 ```
 
-The default command creates a signed release archive under `build/testflight/<UTC build number>/`. `--upload` additionally sends it to App Store Connect with `testFlightInternalTestingOnly=true`, so it is limited to internal testers. Each invocation uses a new UTC build number; use `--build-number` to override it. After Apple processes the upload, install through TestFlight using the Apple Account in your internal group. Builds expire after 90 days.
+The default command creates a signed release archive under `build/testflight/<UTC build number>/`. `--upload` additionally sends it to App Store Connect with `testFlightInternalTestingOnly=true`, so it is limited to internal testers. Build numbers use UTC days since 2020, hour, and minute, fitting Apple’s four/two/two digit limits. Allow a minute between builds or use `--build-number` to provide a higher value. After Apple processes the upload, install through TestFlight using the Apple Account in your internal group. Builds expire after 90 days.
 
 Xcode manages signing and provisioning through its existing account. No credentials or signing keys are committed. These commands do not publish an App Store release. For quick device development, open the exported Xcode project and run on your connected iPhone.
 

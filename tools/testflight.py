@@ -19,11 +19,16 @@ BUNDLE = "com.cascadiacollections.saltline"
 def run(*args, **kwargs):
     subprocess.run([str(arg) for arg in args], cwd=ROOT, check=True, **kwargs)
 
+def default_build_number():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    days = (now.date() - datetime.date(2020, 1, 1)).days
+    return f"{days}.{now.hour}.{now.minute}"
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upload", action="store_true", help="upload the archive as internal TestFlight only")
     parser.add_argument("--check", action="store_true", help="check local prerequisites without building or contacting Apple")
-    parser.add_argument("--build-number", default=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
+    parser.add_argument("--build-number", default=default_build_number())
     args = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("Run on macOS with Xcode installed")
@@ -39,8 +44,8 @@ def main():
     team = os.environ.get("IOS_TEAM") or (match.group(1) if match else "")
     if not re.fullmatch(r"[A-Z0-9]{10}", team):
         parser.error("Set IOS_TEAM to your Apple Developer Program team ID")
-    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", args.build_number):
-        parser.error("Build number must contain one to three numeric components")
+    if not re.fullmatch(r"[1-9][0-9]{0,3}(?:\.[0-9]{1,2}){0,2}", args.build_number):
+        parser.error("Build number must have a positive major of up to four digits and up to two components of two digits")
     run("xcodebuild", "-version")
     print(f"{APP}: {BUNDLE}; team {team}; build {args.build_number}", flush=True)
     if args.check:
