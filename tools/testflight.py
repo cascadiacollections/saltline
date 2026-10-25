@@ -45,8 +45,8 @@ def main():
     print(f"{APP}: {BUNDLE}; team {team}; build {args.build_number}", flush=True)
     if args.check:
         return
-    cargo = subprocess.check_output(["rustup", "which", "cargo"], text=True).strip()
-    rustc = subprocess.check_output(["rustup", "which", "rustc"], text=True).strip()
+    cargo = subprocess.check_output(["rustup", "which", "cargo"], cwd=ROOT, text=True).strip()
+    rustc = subprocess.check_output(["rustup", "which", "rustc"], cwd=ROOT, text=True).strip()
     env = dict(os.environ, RUSTC=rustc)
     run("rustup", "target", "add", "aarch64-apple-ios")
     run(cargo, "build", "-p", CRATE, env=env)
