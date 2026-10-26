@@ -1997,6 +1997,39 @@ mod tests {
         (canvas, buttons)
     }
 
+    /// The iPhone SE (2nd gen), the low-end iOS profiling floor: 1334 by 750
+    /// held landscape, a home button and no notch, so the safe area leaves no
+    /// cutout. Its 16:9 makes the narrowest buffer, and every screen a phone
+    /// reaches must fit in it with nothing assumed of a notch or an inset.
+    #[test]
+    fn an_iphone_se_lays_out_at_320_with_no_insets_and_every_button_on_screen() {
+        let mut g = Game::new(true, Save::default());
+        g.fit_display((1334, 750), (0, 0));
+        assert_eq!((g.display.buffer_w, g.display.buffer_h), (320, 180));
+        assert_eq!(g.display.letterbox, (0, 0));
+        let on_screen = |g: &Game, screen: &str| {
+            let (_, buttons) = draw(g);
+            assert!(!buttons.is_empty(), "{screen}: no touch buttons drawn");
+            for b in &buttons {
+                let r = b.rect;
+                assert!(
+                    r.x >= 0 && r.y >= 0 && r.x + r.w <= 320 && r.y + r.h <= 180,
+                    "{screen}: {:?} at {r:?} leaves the 320x180 buffer",
+                    b.action
+                );
+            }
+        };
+        on_screen(&g, "title");
+        g.start_run(42, false);
+        g.take_effects();
+        on_screen(&g, "run");
+        let mut g = Game::new(true, Save::default());
+        g.fit_display((1334, 750), (0, 0));
+        g.start_versus();
+        g.take_effects();
+        on_screen(&g, "versus");
+    }
+
     #[test]
     fn trial_composites_the_loaded_coastal_background_on_both_canvas_scales() {
         let mut g = game();
