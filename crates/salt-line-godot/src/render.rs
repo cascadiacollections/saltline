@@ -610,7 +610,14 @@ impl Painter<'_> {
                     );
                 }
                 let back = self.g.input_label(Action::Back);
-                y = self.menu_row(y, Action::Back, &format!("{back}  QUIT"), "QUIT", dim);
+                // Armed, the row says what the second press does, as a
+                // match's TITLE does (`Game::quit_armed`).
+                let (quit, quit_c) = match (self.g.quit_armed.is_some(), self.plated()) {
+                    (false, _) => ("QUIT", dim),
+                    (true, true) => (QUIT_AGAIN_TAP, fg),
+                    (true, false) => (QUIT_AGAIN_KEY, fg),
+                };
+                y = self.menu_row(y, Action::Back, &format!("{back}  {quit}"), quit, quit_c);
                 if self.g.crash.last_crash.is_some() {
                     let text = if self.g.crash.crash_copied {
                         "CRASH REPORT COPIED"

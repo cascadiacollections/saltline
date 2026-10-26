@@ -490,9 +490,37 @@ fn controls_and_back() {
 }
 
 #[test]
-fn back_on_the_title_quits() {
+fn back_on_the_title_quits_on_the_second_press() {
     let mut g = game();
+    assert!(!tick(&mut g, keys(&[Key::Escape])).contains(&Effect::Quit));
+    assert!(g.quit_armed.is_some());
+    tick(&mut g, Intents::default());
     assert!(tick(&mut g, keys(&[Key::Escape])).contains(&Effect::Quit));
+}
+
+#[test]
+fn an_armed_quit_on_the_title_lapses() {
+    let mut g = game();
+    tick(&mut g, keys(&[Key::Escape]));
+    assert!(g.busy(), "the lapse needs frames to count down");
+    let frames = (versus::QUIT_CONFIRM / FRAME).ceil() as usize + 1;
+    for _ in 0..frames {
+        tick(&mut g, Intents::default());
+    }
+    assert_eq!(g.quit_armed, None);
+    assert!(!tick(&mut g, keys(&[Key::Escape])).contains(&Effect::Quit));
+}
+
+#[test]
+fn leaving_the_title_disarms_quit() {
+    let mut g = game();
+    tick(&mut g, keys(&[Key::Escape]));
+    tick(&mut g, keys(&[Key::V]));
+    assert_eq!(g.mode, Mode::Controls);
+    assert_eq!(g.quit_armed, None);
+    tick(&mut g, keys(&[Key::Escape]));
+    assert_eq!(g.mode, Mode::Title);
+    assert!(!tick(&mut g, keys(&[Key::Escape])).contains(&Effect::Quit));
 }
 
 // ------------------------------------------------------------- seed entry
