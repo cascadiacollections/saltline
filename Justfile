@@ -210,10 +210,13 @@ android-log:
 # devicectl installs it. IOS_TEAM overrides the preset's Team ID. Set IOS_DEVICE to a
 # device name or UDID when more than one physical iPhone is attached.
 
+# The iOS preset's application/min_ios_version; the library is built for the same floor.
+ios_min := "16.0"
+
 # Build the GDExtension for iOS.
 ios-lib profile="debug":
     rustup target add aarch64-apple-ios
-    RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build -p salt-line-godot \
+    IPHONEOS_DEPLOYMENT_TARGET={{ ios_min }} RUSTC="$(rustup which rustc)" "$(rustup which cargo)" build -p salt-line-godot \
         --target aarch64-apple-ios {{ if profile == "release" { "--release" } else { "" } }}
 
 # Builds the host extension too: Godot loads it while importing the project on a clean checkout.
@@ -286,6 +289,26 @@ ios profile="debug": (ios-project profile)
     fi
     xcrun devicectl device install app --device "$device" "$app"
     xcrun devicectl device process launch --device "$device" com.cascadiacollections.saltline
+
+# IOS_DEVICE picks the phone (a name or UDID; `xcrun devicectl list devices`). E.g.
+# `just ios-launch --salt-perf` or `just ios-launch --rendering-method gl_compatibility`.
+# Launch the installed app on the iPhone with developer flags, streaming its log.
+ios-launch *args:
+    xcrun devicectl device process launch --console --terminate-existing \
+        --device "${IOS_DEVICE:?set IOS_DEVICE to the iPhone name or UDID}" \
+        com.cascadiacollections.saltline {{ args }}
+
+# renderer is mobile or gl_compatibility; the CSV lands in the app's Documents/bench.
+# Soak benchmark on the iPhone (docs/profiling-ios.md): `just ios release` first, then this.
+ios-bench seconds="300" renderer="mobile":
+    just ios-launch --rendering-method {{ renderer }} --salt-bench --salt-bench-seconds {{ seconds }}
+
+# Copy the benchmark CSVs off the iPhone into build/bench.
+ios-bench-pull:
+    mkdir -p build/bench
+    xcrun devicectl device copy from --device "${IOS_DEVICE:?set IOS_DEVICE to the iPhone name or UDID}" \
+        --domain-type appDataContainer --domain-identifier com.cascadiacollections.saltline \
+        --source Documents/bench --destination build/bench
 
 # Check advisories, licences, bans and sources (deny.toml). Needs cargo-deny.
 deny:
