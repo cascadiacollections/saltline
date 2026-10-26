@@ -1517,6 +1517,11 @@ and how it is going should read without reading words.
   TITLE sits where NEXT ROUND's target was, under a tap meant for NEXT
   ROUND after an accidental II; now that tap only arms it. A won match's
   plate, paused or not, quits on the first press: nothing is left to lose.
+  QUIT on the title (or a back gesture there) asks twice the same way:
+  within 3 s, and leaving the title or starting the demo disarms it. On
+  iOS, which ignores `SceneTree::quit`, the adapter writes what a close
+  would and exits the process itself. The error screen still quits on
+  the first press.
 
 ### 11.5 Open questions
 

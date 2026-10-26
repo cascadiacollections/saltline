@@ -363,6 +363,7 @@ impl Game {
         // A half-confirmed new run on the title is forgotten, as leaving
         // the title forgets it: the press after the demo asks again.
         self.run_file.discard_armed = None;
+        self.quit_armed = None;
         let stash = Stash {
             play: std::mem::take(&mut self.play),
             versus_live: self.versus.live.take(),

@@ -788,6 +788,10 @@ pub struct Game {
     /// Seconds the title has gone without input, towards the idle demo
     /// (`demo::IDLE_DEMO_AFTER`). Zero anywhere but the title.
     pub(crate) title_idle: f64,
+    /// Seconds since the title's QUIT was pressed once, up to
+    /// `versus::QUIT_CONFIRM`: a second press in that time quits. `None`
+    /// when not armed; leaving the title disarms it.
+    pub(crate) quit_armed: Option<f64>,
     /// The leg the next demo begins on: the rotation carries on across
     /// demos in a session rather than restarting at the first run.
     pub(crate) demo_next_leg: u64,
@@ -1069,6 +1073,7 @@ impl Default for Game {
             layouts: LayoutsState::default(),
             editor: EditorState::default(),
             title_idle: 0.0,
+            quit_armed: None,
             demo_next_leg: 0,
             idle_demo_spent: false,
             unfocused: false,
@@ -1393,6 +1398,7 @@ impl Game {
             || self.editor.testing_in_flight()
             || self.play.clear_hold > 0.0
             || self.status_time > 0.0
+            || self.quit_armed.is_some()
             || self.dev.auto
             || self.demo.is_some()
             || self.watch.as_ref().is_some_and(|w| !w.paused && !w.ended)

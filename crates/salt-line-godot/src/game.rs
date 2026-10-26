@@ -813,6 +813,20 @@ impl SaltLine {
 // ------------------------------------------------------------------ effects
 
 impl SaltLine {
+    /// End the app. iOS ignores `SceneTree::quit` (apps there are meant to
+    /// be closed from the home screen), so there the process exits itself,
+    /// after the writes a close would make: no `EXIT_TREE` follows. After a
+    /// panic `apply` still writes nothing.
+    fn quit(&mut self) {
+        if cfg!(target_os = "ios") {
+            let pending = std::mem::take(&mut self.events);
+            let fx = self.g.closing(&pending);
+            self.apply(fx);
+            std::process::exit(0);
+        }
+        self.base().get_tree().quit();
+    }
+
     /// Carry out what the core asked for, in the order it asked.
     fn apply(&mut self, fx: Vec<Effect>) {
         for effect in fx {
@@ -887,7 +901,7 @@ impl SaltLine {
                     let fx = self.g.pasted(&text);
                     self.apply(fx);
                 }
-                Effect::Quit => self.base().get_tree().quit(),
+                Effect::Quit => self.quit(),
                 Effect::Store(Store::Layouts { text, why }) => {
                     // The slot file, written whole and atomically as the
                     // save is; the outcome goes back to the core at once.

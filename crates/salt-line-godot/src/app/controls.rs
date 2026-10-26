@@ -181,6 +181,15 @@ impl Game {
         self.handle_global_input();
         match self.mode {
             Mode::Title => {
+                // An armed QUIT lapses after `QUIT_CONFIRM`, as a match's
+                // does: a press much later asks again.
+                if let Some(t) = self.quit_armed {
+                    let t = t + delta;
+                    self.quit_armed = (t < versus::QUIT_CONFIRM).then_some(t);
+                    if self.quit_armed.is_none() {
+                        self.fx.push(Effect::Redraw);
+                    }
+                }
                 if self.action_pressed(Action::TitleMusic) {
                     self.save.title_music = !self.save.title_music;
                     self.settings.touch();
@@ -242,12 +251,21 @@ impl Game {
                     self.play(Sound::Ui);
                     self.mode = Mode::Controls;
                 } else if self.action_pressed(Action::Back) {
-                    self.fx.push(Effect::Quit);
+                    // Quitting asks twice, as it does from a match: a
+                    // stray tap or back gesture only arms it.
+                    if self.quit_armed.take().is_some() {
+                        self.fx.push(Effect::Quit);
+                    } else {
+                        self.quit_armed = Some(0.0);
+                        self.play(Sound::Ui);
+                        self.fx.push(Effect::Redraw);
+                    }
                 }
-                // Leaving the title disarms a half-confirmed discard, so a
-                // press on a later visit asks again.
+                // Leaving the title disarms a half-confirmed discard or
+                // quit, so a press on a later visit asks again.
                 if self.mode != Mode::Title {
                     self.run_file.discard_armed = None;
+                    self.quit_armed = None;
                 }
             }
             Mode::Controls => {
