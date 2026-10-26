@@ -1,5 +1,7 @@
 # One texture, two renderers: a Salt Line footprint audit
 
+> **iOS update:** iOS now runs the Mobile renderer (Metal), so Compatibility can be measured against it on the iPhone SE profiling floor. Android and desktop keep Compatibility. See [profiling-ios.md](profiling-ios.md#renderer) for the toggle and the benchmark.
+
 > Since #49 the frame is one whole-frame texture with up to twelve strip textures drawn over it, and only the strips that changed are uploaded. Since the layered frame (`backdrop`), the playfield's sky and ground are two more textures under those, uploaded only when they change. The one-texture, one-draw-call description below predates both; the memory findings still apply.
 
 Salt Line draws its 320 × 180 playfield in Rust, uploads one RGBA image to Godot, and displays it as one textured quad. That made the desktop renderer seem like a minor choice. A memory snapshot showed otherwise.
