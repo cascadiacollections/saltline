@@ -318,3 +318,7 @@ fuzz target="save_parse" seconds="60":
 # Mutation testing for one file (cargo-mutants); the weekly workflow runs the lot.
 mutants file:
     cargo mutants -f {{ file }}
+
+# Signed archive; add --upload to distribute to internal TestFlight testers.
+testflight *args:
+    python3 tools/testflight.py {{ args }}
