@@ -98,6 +98,15 @@ pub struct DevArgs {
     /// `--salt-fork-duel <seed>:<round>`: as `--salt-fork-run`, for round
     /// `round` (from 0) of the duel on match seed `seed`.
     pub fork_duel: Option<String>,
+    /// `--salt-perf`: show the debug frame-time overlay from launch, on a
+    /// desktop too (`perf::Hud`). Debug builds only; a phone shows it anyway.
+    pub perf: bool,
+    /// `--salt-bench`: the soak benchmark (`perf::Bench`): an autopilot run
+    /// on `perf::BENCH_SEED` whose every frame is written as CSV under
+    /// `user://bench/`, then quit.
+    pub bench: bool,
+    /// `--salt-bench-seconds <s>`: how long `--salt-bench` runs.
+    pub bench_seconds: f64,
 }
 
 impl DevArgs {
@@ -131,6 +140,12 @@ impl DevArgs {
             free: flag(args, "--salt-free"),
             fork_run: value(args, "--salt-fork-run"),
             fork_duel: value(args, "--salt-fork-duel"),
+            perf: flag(args, "--salt-perf"),
+            bench: flag(args, "--salt-bench"),
+            bench_seconds: value(args, "--salt-bench-seconds")
+                .and_then(|v| v.parse().ok())
+                .filter(|s: &f64| s.is_finite() && *s > 0.0)
+                .unwrap_or(crate::perf::BENCH_SECONDS),
         }
     }
 }
@@ -208,7 +223,24 @@ mod tests {
                 free: false,
                 fork_run: None,
                 fork_duel: None,
+                perf: false,
+                bench: false,
+                bench_seconds: crate::perf::BENCH_SECONDS,
             }
+        );
+    }
+
+    #[test]
+    fn the_benchmark_runs_five_minutes_unless_told() {
+        let a = DevArgs::parse(&args("-- --salt-bench"));
+        assert!(a.bench && !a.perf);
+        assert_eq!(a.bench_seconds, 300.0);
+        let a = DevArgs::parse(&args("-- --salt-bench --salt-bench-seconds 30 --salt-perf"));
+        assert!(a.bench && a.perf);
+        assert_eq!(a.bench_seconds, 30.0);
+        assert_eq!(
+            DevArgs::parse(&args("--salt-bench-seconds -1")).bench_seconds,
+            300.0
         );
     }
 

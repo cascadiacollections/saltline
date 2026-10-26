@@ -53,7 +53,8 @@ def main():
         return
     cargo = subprocess.check_output(["rustup", "which", "cargo"], cwd=ROOT, text=True).strip()
     rustc = subprocess.check_output(["rustup", "which", "rustc"], cwd=ROOT, text=True).strip()
-    env = dict(os.environ, RUSTC=rustc)
+    # The iOS preset's application/min_ios_version (Justfile ios_min).
+    env = dict(os.environ, RUSTC=rustc, IPHONEOS_DEPLOYMENT_TARGET="16.0")
     run("rustup", "target", "add", "aarch64-apple-ios")
     run(cargo, "build", "-p", CRATE, env=env)
     run(cargo, "build", "--release", "-p", CRATE, "--target", "aarch64-apple-ios", env=env)

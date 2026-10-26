@@ -84,6 +84,16 @@ textures/default_filters/anisotropic_filtering_level=0
 ; Window ratios outside the generated 320..400px width (and Long Lens)
 ; letterbox around the complete playfield instead of exposing unused sky.
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
-; Phones use the same low-overhead renderer; it also works on emulators where
-; Vulkan presentation fails.
-renderer/rendering_method.mobile="gl_compatibility"
+; Android uses the same low-overhead renderer; it also works on emulators where
+; Vulkan presentation fails. Keyed to `android`, not `mobile`, so exactly one
+; override matches on each phone.
+renderer/rendering_method.android="gl_compatibility"
+; iOS profiles the Mobile renderer (Metal) on the low-end floor, the iPhone SE
+; 2nd gen (docs/profiling-ios.md). Compatibility stays one switch away: launch
+; with `--rendering-method gl_compatibility` (`just ios-launch`), or set this
+; line to "gl_compatibility" to ship it. Compare the two with `--salt-bench`
+; before choosing: on desktop Compatibility cost ~190 MiB less
+; (docs/rendering-footprint.md), and the SE has 3 GB.
+renderer/rendering_method.ios="mobile"
+; If Metal cannot start, run on OpenGL ES (Compatibility) instead of failing.
+rendering_device/fallback_to_opengl3=true
