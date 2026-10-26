@@ -97,6 +97,7 @@ use crate::layouts_file::{
 use crate::match_log::{self, MATCH_FILES, MATCH_LOADING_PATH, MATCH_PATH};
 use crate::pads::Pads;
 use crate::palette::Palette;
+use crate::perf;
 #[cfg(feature = "profiling")]
 use crate::profiling::Capture as ProfileCapture;
 use crate::raster::Canvas;
@@ -221,6 +222,19 @@ pub struct SaltLine {
     /// Which of `start_check_scene`'s scenes is being checked.
     #[cfg(feature = "profiling")]
     check_scene: usize,
+    /// When this frame's `process` began, to time the frame (`perf`).
+    frame_started: Option<std::time::Instant>,
+    device_reads: perf::DeviceReads,
+    /// The debug frame-time overlay (`perf::Hud`); absent from release
+    /// builds, and until `ready`.
+    #[cfg(debug_assertions)]
+    hud: Option<perf::Hud>,
+    /// The overlay shows whatever F1 says: on a phone, or asked for with
+    /// `--salt-perf` or `--salt-bench`.
+    #[cfg(debug_assertions)]
+    hud_forced: bool,
+    /// `--salt-bench`: the soak benchmark, while it runs.
+    bench: Option<perf::Bench>,
 }
 
 #[godot_api]
@@ -271,6 +285,13 @@ impl INode2D for SaltLine {
             check_frame: (Canvas::detailed(1, 1), Cache::default(), Vec::new()),
             #[cfg(feature = "profiling")]
             check_scene: 0,
+            frame_started: None,
+            device_reads: perf::DeviceReads::default(),
+            #[cfg(debug_assertions)]
+            hud: None,
+            #[cfg(debug_assertions)]
+            hud_forced: false,
+            bench: None,
         }
     }
 
@@ -393,6 +414,27 @@ impl INode2D for SaltLine {
         let trial_mode = Self::cmdline_all().iter().any(|arg| arg == "--salt-trial");
         let trial_seed = args.seed.unwrap_or(42);
         let mut args = args;
+        if args.bench {
+            // The same run every time: the autopilot on a fixed seed, which
+            // starts the seed again from the title whenever a run ends.
+            args.seed = Some(perf::BENCH_SEED);
+            args.screen = None;
+            args.auto = true;
+            self.bench = Some(perf::Bench::new(args.bench_seconds));
+            godot_print!(
+                "salt-bench: starting; seed={} seconds={:.0} renderer={}",
+                perf::BENCH_SEED,
+                args.bench_seconds,
+                RenderingServer::singleton().get_current_rendering_method()
+            );
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.hud_forced = args.perf || args.bench || self.g.display.mobile;
+            let (hud, layer) = perf::Hud::new();
+            self.base_mut().add_child(&layer);
+            self.hud = Some(hud);
+        }
         if trial_mode {
             args.seed = None;
             args.continue_run = false;
@@ -447,8 +489,11 @@ impl INode2D for SaltLine {
                 self.start_check_scene();
             }
         }
-        #[cfg(feature = "profiling")]
         let process_started = std::time::Instant::now();
+        let frame_ms = self
+            .frame_started
+            .replace(process_started)
+            .map(|then| (process_started - then).as_secs_f64() * 1000.0);
         #[cfg(feature = "profiling")]
         self.profile.begin_frame();
         // The dev clock (`--salt-shot-at`) runs on the capped time the core
@@ -491,11 +536,15 @@ impl INode2D for SaltLine {
         #[cfg(feature = "profiling")]
         self.profile
             .start_if_playing(self.g.mode == crate::app::Mode::Playing);
-        if self.redraw.due(self.busy()) {
+        let rendered = self.redraw.due(self.busy());
+        if rendered {
             self.render();
         }
         // Every frame, drawn or not: an undrawn frame is the last one drawn.
         self.maybe_screenshot();
+        if let Some(frame_ms) = frame_ms {
+            self.measure(frame_ms, process_started.elapsed(), rendered, delta);
+        }
         #[cfg(feature = "profiling")]
         {
             self.profile.record_process(process_started.elapsed());
@@ -768,11 +817,13 @@ impl INode2D for SaltLine {
             // Pending settings go to disk before the app can be killed: a
             // phone may never resume a paused app, and a close is final.
             CanvasItemNotification::APPLICATION_PAUSED => {
+                self.end_bench("paused");
                 let pending = std::mem::take(&mut self.events);
                 let fx = self.g.app_paused(&pending);
                 self.apply(fx);
             }
             CanvasItemNotification::WM_CLOSE_REQUEST | CanvasItemNotification::EXIT_TREE => {
+                self.end_bench("closed");
                 let pending = std::mem::take(&mut self.events);
                 let fx = self.g.closing(&pending);
                 self.apply(fx);
@@ -1338,6 +1389,52 @@ impl SaltLine {
     /// camera hole on a phone held landscape. Only asked on mobile, where the
     /// window is the whole display; on a desktop the "safe area" is the
     /// monitor's, not the window's.
+    /// One frame's timing, for the overlay and the benchmark (`perf`). The
+    /// monitors read here (draw calls, video memory) describe the frame the
+    /// renderer last finished, one behind the one just processed.
+    fn measure(&mut self, frame_ms: f64, process: std::time::Duration, rendered: bool, delta: f64) {
+        #[cfg(not(debug_assertions))]
+        if self.bench.is_none() {
+            return;
+        }
+        let mut sample = perf::Sample::read(frame_ms, process.as_secs_f64() * 1000.0, rendered);
+        self.device_reads.fill(&mut sample);
+        #[cfg(debug_assertions)]
+        if let Some(hud) = self.hud.as_mut() {
+            hud.update(self.hud_forced || self.g.debug, &sample, delta);
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = delta;
+        if let Some(bench) = self.bench.as_mut() {
+            bench.record(sample);
+            if bench.finish_if_due() {
+                self.end_bench("done");
+                self.quit();
+            }
+        }
+    }
+
+    /// Write the benchmark's frames, if one is running, and stop it. `why`
+    /// names the file: `done` for a full run, `paused` or `closed` for one
+    /// cut short, which is still worth reading.
+    fn end_bench(&mut self, why: &str) {
+        let Some(bench) = self.bench.take() else {
+            return;
+        };
+        godot_print!("{}", bench.summary_line());
+        let stamp = Time::singleton().get_unix_time_from_system() as u64;
+        let path = format!("{}/bench-{stamp}-{why}.csv", perf::BENCH_DIR);
+        let made = godot::classes::DirAccess::make_dir_recursive_absolute(perf::BENCH_DIR);
+        if made != godot::global::Error::OK
+            || !save::write(&path, &format!("{path}.new"), &bench.csv())
+        {
+            godot_warn!("salt-bench: could not write {path}");
+            return;
+        }
+        let shown = save::on_disk(&path).map_or(path.clone(), |p| p.display().to_string());
+        godot_print!("salt-bench: wrote {shown}");
+    }
+
     fn cutout_px(&self, (win_x, _): (i32, i32)) -> (i32, i32) {
         if !self.g.display.mobile {
             return (0, 0);

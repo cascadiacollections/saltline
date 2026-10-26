@@ -44,12 +44,14 @@
 //!            match_log      the suspended versus match's file, for RESUME MATCH
 //!            crash          the panic hook and its report
 //! dev        profiling      opt-in (`--features profiling`) frame-upload timing
+//!            perf           debug frame-time overlay, `--salt-bench` soak log,
+//!                           iOS thermal/memory shim
 //! ```
 //!
 //! "Engine-free" means the module compiles and is tested under `cargo test`
 //! with no Godot running. The modules that call into the engine are `lib`,
 //! `game`, `save`, `palette` and `sprites` (texture loading), `profiling`
-//! (only to print its summary), and `raster` only to hand its bytes over as a
+//! (only to print its summary), `perf` (its overlay and monitor reads), and `raster` only to hand its bytes over as a
 //! `PackedByteArray`.
 
 use godot::prelude::*;
@@ -78,6 +80,7 @@ pub mod match_log;
 pub mod opponent;
 pub mod pads;
 pub mod palette;
+pub mod perf;
 pub mod presentation;
 #[cfg(feature = "profiling")]
 mod profiling;
