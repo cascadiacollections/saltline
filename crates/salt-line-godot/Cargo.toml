@@ -41,5 +41,5 @@ salt-line-sim = { path = "../salt-line-sim" }
 [dev-dependencies]
 insta = "1"
 pretty_assertions = "1"
-rstest = { version = "0.27", default-features = false }
+rstest = { version = "0.28", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
