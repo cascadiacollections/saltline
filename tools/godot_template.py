@@ -237,6 +237,22 @@ def build(platform: str, arch: str | None, src: Path, out: Path, jobs: int) -> N
     print(f"{dest}  {dest.stat().st_size} bytes  sha256 {sha256(dest)}")
 
 
+def template_release_dir() -> str:
+    """Directory name under export_templates/.
+
+    Unset, this is the 4.7.2 stable pin (`4.7.2.stable`). The 4.8 trial sets
+    GODOT_TEMPLATE_VERSION=4.8.beta2 for its own export step. This is not
+    GODOT_VERSION: `key` treats that variable as the shipping pin and fails
+    if it disagrees.
+    """
+    override = os.environ.get("GODOT_TEMPLATE_VERSION", "").strip()
+    if override:
+        if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?\.(?:stable|beta\d*|rc\d*|dev\d*)", override):
+            fail(f"GODOT_TEMPLATE_VERSION={override!r} is not a Godot template directory name")
+        return override
+    return f"{GODOT_VERSION}.stable"
+
+
 def official_templates() -> Path:
     """Where the Godot editor keeps the official templates for this version."""
     if sys.platform == "darwin":
@@ -245,7 +261,7 @@ def official_templates() -> Path:
         base = Path(os.environ["APPDATA"]) / "Godot"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "godot"
-    return base / "export_templates" / f"{GODOT_VERSION}.stable"
+    return base / "export_templates" / template_release_dir()
 
 
 def elf_comment(data: bytes) -> list[str]:
@@ -363,7 +379,7 @@ def prepare_android(debug: bool = False) -> None:
                 fail("Android source template contains an unsafe path")
         archive.extractall(directory)
     (directory / ".gdignore").touch()
-    (directory.parent / ".build_version").write_text(f"{GODOT_VERSION}.stable\n")
+    (directory.parent / ".build_version").write_text(f"{template_release_dir()}\n")
     (directory / "gradlew").chmod(0o755)
 
     android = "http://schemas.android.com/apk/res/android"

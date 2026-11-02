@@ -419,6 +419,8 @@ jobs:
           uv run --locked python -m unittest discover -s tools -p test_sprite_pipeline.py -v
       - name: test the device profiling runner's log reading
         run: python3 -m unittest discover -s tools -p test_android_profile_run.py -v
+      - name: test the Godot 4.8 trial driver
+        run: python3 -m unittest discover -s tools -p test_godot_4_8_trial.py -v
       # ty's version comes from uv.lock and Dependabot bumps it in its own
       # group, so a release with new diagnostics turns only that PR red. This
       # job gates releases, so do not merge that PR red.
