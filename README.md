@@ -502,7 +502,9 @@ exactly which pixels moved. After an intended change, run `cargo insta review`
 (or `INSTA_UPDATE=always cargo test`) and commit the updated `.snap` files. A
 changed screen digest is a determinism change and belongs in NOTES.md.
 `just miri` runs the pure modules under Miri, the Rust interpreter that
-catches undefined behaviour.
+catches undefined behaviour. The GDExtension entry point is left out of that
+run (`cfg(miri)` in `salt-line-godot`): it defines `__cxa_thread_atexit_impl`,
+which recent nightly Miri already shims in the standard library.
 `just bench` runs the divan benchmarks. On this machine a whole screen,
 solvability proof included, takes 40–105 µs, and a shot takes under a
 microsecond. Two slower checks run weekly (`.github/workflows/weekly.yml`)
