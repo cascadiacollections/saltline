@@ -560,7 +560,10 @@ jobs:
   # almost no unsafe today, so this is future-proofing: it covers the pure
   # modules (trig, RNG, save format, touch, aim, icons), because the whole sim
   # suite takes far too long interpreted. Snapshot tests opt out (insta uses a
-  # socket Miri cannot emulate).
+  # socket Miri cannot emulate). The GDExtension entry point is omitted under
+  # Miri (salt-line-godot lib.rs): `#[gdextension]` defines
+  # `__cxa_thread_atexit_impl`, which clashes with a standard-library shim on
+  # recent nightly Miri. The modules below do not need that entry.
   miri:
     name: miri
     runs-on: ubuntu-latest

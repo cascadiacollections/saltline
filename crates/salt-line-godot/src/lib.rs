@@ -54,6 +54,8 @@
 //! (only to print its summary), `perf` (its overlay and monitor reads), and `raster` only to hand its bytes over as a
 //! `PackedByteArray`.
 
+// The prelude is only used by the entry point below, which Miri does not build.
+#[cfg(not(miri))]
 use godot::prelude::*;
 
 pub mod aim;
@@ -97,8 +99,17 @@ pub mod strips;
 pub mod touch;
 pub mod versus;
 
+// Miri sets `cfg(miri)` and interprets the pure modules (save format, touch,
+// aim, icons) plus `salt-line-sim`. It never loads Godot, so this entry point
+// is omitted there. On Linux `#[gdextension]` defines `__cxa_thread_atexit_impl`
+// for gdext's hot-reload workaround (`register_hot_reload_workaround`). Recent
+// nightly Miri shims that symbol in the standard library, and a second
+// definition aborts interpretation before any test runs. Shipping builds still
+// register the extension.
+#[cfg(not(miri))]
 struct SaltLineExtension;
 
+#[cfg(not(miri))]
 #[gdextension]
 unsafe impl ExtensionLibrary for SaltLineExtension {
     fn on_stage_init(stage: InitStage) {
