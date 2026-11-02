@@ -520,14 +520,14 @@ def smoke_launch(exe: Path, png: Path) -> dict[str, Any]:
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        pass
+        pass  # the process group already exited before SIGTERM
     try:
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
-            pass
+            pass  # the process group already exited before SIGKILL
         process.wait(timeout=3)
     ok = png.is_file() and png.read_bytes()[:4] == b"\x89PNG"
     tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:] if log_path.is_file() else ""
@@ -701,8 +701,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Godot 4.8-beta2 trial",
         "",
-        "Official editor and export templates. 4.7.2 stays the shipping pin. "
-        "Not a release build.",
+        "Official editor and export templates. 4.7.2 stays the shipping pin. Not a release build.",
         "",
         f"- 4.7.2 editor: `{stable.get('editor_version', 'not run')}`",
         f"- 4.8-beta2 editor: `{preview.get('editor_version', 'not run')}`",
@@ -939,7 +938,6 @@ def cmd_build(platform: str, arch: str | None, jobs: int, src: Path, out: Path) 
     env["GODOT_VERSION_STATUS"] = trial()["version_status"]
     run([*godot_template.SCONS, f"-j{jobs}", *godot_template.scons_args(platform, arch),
          f"build_profile={profile_path}"], cwd=src, env=env)
-    config = {"platform": platform, "arch": arch}
     built = src / "bin" / godot_template.output_name(platform, arch)
     if platform == "android":
         abi = {"arm64": "arm64-v8a", "arm32": "armeabi-v7a", "x86_32": "x86", "x86_64": "x86_64"}[arch]
