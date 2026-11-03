@@ -66,6 +66,41 @@ class EngineTools(unittest.TestCase):
                 with zipfile.ZipFile(android / "build/libs/release/godot-lib.template_release.aar") as archive:
                     self.assertEqual(archive.read(entry), b"stock")
 
+    def test_android_preparation_drops_files_from_an_older_template(self):
+        templates = android_profile.templates
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            android = root / "android"
+            (android / "res").mkdir(parents=True)
+            (android / "AndroidManifest.xml").write_text(
+                '<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application/></manifest>')
+            (root / "export_presets.cfg").write_text('[preset.3]\nname="Android"\n[preset.3.options]\n')
+            aar = root / "stock.aar"
+            with zipfile.ZipFile(aar, "w") as archive:
+                archive.writestr(f"jni/{templates.ANDROID_ABI}/libgodot_android.so", b"stock")
+
+            def template(version: str, app: str) -> Path:
+                source = root / version
+                source.mkdir()
+                with zipfile.ZipFile(source / "android_source.zip", "w") as archive:
+                    archive.writestr("src/main/AndroidManifest.xml", "<manifest><application/></manifest>")
+                    archive.writestr("gradlew", "")
+                    archive.writestr("libs/release/godot-lib.template_release.aar", aar.read_bytes())
+                    archive.writestr(app, "class App {}")
+                return source
+
+            old = template("4.7.2.stable", "src/main/java/com/godot/game/GodotApp.java")
+            new = template("4.8.beta2", "src/main/java/com/godot/game/app/GodotApplication.java")
+            java = android / "build" / "src" / "main" / "java" / "com" / "godot" / "game"
+            with patch.object(templates, "ROOT", root):
+                with patch.object(templates, "official_templates", return_value=old):
+                    templates.prepare_android()
+                self.assertTrue((java / "GodotApp.java").is_file())
+                with patch.object(templates, "official_templates", return_value=new):
+                    templates.prepare_android()
+            self.assertFalse((java / "GodotApp.java").exists())
+            self.assertTrue((java / "app" / "GodotApplication.java").is_file())
+
     def test_success_exit_without_validation_cannot_reuse_an_old_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

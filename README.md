@@ -830,7 +830,9 @@ JDK 17, and use Gradle. Existing `just android-apk`, `just android-release`,
 profiling and CI exports through `tools/godot_headless.sh` prepare the build
 automatically. Tracked `android/AndroidManifest.xml` and
 `android/res/xml/game_mode_config.xml` are reapplied to ignored generated
-`android/build` sources on every export. The selected custom APK's native engine
+`android/build` sources on every export. Preparation deletes and re-extracts
+`android/build` each time, so files from an older template version cannot
+survive; do not keep hand edits there. The selected custom APK's native engine
 is carried into the official Gradle AAR with the existing compiler check;
 switching to stock restores the stock AAR. For GUI/direct CLI exports, first run
 `python3 tools/godot_template.py prepare-android` (`--debug` for debug exports).
