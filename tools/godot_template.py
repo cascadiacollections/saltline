@@ -371,7 +371,12 @@ def prepare_android(debug: bool = False) -> None:
     directory = ROOT / "android" / "build"
     if not source.is_file():
         fail(f"missing {source}; install Godot's export templates")
-    directory.mkdir(parents=True, exist_ok=True)
+    # Start from an empty directory. Extracting over an older template keeps
+    # files the new one renamed: 4.8 moved GodotApp.java to app/GodotApplication.java,
+    # and the stale 4.7.2 class failed to compile against 4.8's Gradle project.
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True)
     with zipfile.ZipFile(source) as archive:
         for info in archive.infolist():
             dest = (directory / info.filename).resolve()
