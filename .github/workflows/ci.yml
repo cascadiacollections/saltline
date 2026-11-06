@@ -957,6 +957,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: salt-line-${{ matrix.preset }}
+          # Exports are only consumed inside this run; the dev and tagged
+          # releases keep the published copies. ~75 GB sat at 30 days.
+          retention-days: 7
           # An empty upload used to pass this job silently. Never again.
           if-no-files-found: error
           path: |
@@ -1097,6 +1100,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.preset }}
+          retention-days: 7
           path: dist/*
           if-no-files-found: error
 
@@ -1278,6 +1282,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-android
+          retention-days: 7
           path: dist/*
           if-no-files-found: error
 
@@ -1461,6 +1466,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-windows-arm64
+          retention-days: 7
           path: dist/*
           if-no-files-found: error
 
