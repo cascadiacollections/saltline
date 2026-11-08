@@ -17,18 +17,26 @@ run: build
 run-shareware: build
     godot --path . -- --salt-shareware
 
-# Export the shareware edition: "Linux", "Windows Desktop", "macOS" or "Android". Writes build/shareware/.
-export-shareware platform="Linux": build-release
+# Export the shareware edition: "Linux", "Windows Desktop", "macOS" or "Android" (a debug export, as android-apk). Writes build/shareware/.
+export-shareware platform="Linux":
     #!/usr/bin/env bash
     set -euo pipefail
+    mkdir -p build/shareware
     case "{{ platform }}" in
         Linux) out=SaltLine-shareware.x86_64 ;;
         "Windows Desktop") out=SaltLine-shareware.exe ;;
         macOS) out=SaltLine-shareware.zip ;;
-        Android) out=SaltLine-shareware.apk ;;
+        Android)
+            just android-lib
+            python3 tools/godot_template.py prepare-android --debug
+            bash tools/godot_headless.sh --frame-delay 800 --import
+            bash tools/godot_headless.sh --export-debug "Android Shareware" build/shareware/SaltLine-shareware.apk
+            test -e build/shareware/SaltLine-shareware.apk || { echo "error: export wrote nothing" >&2; exit 1; }
+            echo build/shareware/SaltLine-shareware.apk
+            exit 0 ;;
         *) echo "error: no shareware preset for '{{ platform }}'" >&2; exit 2 ;;
     esac
-    mkdir -p build/shareware
+    cargo build --release -p salt-line-godot
     bash tools/godot_headless.sh --import
     bash tools/godot_headless.sh --export-release "{{ platform }} Shareware" "build/shareware/$out"
     # --export-release has been known to exit 0 having written nothing.
