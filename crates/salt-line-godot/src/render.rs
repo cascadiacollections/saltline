@@ -851,6 +851,14 @@ impl Painter<'_> {
                     } else {
                         "CHALLENGE COMPLETE"
                     }
+                } else if self
+                    .g
+                    .play
+                    .run
+                    .as_ref()
+                    .is_some_and(|r| !r.is_over() && self.g.tier.run_capped(r.screens_cleared))
+                {
+                    "END OF SHAREWARE"
                 } else {
                     "OUT OF SHELLS"
                 };

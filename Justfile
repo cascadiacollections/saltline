@@ -13,6 +13,28 @@ build-release:
 run: build
     godot --path .
 
+# Play as the free shareware edition (crates/salt-line-godot/src/tier.rs): runs end after 12 screens; no challenges or editor.
+run-shareware: build
+    godot --path . -- --salt-shareware
+
+# Export the shareware edition: "Linux", "Windows Desktop", "macOS" or "Android". Writes build/shareware/.
+export-shareware platform="Linux": build-release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ platform }}" in
+        Linux) out=SaltLine-shareware.x86_64 ;;
+        "Windows Desktop") out=SaltLine-shareware.exe ;;
+        macOS) out=SaltLine-shareware.zip ;;
+        Android) out=SaltLine-shareware.apk ;;
+        *) echo "error: no shareware preset for '{{ platform }}'" >&2; exit 2 ;;
+    esac
+    mkdir -p build/shareware
+    bash tools/godot_headless.sh --import
+    bash tools/godot_headless.sh --export-release "{{ platform }} Shareware" "build/shareware/$out"
+    # --export-release has been known to exit 0 having written nothing.
+    test -e "build/shareware/$out" || { echo "error: export wrote nothing" >&2; exit 1; }
+    echo "build/shareware/$out"
+
 gen-art: export-sprites
     uv run python tools/gen_sprites.py
 

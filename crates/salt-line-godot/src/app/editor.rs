@@ -624,6 +624,10 @@ impl Game {
     /// Open the editor: on the kept draft if there is one, else its start
     /// page. Drawn at the layout width, letterboxed on a wider phone.
     pub(crate) fn open_editor(&mut self) {
+        if self.tier.is_shareware() {
+            self.note(crate::tier::FULL_GAME_ONLY.into());
+            return;
+        }
         if self.editor.newer_draft {
             self.note(NEWER_DRAFT_NOTE.into());
         }
@@ -646,6 +650,9 @@ impl Game {
     /// `--salt-editor-page`'s page open.
     pub(super) fn open_editor_from_dev(&mut self, code: Option<&str>, page: Option<&str>) {
         self.open_editor();
+        if self.mode != Mode::Editor {
+            return;
+        }
         if let Some(code) = code {
             let fx = self.pasted(code);
             self.fx.extend(fx);

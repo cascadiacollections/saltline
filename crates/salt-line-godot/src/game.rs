@@ -311,7 +311,10 @@ impl INode2D for SaltLine {
         }
         // `--salt-phone` lays the game out as a phone would (touch controls,
         // the rounded corners' pad, a phone's window), for captures.
-        let phone = DevArgs::parse(&Self::cmdline_all()).phone;
+        let dev = DevArgs::parse(&Self::cmdline_all());
+        let phone = dev.phone;
+        let tier =
+            crate::tier::Tier::detect(Os::singleton().has_feature("shareware"), dev.shareware);
         let mobile = Os::singleton().has_feature("mobile") || phone;
         if phone {
             self.phone_window = Some(crate::cli::PHONE_WINDOW);
@@ -343,6 +346,7 @@ impl INode2D for SaltLine {
             return;
         }
         self.g = Game::new(mobile, save::load());
+        self.g.tier = tier;
         // Versus seeds differ from launch to launch: the wall clock, to the
         // microsecond, read here as the date is.
         let micros = (Time::singleton().get_unix_time_from_system() * 1e6) as u64;

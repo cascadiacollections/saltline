@@ -867,9 +867,33 @@ Re-run preparation after reinstalling the Android build template.
    pause, audio, saves and replay outcomes remain intact. Repeat on Android 11
    (no API query) and a desktop build (no changed frame policy).
 
+## Editions
+
+One codebase builds two editions. `crates/salt-line-godot/src/tier.rs` is the only place they
+differ.
+
+| Edition | Where | Runs | Challenges, map editor |
+|---|---|---|---|
+| Full | Paid store builds | Unlimited | Yes |
+| Shareware | Free, from GitHub Releases and itch.io | End after 12 cleared screens, scored as usual | No |
+
+The simulation never sees the tier. A seed plays identically in both up to the cap, so replays,
+share codes and the daily board stay comparable. An export preset with the `shareware` custom
+feature builds the shareware edition. Every `* Shareware` preset in `export_presets.cfg` is a
+copy of its full preset with that feature and a `.shareware` application ID, so both can be
+installed side by side.
+
+```bash
+just run-shareware                 # play the shareware edition locally
+just export-shareware Linux        # or "Windows Desktop", macOS, Android -> build/shareware/
+```
+
+`tools/release_version.py` checks and sets the shareware presets' versions with the full ones.
+
 ## License
 
-MIT. See `LICENSE`.
+MIT. See `LICENSE`. The Salt Line name, icon and title artwork are covered by
+[TRADEMARK.md](TRADEMARK.md), not the code license.
 
 ### Concept boards and application icons
 
