@@ -890,6 +890,10 @@ just export-shareware Linux        # or "Windows Desktop", macOS, Android -> bui
 
 `tools/release_version.py` checks and sets the shareware presets' versions with the full ones.
 
+Tagged releases attach the shareware builds next to the full ones: `SaltLine-shareware-linux-x86_64.zip`,
+`-windows-x86_64.zip`, `-macos.zip` (not signed or notarized) and `-android-arm64.apk`. Pull requests and
+pushes to main don't build them.
+
 ## License
 
 MIT. See `LICENSE`. The Salt Line name, icon and title artwork are covered by

@@ -991,6 +991,33 @@ jobs:
             Linux) (cd build && zip -q "../dist/${{ matrix.zip }}" "${{ matrix.output }}" ./*.so) ;;
           esac
           ls -l dist
+      # The free shareware edition (crates/salt-line-godot/src/tier.rs), for
+      # tagged releases only so pull requests and main pay nothing for it. It
+      # reuses this job's GDExtension build; only the export and the zip are
+      # extra. Every platform with a `<preset> Shareware` preset gets one.
+      # The macOS shareware bundle is not signed or notarized.
+      - name: export and package the shareware edition
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.preset != 'Linux ARM64'
+        shell: bash
+        env:
+          PRESET: ${{ matrix.preset }}
+          OUTPUT: ${{ matrix.output }}
+          ZIP: ${{ matrix.zip }}
+        run: |
+          set -eu
+          mkdir -p build/shareware
+          bash tools/godot_headless.sh --export-release "$PRESET Shareware" "build/shareware/$OUTPUT"
+          if [ ! -e "build/shareware/$OUTPUT" ]; then
+            echo "the shareware export reported success but produced no artifact" >&2
+            exit 1
+          fi
+          zip_name="${ZIP/SaltLine-/SaltLine-shareware-}"
+          case "${{ runner.os }}" in
+            macOS) ditto -c -k --keepParent "build/shareware/$OUTPUT" "dist/$zip_name" ;;
+            Windows) (cd build/shareware && 7z a -tzip "../../dist/$zip_name" "$OUTPUT" ./*.dll > /dev/null) ;;
+            Linux) (cd build/shareware && zip -q "../../dist/$zip_name" "$OUTPUT" ./*.so) ;;
+          esac
+          ls -l dist
       # The smoke launch above runs from the checkout, where the editor-side
       # paths (target/release/...) still resolve, so it passed while the Linux
       # zip shipped the binary alone and could not load its extension. This
@@ -1256,6 +1283,7 @@ jobs:
             python3 tools/godot_template.py package-android "$engine" \
               --out "$RUNNER_TEMP/godot-templates/android_release.apk"
             python3 tools/godot_template.py use Android "$RUNNER_TEMP/godot-templates/android_release.apk"
+            python3 tools/godot_template.py use "Android Shareware" "$RUNNER_TEMP/godot-templates/android_release.apk"
           elif [ "$IS_TAG" = "true" ]; then
             echo "::error::a release tag must export on the stripped engine, and none was fetched"
             exit 1
@@ -1270,6 +1298,18 @@ jobs:
           bash tools/godot_headless.sh --export-release "Android" build/SaltLine.apk
           test -s build/SaltLine.apk
           cp build/SaltLine.apk dist/SaltLine-android-arm64.apk
+          ls -l dist
+      # The free shareware edition (tier.rs), for tagged releases only. Its
+      # own application ID, so it installs beside the full game.
+      - name: export the shareware APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ steps.key.outputs.mode == 'release' && secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD || 'android' }}
+        run: |
+          set -eu
+          bash tools/godot_headless.sh --export-release "Android Shareware" build/SaltLine-shareware.apk
+          test -s build/SaltLine-shareware.apk
+          cp build/SaltLine-shareware.apk dist/SaltLine-shareware-android-arm64.apk
           ls -l dist
       # The certificate digest is what decides whether this APK installs over
       # an existing one; print it so a key mix-up is visible in the log.
