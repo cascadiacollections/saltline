@@ -28,7 +28,6 @@ export-shareware platform="Linux":
         macOS) out=SaltLine-shareware.zip ;;
         Android)
             just android-lib
-            python3 tools/godot_template.py prepare-android --debug
             bash tools/godot_headless.sh --frame-delay 800 --import
             bash tools/godot_headless.sh --export-debug "Android Shareware" build/shareware/SaltLine-shareware.apk
             test -e build/shareware/SaltLine-shareware.apk || { echo "error: export wrote nothing" >&2; exit 1; }

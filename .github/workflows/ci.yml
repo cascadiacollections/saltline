@@ -1282,8 +1282,10 @@ jobs:
           if [ -f "$engine" ]; then
             python3 tools/godot_template.py package-android "$engine" \
               --out "$RUNNER_TEMP/godot-templates/android_release.apk"
+            # Both Android presets build from the one Gradle template, which
+            # godot_headless.sh prepares from this preset's engine for either,
+            # so the shareware APK exports on the stripped engine too.
             python3 tools/godot_template.py use Android "$RUNNER_TEMP/godot-templates/android_release.apk"
-            python3 tools/godot_template.py use "Android Shareware" "$RUNNER_TEMP/godot-templates/android_release.apk"
           elif [ "$IS_TAG" = "true" ]; then
             echo "::error::a release tag must export on the stripped engine, and none was fetched"
             exit 1
