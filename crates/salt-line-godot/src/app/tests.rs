@@ -1833,3 +1833,54 @@ fn controller_can_open_page_and_leave_credits() {
     tick(&mut g, pads(&[Pad::B]));
     assert_eq!(g.mode, Mode::Controls);
 }
+
+// --------------------------------------------------------------- shareware
+
+/// A run one screen short of the shareware cap, played by the autopilot.
+fn one_short_of_the_cap(tier: crate::tier::Tier) -> Game {
+    let mut g = playing(777);
+    g.tier = tier;
+    let last = crate::tier::SHAREWARE_SCREENS - 1;
+    g.jump_to(last);
+    g.play.run.as_mut().unwrap().screens_cleared = last;
+    g.dev.auto = true;
+    g.take_effects();
+    g
+}
+
+#[test]
+fn a_shareware_run_ends_and_is_scored_at_the_cap() {
+    let mut g = one_short_of_the_cap(crate::tier::Tier::Shareware);
+    let fx = run_until(&mut g, 20_000, |g| g.mode == Mode::GameOver);
+    let run = g.play.run.as_ref().unwrap();
+    assert_eq!(run.screens_cleared, crate::tier::SHAREWARE_SCREENS);
+    assert!(!run.is_over(), "the cap ends the run, not the shells");
+    assert_eq!(count(&fx, is_score), 1);
+}
+
+#[test]
+fn a_full_run_plays_past_the_shareware_cap() {
+    let mut g = one_short_of_the_cap(crate::tier::Tier::Full);
+    run_until(&mut g, 20_000, |g| {
+        g.play.run.as_ref().unwrap().screens_cleared > crate::tier::SHAREWARE_SCREENS
+    });
+    assert_ne!(g.mode, Mode::GameOver);
+}
+
+#[test]
+fn shareware_leaves_challenges_and_the_editor_out() {
+    let mut g = game();
+    g.tier = crate::tier::Tier::Shareware;
+    g.start_challenge(0);
+    assert_eq!(g.mode, Mode::Title);
+    assert!(g.play.challenge.is_none());
+    assert_eq!(g.status, crate::tier::FULL_GAME_ONLY);
+    g.open_editor();
+    assert_eq!(g.mode, Mode::Title);
+}
+
+#[test]
+fn the_shareware_flag_parses() {
+    assert!(DevArgs::parse(&["--salt-shareware".into()]).shareware);
+    assert!(!DevArgs::parse(&[]).shareware);
+}

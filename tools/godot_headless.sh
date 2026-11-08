@@ -54,7 +54,8 @@ rm -f "$cache_dir"/editor_doc_cache-*.res
 godot="${GODOT_BIN:-godot}"
 args=("$@")
 for ((i=0; i<${#args[@]}-1; i++)); do
-    if [[ "${args[i]}" = --export-* && "${args[i+1]}" = Android ]]; then
+    # "Android Shareware" (tier.rs) builds from the same Gradle template.
+    if [[ "${args[i]}" = --export-* && ( "${args[i+1]}" = Android || "${args[i+1]}" = "Android Shareware" ) ]]; then
         prepare_args=()
         if [ "${args[i]}" = --export-debug ]; then prepare_args+=(--debug); fi
         if [ "${args[i]}" != --export-pack ]; then

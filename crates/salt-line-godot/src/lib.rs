@@ -96,6 +96,7 @@ pub mod seasonal;
 pub mod sky;
 pub mod sprites;
 pub mod strips;
+pub mod tier;
 pub mod touch;
 pub mod versus;
 

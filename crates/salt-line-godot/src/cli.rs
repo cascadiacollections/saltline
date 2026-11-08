@@ -83,6 +83,9 @@ pub struct DevArgs {
     /// `--salt-phone`: lay the game out as a phone would (touch controls,
     /// the corner pad, [`PHONE_WINDOW`]), for captures on a desktop.
     pub phone: bool,
+    /// `--salt-shareware`: run as the shareware edition (`tier.rs`), as an
+    /// export with the `shareware` feature does.
+    pub shareware: bool,
     /// `--salt-flat`: draw every frame as one canvas, sky and ground
     /// included, instead of in layers (`backdrop`). The reference the layers
     /// are compared with, and a developer fallback for telling a layering
@@ -136,6 +139,7 @@ impl DevArgs {
             editor_page: value(args, "--salt-editor-page"),
             setup: flag(args, "--salt-setup"),
             phone: flag(args, "--salt-phone"),
+            shareware: flag(args, "--salt-shareware"),
             flat: flag(args, "--salt-flat"),
             free: flag(args, "--salt-free"),
             fork_run: value(args, "--salt-fork-run"),
@@ -219,6 +223,7 @@ mod tests {
                 editor_page: None,
                 setup: false,
                 phone: false,
+                shareware: false,
                 flat: false,
                 free: false,
                 fork_run: None,

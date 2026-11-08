@@ -145,10 +145,14 @@ def check(tag: str | None) -> None:
 
     p = presets()
     try:
-        found["export_presets.cfg Android version/name"] = p["Android"]["version/name"]
-        found["export_presets.cfg macOS application/short_version"] = p["macOS"]["application/short_version"]
-        found["export_presets.cfg macOS application/version"] = p["macOS"]["application/version"]
-        for name in ("Windows Desktop", "Windows Desktop ARM64"):
+        # Each shareware preset is a copy of its full one (`tier.rs`) and
+        # carries the same version.
+        for name in ("Android", "Android Shareware"):
+            found[f"export_presets.cfg {name} version/name"] = p[name]["version/name"]
+        for name in ("macOS", "macOS Shareware"):
+            for key in ("application/short_version", "application/version"):
+                found[f"export_presets.cfg {name} {key}"] = p[name][key]
+        for name in ("Windows Desktop", "Windows Desktop ARM64", "Windows Desktop Shareware"):
             for key in ("application/file_version", "application/product_version"):
                 v = p[name][key]
                 # Windows wants four parts; the fourth is always 0.
@@ -179,33 +183,42 @@ def android_code(run: int, release: bool) -> int:
     return major * 10**8 + minor * 10**6 + patch * 10**4 + build
 
 
+# The full Android preset and its shareware copy (`tier.rs`) share a version.
+ANDROID_PRESETS = ("Android", "Android Shareware")
+
+
 def set_android(code: int, name: str | None) -> None:
     path = ROOT / "export_presets.cfg"
     lines = read("export_presets.cfg").splitlines(keepends=True)
-    android = next(
-        (s for s, opts in _preset_sections(lines).items() if opts == "Android"), None
-    )
-    if android is None:
-        fail("no Android preset in export_presets.cfg")
-    section, changed = None, set()
+    sections = {s: opts for s, opts in _preset_sections(lines).items() if opts in ANDROID_PRESETS}
+    missing = set(ANDROID_PRESETS) - set(sections.values())
+    if missing:
+        fail(f"no {', '.join(sorted(missing))} preset in export_presets.cfg")
+    want = {"code"} | ({"name"} if name is not None else set())
+    changed: dict[str, set[str]] = {preset: set() for preset in sections}
+    section = None
     for i, line in enumerate(lines):
         m = re.match(r"^\[(.*)\]\s*$", line)
         if m:
             section = m.group(1)
             continue
-        if section != f"{android}.options":
+        preset = section.removesuffix(".options") if section and section.endswith(".options") else None
+        if preset not in sections:
             continue
         if line.startswith("version/code="):
             lines[i] = f"version/code={code}\n"
-            changed.add("code")
+            changed[preset].add("code")
         elif name is not None and line.startswith("version/name="):
             lines[i] = f'version/name="{name}"\n'
-            changed.add("name")
-    want = {"code"} | ({"name"} if name is not None else set())
-    if changed != want:
-        fail(f"could not find {sorted(want - changed)} in the Android preset")
+            changed[preset].add("name")
+    for preset, keys in changed.items():
+        if keys != want:
+            fail(f"could not find {sorted(want - keys)} in the {sections[preset]} preset")
     path.write_text("".join(lines), encoding="utf-8")
-    print(f"Android preset: version/code={code}" + (f' version/name="{name}"' if name else ""))
+    print(
+        f"{' and '.join(ANDROID_PRESETS)} presets: version/code={code}"
+        + (f' version/name="{name}"' if name else "")
+    )
 
 
 def _preset_sections(lines: list[str]) -> dict[str, str]:

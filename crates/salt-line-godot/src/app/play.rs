@@ -59,6 +59,10 @@ impl Game {
 
     /// Start the bundled one-gun course without touching the saved run.
     pub(crate) fn start_challenge(&mut self, index: usize) {
+        if self.tier.is_shareware() {
+            self.note(crate::tier::FULL_GAME_ONLY.into());
+            return;
+        }
         let Some(challenge) = salt_line_sim::challenge::get(index) else {
             self.note("NO MORE CHALLENGES".into());
             return;
@@ -315,7 +319,16 @@ impl Game {
                     self.finish_run();
                 } else {
                     let advanced = self.play.run.as_mut().map(|r| r.resolve_clear()) == Some(true);
-                    if advanced {
+                    let capped = self
+                        .play
+                        .run
+                        .as_ref()
+                        .is_some_and(|r| self.tier.run_capped(r.screens_cleared));
+                    if capped {
+                        // The shareware edition ends here (`tier.rs`), scored
+                        // like any other run.
+                        self.finish_run();
+                    } else if advanced {
                         self.after_screen_change();
                     }
                 }

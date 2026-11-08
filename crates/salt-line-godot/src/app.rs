@@ -739,6 +739,8 @@ pub struct FrameState {
 /// directly.
 pub struct Game {
     pub(crate) mode: Mode,
+    /// Shareware or full (`tier.rs`). Set once by the node at start-up.
+    pub(crate) tier: crate::tier::Tier,
     pub(crate) credits_page: usize,
     /// Days since the Unix epoch, as the adapter last read the clock. The
     /// sim never touches system time.
@@ -1022,6 +1024,7 @@ impl Default for Game {
     fn default() -> Self {
         Game {
             mode: Mode::Title,
+            tier: crate::tier::Tier::Full,
             credits_page: 0,
             today: 0,
             save: Save::default(),
