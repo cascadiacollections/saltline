@@ -356,7 +356,9 @@ impl Painter<'_> {
             (Action::Confirm, "START".to_string(), fg),
             (Action::Back, "BACK".to_string(), dim),
         ];
-        if !self.plated() {
+        // No editor in the shareware edition (`tier.rs`).
+        let can_make_map = !self.g.tier.is_shareware();
+        if !self.plated() && can_make_map {
             rows.push((make_map, "MAKE MAP".to_string(), fg));
         }
         let labels: Vec<(String, &str)> = rows
@@ -396,7 +398,7 @@ impl Painter<'_> {
                 );
             }
         }
-        if self.plated() {
+        if self.plated() && can_make_map {
             let (ex, ey) = self.g.display.corner_pad;
             let w = self.canvas.w;
             self.draw_touch_button(w - 62 - ex, 3 + ey, 62, 13, "MAKE MAP", make_map);
@@ -983,6 +985,10 @@ impl Painter<'_> {
         .into_iter()
         .filter(|&(action, _)| title_row || action != Action::Replay)
         .filter(|&(action, _)| (over && vs.kept) || action != Action::Watch)
+        // No editor in the shareware edition (`tier.rs`).
+        .filter(|&(action, _)| {
+            !self.g.tier.is_shareware() || action != Action::Edit(crate::input::Ed::ForkRound)
+        })
         .collect();
         let labels: Vec<(String, &str)> = rows
             .iter()

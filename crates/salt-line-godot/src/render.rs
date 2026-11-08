@@ -548,12 +548,19 @@ impl Painter<'_> {
                     let challenges = self.g.input_label(Action::Challenges);
                     let total = salt_line_sim::challenge::ALL.len();
                     let cleared = self.g.save.challenges.len();
+                    // The shareware edition keeps the row, greyed, so the
+                    // menu does not move and says what the full game adds.
+                    let (text, c) = if self.g.tier.is_shareware() {
+                        (format!("CHALLENGES  {}", crate::tier::FULL_GAME_ONLY), dim)
+                    } else {
+                        (format!("CHALLENGES {cleared}/{total}"), alert)
+                    };
                     y = self.menu_row(
                         y,
                         Action::Challenges,
-                        &format!("{challenges}  CHALLENGES {cleared}/{total}"),
-                        &format!("CHALLENGES {cleared}/{total}"),
-                        alert,
+                        &format!("{challenges}  {text}"),
+                        &text,
+                        c,
                     );
                     let trial = self.g.input_label(Action::DroneTrial);
                     y = self.menu_row(
@@ -1831,12 +1838,14 @@ impl Painter<'_> {
         let dim = pal.get(slot::SKY_LO);
         let (w, h) = (self.canvas.w, self.canvas.h);
         // A match's pause can also fork its round into the map editor
-        // (DESIGN §13.11); a run's cannot.
-        let fork = self.g.mode == Mode::Versus;
+        // (DESIGN §13.11); a run's cannot, nor the shareware edition's,
+        // which has no editor (`tier.rs`).
+        let versus = self.g.mode == Mode::Versus;
+        let fork = versus && !self.g.tier.is_shareware();
         // A match's TITLE asks twice while the match is still to be won
         // (`app/versus.rs`, "Quitting a match"): armed, its
         // row says what the second press does, in UI text.
-        let armed = fork
+        let armed = versus
             && self
                 .g
                 .versus
