@@ -381,3 +381,72 @@ summary { cursor: pointer; color: var(--alert); }
 .concept-grid img { display: block; width: 100%; height: auto; }
 .concept-grid figcaption { padding-top: .6rem; color: var(--sand); }
 @media (max-width: 760px) { .concept-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* ------------------------------------------------ coming-soon store buttons */
+/* A store button without a URL yet (main.js LINKS) is a label, not a link. */
+.btn[aria-disabled="true"] {
+  border-style: dashed;
+  border-color: var(--bedrock);
+  color: var(--rock);
+  background: transparent;
+  box-shadow: none;
+  cursor: default;
+}
+.btn[aria-disabled="true"]:hover { background: transparent; color: var(--rock); }
+.btn[aria-disabled="true"]:active { transform: none; }
+.btn.primary[aria-disabled="true"] { border-color: var(--st); color: var(--st-hi); }
+footer [aria-disabled="true"] { color: var(--rock); text-decoration: none; cursor: default; }
+
+/* ----------------------------------------------------------------- get it */
+.cards.get .card { display: flex; flex-direction: column; gap: .8rem; }
+.cards.get .card p { flex: 1; }
+.cards.get .btn { align-self: flex-start; }
+details.testers summary, #build summary { cursor: pointer; color: var(--sand); }
+#build summary h2 { display: inline; margin: 0; }
+.dev-builds { margin: .6rem 0 0; padding-left: 1.2rem; line-height: 1.9; }
+
+/* ------------------------------------------------------------------ press */
+.press-grid { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items: start; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem; margin: 0; }
+.facts dt { color: var(--rock); font-family: var(--mono); font-size: .8rem; text-transform: uppercase; }
+.facts dd { margin: 0; }
+.kit { padding-left: 1.2rem; line-height: 1.9; }
+.art-note { max-width: 70ch; margin-top: 1rem; }
+
+/* The live button leads, whichever it is (main.js marks it primary). */
+.hero .cta .btn.primary { order: -1; }
+.facts { padding: 1rem 1.2rem; }
+
+/* --------------------------------------------------------- device frames */
+/* Generic hardware drawn in CSS: no mockup images, no real-device likeness. */
+.device { position: relative; margin: 0 auto; background: #141210; box-shadow: 0 10px 0 #0006; }
+.device img { display: block; width: 100%; height: auto; }
+.device-phone {
+  /* A phone held landscape: thick rounded body, a camera hole on one end. */
+  padding: clamp(8px, 2.2vw, 16px) clamp(14px, 4vw, 30px);
+  border: 2px solid var(--shadow);
+  border-radius: clamp(18px, 5vw, 36px);
+  max-width: 700px;
+}
+.device-phone::before {
+  content: ""; position: absolute; top: 50%; left: clamp(5px, 1.4vw, 11px);
+  width: clamp(5px, 1.2vw, 8px); aspect-ratio: 1; border-radius: 50%;
+  background: #2b2723; transform: translateY(-50%);
+}
+.device-phone img { border-radius: 4px; }
+.device-monitor {
+  /* A desktop monitor: thin bezel, a stand under it. */
+  padding: clamp(6px, 1.4vw, 12px);
+  border: 2px solid var(--shadow);
+  border-radius: 8px;
+  margin-bottom: clamp(26px, 5vw, 42px);
+}
+.device-monitor::after {
+  content: ""; position: absolute; left: 50%; top: 100%;
+  width: 22%; height: clamp(18px, 4vw, 34px);
+  transform: translateX(-50%);
+  background: linear-gradient(#1c1916, #141210);
+  clip-path: polygon(38% 0, 62% 0, 70% 70%, 100% 72%, 100% 100%, 0 100%, 0 72%, 30% 70%);
+}
+
+#concepts { margin-top: 2.5rem; }
