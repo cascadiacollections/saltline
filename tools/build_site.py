@@ -412,7 +412,7 @@ def license_page():
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="topbar"><a class="brand" href="index.html">SALT LINE</a>
-<nav aria-label="Project links"><a href="index.html#download">Downloads</a></nav></header>
+<nav aria-label="Project links"><a href="index.html#get">Get Salt Line</a></nav></header>
 <main id="main"><section aria-labelledby="licenses-h">
 <h1 id="licenses-h">Credits &amp; licenses</h1>
 <p>Salt Line is by Cascadia Collections and is licensed under MIT.

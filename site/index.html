@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Salt Line — artillery roguelike, alpha</title>
-<meta name="description" content="Aim through the wind, break the terrain, and make every shell count in Salt Line, a free artillery roguelike with solo runs, local duels, and a map editor. Play the alpha on Android, Windows, macOS, or Linux.">
+<title>Salt Line — artillery roguelike · free demo, coming to Steam</title>
+<meta name="description" content="Read the wind, break the ground, make every shell count. Salt Line is a pixel-art artillery roguelike with an endless procedural horizon, destructible terrain and a modifier draft every four screens. Free demo; coming to Steam.">
 <!-- The placeholder below is rewritten to the live Pages base URL at deploy
      time (.github/workflows/pages.yml); it only affects link previews. -->
 <link rel="canonical" href="__SITE_URL__">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Salt Line — artillery roguelike, alpha">
-<meta property="og:description" content="Aim through the wind, break the terrain, and make every shell count. Free solo runs, local duels, and custom maps for Android, Windows, macOS, and Linux.">
+<meta property="og:title" content="Salt Line — artillery roguelike, coming to Steam">
+<meta property="og:description" content="Read the wind, break the ground, make every shell count. Endless runs, destructible terrain, a modifier draft every four screens. Play the free demo.">
 <meta property="og:url" content="__SITE_URL__">
 <meta property="og:image" content="__SITE_URL__assets/og.png">
 <meta property="og:image:width" content="1200">
@@ -20,7 +20,6 @@
 <link rel="icon" href="assets/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/favicon.png">
 <link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="testflight-promo.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -31,28 +30,15 @@
     <span>SALT&nbsp;LINE</span>
   </a>
   <nav aria-label="Sections">
-    <a href="#download">Download</a>
-    <a href="#what">What it is</a>
-    <a href="#play">Ways to play</a>
-    <a href="#concepts">Art direction</a>
-    <a href="#media">Media</a>
+    <a href="#play">The game</a>
+    <a href="#get">Get it</a>
     <a href="#modifiers">Modifiers</a>
-    <a href="#build">Build it</a>
-    <a class="ext" href="https://github.com/cascadiacollections/saltline">Source ↗</a>
+    <a href="#media">Media</a>
+    <a href="#press">Press</a>
   </nav>
 </header>
 
 <main id="main">
-<section class="halloween-promo" aria-labelledby="testflight-promo-title" hidden>
-  <div>
-    <p class="promo-dates"><span aria-hidden="true">🎃</span> Halloween week · October 25–31, 2026</p>
-    <h2 id="testflight-promo-title">One more shot before midnight.</h2>
-    <p>Bring your aim to the Salt Line iOS beta.</p>
-    <p class="promo-note">Free to test with Apple TestFlight. Public builds unlock after Apple beta approval. Promo ends November 1 at 12:00 a.m. Pacific.</p>
-  </div>
-  <a class="promo-link" href="https://testflight.apple.com/join/PgjfndD9" aria-label="Join the Salt Line iOS beta on TestFlight">Join the iOS beta <span aria-hidden="true">↗</span></a>
-</section>
-
 
 <section id="top" class="hero">
   <div class="hero-art" aria-hidden="true">
@@ -61,28 +47,29 @@
   </div>
 
   <div class="hero-copy">
-    <p class="kicker"><span class="blink">▌</span> ALPHA 0.1 &nbsp;·&nbsp; FREE &nbsp;·&nbsp; MIT LICENSED</p>
+    <p class="kicker"><span class="blink">▌</span> ARTILLERY ROGUELIKE &nbsp;·&nbsp; FREE DEMO &nbsp;·&nbsp; COMING TO STEAM</p>
     <h1>Salt&nbsp;Line</h1>
-    <p class="tagline">Aim through the wind. Bring down structures and leave the
-      terrain broken behind you. Make every shell count in a solo roguelike run,
-      challenge a friend on the same device, or duel the AI on a map you made.</p>
+    <p class="tagline">Read the wind. Break the ground. Make every shell count.
+      An endless coastline of fragile structures, terrain that stays broken, and
+      a draft every four screens that changes how you shoot.</p>
 
     <ul class="badges" aria-label="At a glance">
-      <li>Deterministic sim</li>
-      <li>320×180, 16 colours</li>
-      <li>Rust + Godot 4</li>
-      <li>No ads, no telemetry</li>
+      <li>Endless procedural runs</li>
+      <li>Destructible terrain</li>
+      <li>24 modifiers</li>
+      <li>Local versus &amp; map editor</li>
     </ul>
 
+    <!-- Store and demo links live in main.js (LINKS). A button with no URL
+         shows its "coming soon" label and is not a link. -->
     <div class="cta">
-      <a class="btn" href="https://testflight.apple.com/join/PgjfndD9">Join the iOS TestFlight beta</a>
-      <a class="btn primary" href="#download">Download a dev build</a>
-      <a class="btn" href="https://github.com/cascadiacollections/saltline">Get the source</a>
-      <a class="btn ghost" href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Read the design doc</a>
+      <a class="btn" data-link="steam" data-soon="Coming to Steam" data-live="Wishlist on Steam">Coming to Steam</a>
+      <a class="btn" data-link="demo" data-soon="Free demo · coming soon" data-live="Play the free demo">Free demo · coming soon</a>
+      <a class="btn" href="https://testflight.apple.com/join/PgjfndD9" data-link="testflight" data-soon="iPhone beta · coming soon" data-live="Play free on iPhone (beta)">Play free on iPhone (beta)</a>
     </div>
 
-    <p class="fineprint">iOS via TestFlight after Apple beta review · Android · Windows · macOS · Linux &nbsp;—&nbsp; rolling dev builds, a proper release when the alpha stops moving.
-      Downloads and source currently require access to the GitHub repository.</p>
+    <p class="fineprint">Windows · macOS · Linux · Android · iPhone. Offline, no account,
+      no ads, no telemetry.</p>
   </div>
 </section>
 
@@ -90,15 +77,49 @@
   <div class="preview-copy">
     <h2 id="preview-h">One shot can change the ground</h2>
     <p>Line up an arc, read the wind, and bring the tower down. The crater and
-      wreckage stay on that screen while you finish the fight.</p>
+      the wreckage stay where they fell, so your next shot is aimed at a coast
+      you broke yourself.</p>
   </div>
   <figure class="shot-figure">
-    <picture>
-      <source media="(prefers-reduced-motion: reduce)" srcset="assets/shot_static.png">
-      <img src="assets/shot.gif" alt="A shell impact brings a leaning water tower down, leaving its wreckage on the sand." class="px" width="640" height="360" loading="lazy">
-    </picture>
-    <figcaption>Shot and collapse from the game's art and simulation pipeline.</figcaption>
+    <div class="device device-phone">
+      <picture>
+        <source media="(prefers-reduced-motion: reduce)" srcset="assets/shot_static.png">
+        <img src="assets/shot.gif" alt="A shell impact brings a leaning water tower down, leaving its wreckage on the sand." class="px" width="640" height="360" loading="lazy">
+      </picture>
+    </div>
+    <figcaption>Captured from the game: one shot, one collapse.</figcaption>
   </figure>
+</section>
+
+<!-- ------------------------------------------------------------- play -->
+<section id="play" aria-labelledby="play-h">
+  <h2 id="play-h">How a run plays</h2>
+  <div class="cards">
+    <article class="card">
+      <h3>Shells are your life</h3>
+      <p>Every screen is a set of structures to bring down. Clear it cleanly and
+        you earn shells back; waste them and the run ends. A one-shot clear pays
+        best, so every arc is a small bet.</p>
+    </article>
+    <article class="card">
+      <h3>Draft every four screens</h3>
+      <p>Pick one of three modifiers: heavier shells, airbursts, instruments that
+        read the wind, economy tricks. Twenty-four in all, and they stack into
+        builds that play very differently.</p>
+    </article>
+    <article class="card">
+      <h3>Never an unfair board</h3>
+      <p>Before a screen appears, the game proves it can be cleared with the
+        loadout you actually have. Hard, never impossible. The daily seed is the
+        same for everyone.</p>
+    </article>
+    <article class="card">
+      <h3>Duels and your own maps</h3>
+      <p>Pass the device to a friend or take on the AI at three levels. Sculpt
+        terrain in the map editor, then share a code so a friend can fight on the
+        same ground.</p>
+    </article>
+  </div>
 </section>
 
 <!-- ------------------------------------------------------------ shareware -->
@@ -106,116 +127,100 @@
   <div class="panel dosbox">
     <div class="dosbar"><span>README.TXT</span><span class="dots">■ ■ ■</span></div>
 <pre class="dos">
-              S A L T   L I N E   —   ALPHA RELEASE
-              ======================================
+              S A L T   L I N E   —   SHAREWARE
+              =================================
 
-  DISTRIBUTION .... Unlimited. Copy it, mirror it, fork it.
-  EPISODES ........ One. There is no Episode Two to order.
-  REGISTRATION .... Not required. There is no key, no nag
-                    screen, no timer, and no crippled build.
-  PRICE ........... $0.00 US. The repository is the product.
-  SUPPORT ......... File an issue. That is the whole system.
+  EPISODE ONE ..... Free. The first 12 screens of every
+                    run, the daily seed, local versus.
+                    Copy it, share it, play it forever.
+  FULL GAME ....... The endless horizon, the challenge
+                    course and the map editor.
+                    Coming to Steam.
+  REGISTRATION .... No key, no nag screen, no timer.
+                    The demo is the real game, cut short.
 
-  IF YOU LIKE IT: star the repo, send a seed that broke it,
-  or draw a sprite. That is the registration fee.
+  IF YOU LIKE IT: wishlist it on Steam when the page goes
+  up, and tell one friend who likes Worms or Scorched Earth.
 </pre>
   </div>
   <div class="sw-copy">
-    <h2 id="sw-h">Shareware ethics, current engineering</h2>
-    <p>Salt Line borrows the part of 1994 worth keeping: the whole game in one
-      download, no gate in the middle, and a text file that tells you the truth.
-      What it doesn't borrow is the tooling. Underneath the dithered sky is a
-      dependency-free Rust simulation with a proof obligation attached to every
-      screen it shows you.</p>
-    <p class="note">This is an <strong>alpha</strong>. Things move, runs save as seeds and shot logs,
-      and the art is programmer art awaiting a hand-drawn pass.</p>
+    <h2 id="sw-h">Shareware, the honest kind</h2>
+    <p>Salt Line borrows the part of 1994 worth keeping: a free episode you can
+      keep, copy and share, and a full game for the people who want more. The
+      demo isn't a trial that expires. It's the same game, ending after twelve
+      screens.</p>
+    <p class="note">Salt Line is in <strong>alpha</strong>. It's playable end to end, balance
+      still moves between builds, and some art is still placeholder.</p>
   </div>
 </section>
 
-<!-- ------------------------------------------------------------- download -->
-<section id="download" aria-labelledby="dl-h">
-  <h2 id="dl-h">Download a dev build</h2>
-  <p class="small">Rebuilt from <code>main</code> on every merge, so expect the odd rough edge.
-    Desktop builds are unsigned; macOS and Windows may show a security warning.
-    Android is a sideloaded APK. GitHub sign-in and repository access are currently
-    required for these downloads; there is no public store release.</p>
-  <div class="cards dl">
-    <article class="card" data-platform="android">
-      <h3>Android <span class="arch">arm64</span></h3>
-      <ol>
-        <li>Download the APK on your phone.</li>
-        <li>Open it, and let your browser install unknown apps when asked.</li>
-        <li>Touch controls are built in. Updates install over builds signed with the same key.</li>
-      </ol>
-      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-android-arm64.apk">Download APK</a>
+<!-- ------------------------------------------------------------- get -->
+<section id="get" aria-labelledby="get-h">
+  <h2 id="get-h">Get Salt Line</h2>
+  <div class="cards get">
+    <article class="card">
+      <h3>Steam</h3>
+      <p>The full game on Windows, macOS and Linux. The store page is on its way;
+        wishlisting is the single most useful thing you can do for a small game.</p>
+      <a class="btn primary" data-link="steam" data-soon="Coming to Steam" data-live="Wishlist on Steam">Coming to Steam</a>
     </article>
-    <article class="card" data-platform="windows">
-      <h3>Windows <span class="arch">x64 · ARM64</span></h3>
-      <ol>
-        <li>Unzip, then run <code>SaltLine.exe</code> (<code>SaltLine-arm64.exe</code> on ARM).</li>
-        <li>If SmartScreen stops it: <em>More info</em>, then <em>Run anyway</em>.</li>
-      </ol>
-      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-windows-x86_64.zip">Download x64</a>
-      <a class="btn" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-windows-arm64.zip">Download ARM64</a>
+    <article class="card">
+      <h3>Free demo</h3>
+      <p>The shareware edition for Windows, macOS, Linux and Android: the first
+        twelve screens of every run, the daily seed and local versus. It installs
+        alongside the full game.</p>
+      <a class="btn" data-link="demo" data-soon="Free demo · coming soon" data-live="Play the free demo">Free demo · coming soon</a>
     </article>
-    <article class="card" data-platform="mac">
-      <h3>macOS <span class="arch">Apple silicon · Intel</span></h3>
-      <ol>
-        <li>Unzip and open <code>SaltLine.app</code>.</li>
-        <li>If Gatekeeper blocks it: <em>System Settings → Privacy &amp; Security → Open Anyway</em>.</li>
-      </ol>
-      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-macos.zip">Download for macOS</a>
-    </article>
-    <article class="card" data-platform="linux">
-      <h3>Linux <span class="arch">x86_64 · arm64</span></h3>
-      <ol>
-        <li>Unzip, then run <code>./SaltLine.x86_64</code> (<code>./SaltLine.arm64</code> on ARM).</li>
-        <li>One self-contained binary. No Godot install needed.</li>
-      </ol>
-      <a class="btn primary" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-linux-x86_64.zip">Download x86_64</a>
-      <a class="btn" href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-linux-arm64.zip">Download ARM64</a>
+    <article class="card">
+      <h3>iPhone beta</h3>
+      <p>The current alpha, free through Apple's TestFlight. Expect rough edges,
+        and builds that expire after 90 days.</p>
+      <a class="btn" href="https://testflight.apple.com/join/PgjfndD9" data-link="testflight" data-soon="iPhone beta · coming soon" data-live="Join on TestFlight">Join on TestFlight</a>
     </article>
   </div>
-  <p class="small">Verify with <a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SHA256SUMS">SHA256SUMS</a> ·
-    <a href="https://github.com/cascadiacollections/saltline/releases/tag/dev">all dev build files</a></p>
+
+  <details class="testers">
+    <summary>Alpha testers: rolling dev builds</summary>
+    <p class="small">Rebuilt from <code>main</code> on every merge. These need access to the
+      GitHub repository. Desktop builds are unsigned, so macOS and Windows may show a
+      security warning; Android is a sideloaded APK.</p>
+    <ul class="dev-builds">
+      <li><a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-android-arm64.apk">Android (arm64)</a></li>
+      <li><a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-windows-x86_64.zip">Windows x64</a> · <a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-windows-arm64.zip">ARM64</a></li>
+      <li><a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-macos.zip">macOS (Apple silicon and Intel)</a></li>
+      <li><a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-linux-x86_64.zip">Linux x86_64</a> · <a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SaltLine-linux-arm64.zip">arm64</a></li>
+      <li><a href="https://github.com/cascadiacollections/saltline/releases/download/dev/SHA256SUMS">SHA256SUMS</a> · <a href="https://github.com/cascadiacollections/saltline/releases/tag/dev">all files</a></li>
+    </ul>
+  </details>
 </section>
 
-<!-- ------------------------------------------------------------- play -->
-<section id="play" aria-labelledby="play-h">
-  <h2 id="play-h">Ways to play</h2>
-  <div class="cards">
-    <article class="card">
-      <h3>A horizon of solo runs</h3>
-      <p>Start the daily seed or enter your own. Break structures, manage your
-        shells, and draft a modifier every four screens. Resume a saved run
-        or replay a seed to try a different approach.</p>
-    </article>
-    <article class="card">
-      <h3>Local duels, human or AI</h3>
-      <p>Two players share one device, or take on the computer at three difficulty
-        levels. Choose aim help and rolling guns before the match, then pass
-        the phone or controller between turns.</p>
-    </article>
-    <article class="card">
-      <h3>Make ground worth fighting over</h3>
-      <p>Sculpt, smooth, stamp, and mirror terrain in the map editor. Place both
-        guns, test the shots, and save a map or copy its share code. Paste a
-        friend's code to play the same ground.</p>
-    </article>
-    <article class="card">
-      <h3>Keep the shots you remember</h3>
-      <p>Watch finished runs and matches in Replays, and star favourites to keep
-        them. An idle demo shows the game in motion. Keyboard, controller,
-        touch buttons, and drag aiming are built in.</p>
-    </article>
+<!-- --------------------------------------------------------- modifiers -->
+<section id="modifiers" aria-labelledby="mod-h">
+  <h2 id="mod-h">Twenty-four ways to change a shot</h2>
+  <p class="lede">Three offers every four screens, from four families. Each one is a
+    rule change you can feel on the next shot, not a percentage on a stat sheet.</p>
+  <div class="mods">
+    <div class="mod-col"><h3>Shell</h3><ul>
+      <li>Ballast</li><li>Sabot</li><li>Airburst</li><li>Skipstone</li>
+      <li>Auger</li><li>Cluster</li><li>Thermal Lance</li><li>Featherweight</li>
+    </ul></div>
+    <div class="mod-col"><h3>Instrument</h3><ul>
+      <li>Vernier</li><li>Anemometer</li><li>Rangefinder</li><li>Chalk Marks</li>
+      <li>Dead Reckoning</li><li>Plumb Line</li>
+    </ul></div>
+    <div class="mod-col"><h3>Economy</h3><ul>
+      <li>Salvage</li><li>Quartermaster</li><li>Depot</li><li>Standing Orders</li>
+      <li>Scavenger Rites</li><li>Forced March</li>
+    </ul></div>
+    <div class="mod-col"><h3>Structural</h3><ul>
+      <li>Enfilade</li><li>Sapper's Eye</li><li>Long Lens</li><li>Storm Front</li>
+    </ul></div>
   </div>
-  <p class="small">Everything runs locally: no matchmaking, account, ads, or telemetry.
-    Share codes leave the game only when you copy and send them yourself.</p>
 </section>
 
 <!-- ------------------------------------------------------------- what -->
 <section id="what" aria-labelledby="what-h">
-  <h2 id="what-h">The three things that matter</h2>
+  <h2 id="what-h">Under the hood</h2>
   <div class="cards">
     <article class="card">
       <h3><span class="num">01</span> Wind is an acceleration</h3>
@@ -227,47 +232,33 @@
     <article class="card">
       <h3><span class="num">02</span> Every screen is proven solvable</h3>
       <p>Before a screen is drawn, the generator finds three or more surviving
-        trajectory candidates per target — checked against your current loadout
-        and verified by the same damage model the game runs. If it can't, it
-        rolls again. You are never handed an impossible board.</p>
+        trajectories per target, checked against your current loadout with the
+        same damage model the game runs. If it can't, it rolls again.</p>
       <code>MIN_SOLUTIONS = 3</code>
     </article>
     <article class="card">
       <h3><span class="num">03</span> Determinism is a feature</h3>
-      <p>Same seed plus same inputs gives a byte-identical final state on Linux,
-        macOS and Windows — enforced in CI by comparing a digest across all
-        platforms. No libm, no thread RNG, no map iteration in any state-affecting
-        path. A run saves as a seed and a shot log.</p>
+      <p>Same seed plus same inputs gives a byte-identical result on every
+        platform, enforced in CI. A run saves as a seed and a shot log, which is
+        how replays and the daily seed stay fair.</p>
       <code>DT = 1.0 / 120.0 · f64 throughout</code>
     </article>
   </div>
 </section>
 
 <!-- ------------------------------------------------------------- media -->
-<section id="concepts" aria-labelledby="concepts-h">
-  <h2 id="concepts-h">A coast shaped by iron</h2>
-  <p class="lede">Salt, weather, heavy machines, fragile structures. Six concept boards explore the world of Salt Line, from storm-dark shorelines to sunbleached chalk.</p>
-  <p class="small">Art-direction studies, not gameplay screenshots. Open any board to explore it at full resolution.</p>
-  <div class="concept-grid">
-    <figure><a href="assets/concept-boards/01-salt-and-iron.png"><img src="assets/concept-boards/01-salt-and-iron.png" alt="Salt Line Salt & Iron concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Salt & Iron</figcaption></figure>
-    <figure><a href="assets/concept-boards/02-storm-coast.png"><img src="assets/concept-boards/02-storm-coast.png" alt="Salt Line Storm Coast concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Storm Coast</figcaption></figure>
-    <figure><a href="assets/concept-boards/03-fieldwork.png"><img src="assets/concept-boards/03-fieldwork.png" alt="Salt Line Fieldwork concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="940"></a><figcaption>Fieldwork</figcaption></figure>
-    <figure><a href="assets/concept-boards/04-sunbleached.png"><img src="assets/concept-boards/04-sunbleached.png" alt="Salt Line Sunbleached concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Sunbleached</figcaption></figure>
-    <figure><a href="assets/concept-boards/05-night-signal.png"><img src="assets/concept-boards/05-night-signal.png" alt="Salt Line Night Signal concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Night Signal</figcaption></figure>
-    <figure><a href="assets/concept-boards/06-iron-and-chalk.png"><img src="assets/concept-boards/06-iron-and-chalk.png" alt="Salt Line Iron & Chalk concept board with coastal artillery, structures and palette studies" loading="lazy" width="1536" height="1024"></a><figcaption>Iron & Chalk</figcaption></figure>
-  </div>
-</section>
-
 <section id="media" aria-labelledby="media-h">
-  <h2 id="media-h">Media</h2>
-  <p class="lede">Everything below is generated by the game's own art pipeline —
-    same palette, same native grid, integer scaling only.</p>
+  <h2 id="media-h">A coast shaped by iron</h2>
+  <p class="lede">Salt, weather, heavy machines, fragile structures. A 320×180 world in
+    sixteen fixed colours, scaled by whole pixels only.</p>
 
   <div class="media-grid">
     <figure>
-      <img src="assets/scene_4x.png" alt="Reference screen at 4x: dithered sky, layered sand and bedrock, a leaning water tower, a radio mast and a derrick on the horizon." class="px" width="1280" height="720" loading="lazy">
-      <figcaption>The reference screen. Terrain is a heightfield with sand, rock
-        and bedrock layers — each material takes damage differently.</figcaption>
+      <div class="device device-monitor">
+        <img src="assets/scene_4x.png" alt="A game screen at 4x: dithered sky, layered sand and bedrock, a leaning water tower, a radio mast and a derrick on the horizon." class="px" width="1280" height="720" loading="lazy">
+      </div>
+      <figcaption>Terrain is layered sand, rock and bedrock, and each material
+        takes damage differently.</figcaption>
     </figure>
     <figure>
       <img src="assets/sprite_sheet_4x.png" alt="Contact sheet of every sprite: three emplacement variants, water tower states, derrick, mast, silo, pylon, and the barrel angle strip." class="px" width="3312" height="488" loading="lazy">
@@ -292,114 +283,76 @@
         <p class="readout"><span id="readout">BARREL 0° · TRUE 0.0°</span></p>
       </div>
       <p class="small">The sprite is quantized to 5°. The numeric field is not.
-        That gap is the whole reason the <em>Vernier</em> modifier feels like an
-        instrument instead of a stat.</p>
+        That gap is why the <em>Vernier</em> modifier feels like an instrument
+        instead of a stat.</p>
     </figure>
   </div>
 
-  <figure class="palette">
-    <img src="assets/palette_16.png" alt="The sixteen-colour palette: four terrain tones, three sky tones, three hull tones, three structure tones, two UI tones and one alert orange." class="px" width="768" height="80" loading="lazy">
-    <figcaption>Sixteen colours, fixed. The PNG is sampled at runtime rather than
-      transcribed into code, so the image stays the single source of truth.</figcaption>
-  </figure>
+  <h3 id="concepts">Art direction</h3>
+  <p class="small">Concept boards for the world, not gameplay screenshots. Open any board
+    at full resolution.</p>
+  <div class="concept-grid">
+    <figure><a href="assets/concept-boards/01-salt-and-iron.png"><img src="assets/concept-boards/01-salt-and-iron.png" alt="Salt Line Salt & Iron concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Salt &amp; Iron</figcaption></figure>
+    <figure><a href="assets/concept-boards/02-storm-coast.png"><img src="assets/concept-boards/02-storm-coast.png" alt="Salt Line Storm Coast concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Storm Coast</figcaption></figure>
+    <figure><a href="assets/concept-boards/03-fieldwork.png"><img src="assets/concept-boards/03-fieldwork.png" alt="Salt Line Fieldwork concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="940"></a><figcaption>Fieldwork</figcaption></figure>
+    <figure><a href="assets/concept-boards/04-sunbleached.png"><img src="assets/concept-boards/04-sunbleached.png" alt="Salt Line Sunbleached concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Sunbleached</figcaption></figure>
+    <figure><a href="assets/concept-boards/05-night-signal.png"><img src="assets/concept-boards/05-night-signal.png" alt="Salt Line Night Signal concept board with coastal artillery, structures and palette studies" loading="lazy" width="1672" height="941"></a><figcaption>Night Signal</figcaption></figure>
+    <figure><a href="assets/concept-boards/06-iron-and-chalk.png"><img src="assets/concept-boards/06-iron-and-chalk.png" alt="Salt Line Iron & Chalk concept board with coastal artillery, structures and palette studies" loading="lazy" width="1536" height="1024"></a><figcaption>Iron &amp; Chalk</figcaption></figure>
+  </div>
+  <p class="small art-note">About the art: the shipped sprites and the title scene are cut from
+    these concept boards, and some cleanup used AI image tools. The art is still
+    alpha and gets a hand-drawn pass before release.</p>
 </section>
 
-<!-- --------------------------------------------------------- modifiers -->
-<section id="modifiers" aria-labelledby="mod-h">
-  <h2 id="mod-h">Draft every four screens</h2>
-  <p class="lede">Twenty-four modifiers, four columns, three offers. They are data
-    rows folded into a loadout — never a branch in the ballistics core.</p>
-  <div class="mods">
-    <div class="mod-col"><h3>Shell</h3><ul>
-      <li>Ballast</li><li>Sabot</li><li>Airburst</li><li>Skipstone</li>
-      <li>Auger</li><li>Cluster</li><li>Thermal Lance</li><li>Featherweight</li>
-    </ul></div>
-    <div class="mod-col"><h3>Instrument</h3><ul>
-      <li>Vernier</li><li>Anemometer</li><li>Rangefinder</li><li>Chalk Marks</li>
-      <li>Dead Reckoning</li><li>Plumb Line</li>
-    </ul></div>
-    <div class="mod-col"><h3>Economy</h3><ul>
-      <li>Salvage</li><li>Quartermaster</li><li>Depot</li><li>Standing Orders</li>
-      <li>Scavenger Rites</li><li>Forced March</li>
-    </ul></div>
-    <div class="mod-col"><h3>Structural</h3><ul>
-      <li>Enfilade</li><li>Sapper's Eye</li><li>Long Lens</li><li>Storm Front</li>
-    </ul></div>
+<!-- ------------------------------------------------------------- press -->
+<section id="press" aria-labelledby="press-h">
+  <h2 id="press-h">Press &amp; creators</h2>
+  <div class="press-grid">
+    <dl class="facts panel">
+      <dt>Title</dt><dd>Salt Line</dd>
+      <dt>Genre</dt><dd>Artillery roguelike, single player and local versus</dd>
+      <dt>Developer</dt><dd>Cascadia Collections</dd>
+      <dt>Platforms</dt><dd>Windows, macOS, Linux, Android, iPhone</dd>
+      <dt>Status</dt><dd>Alpha. Free demo; full game coming to Steam</dd>
+      <dt>Price</dt><dd>To be announced</dd>
+      <dt>Engine</dt><dd>Deterministic Rust simulation, Godot 4 presentation</dd>
+    </dl>
+    <div>
+      <p>Covering roguelikes, artillery games or pixel art? Use anything on this page.
+        Captures come straight from the game at whole-pixel scale.</p>
+      <ul class="kit">
+        <li><a href="assets/shot.gif">Gameplay GIF</a> (640×360)</li>
+        <li><a href="assets/scene_4x.png">Screenshot</a> (1280×720)</li>
+        <li><a href="assets/hero_wide.png">Key art, wide</a> (1280×360)</li>
+        <li><a href="assets/og.png">Social card</a> (1200×630)</li>
+        <li><a href="assets/sprite_sheet_4x.png">Sprite sheet</a></li>
+      </ul>
+      <p class="small">Steam keys for creators will be available once the store page is up.
+        Until then, the iPhone beta is open to everyone.</p>
+    </div>
   </div>
 </section>
 
 <!-- ------------------------------------------------------------- build -->
 <section id="build" aria-labelledby="build-h">
-  <h2 id="build-h">Build from source</h2>
-  <p class="lede">For contributors: install Rust 1.99.0 (pinned in
-    <code>rust-toolchain.toml</code>), Godot 4.7.2, <code>uv</code> 0.13.5, and Python 3.15.0 for asset tools.
-    Follow the <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md#quick-start">README quick start</a>
-    for platform setup. Players downloading a packaged build do not need these tools.</p>
-  <div class="build-grid">
-    <div>
-      <div class="codeblock">
-        <button class="copy" type="button" data-copy="#quickstart">Copy</button>
+  <details>
+    <summary><h2 id="build-h">For contributors</h2></summary>
+    <p class="small">Building from source needs access to the repository, Rust 1.99.0
+      (pinned in <code>rust-toolchain.toml</code>), Godot 4.7.2, <code>uv</code> 0.13.5 and
+      Python 3.15.0 for asset tools. See the
+      <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md#quick-start">README quick start</a>.
+      Players don't need any of this.</p>
+    <div class="codeblock">
+      <button class="copy" type="button" data-copy="#quickstart">Copy</button>
 <pre id="quickstart"><code>git clone https://github.com/cascadiacollections/saltline
 cd saltline
 cargo test                       # sim + presentation, no engine needed
 cargo build -p salt-line-godot   # the GDExtension
 godot --path .                   # play</code></pre>
-      </div>
-      <p class="small">Build before you launch: the engine loads the extension out
-        of <code>target/</code>, so a stale build is what it will run.</p>
-
-      <h3>Keyboard basics</h3>
-      <p class="small">In-game Settings lists keyboard, controller, and touch controls.
-        See the <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md#controls">full controls guide</a>
-        for drag aiming, replays, and the map editor.</p>
-      <table class="keys">
-        <tbody>
-          <tr><th scope="row"><kbd>←</kbd> <kbd>→</kbd></th><td>Angle, one quantization step (<kbd>Shift</kbd>: ten)</td></tr>
-          <tr><th scope="row"><kbd>↑</kbd> <kbd>↓</kbd></th><td>Power (<kbd>Shift</kbd>: ten steps)</td></tr>
-          <tr><th scope="row"><kbd>Space</kbd></th><td>Fire</td></tr>
-          <tr><th scope="row"><kbd>[</kbd> <kbd>]</kbd></th><td>Airburst fuse distance</td></tr>
-          <tr><th scope="row"><kbd>,</kbd> <kbd>.</kbd></th><td>Reposition the emplacement (needs Enfilade)</td></tr>
-          <tr><th scope="row"><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></th><td>Take a draft offer</td></tr>
-          <tr><th scope="row"><kbd>S</kbd> / <kbd>C</kbd> / <kbd>R</kbd></th><td>Seed entry / copy seed / replay seed</td></tr>
-          <tr><th scope="row"><kbd>F1</kbd></th><td>Debug overlay</td></tr>
-        </tbody>
-      </table>
     </div>
-
-    <aside class="reqs panel">
-      <h3>Build and runtime details</h3>
-      <dl>
-        <dt>OS</dt><dd>Android, Linux, macOS, Windows</dd>
-        <dt>Build engine</dt><dd>Godot 4.7.2 (presentation only)</dd>
-        <dt>Build tools</dt><dd>Rust 1.99.0, uv 0.13.5, Python 3.15.0</dd>
-        <dt>Internal res</dt><dd>320×180, integer-scaled</dd>
-        <dt>Colours</dt><dd>16, fixed</dd>
-        <dt>Network</dt><dd>Offline play; no telemetry</dd>
-        <dt>Run save</dt><dd>(seed, width, shot log)</dd>
-        <dt>Dependencies</dt><dd>The sim crate has none — not even <code>rand</code></dd>
-      </dl>
-      <h3>Headless tools</h3>
-      <ul class="tools">
-        <li><code>batch</code> — 5,000 screens across 50 seeds, solvability gate</li>
-        <li><code>determinism</code> — 200 runs replayed and hashed</li>
-        <li><code>--salt-gallery</code> — one frame per shape template</li>
-        <li><code>--salt-shot</code> — screenshot any seed and screen</li>
-      </ul>
-    </aside>
-  </div>
-</section>
-
-<!-- ------------------------------------------------------------- alpha -->
-<section class="alpha-note" aria-labelledby="alpha-h">
-  <h2 id="alpha-h">What "alpha" means here</h2>
-  <ul class="checks">
-    <li class="yes">The simulation is done and tested: ballistics, terrain damage, drafting, solvability, determinism.</li>
-    <li class="yes">It is playable end to end, from the first screen to the run-over seed you can copy and share.</li>
-    <li class="yes">Packaged dev builds, sound effects, and in-game controls, audio, and offline credits are available.</li>
-    <li class="no">The art is generated programmer art. All five structures have three damage states; four still need hand-drawn leaning and collapsed poses.</li>
-    <li class="no">Desktop builds are unsigned, and Android is a sideloaded APK.</li>
-    <li class="no">Balance numbers move between commits. Seeds stay reproducible; they do not stay comparable across versions.</li>
-  </ul>
+    <p class="small">The design doc explains the rules in depth:
+      <a href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">DESIGN.md</a>.</p>
+  </details>
 </section>
 
 </main>
@@ -408,23 +361,20 @@ godot --path .                   # play</code></pre>
   <div class="foot-grid">
     <div>
       <p class="brand-foot">SALT&nbsp;LINE</p>
-      <p class="small">Solo runs, local duels, custom maps.<br>Deterministic Rust core, Godot 4 presentation.</p>
+      <p class="small">An artillery roguelike by Cascadia Collections.<br>Free demo · coming to Steam.</p>
     </div>
     <nav aria-label="Project links">
-      <a href="https://github.com/cascadiacollections/saltline">Repository</a>
-      <a href="https://github.com/cascadiacollections/saltline/blob/main/design/DESIGN.md">Design doc</a>
-      <a href="https://github.com/cascadiacollections/saltline/blob/main/README.md">README</a>
-      <a href="https://github.com/cascadiacollections/saltline/issues">Issues</a>
-      <a href="licenses.html">MIT license &amp; FOSS acknowledgments</a>
+      <a data-link="steam" data-soon="Steam page: coming soon" data-live="Steam">Steam page: coming soon</a>
+      <a href="https://github.com/cascadiacollections/saltline/issues">Report a bug</a>
+      <a href="licenses.html">License &amp; open-source acknowledgments</a>
+      <a data-link="sponsors" data-soon="" data-live="Support development">Support development</a>
     </nav>
     <p class="small colophon">No code, assets or naming lineage from any existing
-      artillery game. Settings → Credits / Licenses includes offline notices
-      for Godot, gdext, Rust libraries, and Linux integration. This page ships no trackers, no cookies and no third-party
-      requests; gameplay media comes from the game's own art pipeline; concept boards explore its future art direction.</p>
+      artillery game. Some art cleanup used AI image tools; see "About the art" above.
+      This page ships no trackers, no cookies and no third-party requests.</p>
   </div>
 </footer>
 
 <script src="main.js" defer></script>
-<script src="testflight-promo.js" defer></script>
 </body>
 </html>

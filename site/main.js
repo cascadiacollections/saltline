@@ -2,6 +2,38 @@
 (() => {
   "use strict";
 
+  // ---------------------------------------------------------- store links
+  // The one place to switch a button from "coming soon" to live: paste the URL.
+  // Every element with data-link="<key>" becomes a link labelled data-live when
+  // its URL is set, and stays a plain label (data-soon) when it isn't. An empty
+  // data-soon hides the element until it has a URL.
+  const LINKS = {
+    steam: "",          // https://store.steampowered.com/app/<id>/Salt_Line/
+    demo: "",           // the itch.io page for the shareware edition
+    testflight: "https://testflight.apple.com/join/PgjfndD9",
+    sponsors: "",       // https://github.com/sponsors/KevinTCoughlin once it's approved
+  };
+  // The first live link in this order gets the primary button style in the hero.
+  const PRIMARY_ORDER = ["steam", "demo", "testflight"];
+
+  document.querySelectorAll("[data-link]").forEach((el) => {
+    const url = LINKS[el.dataset.link];
+    if (url) {
+      el.href = url;
+      el.textContent = el.dataset.live;
+      el.removeAttribute("aria-disabled");
+    } else {
+      el.removeAttribute("href");
+      el.setAttribute("aria-disabled", "true");
+      el.textContent = el.dataset.soon;
+      if (!el.dataset.soon) el.hidden = true;
+    }
+  });
+  const primary = PRIMARY_ORDER.find((key) => LINKS[key]);
+  if (primary) {
+    document.querySelector(`.hero .cta [data-link="${primary}"]`)?.classList.add("primary");
+  }
+
   // ---------------------------------------------------------- copy button
   document.querySelectorAll(".copy").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -22,17 +54,6 @@
       setTimeout(() => (btn.textContent = label), 1600);
     });
   });
-
-  // ----------------------------------------------- your platform's build
-  // A hint only: every download stays one click away whatever this guesses.
-  const ua = navigator.userAgent;
-  const platform = /Android/i.test(ua) ? "android"
-    : /Windows/i.test(ua) ? "windows"
-    // iPadOS reports itself as a Mac; a touchscreen gives it away.
-    : /Macintosh/i.test(ua) && navigator.maxTouchPoints < 2 ? "mac"
-    : /Linux/i.test(ua) ? "linux"
-    : null;
-  document.querySelector(`.dl [data-platform="${platform}"]`)?.classList.add("yours");
 
   // ------------------------------------------------------------ scrollspy
   const links = [...document.querySelectorAll('.topbar nav a[href^="#"]')];
