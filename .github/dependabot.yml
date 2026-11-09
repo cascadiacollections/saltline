@@ -23,6 +23,7 @@ updates:
       default-days: 7
     groups:
       cargo:
+        patterns: ["*"]
         update-types: [minor, patch]
     ignore:
       # The `api-4-7` feature ties the bindings to the engine version (README, salt_line.gdextension).

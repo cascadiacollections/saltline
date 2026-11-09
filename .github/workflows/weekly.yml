@@ -96,8 +96,14 @@ jobs:
           # Stopped (SIGINT, so it restores the source and writes what it has)
           # well inside the job's timeout, so a shard that runs long still
           # reports what it tested instead of being killed with nothing.
+          # No --kill-after: ubuntu-latest is now Ubuntu 26.04, whose timeout
+          # comes from uutils coreutils, and uutils' timeout with -k sends
+          # SIGKILL at the deadline instead of SIGINT (reproduced with uutils
+          # 0.12). Every shard then exited 137, failing the run before writing
+          # its summary (2026-10-26, 2026-11-02). The job's timeout-minutes
+          # is the hard stop.
           set +e
-          timeout -s INT -k 5m 100m \
+          timeout -s INT 100m \
             cargo mutants --in-place --shard "$SHARD/$SHARDS" --sharding round-robin
           code=$?
           set -e
