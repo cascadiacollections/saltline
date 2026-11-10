@@ -101,7 +101,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: cargo-nextest
       - name: test salt-line-sim (headless, no Godot installed)
@@ -481,12 +481,12 @@ jobs:
         with:
           persist-credentials: false
       - name: spelling
-        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+        uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
       - name: workflow security
-        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           advanced-security: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: cargo-machete
       - name: unused dependencies
@@ -511,7 +511,7 @@ jobs:
         with:
           lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
           key: coverage
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: coverage
@@ -615,7 +615,7 @@ jobs:
           workspaces: fuzz -> target
       # cargo-fuzz arrives as its static musl build and would target musl by
       # default; see the fuzz job in weekly.yml for why --target is needed.
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: cargo-fuzz
       - name: build every fuzz target
@@ -1536,7 +1536,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable  # the pinned channel still comes from rust-toolchain.toml
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           # Pinned: the tool writes its own version into the SBOM, so a new
           # release would change the bytes a commit's SBOM is meant to keep.
