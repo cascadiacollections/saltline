@@ -152,6 +152,14 @@ def adjusted_profile(lock: dict[str, Any] | None = None) -> dict[str, Any]:
         raise TrialError(f"trial profile drops are not in the shared profile: {', '.join(missing)}")
     for name in drops:
         del options[name]
+    # Options 4.8 adds that the 4.7.2 profile cannot name. 4.8 gates RD_ENABLED on its own
+    # `rendering_device` option rather than on `vulkan`, so a Vulkan-less Android build must
+    # turn it off too, or display_server_android.cpp calls a Vulkan-only function.
+    sets = dict(data["custom_build"].get("profile_sets", {}))
+    clash = sorted(name for name in sets if name in options)
+    if clash:
+        raise TrialError(f"trial profile sets are already in the shared profile: {', '.join(clash)}")
+    options.update(sets)
     return profile
 
 
@@ -892,6 +900,9 @@ def check_trial_profile(src: Path, lock: dict[str, Any] | None = None) -> None:
                 stale.append(option)
         elif not is_known:
             unknown.append(option)
+    for option in data["custom_build"].get("profile_sets", {}):
+        if not option_known(src, option, known):
+            unknown.append(option)
     extra = sorted(drops - set(profile["disabled_build_options"]))
     if extra or stale or unknown:
         raise TrialError(
@@ -961,6 +972,7 @@ def cmd_build(platform: str, arch: str | None, jobs: int, src: Path, out: Path) 
         "sha256": sha256(dest),
         "bytes": dest.stat().st_size,
         "profile_drops": list(LOCK["custom_build"]["profile_drops"]),
+        "profile_sets": dict(LOCK["custom_build"].get("profile_sets", {})),
     }
     (out / "build-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"{dest}  {report['bytes']} bytes  sha256 {report['sha256']}  key {report['key']}")

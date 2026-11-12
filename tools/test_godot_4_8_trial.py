@@ -68,6 +68,21 @@ class Godot48Trial(unittest.TestCase):
             {"module_regex_enabled"},
         )
 
+    def test_profile_sets_turn_off_rendering_device_for_the_trial_only(self):
+        adjusted = trial.adjusted_profile()
+        shared = json.loads(godot_template.PROFILE.read_text())
+        # 4.8 gates RD_ENABLED on `rendering_device`, not `vulkan`; without this the stripped
+        # Android build fails in display_server_android.cpp (free_vulkan_global_context).
+        self.assertIs(adjusted["disabled_build_options"]["rendering_device"], False)
+        self.assertNotIn("rendering_device", shared["disabled_build_options"])
+        self.assertIs(shared["disabled_build_options"]["vulkan"], False)
+
+    def test_profile_set_already_in_the_shared_profile_is_refused(self):
+        lock = json.loads(json.dumps(trial.LOCK))
+        lock["custom_build"]["profile_sets"] = {"vulkan": False}
+        with self.assertRaisesRegex(trial.TrialError, "already in the shared profile"):
+            trial.adjusted_profile(lock)
+
     def test_profile_check_accepts_a_4_8_tree_and_rejects_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = self.tree(Path(tmp), regex=False, omit=None)
@@ -78,6 +93,9 @@ class Godot48Trial(unittest.TestCase):
             missing = self.tree(Path(tmp) / "missing", regex=False, omit="module_ogg_enabled")
             with self.assertRaises(trial.TrialError):
                 trial.check_trial_profile(missing)
+            no_rd = self.tree(Path(tmp) / "no_rd", regex=False, omit=None, rendering_device=False)
+            with self.assertRaisesRegex(trial.TrialError, "rendering_device"):
+                trial.check_trial_profile(no_rd)
 
     def test_package_inspection_reports_native_libraries(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -151,7 +169,7 @@ class Godot48Trial(unittest.TestCase):
             ["SCRIPT ERROR: bad"],
         )
 
-    def tree(self, src: Path, regex: bool, omit: str | None) -> Path:
+    def tree(self, src: Path, regex: bool, omit: str | None, rendering_device=True) -> Path:
         src.mkdir(parents=True, exist_ok=True)
         profile = json.loads(godot_template.PROFILE.read_text())
         quoted = []
@@ -167,6 +185,8 @@ class Godot48Trial(unittest.TestCase):
                 (module_dir / "config.py").write_text("# module\n", encoding="utf-8")
             else:
                 quoted.append(f'"{option}"')
+        if rendering_device:
+            quoted.append('"rendering_device"')
         (src / "SConstruct").write_text("\n".join(quoted), encoding="utf-8")
         (src / "platform").mkdir(exist_ok=True)
         return src

@@ -118,6 +118,15 @@ Python 3.9+.
 `tools/godot_build_profile.json` is not edited, so the 4.7.2 lock key stays
 put.
 
+`rendering_device=false` is set for the trial build only (`profile_sets` in
+the trial lock). 4.8 adds a `rendering_device` SCons option, on by default,
+and defines `RD_ENABLED` from it rather than from `vulkan`. With only
+`vulkan=false`, as the 4.7.2 profile has it, the stripped Android build fails:
+`display_server_android.cpp` calls `free_vulkan_global_context()` under
+`RD_ENABLED`, but declares it only under `VULKAN_ENABLED` (seen on beta3,
+same code on beta2 and `master`). The option does not exist in 4.7.2, so it
+cannot go in the shared profile until the pin moves.
+
 These modules are in the 4.8-beta3 tree and not in the 4.7.2 tree, and the
 trial leaves them at Godot's default (enabled): `texture_streaming`,
 `tilemap`, `visionos_xr`. Worth a look before any real pin. Their presence

@@ -41,7 +41,8 @@
     "python_min": "3.10",
     "scons": "4.11.1",
     "profile_drops": ["module_regex_enabled"],
+    "profile_sets": {"rendering_device": false},
     "modules_added_since_4_7_2": ["texture_streaming", "tilemap", "visionos_xr"],
-    "key": "f418dd9a8c6ca557"
+    "key": "2b5a398250e6cad7"
   }
 }
