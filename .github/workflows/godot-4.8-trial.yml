@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       custom_engine:
-        description: "Also build a stripped 4.8-beta2 Android arm64 template (Python >= 3.10). Allow-failure. Does not publish or edit the 4.7.2 lock."
+        description: "Also build a stripped 4.8-beta3 Android arm64 template (Python >= 3.10). Allow-failure. Does not publish or edit the 4.7.2 lock."
         required: false
         type: boolean
         default: false
@@ -27,7 +27,7 @@ env:
 
 jobs:
   compare:
-    name: official 4.8-beta2 vs 4.7.2
+    name: official 4.8-beta3 vs 4.7.2
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -76,7 +76,7 @@ jobs:
   # hide the official-template comparison. Nothing here publishes a release
   # or writes tools/godot_templates.lock.json.
   custom-engine:
-    name: stripped 4.8-beta2 engine
+    name: stripped 4.8-beta3 engine
     if: ${{ inputs.custom_engine }}
     continue-on-error: true
     runs-on: ubuntu-latest

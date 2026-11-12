@@ -1,4 +1,4 @@
-"""The 4.8-beta2 trial stays off the 4.7.2 pin."""
+"""The 4.8-beta3 trial stays off the 4.7.2 pin."""
 
 import hashlib
 import io
@@ -25,9 +25,9 @@ class Godot48Trial(unittest.TestCase):
     def test_template_directory_defaults_to_the_stable_pin(self):
         with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": ""}):
             self.assertEqual(godot_template.template_release_dir(), "4.7.2.stable")
-        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8.beta2"}):
-            self.assertEqual(godot_template.template_release_dir(), "4.8.beta2")
-        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8-beta2"}), \
+        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8.beta3"}):
+            self.assertEqual(godot_template.template_release_dir(), "4.8.beta3")
+        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8-beta3"}), \
              patch("sys.stderr", io.StringIO()):
             with self.assertRaises(SystemExit):
                 godot_template.template_release_dir()
@@ -42,10 +42,10 @@ class Godot48Trial(unittest.TestCase):
 
     def test_editor_version_must_match_the_lock_commit(self):
         spec = trial.trial()
-        self.assertIsNone(trial.editor_version_error("4.8.beta2.official.cafc17a19\n", spec))
+        self.assertIsNone(trial.editor_version_error("4.8.beta3.official.c51ff06e8\n", spec))
         self.assertIsNone(trial.editor_version_error("4.7.2.stable.official.ed1daf0bf", trial.compare()))
-        self.assertIn("commit", trial.editor_version_error("4.8.beta2.official.aaaaaaaaa", spec) or "")
-        self.assertIn("4.8.beta2", trial.editor_version_error("4.8.beta1.official.cafc17a19", spec) or "")
+        self.assertIn("commit", trial.editor_version_error("4.8.beta3.official.aaaaaaaaa", spec) or "")
+        self.assertIn("4.8.beta3", trial.editor_version_error("4.8.beta1.official.c51ff06e8", spec) or "")
         self.assertIn("unrecognized", trial.editor_version_error("Godot Engine", spec) or "")
 
     def test_published_sums_must_match_the_lock(self):
@@ -68,6 +68,21 @@ class Godot48Trial(unittest.TestCase):
             {"module_regex_enabled"},
         )
 
+    def test_profile_sets_turn_off_rendering_device_for_the_trial_only(self):
+        adjusted = trial.adjusted_profile()
+        shared = json.loads(godot_template.PROFILE.read_text())
+        # 4.8 gates RD_ENABLED on `rendering_device`, not `vulkan`; without this the stripped
+        # Android build fails in display_server_android.cpp (free_vulkan_global_context).
+        self.assertIs(adjusted["disabled_build_options"]["rendering_device"], False)
+        self.assertNotIn("rendering_device", shared["disabled_build_options"])
+        self.assertIs(shared["disabled_build_options"]["vulkan"], False)
+
+    def test_profile_set_already_in_the_shared_profile_is_refused(self):
+        lock = json.loads(json.dumps(trial.LOCK))
+        lock["custom_build"]["profile_sets"] = {"vulkan": False}
+        with self.assertRaisesRegex(trial.TrialError, "already in the shared profile"):
+            trial.adjusted_profile(lock)
+
     def test_profile_check_accepts_a_4_8_tree_and_rejects_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = self.tree(Path(tmp), regex=False, omit=None)
@@ -78,6 +93,9 @@ class Godot48Trial(unittest.TestCase):
             missing = self.tree(Path(tmp) / "missing", regex=False, omit="module_ogg_enabled")
             with self.assertRaises(trial.TrialError):
                 trial.check_trial_profile(missing)
+            no_rd = self.tree(Path(tmp) / "no_rd", regex=False, omit=None, rendering_device=False)
+            with self.assertRaisesRegex(trial.TrialError, "rendering_device"):
+                trial.check_trial_profile(no_rd)
 
     def test_package_inspection_reports_native_libraries(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -116,7 +134,7 @@ class Godot48Trial(unittest.TestCase):
         self.assertEqual(rows["Salt Line APK"][1], "—")
         trial.check_packaged_engines(stable, preview)
         preview["apk"] = packed("lib/arm64-v8a/libgodot_android.so", "stable-engine", 30)
-        with self.assertRaisesRegex(trial.TrialError, "4.8-beta2 APK"):
+        with self.assertRaisesRegex(trial.TrialError, "4.8-beta3 APK"):
             trial.check_packaged_engines(stable, preview)
 
     def test_build_report_must_match_commit_key_and_bytes(self):
@@ -128,7 +146,7 @@ class Godot48Trial(unittest.TestCase):
                 "tag": trial.trial()["godot"],
                 "editor_version": trial.trial()["editor_version"],
                 "commit": trial.trial()["commit"],
-                "version_status": "beta2",
+                "version_status": "beta3",
                 "key": trial.custom_build_key(),
                 "python": "3.12.3",
                 "file": binary.name,
@@ -151,7 +169,7 @@ class Godot48Trial(unittest.TestCase):
             ["SCRIPT ERROR: bad"],
         )
 
-    def tree(self, src: Path, regex: bool, omit: str | None) -> Path:
+    def tree(self, src: Path, regex: bool, omit: str | None, rendering_device=True) -> Path:
         src.mkdir(parents=True, exist_ok=True)
         profile = json.loads(godot_template.PROFILE.read_text())
         quoted = []
@@ -167,6 +185,8 @@ class Godot48Trial(unittest.TestCase):
                 (module_dir / "config.py").write_text("# module\n", encoding="utf-8")
             else:
                 quoted.append(f'"{option}"')
+        if rendering_device:
+            quoted.append('"rendering_device"')
         (src / "SConstruct").write_text("\n".join(quoted), encoding="utf-8")
         (src / "platform").mkdir(exist_ok=True)
         return src
