@@ -188,7 +188,7 @@ recreates on each push to `main`, so check that flow still works first.
 
 ## Bumping Godot
 
-A preview such as 4.8-beta2 is not a bump. The shipping pin stays 4.7.2.
+A preview such as 4.8-beta3 is not a bump. The shipping pin stays 4.7.2.
 The opt-in trial is `docs/godot-4.8-trial.md`.
 
 1. Change `GODOT_VERSION` in `.github/workflows/ci.yml` and in

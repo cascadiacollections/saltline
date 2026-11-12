@@ -241,7 +241,7 @@ def template_release_dir() -> str:
     """Directory name under export_templates/.
 
     Unset, this is the 4.7.2 stable pin (`4.7.2.stable`). The 4.8 trial sets
-    GODOT_TEMPLATE_VERSION=4.8.beta2 for its own export step. This is not
+    GODOT_TEMPLATE_VERSION=4.8.beta3 for its own export step. This is not
     GODOT_VERSION: `key` treats that variable as the shipping pin and fails
     if it disagrees.
     """

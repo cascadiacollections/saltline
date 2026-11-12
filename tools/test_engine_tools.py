@@ -90,7 +90,7 @@ class EngineTools(unittest.TestCase):
                 return source
 
             old = template("4.7.2.stable", "src/main/java/com/godot/game/GodotApp.java")
-            new = template("4.8.beta2", "src/main/java/com/godot/game/app/GodotApplication.java")
+            new = template("4.8.beta3", "src/main/java/com/godot/game/app/GodotApplication.java")
             java = android / "build" / "src" / "main" / "java" / "com" / "godot" / "game"
             with patch.object(templates, "ROOT", root):
                 with patch.object(templates, "official_templates", return_value=old):
