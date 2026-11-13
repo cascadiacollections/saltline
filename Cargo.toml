@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/salt-line-sim", "crates/salt-line-godot"]
+members = ["crates/salt-line-sim", "crates/salt-line-godot", "crates/shift-sim"]
 # Fuzzing lives in its own workspace (fuzz/Cargo.toml) and needs nightly.
 exclude = ["fuzz"]
 

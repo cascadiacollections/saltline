@@ -1,0 +1,13 @@
+[package]
+publish = false
+name = "shift-sim"
+description = "Game Off 2026 entry: two-phase stages, echoes and the Expedition run, on salt-line-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Same rule as salt-line-sim: no dependencies beyond the sim, so it builds
+# and tests headless with no engine present.
+[dependencies]
+salt-line-sim = { path = "../salt-line-sim" }
