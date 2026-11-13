@@ -7,6 +7,10 @@ dependencies = [
     "Pillow>=13.0",
 ]
 
+[tool.ty.environment]
+# gameoff/tools/ imports the engine's sprite helpers from tools/.
+extra-paths = ["tools"]
+
 [tool.ty.analysis]
 # blender/scripts run inside Blender, which provides these modules.
 allowed-unresolved-imports = ["bpy", "mathutils"]

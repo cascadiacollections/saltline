@@ -145,7 +145,7 @@ trebuchet alike) plus these two era modifiers.
 - Same seed gives identical eras, terrain, structures and echo placement.
 - Per-era isolation: damage in Salt never alters Siege terrain or original
   structures. The only cross-era effect is new echoes.
-- Replay: the run is seed + an input log (shots and SHIFTs). It has its own
+- Replay: the run is seed + an input log (shots and SHIFT presses). It has its own
   versioned format (`SHIFT_LOG_VERSION`) and a round-trip test.
   `salt-line-sim`'s codec and epoch are untouched.
 - Golden-seed Expedition: scripted inputs, taken from the solver, reach and kill
