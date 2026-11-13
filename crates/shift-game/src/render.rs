@@ -7,7 +7,7 @@ use shift_sim::expedition::{Pick, State};
 use shift_sim::stage::{Role, BASTION_INTEGRITY};
 use shift_sim::{PhaseMod, Plane, Stage};
 
-use crate::app::{stage_label, Game, Mode, Play};
+use crate::app::{hit, stage_label, Game, Mode, Play, AIM_NEAR, AIM_SPAN, PAUSE_ITEMS};
 use crate::canvas::{dither, Canvas, Rgba, H, W};
 use crate::font::{self, centred, text, text_outlined};
 use crate::sprites::{Atlas, Ink};
@@ -260,9 +260,14 @@ impl Renderer {
                 );
             }
         }
-        // Aim guide: a dotted ray from the muzzle, longer with power.
+        // Aim guide: a dotted ray from the muzzle, longer with power. While
+        // a pointer drags, it reaches the point the drag aims at.
         if p.flight.is_none() && p.view.is_none() {
-            let len = 10.0 + 34.0 * p.power_ticks as f64 / 1000.0;
+            let len = if p.drag.is_some() {
+                AIM_NEAR + AIM_SPAN * p.power_ticks as f64 / 1000.0
+            } else {
+                10.0 + 34.0 * p.power_ticks as f64 / 1000.0
+            };
             let r = deg.to_radians();
             let (ex, ey) = (m.x + r.cos() * len, m.y + r.sin() * len);
             c.line(mx, my, ex.round() as i32, sy(ey), INK, 3);
@@ -334,7 +339,19 @@ impl Renderer {
             run.shells(),
             p.shown().echoes_left()
         );
-        text(c, &right, W as i32 - 3 - font::width(&right, 1), 2, 1, INK);
+        text(
+            c,
+            &right,
+            hit::PAUSE.x - 3 - font::width(&right, 1),
+            2,
+            1,
+            INK,
+        );
+        // Pause button: two bars.
+        let pb = hit::PAUSE;
+        c.rect(pb.x, 0, 1, 9, Rgba::rgb(90, 86, 96));
+        c.rect(pb.x + 4, 2, 2, 5, INK);
+        c.rect(pb.x + 8, 2, 2, 5, INK);
 
         // Bottom band: aim, wind, SHIFT.
         let y = H as i32 - 8;
@@ -373,7 +390,13 @@ impl Renderer {
         } else {
             (format!("[SHIFT] {to}"), ECHO)
         };
-        text(c, &shift, W as i32 - 3 - font::width(&shift, 1), y, 1, col);
+        if !shift.is_empty() {
+            // A button: set off by a divider, so it reads as tappable.
+            let w = font::width(&shift, 1) + 6;
+            let x = W as i32 - 1 - w;
+            c.rect(x - 1, y - 2, 1, 10, Rgba::rgb(90, 86, 96));
+            text(c, &shift, x + 3, y, 1, col);
+        }
 
         // Era modifiers held, under the top band.
         let mut mods = Vec::new();
@@ -401,10 +424,34 @@ impl Renderer {
                 }
             }
         }
-        if p.quit_armed > 0.0 {
-            let s = "ESC AGAIN TO ABANDON THE RUN";
-            c.rect_blend(160 - 62, 56, 124, 11, DARK, 0.8);
-            centred(c, s, 160, 59, 1, INK);
+        if p.drag.is_some() {
+            let s = "RELEASE TO FIRE - DRAG TO A BAR TO CANCEL";
+            let w = font::width(s, 1) + 8;
+            c.rect_blend(160 - w / 2, 12, w, 9, DARK, 0.7);
+            centred(c, s, 160, 14, 1, INK);
+        }
+        if let Some(sel) = p.paused {
+            c.rect_blend(0, 0, W as i32, H as i32, DARK, 0.6);
+            let x = 160 - font::width("PAUSED", 2) / 2;
+            text(c, "PAUSED", x, 54, 2, ALERT);
+            for (i, item) in PAUSE_ITEMS.iter().enumerate() {
+                let r = hit::pause_item(i);
+                let on = i == sel;
+                c.rect(
+                    r.x,
+                    r.y,
+                    r.w,
+                    r.h,
+                    if on {
+                        Rgba::rgb(60, 56, 70)
+                    } else {
+                        Rgba::rgb(40, 38, 46)
+                    },
+                );
+                frame(c, r, if on { ALERT } else { Rgba::rgb(90, 86, 96) });
+                centred(c, item, 160, r.y + 4, 1, if on { ALERT } else { INK });
+            }
+            centred(c, "ESC RESUMES", 160, 116, 1, Rgba::rgb(180, 176, 170));
         }
     }
 
@@ -456,15 +503,16 @@ impl Renderer {
         );
 
         let blink = (t * 2.0) as i32 % 2 == 0;
-        out.rect_blend(62, 92, 196, 61, DARK, 0.75);
+        out.rect_blend(58, 92, 204, 70, DARK, 0.75);
         if blink {
-            centred(out, "PRESS ENTER - EXPEDITION", 160, 96, 1, INK);
+            centred(out, "PRESS ENTER OR TAP - EXPEDITION", 160, 96, 1, INK);
         }
         let lines = [
             "UP/DOWN  ANGLE     LEFT/RIGHT  POWER",
             "SPACE  FIRE      SHIFT  CHANGE ERA",
-            "Z  FINE AIM      ESC  BACK",
+            "Z  FINE AIM      ESC  PAUSE",
             "PAD: D-PAD AIM  A FIRE  LB/RB SHIFT  X FINE",
+            "MOUSE/TOUCH: DRAG TO AIM, RELEASE TO FIRE",
             "12 SCREENS. THE BASTION WAITS AT THE END.",
         ];
         for (i, l) in lines.iter().enumerate() {
@@ -474,7 +522,7 @@ impl Renderer {
                 160,
                 106 + i as i32 * 9,
                 1,
-                if i == 4 { ALERT } else { INK },
+                if i == 5 { ALERT } else { INK },
             );
         }
         let stamp = format!("COUNTERWEIGHT  {}  GAME OFF 2026", g.stamp);
@@ -495,12 +543,9 @@ impl Renderer {
         };
         c.rect_blend(0, 0, W as i32, H as i32, DARK, 0.55);
         centred(c, "THE LINE HOLDS. CHOOSE AN ADVANTAGE.", 160, 24, 1, ALERT);
-        let cw = 96;
-        let gap = 6;
-        let total = offers.len() as i32 * cw + (offers.len() as i32 - 1) * gap;
-        let x0 = 160 - total / 2;
+        let cw = hit::CARD_W;
         for (i, o) in offers.iter().enumerate() {
-            let x = x0 + i as i32 * (cw + gap);
+            let x = hit::card(i, offers.len()).x;
             let on = i == sel;
             c.rect(
                 x,
@@ -531,7 +576,11 @@ impl Renderer {
                 y += 7;
             }
         }
-        centred(c, "1-3 OR ARROWS + ENTER    ESC SKIP", 160, 142, 1, INK);
+        centred(c, "1-3, ARROWS + ENTER, OR TAP TWICE", 160, 138, 1, INK);
+        let r = hit::SKIP;
+        c.rect(r.x, r.y, r.w, r.h, Rgba::rgb(40, 38, 46));
+        frame(c, r, Rgba::rgb(90, 86, 96));
+        centred(c, "SKIP (ESC)", 160, r.y + 4, 1, INK);
     }
 
     fn over(&self, p: &Play, victory: bool, c: &mut Canvas) {
@@ -562,7 +611,7 @@ impl Renderer {
                 if i == 4 { ALERT } else { INK },
             );
         }
-        centred(c, "ENTER - TITLE", 160, 128, 1, ECHO);
+        centred(c, "ENTER OR TAP - TITLE", 160, 128, 1, ECHO);
     }
 }
 
@@ -637,6 +686,14 @@ impl Canvas {
     fn draw_spr(&mut self, s: &crate::sprites::Sprite, x: i32, y: i32, flip: bool, ink: Ink) {
         s.draw(self, x, y, flip, ink);
     }
+}
+
+/// A one-pixel border just inside `r`.
+fn frame(c: &mut Canvas, r: hit::Rect, col: Rgba) {
+    c.rect(r.x, r.y, r.w, 1, col);
+    c.rect(r.x, r.y + r.h - 1, r.w, 1, col);
+    c.rect(r.x, r.y, 1, r.h, col);
+    c.rect(r.x + r.w - 1, r.y, 1, r.h, col);
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@
 use std::io::Write;
 
 use shift_game::app::{Mode, Play};
-use shift_game::{Button, Canvas, Game, Held, Input, Renderer, H, W};
+use shift_game::{Button, Canvas, Game, Held, Input, Pointer, Renderer, H, W};
 use shift_sim::{bot, Input as RunInput};
 
 fn main() {
@@ -34,6 +34,7 @@ fn main() {
             &Input {
                 held: Held::default(),
                 pressed,
+                pointer: None,
             },
         );
         let mut t = 0.0;
@@ -49,6 +50,24 @@ fn main() {
     snap(&g, "title-siege", &mut r, &mut c);
     step(&mut g, 0.1, vec![Button::Fire]);
     snap(&g, "present-aim", &mut r, &mut c);
+    // Pointer aiming mid-drag, then a release over the bottom band cancels.
+    let at = |g: &mut Game, x: f32, y: f32, down: bool| {
+        g.update(
+            1.0 / 60.0,
+            &Input {
+                pointer: Some(Pointer { x, y, down }),
+                ..Input::default()
+            },
+        );
+    };
+    at(&mut g, 220.0, 70.0, true);
+    at(&mut g, 150.0, 60.0, true);
+    snap(&g, "drag-aim", &mut r, &mut c);
+    at(&mut g, 150.0, 176.0, true);
+    at(&mut g, 150.0, 176.0, false);
+    step(&mut g, 0.1, vec![Button::Back]);
+    snap(&g, "paused", &mut r, &mut c);
+    step(&mut g, 0.1, vec![Button::Back]);
 
     let mut shots = 0;
     let mut saw = [false; 8];

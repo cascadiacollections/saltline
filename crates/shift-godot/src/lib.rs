@@ -19,11 +19,11 @@ use godot::classes::{
     AudioStreamPlayer, AudioStreamWav, ClassDb, Engine, INode2D, Image, ImageTexture, Input,
     Node2D, Os, Time,
 };
-use godot::global::{JoyButton, Key};
+use godot::global::{JoyButton, Key, MouseButton};
 use godot::prelude::*;
 
 use shift_game::audio::{pcm, Cue, MIX_RATE};
-use shift_game::{Button, Canvas, Effect, Game, Held, Input as GameInput, Renderer, H, W};
+use shift_game::{Button, Canvas, Effect, Game, Held, Input as GameInput, Pointer, Renderer, H, W};
 
 struct CounterweightExtension;
 
@@ -243,6 +243,15 @@ impl Counterweight {
             right: is(Button::Right),
             fine: input.is_key_pressed(Key::Z) || input.is_joy_button_pressed(0, JoyButton::X),
         };
+        // The node sits at the origin of the 320x180 stretched viewport, so
+        // its local mouse position is already in frame pixels. Touches arrive
+        // as the mouse (emulate_mouse_from_touch, on by default).
+        let m = self.base().get_local_mouse_position();
+        out.pointer = Some(Pointer {
+            x: m.x,
+            y: m.y,
+            down: input.is_mouse_button_pressed(MouseButton::LEFT),
+        });
         out
     }
 
