@@ -54,9 +54,9 @@ fn a_fallen_original_leaves_an_echo_in_the_other_era() {
 fn echoes_do_not_echo() {
     let mut run = Expedition::new(5, W);
     fell_something(&mut run);
-    // Now in Siege, kill an echo and check Salt gains nothing new.
+    // Now in Siege, kill an echo and check the Present gains nothing new.
     run.apply(Input::Shift).unwrap();
-    let salt_len = run.stage().screen(Plane::Salt).structures.len();
+    let salt_len = run.stage().screen(Plane::Present).structures.len();
     for _ in 0..20 {
         let Some(input) = bot::next_input(&run) else {
             break;
@@ -66,7 +66,7 @@ fn echoes_do_not_echo() {
         }
         run.apply(input);
     }
-    let salt = run.stage().era(Plane::Salt);
+    let salt = run.stage().era(Plane::Present);
     let new_from_echoes = salt.roles[salt_len..]
         .iter()
         .filter(|r| **r == Role::Echo)
@@ -96,7 +96,7 @@ fn bastion_stage_is_one_heavy_structure_per_era() {
 #[test]
 fn trebuchet_flies_differently_from_the_howitzer() {
     let base = Loadout::new();
-    let (salt, siege) = (Plane::Salt.loadout(&base), Plane::Siege.loadout(&base));
+    let (salt, siege) = (Plane::Present.loadout(&base), Plane::Siege.loadout(&base));
     assert!(siege.muzzle_scale < salt.muzzle_scale);
     assert!(siege.wind_scale < salt.wind_scale);
     assert!(siege.crater_scale > salt.crater_scale);

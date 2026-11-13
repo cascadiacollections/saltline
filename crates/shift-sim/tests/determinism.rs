@@ -36,7 +36,7 @@ fn same_seed_gives_identical_phases() {
 fn phases_differ() {
     let s = stage(7, 0);
     assert_ne!(
-        digest(s.screen(Plane::Salt)),
+        digest(s.screen(Plane::Present)),
         digest(s.screen(Plane::Siege))
     );
 }
@@ -44,26 +44,26 @@ fn phases_differ() {
 #[test]
 fn shift_swaps_and_returns() {
     let mut s = stage(7, 0);
-    assert_eq!(s.active(), Plane::Salt);
+    assert_eq!(s.active(), Plane::Present);
     s.shift(false);
     assert_eq!(s.active(), Plane::Siege);
     s.shift(false);
-    assert_eq!(s.active(), Plane::Salt);
+    assert_eq!(s.active(), Plane::Present);
 }
 
 #[test]
 fn damage_stays_in_the_active_era_except_echoes() {
     let mut s = stage(99, 1);
     let siege_before = s.screen(Plane::Siege).clone();
-    let salt_before = digest(s.screen(Plane::Salt));
+    let salt_before = digest(s.screen(Plane::Present));
     // A spread of shots; some land on terrain, which always craters.
     for (a, p) in [(900, 400), (700, 600), (1100, 300)] {
         s.fire(shot(a, p), &Loadout::new(), false, false);
     }
     assert_ne!(
-        digest(s.screen(Plane::Salt)),
+        digest(s.screen(Plane::Present)),
         salt_before,
-        "shots should have left a mark in Salt"
+        "shots should have left a mark in the Present"
     );
     let siege = s.era(Plane::Siege);
     // Siege's ground is untouched and its originals are exactly as they were.

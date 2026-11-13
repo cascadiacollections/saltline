@@ -1,6 +1,6 @@
-//! Game Off 2026 entry rules (gameoff/DESIGN.md), built on `salt-line-sim`.
+//! Counterweight (Game Off 2026 entry) rules (gameoff/DESIGN.md), built on `salt-line-sim`.
 //!
-//! Every stage exists in two eras: Salt, the present, fired with a howitzer,
+//! Every stage exists in two eras: Present, the present, fired with a howitzer,
 //! and Siege, 1347, fired with a trebuchet. Each era is an ordinary
 //! [`salt_line_sim::run::Screen`] generated from its own sub-stream of the
 //! run seed, so terrain, structures, wind and damage are tracked per era by

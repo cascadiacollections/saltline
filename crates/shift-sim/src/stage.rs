@@ -11,35 +11,35 @@ use salt_line_sim::run::{generate_screen, Screen, ShotReport, StructState, Struc
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Plane {
     /// The present: a howitzer on the salt flats. Pale, day.
-    Salt,
+    Present,
     /// 1347: a trebuchet before a castle. Deep, dusk.
     Siege,
 }
 
 impl Plane {
     /// Both eras, in index order.
-    pub const BOTH: [Plane; 2] = [Plane::Salt, Plane::Siege];
+    pub const BOTH: [Plane; 2] = [Plane::Present, Plane::Siege];
 
     /// The other era.
     pub fn other(self) -> Self {
         match self {
-            Plane::Salt => Plane::Siege,
-            Plane::Siege => Plane::Salt,
+            Plane::Present => Plane::Siege,
+            Plane::Siege => Plane::Present,
         }
     }
 
     /// Index into per-era arrays.
     pub fn index(self) -> usize {
         match self {
-            Plane::Salt => 0,
+            Plane::Present => 0,
             Plane::Siege => 1,
         }
     }
 
-    /// Sub-stream tag naming this era: ASCII "SALT" and "SIEG".
+    /// Sub-stream tag naming this era: ASCII "PRES" and "SIEG".
     fn tag(self) -> u64 {
         match self {
-            Plane::Salt => 0x5341_4C54,
+            Plane::Present => 0x5052_4553,
             Plane::Siege => 0x5349_4547,
         }
     }
@@ -148,8 +148,8 @@ impl Stage {
             Era { screen, roles }
         };
         Stage {
-            eras: [gen(Plane::Salt), gen(Plane::Siege)],
-            active: Plane::Salt,
+            eras: [gen(Plane::Present), gen(Plane::Siege)],
+            active: Plane::Present,
         }
     }
 

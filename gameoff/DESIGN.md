@@ -1,10 +1,10 @@
 # Game Off 2026 entry: design lock
 
 Theme: **SHIFT**. Deadline: Tue 2026-12-01 13:37 PT. Target: submit Mon 2026-11-30.
-Status: design locked 2026-11-13. Working title: **Salt Line: Shift** (alt: *Salt & Siege*) (final name
-can change before the itch page goes up).
+Status: design locked 2026-11-13. Working title: **Counterweight** (final name can change before the itch page
+goes up).
 
-## Why this is a new game, not a Salt Line update
+## Same engine, its own game
 
 Game Off rule 1: templates, starter projects, existing libraries and reusable
 code are welcome, "but the vast majority of your game's development should
@@ -12,9 +12,14 @@ happen during the submission period". The FAQ adds: "Please don't submit an old
 game with only minor changes." Bolting a phase system onto released Salt Line
 (v0.2.0, Steam, shareware edition) would be an old game with additions.
 
-So the entry is a **new, smaller game built in November** that uses
-`salt-line-sim` as a **library** (terrain heightfields, ballistics, damage,
-the solver and the RNG). Its rules, run loop and presentation are new.
+So the entry is a **new, smaller game built in November** on the same engine:
+`salt-line-sim` used as a **library** (terrain heightfields, ballistics, damage,
+the solver and the RNG). Its rules, run loop, presentation and identity are new.
+
+**Identity.** Counterweight is its own game, not a Salt Line edition: its own
+name, title art, icon and application ID (`com.cascadiacollections.counterweight`).
+`TRADEMARK.md` reserves the Salt Line name and icon, and the jam entry
+stays clear of them. The credits say it is built on the Salt Line engine.
 
 - Only the new game and the library it needs go into the public repo. The full
   Salt Line game (the Godot crate, editor, versus, challenges, store builds)
@@ -45,10 +50,10 @@ Artillery against a fixed run of fortified screens, across two **eras** of the
 same coast. **SHIFT** (key: **Shift**, gamepad: shoulder button, shown in the
 HUD) swaps eras, and the battlefield cross-fades.
 
-| | **Salt** (the present) | **Siege** (1347) |
+| | **Present** | **Siege** (1347) |
 | --- | --- | --- |
 | Look | Pale, day | Deep, dusk, torchlit |
-| Your gun | Howitzer, as in Salt Line | **Trebuchet**: counterweight throw, heavy stone |
+| Your gun | Howitzer | **Trebuchet**: counterweight throw, heavy stone |
 | Flight | Shell speed, full wind | 0.85× speed (shorter reach, higher lobs), 0.35× wind |
 | Impact | Shell crater and blast | 1.5× crater, 1.3× blast |
 | Targets | Derricks, masts, water towers, silos, pylons | The same footprints dressed as watchtowers, banner poles, bell towers, keeps, siege towers |
@@ -60,7 +65,7 @@ Fell a radio mast today and a ghostly watchtower rises on the medieval line.
 ### 1. Two eras (core)
 
 - Each screen is a **pair** of `salt_line_sim::run::Screen`s generated from one
-  run seed: `era_seed = rng::substream(run_seed, "SALT" | "SIEG")`. Terrain,
+  run seed: `era_seed = rng::substream(run_seed, "PRES" | "SIEG")`. Terrain,
   structures and wind come from that era's seed. Damage (craters, structure
   state) lives in that era's `Screen` and never touches the other.
 - The trebuchet is the drafted loadout with the Siege multipliers applied on
@@ -122,7 +127,8 @@ trebuchet alike) plus these two era modifiers.
 
 ## Presentation
 
-- **Art.** Salt reuses existing Salt Line art. Siege is a grade swap (deep,
+- **Art.** The Present reuses existing engine art (terrain, howitzer,
+  structures) with its own grade. Siege is a grade swap (deep,
   dusk) of the same art. The few medieval pieces it needs (trebuchet, stone,
   medieval skins for the five structure footprints) are **made during the jam
   with the existing procedural pipeline** (`tools/gen_sprites.py`), at the same
@@ -143,7 +149,7 @@ trebuchet alike) plus these two era modifiers.
 ## Determinism and tests (`crates/shift-sim`)
 
 - Same seed gives identical eras, terrain, structures and echo placement.
-- Per-era isolation: damage in Salt never alters Siege terrain or original
+- Per-era isolation: damage in the Present never alters Siege terrain or original
   structures. The only cross-era effect is new echoes.
 - Replay: the run is seed + an input log (shots and SHIFTs). It has its own
   versioned format (`SHIFT_LOG_VERSION`) and a round-trip test.
@@ -167,8 +173,8 @@ trebuchet alike) plus these two era modifiers.
 
 ## Open decisions (owner)
 
-- Final title.
-- Public repo name (`cascadiacollections/saltline-gameoff` proposed) and
-  license (MIT, matching the sim).
+- Final title (Counterweight is the working title).
+- Public repo name (`cascadiacollections/counterweight` proposed, replacing the
+  handoff's `saltline-gameoff`) and license (MIT, matching the sim).
 - Where the workspace asset folders (`salt-line/assets`, `/audio`,
   `/marketing`) live. They aren't on this Mac under `~/Development` or `~`.
