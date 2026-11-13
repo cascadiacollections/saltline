@@ -100,7 +100,7 @@ impl Renderer {
             }
             Mode::Over { play, victory } => {
                 self.play(play, out);
-                self.over(play, *victory, out);
+                self.over(play, *victory, g, out);
             }
         }
     }
@@ -424,11 +424,15 @@ impl Renderer {
                 }
             }
         }
-        if p.drag.is_some() {
-            let s = "RELEASE TO FIRE - DRAG TO A BAR TO CANCEL";
+        let banner = if p.drag.is_some() {
+            Some(("RELEASE TO FIRE - DRAG TO A BAR TO CANCEL", INK))
+        } else {
+            first_screen_hint(p)
+        };
+        if let Some((s, col)) = banner {
             let w = font::width(s, 1) + 8;
             c.rect_blend(160 - w / 2, 12, w, 9, DARK, 0.7);
-            centred(c, s, 160, 14, 1, INK);
+            centred(c, s, 160, 14, 1, col);
         }
         if let Some(sel) = p.paused {
             c.rect_blend(0, 0, W as i32, H as i32, DARK, 0.6);
@@ -525,6 +529,18 @@ impl Renderer {
                 if i == 5 { ALERT } else { INK },
             );
         }
+        if g.best > 0 {
+            let b = format!("BEST {}", g.best);
+            text_outlined(
+                out,
+                &b,
+                W as i32 - 3 - font::width(&b, 1),
+                H as i32 - 8,
+                1,
+                ALERT,
+                DARK,
+            );
+        }
         let stamp = format!("COUNTERWEIGHT  {}  GAME OFF 2026", g.stamp);
         text_outlined(
             out,
@@ -583,7 +599,7 @@ impl Renderer {
         centred(c, "SKIP (ESC)", 160, r.y + 4, 1, INK);
     }
 
-    fn over(&self, p: &Play, victory: bool, c: &mut Canvas) {
+    fn over(&self, p: &Play, victory: bool, g: &Game, c: &mut Canvas) {
         c.rect_blend(0, 0, W as i32, H as i32, DARK, 0.6);
         c.rect(60, 36, 200, 104, Rgba::rgb(40, 38, 46));
         let (head, col) = if victory {
@@ -609,6 +625,18 @@ impl Renderer {
                 64 + i as i32 * 10,
                 1,
                 if i == 4 { ALERT } else { INK },
+            );
+        }
+        if g.new_best {
+            centred(c, "NEW BEST", 160, 116, 1, ALERT);
+        } else if g.best > 0 {
+            centred(
+                c,
+                &format!("BEST {}", g.best),
+                160,
+                116,
+                1,
+                Rgba::rgb(180, 176, 170),
             );
         }
         centred(c, "ENTER OR TAP - TITLE", 160, 128, 1, ECHO);
@@ -686,6 +714,51 @@ impl Canvas {
     fn draw_spr(&mut self, s: &crate::sprites::Sprite, x: i32, y: i32, flip: bool, ink: Ink) {
         s.draw(self, x, y, flip, ink);
     }
+}
+
+/// On the first screen only, one line at a time on what to do next.
+fn first_screen_hint(p: &Play) -> Option<(&'static str, Rgba)> {
+    let run = &p.run;
+    if run.stage_index() != 0
+        || p.flight.is_some()
+        || p.view.is_some()
+        || p.note.is_some()
+        || *run.state() != State::Firing
+    {
+        return None;
+    }
+    let log = run.log();
+    let first_shift = log.iter().position(|i| *i == shift_sim::Input::Shift);
+    let shifted = first_shift.is_some();
+    // Fired since the first SHIFT.
+    let fired_after = first_shift.is_some_and(|i| {
+        log[i..]
+            .iter()
+            .any(|x| matches!(x, shift_sim::Input::Fire { .. }))
+    });
+    let stage = p.shown();
+    let here = p.era();
+    let there = here.other();
+    if run.total_shots() == 0 {
+        return Some(("BREAK THE LINE: AIM, THEN FIRE", INK));
+    }
+    if !shifted && stage.era(there).echoes_left() > 0 {
+        return Some(("ITS ECHO STANDS IN THE OTHER ERA - SHIFT", ECHO));
+    }
+    if !shifted && stage.era(here).screen.cleared() && !stage.cleared() {
+        return Some(("THIS ERA IS CLEAR - SHIFT TO FINISH THE LINE", ECHO));
+    }
+    if shifted && !fired_after && stage.era(here).echoes_left() > 0 {
+        return Some((
+            if here == Plane::Siege {
+                "ECHOES ARE WEAKER. THE TREBUCHET SHRUGS OFF WIND"
+            } else {
+                "ECHOES ARE WEAKER. SHELLS RIDE THE WIND"
+            },
+            ALERT,
+        ));
+    }
+    None
 }
 
 /// A one-pixel border just inside `r`.

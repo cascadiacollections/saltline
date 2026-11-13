@@ -16,8 +16,8 @@
 use godot::classes::audio_stream_wav::{Format as WavFormat, LoopMode};
 use godot::classes::image::Format;
 use godot::classes::{
-    AudioStreamPlayer, AudioStreamWav, ClassDb, Engine, INode2D, Image, ImageTexture, Input,
-    Node2D, Os, Time,
+    AudioStreamPlayer, AudioStreamWav, ClassDb, Engine, FileAccess, INode2D, Image, ImageTexture,
+    Input, Node2D, Os, Time,
 };
 use godot::global::{JoyButton, Key, MouseButton};
 use godot::prelude::*;
@@ -42,7 +42,12 @@ const CLASSES: &[&str] = &[
     "AudioStreamPlayer",
     "Input",
     "Time",
+    "FileAccess",
 ];
+
+/// The best score, as decimal text. `user://` is the app's data folder on
+/// desktop and IndexedDB on the Web.
+const BEST_PATH: &str = "user://best.txt";
 
 /// Buttons, and the keys and first-pad buttons that press them.
 type Binding = (Button, &'static [Key], &'static [JoyButton]);
@@ -140,6 +145,11 @@ impl INode2D for Counterweight {
                 missing.join(", ")
             );
         }
+        self.game.best = FileAccess::get_file_as_string(BEST_PATH)
+            .to_string()
+            .trim()
+            .parse()
+            .unwrap_or(0);
         self.project_fps = Engine::singleton().get_max_fps();
         self.bytes.resize(W * H * 4);
         let image = Image::create_empty(W as i32, H as i32, false, Format::RGBA8);
@@ -179,6 +189,13 @@ impl INode2D for Counterweight {
                         self.play(Cue::Title);
                     } else if let Some(p) = self.players.get_mut(Cue::Title.index()) {
                         p.stop();
+                    }
+                }
+                Effect::SaveBest(score) => {
+                    if let Some(mut f) =
+                        FileAccess::open(BEST_PATH, godot::classes::file_access::ModeFlags::WRITE)
+                    {
+                        f.store_string(&score.to_string());
                     }
                 }
                 Effect::Quit => {

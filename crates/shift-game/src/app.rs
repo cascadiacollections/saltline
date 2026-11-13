@@ -162,6 +162,8 @@ pub enum Effect {
     Music(bool),
     /// Quit the application (title screen, Esc).
     Quit,
+    /// A new best score: the engine keeps it for next time.
+    SaveBest(u32),
 }
 
 /// A shell (or stone) on its way, drawn over the stage as it was before the
@@ -263,6 +265,10 @@ pub struct Game {
     pub autoplay: bool,
     auto_wait: f32,
     ptr_was_down: bool,
+    /// Best score so far; the engine loads it at start.
+    pub best: u32,
+    /// The run on the end screen set [`Game::best`].
+    pub new_best: bool,
 }
 
 impl Default for Game {
@@ -282,6 +288,8 @@ impl Game {
             autoplay: false,
             auto_wait: 0.0,
             ptr_was_down: false,
+            best: 0,
+            new_best: false,
         }
     }
 
@@ -394,6 +402,7 @@ impl Game {
         // A tap on a menu screen is a button press there.
         let tapped = touch.filter(|t| t.pressed);
         let mode = std::mem::replace(&mut self.mode, Mode::Title { t: 0.0 });
+        let was_over = matches!(mode, Mode::Over { .. });
         self.mode = match mode {
             Mode::Title { t } => {
                 let input = with_tap(input, tapped.map(|_| Button::Fire));
@@ -434,6 +443,14 @@ impl Game {
                 }
             }
         };
+        if let (Mode::Over { play, .. }, false) = (&self.mode, was_over) {
+            let score = play.run.score(play.elapsed as u32);
+            self.new_best = score > self.best;
+            if self.new_best {
+                self.best = score;
+                fx.push(Effect::SaveBest(score));
+            }
+        }
         if !fx.is_empty() {
             self.dirty = true;
         }
@@ -1166,5 +1183,33 @@ mod tests {
         );
         g.update(0.016, &ptr(x, y, true));
         assert!(matches!(g.mode, Mode::Play(_)), "second tap takes it");
+    }
+
+    #[test]
+    fn a_finished_run_sets_the_best_once() {
+        let mut g = Game::new();
+        g.autoplay = true;
+        g.fixed_seed = Some(0x5A17_11E5);
+        let mut saved = Vec::new();
+        for _ in 0..60 * 60 * 20 {
+            for e in g.update(1.0 / 30.0, &Input::default()) {
+                if let Effect::SaveBest(s) = e {
+                    saved.push(s);
+                }
+            }
+            if matches!(g.mode, Mode::Over { .. }) {
+                break;
+            }
+        }
+        assert!(
+            matches!(g.mode, Mode::Over { .. }),
+            "the bot finishes a run"
+        );
+        assert_eq!(saved.len(), 1);
+        assert!(g.new_best);
+        assert_eq!(g.best, saved[0]);
+        // Lingering on the end screen saves nothing more.
+        g.autoplay = false;
+        assert!(g.update(0.1, &Input::default()).is_empty());
     }
 }
