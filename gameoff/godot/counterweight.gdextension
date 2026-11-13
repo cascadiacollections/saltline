@@ -1,0 +1,22 @@
+; The library is copied into res://bin by `just gameoff-build` (desktop) or
+; the gameoff-web workflow (Web), so the project never reaches outside
+; itself and exports pick it up like any other file.
+
+[configuration]
+
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.7
+reloadable = true
+
+[libraries]
+
+macos.debug =            "res://bin/libshift_godot.dylib"
+macos.release =          "res://bin/libshift_godot.dylib"
+linux.debug.x86_64 =     "res://bin/libshift_godot.so"
+linux.release.x86_64 =   "res://bin/libshift_godot.so"
+windows.debug.x86_64 =   "res://bin/shift_godot.dll"
+windows.release.x86_64 = "res://bin/shift_godot.dll"
+; One no-threads build (profile `web`, feature `web`); the Web preset must
+; keep Thread Support off.
+web.debug.wasm32 =       "res://bin/shift_godot.wasm"
+web.release.wasm32 =     "res://bin/shift_godot.wasm"

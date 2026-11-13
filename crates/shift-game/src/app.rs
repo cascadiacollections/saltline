@@ -148,6 +148,10 @@ pub struct Game {
     pub stamp: String,
     /// Frames always differ while this is true (something animates).
     dirty: bool,
+    /// The solver bot plays, through the same buttons a player presses:
+    /// attract mode and engine-side review captures (`--cw-autoplay`).
+    pub autoplay: bool,
+    auto_wait: f32,
 }
 
 impl Default for Game {
@@ -164,6 +168,50 @@ impl Game {
             fixed_seed: None,
             stamp: option_env!("CW_BUILD").unwrap_or("dev build").to_string(),
             dirty: true,
+            autoplay: false,
+            auto_wait: 0.0,
+        }
+    }
+
+    /// The buttons the autopilot presses this frame.
+    fn autopilot(&mut self, dt: f32) -> Vec<Button> {
+        self.auto_wait -= dt;
+        if self.auto_wait > 0.0 {
+            return Vec::new();
+        }
+        let wait = |me: &mut Self, s: f32, b: Button| {
+            me.auto_wait = s;
+            vec![b]
+        };
+        match &mut self.mode {
+            Mode::Title { t } if *t > 2.0 => wait(self, 0.5, Button::Fire),
+            Mode::Title { .. } => Vec::new(),
+            Mode::Draft { .. } => wait(self, 1.2, Button::One),
+            Mode::Over { .. } => wait(self, 4.0, Button::Fire),
+            Mode::Play(p) => {
+                if p.flight.is_some() || p.view.is_some() || p.fade.is_some() || p.ending.is_some()
+                {
+                    return Vec::new();
+                }
+                match shift_sim::bot::next_input(&p.run) {
+                    Some(RunInput::Shift) => wait(self, 0.6, Button::Shift),
+                    Some(RunInput::Fire {
+                        angle_ticks,
+                        power_ticks,
+                    }) => {
+                        // Swing the gun toward the solution, then fire.
+                        let (da, dp) = (angle_ticks - p.angle_ticks, power_ticks - p.power_ticks);
+                        if da == 0 && dp == 0 {
+                            return wait(self, 0.35, Button::Fire);
+                        }
+                        p.angle_ticks += da.signum() * da.abs().min(20);
+                        p.power_ticks += dp.signum() * dp.abs().min(14);
+                        self.dirty = true;
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                }
+            }
         }
     }
 
@@ -202,6 +250,16 @@ impl Game {
     }
 
     pub fn update(&mut self, dt: f32, input: &Input) -> Vec<Effect> {
+        let auto;
+        let input = if self.autoplay {
+            auto = Input {
+                held: Held::default(),
+                pressed: self.autopilot(dt),
+            };
+            &auto
+        } else {
+            input
+        };
         let mut fx = Vec::new();
         let h = input.held;
         if !input.pressed.is_empty() || h.up || h.down || h.left || h.right {

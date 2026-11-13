@@ -386,3 +386,34 @@ mutants file:
 # Signed archive; add --upload to distribute to internal TestFlight testers.
 testflight *args:
     python3 tools/testflight.py {{ args }}
+
+# ---- Counterweight (Game Off 2026 entry; gameoff/DESIGN.md) ----
+
+# Build Counterweight's GDExtension (optimized) into its Godot project.
+gameoff-build:
+    cargo build --release -p shift-godot
+    mkdir -p gameoff/godot/bin gameoff/godot/.godot
+    cp target/release/{{ if os() == "macos" { "libshift_godot.dylib" } else if os() == "windows" { "shift_godot.dll" } else { "libshift_godot.so" } }} gameoff/godot/bin/
+    echo 'res://counterweight.gdextension' > gameoff/godot/.godot/extension_list.cfg
+
+# Play Counterweight. `just gameoff-run --cw-autoplay` lets the solver bot play.
+gameoff-run *args: gameoff-build
+    godot --path gameoff/godot -- {{ args }}
+
+# Record the autoplaying game through the real engine as PNG frames.
+gameoff-movie out="build/gameoff-movie" frames="1800": gameoff-build
+    mkdir -p {{ out }}
+    godot --path gameoff/godot --write-movie {{ out }}/frame.png --fixed-fps 30 --quit-after {{ frames }} -- --cw-autoplay --cw-seed 1347
+
+# Render review frames headless (no Godot): title, play, SHIFT, draft, bastion, end.
+gameoff-capture out="build/gameoff-capture":
+    cargo run --release -p shift-game --example capture -- {{ out }}
+
+# Balance harness: the solver bot over many seeds, optional aim noise in ticks.
+gameoff-batch seeds="200" angle_noise="0" power_noise="0":
+    cargo run --release -p shift-sim --example batch -- {{ seeds }} {{ angle_noise }} {{ power_noise }}
+
+# Regenerate Counterweight's art: Siege sprites, then the embedded atlas.
+gameoff-art:
+    uv run python gameoff/tools/gen_medieval.py
+    uv run python gameoff/tools/export_atlas.py

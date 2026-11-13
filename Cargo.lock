@@ -528,6 +528,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shift-godot"
+version = "0.2.0"
+dependencies = [
+ "godot",
+ "shift-game",
+]
+
+[[package]]
 name = "shift-sim"
 version = "0.2.0"
 dependencies = [

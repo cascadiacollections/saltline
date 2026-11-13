@@ -108,6 +108,8 @@ jobs:
         run: cargo nextest run -p salt-line-sim --profile ci
       - name: test shift-sim (Game Off 2026 rules, headless)
         run: cargo nextest run -p shift-sim --profile ci
+      - name: test shift-game (Game Off 2026 game loop and renderer, headless)
+        run: cargo nextest run -p shift-game --profile ci
       - name: test salt-line-godot (rasteriser, fonts, camera maths)
         run: cargo nextest run -p salt-line-godot --profile ci
       - name: test the profiling build's own logic (GPU check sampling)

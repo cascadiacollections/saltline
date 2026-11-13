@@ -1,0 +1,221 @@
+name: gameoff-web
+
+# Counterweight (Game Off 2026): the Web build, from the recipe proved on
+# gameoff/web-spike.
+#
+#   push to gameoff-2026 / gameoff/**   build, export, boot it in headless
+#                                       Chrome, upload the build (review)
+#   tag gameoff-v*                      the same, then a GitHub Release with
+#                                       the zipped build, then (after manual
+#                                       approval of the `itch-draft`
+#                                       environment) a butler push to the
+#                                       itch.io DRAFT channel
+#
+# The public itch channel is never pushed from here: that is the owner's
+# call at submission time.
+#
+# Recipe (godot-rust book, "Export to Web", adjusted for rustc >= 1.98):
+#   - pinned nightly + rust-src + wasm32-unknown-emscripten; `-Zbuild-std`
+#     and the `-Z` rustflags in .cargo/config.toml need nightly. The 1.99.0
+#     pin in rust-toolchain.toml stays; `cargo +<nightly>` overrides it here.
+#   - emsdk 4.0.20, what Godot's 4.7 web templates are built with.
+#   - no threads: gdext `experimental-wasm-nothreads`, Web preset with
+#     Thread Support off and Extensions Support on. No COOP/COEP needed.
+#   - Cargo profile `web` = release with panic = "abort" (see Cargo.toml).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gameoff-2026, 'gameoff/**']
+    tags: ['gameoff-v*']
+    paths:
+      - 'crates/**'
+      - 'gameoff/**'
+      - 'Cargo.*'
+      - '.cargo/config.toml'
+      - 'rust-toolchain.toml'
+      - 'art/sprites/**'
+      - 'art/audio/**'
+      - '.github/workflows/gameoff-web.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  GODOT_VERSION: 4.7.2
+  RUST_NIGHTLY: nightly-2026-11-10
+  EMSDK_VERSION: 4.0.20
+  PROJECT: gameoff/godot
+
+jobs:
+  web:
+    name: web build (no threads)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: build stamp
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -eu
+          sha=$(git rev-parse --short HEAD)
+          if [ "$REF_TYPE" = tag ]; then stamp="$REF_NAME $sha"; else stamp="preview $sha"; fi
+          echo "CW_BUILD=$stamp" >> "$GITHUB_ENV"
+          echo "build stamp: $stamp"
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY }}
+          targets: wasm32-unknown-emscripten
+          components: rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: gameoff-web-${{ env.RUST_NIGHTLY }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: emsdk-cache
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
+      - name: install emsdk
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          mkdir -p ~/emsdk
+          curl -fsSL "https://codeload.github.com/emscripten-core/emsdk/tar.gz/refs/tags/$EMSDK_VERSION" \
+            | tar xz -C ~/emsdk --strip-components=1
+          ~/emsdk/emsdk install "$EMSDK_VERSION"
+      - name: activate emsdk
+        run: |
+          set -eu
+          ~/emsdk/emsdk activate "$EMSDK_VERSION"
+          echo "EMSDK=$HOME/emsdk" >> "$GITHUB_ENV"
+          echo "$HOME/emsdk" >> "$GITHUB_PATH"
+          echo "$HOME/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+      - name: build the wasm GDExtension (no threads)
+        run: |
+          set -eu
+          cargo "+$RUST_NIGHTLY" build -Zbuild-std=std,panic_abort \
+            --target wasm32-unknown-emscripten --profile web \
+            -p shift-godot --features web
+          lib=target/wasm32-unknown-emscripten/web/shift_godot.wasm
+          ls -l "$lib"
+          # The template has no Wasm exception tag; an unwinding build imports one.
+          if strings "$lib" | grep -q __cpp_exception; then
+            echo "$lib imports env.__cpp_exception: Godot's web template cannot link it" >&2
+            exit 1
+          fi
+          mkdir -p "$PROJECT/bin"
+          cp "$lib" "$PROJECT/bin/"
+      # The editor that runs --import and --export loads the host build of
+      # the extension, so give it one, and list the extension for it.
+      - name: build the host GDExtension for the editor
+        run: |
+          set -eu
+          cargo build -p shift-godot
+          cp target/debug/libshift_godot.so "$PROJECT/bin/"
+          mkdir -p "$PROJECT/.godot"
+          echo 'res://counterweight.gdextension' > "$PROJECT/.godot/extension_list.cfg"
+      - name: import
+        run: godot --headless --path "$PROJECT" --import
+      - name: export Web
+        run: |
+          set -eu
+          mkdir -p "$PROJECT/build/web"
+          godot --headless --path "$PROJECT" --export-release "Web" build/web/index.html
+          out="$PROJECT/build/web"
+          if [ ! -s "$out/index.html" ] || ! ls "$out"/*.wasm >/dev/null 2>&1; then
+            echo "the export reported success but produced no web build" >&2
+            ls -la "$out" >&2
+            exit 1
+          fi
+          ls -l "$out"
+          du -sh "$out"
+      - name: boot and play it in headless Chrome
+        run: |
+          set -eu
+          python3 -m pip install --quiet playwright
+          python3 gameoff/tools/web_smoke.py "$PROJECT/build/web" build/web-smoke --channel chrome
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: counterweight-web
+          path: ${{ env.PROJECT }}/build/web
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: counterweight-web-smoke
+          path: build/web-smoke
+          if-no-files-found: ignore
+
+  release:
+    name: GitHub Release (tag)
+    if: github.ref_type == 'tag'
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: counterweight-web
+          path: web
+      - name: zip and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          (cd web && zip -qr "../counterweight-web-$TAG.zip" .)
+          gh release create "$TAG" "counterweight-web-$TAG.zip" \
+            --repo "$GITHUB_REPOSITORY" --title "Counterweight $TAG" \
+            --notes "Game Off 2026 web build. Unzip and serve, or upload to itch.io as HTML5." \
+            --prerelease
+
+  itch-draft:
+    name: itch.io draft channel (manual approval)
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Configure this environment with required reviewers (the owner), and the
+    # BUTLER_API_KEY secret, in the repository settings. Nothing runs until
+    # it is approved.
+    environment: itch-draft
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: counterweight-web
+          path: web
+      - name: install butler
+        run: |
+          set -eu
+          curl -fsSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler
+          chmod +x butler/butler
+          ./butler/butler -V
+      - name: push to the DRAFT channel
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_TARGET: ${{ vars.ITCH_TARGET }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if [ -z "${BUTLER_API_KEY:-}" ] || [ -z "${ITCH_TARGET:-}" ]; then
+            echo "BUTLER_API_KEY secret and ITCH_TARGET variable (user/game) must be set" >&2
+            exit 1
+          fi
+          ./butler/butler push web "$ITCH_TARGET:html5-draft" --userversion "$TAG"

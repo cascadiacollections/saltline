@@ -1,0 +1,25 @@
+[package]
+publish = false
+name = "shift-godot"
+description = "Counterweight (Game Off 2026): the one Godot node around shift-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Web (HTML5) build: gdext's Wasm support, single-threaded (Godot's Web
+# export with Thread Support off). Only the wasm32-unknown-emscripten build
+# turns it on; recipe in .github/workflows/gameoff-web.yml.
+web = ["godot/experimental-wasm", "godot/experimental-wasm-nothreads"]
+
+[dependencies]
+# Same pins as Salt Line's node, for the same reasons (salt-line-godot's
+# Cargo.toml): api-4-7 so the extension loads on 4.7+, and lazy function
+# tables so an engine built without unused classes (a stripped template)
+# still starts; the classes this node needs are checked at startup instead.
+godot = { version = "0.5", features = ["api-4-7", "lazy-function-tables"] }
+shift-game = { path = "../shift-game" }
