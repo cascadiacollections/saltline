@@ -4,7 +4,7 @@ use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::replay::{hash_screen, Hasher};
 use salt_line_sim::run::{shot, Screen};
 use salt_line_sim::SCREEN_W_REF;
-use shift_sim::{Plane, Stage};
+use shift_sim::{Plane, Role, Stage};
 
 fn digest(s: &Screen) -> u64 {
     let mut h = Hasher::new();
@@ -21,7 +21,7 @@ fn same_seed_gives_identical_phases() {
     for seed in [1u64, 0xDEAD_BEEF, 42_424_242] {
         for index in 0..4 {
             let (a, b) = (stage(seed, index), stage(seed, index));
-            for p in [Plane::Salt, Plane::Brine] {
+            for p in Plane::BOTH {
                 assert_eq!(
                     digest(a.screen(p)),
                     digest(b.screen(p)),
@@ -37,7 +37,7 @@ fn phases_differ() {
     let s = stage(7, 0);
     assert_ne!(
         digest(s.screen(Plane::Salt)),
-        digest(s.screen(Plane::Brine))
+        digest(s.screen(Plane::Siege))
     );
 }
 
@@ -45,29 +45,34 @@ fn phases_differ() {
 fn shift_swaps_and_returns() {
     let mut s = stage(7, 0);
     assert_eq!(s.active(), Plane::Salt);
-    s.shift();
-    assert_eq!(s.active(), Plane::Brine);
-    s.shift();
+    s.shift(false);
+    assert_eq!(s.active(), Plane::Siege);
+    s.shift(false);
     assert_eq!(s.active(), Plane::Salt);
 }
 
 #[test]
-fn damage_stays_in_the_active_phase() {
+fn damage_stays_in_the_active_era_except_echoes() {
     let mut s = stage(99, 1);
-    let brine_before = digest(s.screen(Plane::Brine));
+    let siege_before = s.screen(Plane::Siege).clone();
     let salt_before = digest(s.screen(Plane::Salt));
     // A spread of shots; some land on terrain, which always craters.
     for (a, p) in [(900, 400), (700, 600), (1100, 300)] {
-        s.fire(shot(a, p), &Loadout::new(), false);
+        s.fire(shot(a, p), &Loadout::new(), false, false);
     }
     assert_ne!(
         digest(s.screen(Plane::Salt)),
         salt_before,
         "shots should have left a mark in Salt"
     );
+    let siege = s.era(Plane::Siege);
+    // Siege's ground is untouched and its originals are exactly as they were.
+    assert_eq!(siege.screen.field.scar, siege_before.field.scar);
+    let n = siege_before.structures.len();
     assert_eq!(
-        digest(s.screen(Plane::Brine)),
-        brine_before,
-        "Brine must not change"
+        format!("{:?}", &siege.screen.structures[..n]),
+        format!("{:?}", siege_before.structures)
     );
+    // Anything new there is an echo.
+    assert!(siege.roles[n..].iter().all(|r| *r == Role::Echo));
 }
