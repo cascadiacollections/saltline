@@ -20,3 +20,8 @@ android.debug.arm64 =    "res://target/aarch64-linux-android/debug/libsalt_line_
 android.release.arm64 =  "res://target/aarch64-linux-android/release/libsalt_line_godot.so"
 ios.debug =              "res://target/aarch64-apple-ios/debug/libsalt_line_godot.dylib"
 ios.release =            "res://target/aarch64-apple-ios/release/libsalt_line_godot.dylib"
+; Web spike: one no-threads build (Cargo profile `web`, feature `web`) for both
+; debug and release exports. No `web.*.threads.wasm32` entries, so the Web
+; preset must keep Thread Support off.
+web.debug.wasm32 =       "res://target/wasm32-unknown-emscripten/web/salt_line_godot.wasm"
+web.release.wasm32 =     "res://target/wasm32-unknown-emscripten/web/salt_line_godot.wasm"

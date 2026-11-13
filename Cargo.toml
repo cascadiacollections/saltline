@@ -19,6 +19,16 @@ codegen-units = 1
 # `abort` a panic would take the whole process down, report unwritten.
 panic = "unwind"
 
+# Web (HTML5) spike only; desktop and mobile keep `release` above. On
+# wasm32-unknown-emscripten gdext cannot catch a panic anyway (it aborts the
+# page with "RuntimeError: Aborted"), and current rustc (since
+# rust-lang/rust#156928, June 2026) always unwinds with Wasm exception
+# handling, which imports an `env.__cpp_exception` tag that Godot's web
+# template does not export. `abort` emits no unwinding code, so no import.
+[profile.web]
+inherits = "release"
+panic = "abort"
+
 # cargo-mutants builds and tests with this (.cargo/mutants.toml). The test
 # suite dominates each mutant's time and runs about four times faster at
 # opt-level 1 than unoptimised, for a slightly slower rebuild. Debug

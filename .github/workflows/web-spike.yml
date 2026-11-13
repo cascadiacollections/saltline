@@ -1,0 +1,141 @@
+name: web-spike
+
+# Feasibility spike (gameoff/web-spike): can the Rust GDExtension be built for
+# wasm32-unknown-emscripten and exported with Godot's Web preset, headless?
+# Not a release path and not a required check. Desktop builds are untouched:
+# the wasm flags in .cargo/config.toml apply only to the emscripten target, the
+# `web` Cargo profile and feature are only used here.
+#
+# Recipe (godot-rust book, "Export to Web", adjusted for rustc >= 1.98):
+#   - pinned nightly + rust-src + wasm32-unknown-emscripten; `-Zbuild-std`
+#     (and the `-Z` rustflags) need nightly. rust-toolchain.toml's 1.99.0 pin
+#     stays; `cargo +<nightly>` overrides it for this one invocation.
+#   - emsdk 4.0.20, what godotengine/build-containers (4.7 branch) builds the
+#     4.7 web templates with.
+#   - no threads: gdext `experimental-wasm-nothreads`, Godot preset with
+#     Thread Support off and Extensions Support on (web_dlink_nothreads
+#     template). No COOP/COEP headers needed to serve it.
+#   - profile `web` = release with panic = "abort": see Cargo.toml.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gameoff/web-spike]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  GODOT_VERSION: 4.7.2
+  RUST_NIGHTLY: nightly-2026-11-10
+  EMSDK_VERSION: 4.0.20
+
+jobs:
+  web:
+    name: web export (no threads)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: chickensoft-games/setup-godot@ac93246ea68518a384c1c280a496e5989341f2f6 # v2.4.3
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+      - name: check the dlink no-threads web template is installed
+        run: |
+          set -eu
+          t=$(find "$HOME" -path '*export_templates*' -name 'web_dlink_nothreads_release.zip' 2>/dev/null | head -1)
+          if [ -z "$t" ]; then echo "no web_dlink_nothreads_release.zip in the templates" >&2; exit 1; fi
+          ls -l "$(dirname "$t")"/web_*
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY }}
+          targets: wasm32-unknown-emscripten
+          components: rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: web-spike-${{ env.RUST_NIGHTLY }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: emsdk-cache
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
+      - name: install emsdk
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          mkdir -p ~/emsdk
+          curl -fsSL "https://codeload.github.com/emscripten-core/emsdk/tar.gz/refs/tags/$EMSDK_VERSION" \
+            | tar xz -C ~/emsdk --strip-components=1
+          ~/emsdk/emsdk install "$EMSDK_VERSION"
+      - name: activate emsdk
+        run: |
+          set -eu
+          ~/emsdk/emsdk activate "$EMSDK_VERSION"
+          echo "EMSDK=$HOME/emsdk" >> "$GITHUB_ENV"
+          echo "$HOME/emsdk" >> "$GITHUB_PATH"
+          echo "$HOME/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+      - name: build the wasm GDExtension (no threads)
+        run: |
+          set -eu
+          emcc --version | head -1
+          rustc "+$RUST_NIGHTLY" --version
+          start=$(date +%s)
+          cargo "+$RUST_NIGHTLY" build -Zbuild-std=std,panic_abort \
+            --target wasm32-unknown-emscripten --profile web \
+            -p salt-line-godot --features web
+          echo "wasm build: $(( $(date +%s) - start ))s"
+          lib=target/wasm32-unknown-emscripten/web/salt_line_godot.wasm
+          ls -l "$lib"
+          # The template has no Wasm exception tag; an unwinding build imports one.
+          if strings "$lib" | grep -q __cpp_exception; then
+            echo "$lib imports env.__cpp_exception: Godot's web template cannot link it" >&2
+            exit 1
+          fi
+      # The editor that drives --import and --export loads the host (debug)
+      # entry of salt_line.gdextension, so give it one; otherwise the import
+      # runs with the extension's classes missing.
+      - name: build the host GDExtension for the editor
+        run: cargo build -p salt-line-godot
+      - name: import resources
+        run: bash tools/godot_headless.sh --frame-delay 800 --import
+      - name: export Web
+        run: |
+          set -eu
+          mkdir -p build/web
+          start=$(date +%s)
+          bash tools/godot_headless.sh --export-release "Web" build/web/index.html
+          echo "web export: $(( $(date +%s) - start ))s"
+          if [ ! -s build/web/index.html ] || ! ls build/web/*.wasm >/dev/null 2>&1; then
+            echo "the export reported success but produced no web build" >&2
+            ls -la build/web >&2
+            exit 1
+          fi
+          ls -l build/web
+          du -sh build/web
+      - name: boot it in headless Chrome
+        id: smoke
+        continue-on-error: true
+        run: |
+          set -eu
+          python3 -m pip install --quiet playwright
+          python3 tools/web_spike_smoke.py build/web build/web-smoke --channel chrome
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: salt-line-web
+          path: build/web
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: salt-line-web-smoke
+          path: build/web-smoke
+          if-no-files-found: ignore
