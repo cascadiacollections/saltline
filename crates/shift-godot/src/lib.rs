@@ -19,7 +19,7 @@ use godot::classes::{
     AudioStreamPlayer, AudioStreamWav, ClassDb, Engine, INode2D, Image, ImageTexture, Input,
     Node2D, Os, Time,
 };
-use godot::global::Key;
+use godot::global::{JoyButton, Key};
 use godot::prelude::*;
 
 use shift_game::audio::{pcm, Cue, MIX_RATE};
@@ -44,19 +44,39 @@ const CLASSES: &[&str] = &[
     "Time",
 ];
 
-/// Buttons and the keys that press them.
-const BUTTONS: &[(Button, &[Key])] = &[
-    (Button::Up, &[Key::UP, Key::W]),
-    (Button::Down, &[Key::DOWN, Key::S]),
-    (Button::Left, &[Key::LEFT, Key::A]),
-    (Button::Right, &[Key::RIGHT, Key::D]),
-    (Button::Fire, &[Key::SPACE, Key::ENTER, Key::KP_ENTER]),
-    (Button::Shift, &[Key::SHIFT, Key::TAB]),
-    (Button::Back, &[Key::ESCAPE]),
-    (Button::One, &[Key::KEY_1]),
-    (Button::Two, &[Key::KEY_2]),
-    (Button::Three, &[Key::KEY_3]),
+/// Buttons, and the keys and first-pad buttons that press them.
+type Binding = (Button, &'static [Key], &'static [JoyButton]);
+const BUTTONS: &[Binding] = &[
+    (Button::Up, &[Key::UP, Key::W], &[JoyButton::DPAD_UP]),
+    (Button::Down, &[Key::DOWN, Key::S], &[JoyButton::DPAD_DOWN]),
+    (Button::Left, &[Key::LEFT, Key::A], &[JoyButton::DPAD_LEFT]),
+    (
+        Button::Right,
+        &[Key::RIGHT, Key::D],
+        &[JoyButton::DPAD_RIGHT],
+    ),
+    (
+        Button::Fire,
+        &[Key::SPACE, Key::ENTER, Key::KP_ENTER],
+        &[JoyButton::A],
+    ),
+    (
+        Button::Shift,
+        &[Key::SHIFT, Key::TAB],
+        &[JoyButton::LEFT_SHOULDER, JoyButton::RIGHT_SHOULDER],
+    ),
+    (
+        Button::Back,
+        &[Key::ESCAPE],
+        &[JoyButton::B, JoyButton::START],
+    ),
+    (Button::One, &[Key::KEY_1], &[]),
+    (Button::Two, &[Key::KEY_2], &[]),
+    (Button::Three, &[Key::KEY_3], &[]),
 ];
+
+/// Sound effects sit a little under full scale so overlapping cues don't clip.
+const SFX_DB: f32 = -4.0;
 
 #[derive(GodotClass)]
 #[class(base = Node2D)]
@@ -141,9 +161,7 @@ impl INode2D for Counterweight {
             }
             let mut player = AudioStreamPlayer::new_alloc();
             player.set_stream(&wav);
-            if cue == Cue::Title {
-                player.set_volume_db(-6.0);
-            }
+            player.set_volume_db(if cue == Cue::Title { -6.0 } else { SFX_DB });
             self.base_mut().add_child(&player);
             self.players.push(player);
         }
@@ -204,8 +222,9 @@ impl Counterweight {
     fn poll(&mut self) -> GameInput {
         let input = Input::singleton();
         let mut out = GameInput::default();
-        for (i, (b, keys)) in BUTTONS.iter().enumerate() {
-            let now = keys.iter().any(|k| input.is_key_pressed(*k));
+        for (i, (b, keys, pads)) in BUTTONS.iter().enumerate() {
+            let now = keys.iter().any(|k| input.is_key_pressed(*k))
+                || pads.iter().any(|j| input.is_joy_button_pressed(0, *j));
             if now && !self.down[i] {
                 out.pressed.push(*b);
             }
@@ -214,7 +233,7 @@ impl Counterweight {
         let is = |b: Button| {
             BUTTONS
                 .iter()
-                .position(|(x, _)| *x == b)
+                .position(|(x, _, _)| *x == b)
                 .is_some_and(|i| self.down[i])
         };
         out.held = Held {
@@ -222,7 +241,7 @@ impl Counterweight {
             down: is(Button::Down),
             left: is(Button::Left),
             right: is(Button::Right),
-            fine: input.is_key_pressed(Key::Z),
+            fine: input.is_key_pressed(Key::Z) || input.is_joy_button_pressed(0, JoyButton::X),
         };
         out
     }

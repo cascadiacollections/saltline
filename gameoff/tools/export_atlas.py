@@ -18,6 +18,7 @@ OUT = os.path.join(ROOT, "crates", "shift-game", "assets", "sprites.bin")
 
 PRESENT = [
     "tank_base", "barrel_strip_5deg",
+    "tank_ballast", "barrel_strip_ballast", "barrel_strip_sabot",
     "derrick", "derrick_leaning", "derrick_collapsed",
     "radio_mast", "radio_mast_leaning", "radio_mast_collapsed",
     "tower_intact", "tower_leaning", "tower_collapsed",

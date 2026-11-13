@@ -1,6 +1,6 @@
 //! A [`Game`] painted into a [`Canvas`]. Engine-free.
 
-use salt_line_sim::modifiers::Loadout;
+use salt_line_sim::modifiers::{Loadout, Modifier};
 use salt_line_sim::run::{Screen, StructState, Structure, StructureKind};
 use salt_line_sim::terrain::Material;
 use shift_sim::expedition::{Pick, State};
@@ -218,9 +218,23 @@ impl Renderer {
         let frame = ((deg / 5.0).round() as i32).clamp(0, 18);
         match era {
             Plane::Present => {
-                let tank = self.atlas.get("tank_base");
-                c.draw_spr(tank, mx - 15, my - 3, false, Ink::Solid);
-                let strip = self.atlas.get("barrel_strip_5deg");
+                // Drafted gun modifiers show on the howitzer, with the
+                // engine's own variant art.
+                let lo = p.run.base_loadout();
+                let ballast = lo.stacks(Modifier::Ballast) > 0;
+                let (tank, pivot) = if ballast {
+                    (self.atlas.get("tank_ballast"), (13, 4))
+                } else {
+                    (self.atlas.get("tank_base"), (15, 3))
+                };
+                c.draw_spr(tank, mx - pivot.0, my - pivot.1, false, Ink::Solid);
+                let strip = self.atlas.get(if ballast {
+                    "barrel_strip_ballast"
+                } else if lo.stacks(Modifier::Sabot) > 0 {
+                    "barrel_strip_sabot"
+                } else {
+                    "barrel_strip_5deg"
+                });
                 strip.draw_region(c, frame * 28, 28, mx - 3, my - 24, false, Ink::Solid);
             }
             Plane::Siege => {
@@ -442,7 +456,7 @@ impl Renderer {
         );
 
         let blink = (t * 2.0) as i32 % 2 == 0;
-        out.rect_blend(70, 92, 180, 52, DARK, 0.75);
+        out.rect_blend(62, 92, 196, 61, DARK, 0.75);
         if blink {
             centred(out, "PRESS ENTER - EXPEDITION", 160, 96, 1, INK);
         }
@@ -450,6 +464,7 @@ impl Renderer {
             "UP/DOWN  ANGLE     LEFT/RIGHT  POWER",
             "SPACE  FIRE      SHIFT  CHANGE ERA",
             "Z  FINE AIM      ESC  BACK",
+            "PAD: D-PAD AIM  A FIRE  LB/RB SHIFT  X FINE",
             "12 SCREENS. THE BASTION WAITS AT THE END.",
         ];
         for (i, l) in lines.iter().enumerate() {
@@ -459,7 +474,7 @@ impl Renderer {
                 160,
                 106 + i as i32 * 9,
                 1,
-                if i == 3 { ALERT } else { INK },
+                if i == 4 { ALERT } else { INK },
             );
         }
         let stamp = format!("COUNTERWEIGHT  {}  GAME OFF 2026", g.stamp);
