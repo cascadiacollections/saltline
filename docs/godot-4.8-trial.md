@@ -58,7 +58,7 @@ Locally, with a release GDExtension already built
 (`cargo build --release -p salt-line-godot`):
 
 ```sh
-just godot-4.8-trial
+just godot-48-trial
 # or: python3 tools/godot_4_8_trial.py run
 ```
 
@@ -76,7 +76,7 @@ job is allow-failure. It does not publish a release and does not edit the
 4.7.2 lock.
 
 ```sh
-just godot-4.8-trial-engine          # local stripped build; needs uv and the Android SDK
+just godot-48-trial-engine          # local stripped build; needs uv and the Android SDK
 python3 tools/godot_4_8_trial.py check-python
 ```
 

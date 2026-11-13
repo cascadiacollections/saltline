@@ -186,12 +186,12 @@ godot-template platform="android":
 # Opt-in Godot 4.8-beta3 trial (docs/godot-4.8-trial.md). Does not change the 4.7.2 pin.
 # Downloads the official editor and export templates, exports Linux, and writes
 # build/godot-4.8-trial/report.md. An Android APK is included when the SDK is set.
-godot-4.8-trial:
+godot-48-trial:
     python3 tools/godot_4_8_trial.py run
 
 # Stripped 4.8-beta3 template. Refuses Python older than 3.10. Does not publish
 # or rewrite tools/godot_templates.lock.json.
-godot-4.8-trial-engine platform="android":
+godot-48-trial-engine platform="android":
     python3 tools/godot_4_8_trial.py build {{ platform }}
 
 # Release APK at build/SaltLine-release.apk on the stripped engine (run `just godot-template`
