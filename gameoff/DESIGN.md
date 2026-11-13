@@ -55,7 +55,7 @@ HUD) swaps eras, and the battlefield cross-fades.
 | --- | --- | --- |
 | Look | Pale, day | Deep, dusk, torchlit |
 | Your gun | Howitzer | **Trebuchet**: counterweight throw, heavy stone |
-| Flight | Shell speed, full wind | 0.85× speed (shorter reach, higher lobs), 0.35× wind |
+| Flight | Shell speed, 3× the sim's wind (the coast is gusty) | 0.85× speed (shorter reach, higher lobs), 0.35× of that wind |
 | Impact | Shell crater and blast | 1.5× crater, 1.3× blast |
 | Targets | Derricks, masts, water towers, silos, pylons | The same footprints dressed as watchtowers, banner poles, bell towers, keeps, siege towers |
 
@@ -129,8 +129,8 @@ trebuchet alike) plus these two era modifiers.
   | Aim | Wins | Shells left on a win |
   | --- | ---: | ---: |
   | Perfect (solver) | 98% | 32 |
-  | ±2°, ±5% power | 85% | 14 |
-  | ±4°, ±8% power | 32% | 7 |
+  | ±2°, ±5% power | 87% | 14 |
+  | ±4°, ±8% power | 28% | 7 |
 
   Playtests decide the final numbers. The knobs are `START_SHELLS`,
   `STAGE_RESUPPLY` and `DIFFICULTY_STRIDE`.

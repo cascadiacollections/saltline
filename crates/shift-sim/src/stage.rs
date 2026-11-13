@@ -54,6 +54,9 @@ impl Plane {
     /// modifiers stack under it. Never fed back into the loadout itself.
     pub fn loadout(self, base: &Loadout) -> Loadout {
         let mut lo = base.clone();
+        // The present's light shells ride the coastal wind hard; the sim's own
+        // early bands are near calm, which left the eras feeling alike.
+        lo.wind_scale *= PRESENT_WIND;
         if self == Plane::Siege {
             lo.muzzle_scale *= TREBUCHET_MUZZLE;
             lo.wind_scale *= TREBUCHET_WIND;
@@ -64,6 +67,9 @@ impl Plane {
     }
 }
 
+/// Wind on the present's shells relative to the sim's own (both eras start
+/// from this; the trebuchet then multiplies by [`TREBUCHET_WIND`]).
+pub const PRESENT_WIND: f64 = 3.0;
 /// Trebuchet stone speed relative to a shell.
 pub const TREBUCHET_MUZZLE: f64 = 0.85;
 /// Wind's effect on a stone relative to a shell.
