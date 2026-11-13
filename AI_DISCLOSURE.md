@@ -16,7 +16,8 @@ This game was built with substantial AI assistance. Code was written with
 | `shift-sim` (phase rules, echoes, modifiers, Expedition) | Yes | Written during the jam with Claude Code. |
 | `shift-godot` (rendering, input, HUD, audio playback) | Yes | Written during the jam with Claude Code. |
 | CI, web export and release tooling | Yes | Written with Claude Code. |
-| Art | Yes. Code-generated, not image models | Pre-existing Salt Line sprites and backgrounds, produced by procedural scripts (`tools/gen_sprites.py` and related) written with Claude Code. The Siege era is a palette remap of that art. The medieval pieces (trebuchet, stone, medieval structure skins) are made during the jam by the same procedural scripts. No image-model art. |
+| Art: engine sprites | **Yes, partly image-model** | Chassis and structure sprites are cut from the supplied *Salt & Iron* concept board (`art/source/salt-and-iron/01-salt-and-iron.png`) by `tools/import_concept_art.py`. Two cleanup images there (`clean-background.png`, `extracted-barrel.png`) were made with the built-in **ImageGen** tool (2026-10-10). **Origin of the concept board itself: owner to confirm** before submission. |
+| Art: Counterweight's own pieces | Yes, code-generated | The Siege grade, trebuchet, stone and medieval structure skins are drawn by procedural scripts written with Claude Code during the jam (`gameoff/tools/`). The Salt Line title art and icon are not used. |
 | Audio | Yes. Code-synthesized | Pre-existing Salt Line WAVs synthesized by `tools/gen_audio.py` (written with Claude Code). The SHIFT sound is synthesized the same way. |
 | Design | Mixed | The phase/echo design came from the developer, refined in conversation with Claude. |
 | itch page art (`salt-line/marketing`) | TBD | Record the file names and how each was made when imported. |
