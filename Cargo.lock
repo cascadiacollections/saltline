@@ -520,6 +520,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
+name = "shift-game"
+version = "0.2.0"
+dependencies = [
+ "salt-line-sim",
+ "shift-sim",
+]
+
+[[package]]
 name = "shift-sim"
 version = "0.2.0"
 dependencies = [

@@ -3,7 +3,9 @@
 use salt_line_sim::ballistics::Shot;
 use salt_line_sim::modifiers::Loadout;
 use salt_line_sim::rng::substream;
-use salt_line_sim::run::{generate_screen, Screen, ShotReport, StructState, Structure};
+use salt_line_sim::run::{
+    generate_screen, Screen, ShotReport, StructState, Structure, StructureKind,
+};
 
 /// Which era is real. Named `Plane` in code so it can't be confused with
 /// `salt_line_sim::run::Phase`, the run state machine. The game calls it a
@@ -70,6 +72,11 @@ pub const TREBUCHET_WIND: f64 = 0.35;
 pub const TREBUCHET_CRATER: f64 = 1.5;
 /// Blast reach of a stone relative to a shell.
 pub const TREBUCHET_BLAST: f64 = 1.3;
+
+/// Stage `i` is generated as the sim's screen `i * DIFFICULTY_STRIDE`, so a
+/// 12-stage Expedition climbs the sim's difficulty bands (four screens each)
+/// to band 5: wind, distance and up to three targets, not a calm band 0-2.
+pub const DIFFICULTY_STRIDE: u32 = 2;
 
 /// An echo's starting integrity, as a share of a fresh structure's 1.0.
 /// DESIGN: 40–50%.
@@ -142,8 +149,12 @@ impl Stage {
     /// as that era fires it.
     pub fn generate(run_seed: u64, index: u32, width: usize, base: &Loadout) -> Self {
         let gen = |p: Plane| {
-            let screen =
-                generate_screen(substream(run_seed, p.tag()), index, width, &p.loadout(base));
+            let screen = generate_screen(
+                substream(run_seed, p.tag()),
+                index * DIFFICULTY_STRIDE,
+                width,
+                &p.loadout(base),
+            );
             let roles = vec![Role::Original; screen.structures.len()];
             Era { screen, roles }
         };
@@ -164,7 +175,10 @@ impl Stage {
                 .iter()
                 .max_by(|a, b| a.centre_x().total_cmp(&b.centre_x()))
                 .cloned();
-            if let Some(mut s) = far {
+            if let Some(far) = far {
+                // Always the heaviest silhouette (silo / keep), re-seated on
+                // the same centre.
+                let mut s = reseat(&era.screen, &far, StructureKind::Silo);
                 s.integrity = BASTION_INTEGRITY;
                 era.screen.structures = vec![s];
                 era.roles = vec![Role::Bastion];
@@ -310,18 +324,27 @@ impl Stage {
 /// An intact echo of `src` on `screen`'s ground, at the same centre x, seated
 /// on the highest column of its footprint as the sim seats every structure.
 fn seat_echo(screen: &Screen, src: &Structure) -> Structure {
-    let fp = src.footprint();
+    let mut s = reseat(screen, src, src.kind);
+    s.integrity = ECHO_INTEGRITY;
+    s
+}
+
+/// An intact structure of `kind` centred where `src` stands, seated on
+/// `screen`'s ground the way the sim seats every structure.
+fn reseat(screen: &Screen, src: &Structure, kind: StructureKind) -> Structure {
+    let fp = kind.footprint();
     let max_x0 = screen.width.saturating_sub(fp + 1).max(1);
-    let x0 = (src.x0).clamp(1, max_x0);
+    let want = (src.centre_x() - fp as f64 * 0.5).round().max(1.0) as usize;
+    let x0 = want.clamp(1, max_x0);
     let field = &screen.field;
     let base = field.seat(x0, fp);
     let mean = (x0..x0 + fp).map(|i| field.surface(i)).sum::<f64>() / fp as f64;
     Structure {
-        kind: src.kind,
+        kind,
         x0,
         base,
         original_mean: mean,
-        integrity: ECHO_INTEGRITY,
+        integrity: 1.0,
         support: 1.0,
         state: StructState::Intact,
         lean: 0,
