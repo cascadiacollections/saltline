@@ -6,7 +6,7 @@ in a headless browser.
 Serves the export with a plain static server (no COOP/COEP: the no-threads
 build must not need them), loads index.html, waits for the engine to start,
 screenshots the title, presses Enter (start an Expedition), fires, then
-SHIFTs, screenshotting each. Writes console.log, boot.png, play.png, fired.png
+shifts era, screenshotting each. Writes console.log, boot.png, play.png, fired.png
 and shifted.png to out/. Adapted from the gameoff/web-spike feasibility test.
 Fails on a page error, an engine abort or a GDExtension load failure.
 Needs `pip install playwright` and a browser channel (or `playwright install chromium`).
@@ -44,7 +44,7 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
         ".pck": "application/octet-stream",
     }
 
-    def log_message(self, *args: object) -> None:  # noqa: D102
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002, D102
         pass
 
 

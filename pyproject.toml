@@ -13,7 +13,8 @@ extra-paths = ["tools"]
 
 [tool.ty.analysis]
 # blender/scripts run inside Blender, which provides these modules.
-allowed-unresolved-imports = ["bpy", "mathutils"]
+# gameoff/tools/web_smoke.py runs in CI after `pip install playwright`.
+allowed-unresolved-imports = ["bpy", "mathutils", "playwright.**"]
 
 [tool.uv]
 # A range, not an exact pin: Dependabot runs its own uv (0.13.5 when this was
