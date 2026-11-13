@@ -36,7 +36,8 @@ stays clear of them. The credits say it is built on the Salt Line engine.
 | Path | What |
 | --- | --- |
 | `crates/shift-sim` | New. The era rules: two-era stages, echoes, the phase modifiers, Expedition run and score. Depends only on `salt-line-sim`. Deterministic, headless, fully tested. |
-| `crates/shift-godot` | New. gdext presentation: rendering, input, HUD, audio, title, victory and defeat. |
+| `crates/shift-game` | New. The game around the rules, engine-free: modes, input, aiming, the shot animation, SHIFT dissolve, draft, end screen, the software renderer, the font, sound cues and the autopilot. Tested headless, and `examples/capture` renders review PNGs. |
+| `crates/shift-godot` | New. The one Godot node: polls keys and the pad, runs `shift-game`, plays cues, uploads the frame. |
 | `gameoff/godot/` | New. The Godot project for the entry (its own `project.godot`, `.gdextension` and export presets: Web plus desktop fallbacks). |
 | `gameoff/` | Design, post-jam notes, itch page copy. |
 | `AI_DISCLOSURE.md` | Maintained from day one. Pasted verbatim into the itch page and the public README. |
@@ -107,7 +108,7 @@ trebuchet alike) plus these two era modifiers.
   `salt-line-sim` band curves). Drafts come after screens 4 and 8.
 - Screen 12 is the **bastion**: one heavy structure anchored in both phases
   (no echo rules). It must be killed once in each phase.
-- Shells are the run resource (start 14, refunds on clean clears, as in the sim
+- Shells are the run resource (start 40, refunds on clean clears, as in the sim
   economy). **Defeat**: shells run out with the screen uncleared.
 - **Score** = screens cleared × 1000 + shells remaining × 100 + time bonus
   (max(0, 900 − seconds)).
@@ -117,10 +118,22 @@ trebuchet alike) plus these two era modifiers.
 
 - SHIFT costs nothing. It locks only while a shell is in flight.
 - Echoes start at 40–50% health (45% to begin with).
-- Start with 30 shells. Clearing a stage refunds as a screen cleared in
-  ⌈shots/2⌉ shots. First bot numbers (200 seeds, perfect solver aim): 96% wins,
-  7.2 shells left on average, and the losses all run dry at the bastion.
-  Humans miss, so expect to loosen this in the balance pass.
+- Start with 40 shells. Clearing a stage refunds as a screen cleared in
+  ⌈shots/2⌉ shots, plus a flat +3 resupply.
+- Stage *i* is the sim's screen 2*i* (`DIFFICULTY_STRIDE`), so the run climbs
+  bands 0–5: wind, distance and up to three targets per era. With stride 1 a
+  12-stage run never left band 2 and was calm. With stride 3, even perfect aim
+  won 0%.
+- Bot numbers, 200 seeds (`just gameoff-batch 200 <angle> <power>`):
+
+  | Aim | Wins | Shells left on a win |
+  | --- | ---: | ---: |
+  | Perfect (solver) | 98% | 32 |
+  | ±2°, ±5% power | 85% | 14 |
+  | ±4°, ±8% power | 32% | 7 |
+
+  Playtests decide the final numbers. The knobs are `START_SHELLS`,
+  `STAGE_RESUPPLY` and `DIFFICULTY_STRIDE`.
 - A competent player clears an Expedition in 8–12 minutes. A golden-seed test
   and a batch harness of random shots check it can be finished at all, and a
   playtest checks the time.
@@ -145,6 +158,22 @@ trebuchet alike) plus these two era modifiers.
   screen n/12, echoes remaining (both phases).
 - Title screen: one EXPEDITION entry, plus the build stamp (`gameoff-vX.Y.Z` +
   short SHA, from CI env at build time).
+
+## Controls
+
+| | Keyboard | Gamepad |
+| --- | --- | --- |
+| Angle | Up / Down (W/S) | D-pad up / down |
+| Power | Left / Right (A/D) | D-pad left / right |
+| Fine aim (hold) | Z | X |
+| Fire / select | Space, Enter | A |
+| SHIFT | Shift, Tab | LB / RB |
+| Back (twice in a run to abandon) | Esc | B, Start |
+| Draft pick | 1–3, or arrows + Enter | D-pad + A |
+
+`gameoff/run.sh` builds and plays it. `--cw-autoplay` lets the solver bot play
+(attract mode, and `just gameoff-movie` engine recordings). `--cw-seed N`
+fixes the run seed.
 
 ## Determinism and tests (`crates/shift-sim`)
 
