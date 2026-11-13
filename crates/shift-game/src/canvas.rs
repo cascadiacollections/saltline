@@ -124,6 +124,23 @@ impl Canvas {
     }
 
     /// Per-pixel dithered crossfade: where the dither says so, take `other`.
+    /// Move the whole picture by (`dx`, `dy`), filling the uncovered edge by
+    /// repeating the nearest row or column (screen shake without a seam).
+    pub fn nudge(&mut self, dx: i32, dy: i32) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let src = self.px.clone();
+        let (w, h) = (W as i32, H as i32);
+        for y in 0..h {
+            let sy = (y - dy).clamp(0, h - 1);
+            for x in 0..w {
+                let sx = (x - dx).clamp(0, w - 1);
+                self.px[(y * w + x) as usize] = src[(sy * w + sx) as usize];
+            }
+        }
+    }
+
     pub fn dissolve(&mut self, other: &Canvas, t: f32) {
         for y in 0..H as i32 {
             for x in 0..W as i32 {

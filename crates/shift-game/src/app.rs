@@ -233,6 +233,8 @@ pub struct Play {
     /// Auto-repeat timer for held aim keys.
     repeat: f32,
     held_for: f32,
+    /// Screen shake: seconds left and strength in pixels.
+    pub shake: (f32, f32),
     /// Paused, with this menu item selected.
     pub paused: Option<usize>,
     /// A pointer drag is aiming; releasing over the field fires. Holds the
@@ -265,6 +267,8 @@ pub struct Game {
     pub autoplay: bool,
     auto_wait: f32,
     ptr_was_down: bool,
+    /// Running in a browser: no quit, no F11 (the host page has fullscreen).
+    pub web: bool,
     /// Best score so far; the engine loads it at start.
     pub best: u32,
     /// The run on the end screen set [`Game::best`].
@@ -288,6 +292,7 @@ impl Game {
             autoplay: false,
             auto_wait: 0.0,
             ptr_was_down: false,
+            web: false,
             best: 0,
             new_best: false,
         }
@@ -352,6 +357,7 @@ impl Game {
                     || !p.blasts.is_empty()
                     || p.note.is_some()
                     || p.hold > 0.0
+                    || p.shake.0 > 0.0
                     || p.ending.is_some()
             }
             Mode::Draft { .. } | Mode::Over { .. } => false,
@@ -503,6 +509,7 @@ impl Play {
             last_path: [Vec::new(), Vec::new()],
             repeat: 0.0,
             held_for: 0.0,
+            shake: (0.0, 0.0),
             paused: None,
             drag: None,
             ending: None,
@@ -676,6 +683,13 @@ impl Play {
             }
             _ => false,
         });
+        // Shake: a fall shakes most, a stone more than a shell.
+        let heavy = if f.era == Plane::Siege { 1.0 } else { 0.0 };
+        if fell {
+            self.shake = (0.35, 2.0 + heavy);
+        } else if struck {
+            self.shake = (0.2, 1.0 + heavy);
+        }
         fx.push(Effect::Play(if fell {
             Cue::Collapse
         } else if struck {
@@ -797,6 +811,7 @@ fn play_update(
         return pause_update(p, input, touch, fx);
     }
     p.elapsed += dt as f64;
+    p.shake.0 = (p.shake.0 - dt).max(0.0);
     for b in &mut p.blasts {
         b.t += dt;
     }

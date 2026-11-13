@@ -126,6 +126,20 @@ impl Renderer {
         self.a = a;
         self.flight(p, out);
         self.blasts(p, out);
+        let (left, amp) = p.shake;
+        if left > 0.0 && p.paused.is_none() {
+            // A few pixels, decaying, stepping every 1/30 s; the HUD holds still.
+            let k = (left / 0.35).min(1.0) * amp;
+            let n = (left * 30.0) as i32;
+            let (dx, dy) = (
+                [1, -1, 0, 1, -1][n as usize % 5],
+                [-1, 1, 1, 0, -1][n as usize % 5],
+            );
+            out.nudge(
+                (dx as f32 * k).round() as i32,
+                (dy as f32 * k).round() as i32,
+            );
+        }
         self.hud(p, out);
     }
 
@@ -514,7 +528,11 @@ impl Renderer {
         let lines = [
             "UP/DOWN  ANGLE     LEFT/RIGHT  POWER",
             "SPACE  FIRE      SHIFT  CHANGE ERA",
-            "Z  FINE AIM      ESC  PAUSE",
+            if g.web {
+                "Z  FINE AIM      ESC  PAUSE"
+            } else {
+                "Z  FINE AIM   ESC  PAUSE   F11  FULLSCREEN"
+            },
             "PAD: D-PAD AIM  A FIRE  LB/RB SHIFT  X FINE",
             "MOUSE/TOUCH: DRAG TO AIM, RELEASE TO FIRE",
             "12 SCREENS. THE BASTION WAITS AT THE END.",

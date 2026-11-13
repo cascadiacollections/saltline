@@ -16,8 +16,8 @@
 use godot::classes::audio_stream_wav::{Format as WavFormat, LoopMode};
 use godot::classes::image::Format;
 use godot::classes::{
-    AudioStreamPlayer, AudioStreamWav, ClassDb, Engine, FileAccess, INode2D, Image, ImageTexture,
-    Input, Node2D, Os, Time,
+    AudioStreamPlayer, AudioStreamWav, ClassDb, DisplayServer, Engine, FileAccess, INode2D, Image,
+    ImageTexture, Input, Node2D, Os, Time,
 };
 use godot::global::{JoyButton, Key, MouseButton};
 use godot::prelude::*;
@@ -43,6 +43,7 @@ const CLASSES: &[&str] = &[
     "Input",
     "Time",
     "FileAccess",
+    "DisplayServer",
 ];
 
 /// The best score, as decimal text. `user://` is the app's data folder on
@@ -98,6 +99,7 @@ struct Counterweight {
     project_fps: i32,
     was_busy: bool,
     drawn_once: bool,
+    fullscreen_key: bool,
 }
 
 #[godot_api]
@@ -119,6 +121,7 @@ impl INode2D for Counterweight {
             project_fps: 0,
             was_busy: false,
             drawn_once: false,
+            fullscreen_key: false,
         }
     }
 
@@ -130,6 +133,7 @@ impl INode2D for Counterweight {
             .map(|a| a.to_string())
             .collect();
         self.game.autoplay = args.iter().any(|a| a == "--cw-autoplay");
+        self.game.web = Os::singleton().has_feature("web");
         if let Some(i) = args.iter().position(|a| a == "--cw-seed") {
             self.game.fixed_seed = args.get(i + 1).and_then(|s| s.parse().ok());
         }
@@ -179,6 +183,7 @@ impl INode2D for Counterweight {
     }
 
     fn process(&mut self, delta: f64) {
+        self.fullscreen_toggle();
         let input = self.poll();
         let fx = self.game.update(delta as f32, &input);
         for e in fx {
@@ -236,6 +241,26 @@ impl INode2D for Counterweight {
 }
 
 impl Counterweight {
+    /// F11 toggles fullscreen on desktop (not Alt+Enter: Enter fires). On
+    /// the Web the host page (itch.io) has its own fullscreen button.
+    fn fullscreen_toggle(&mut self) {
+        use godot::classes::display_server::WindowMode;
+        let input = Input::singleton();
+        let now = input.is_key_pressed(Key::F11);
+        let edge = now && !self.fullscreen_key;
+        self.fullscreen_key = now;
+        if !edge || Os::singleton().has_feature("web") {
+            return;
+        }
+        let mut ds = DisplayServer::singleton();
+        let next = if ds.window_get_mode() == WindowMode::FULLSCREEN {
+            WindowMode::WINDOWED
+        } else {
+            WindowMode::FULLSCREEN
+        };
+        ds.window_set_mode(next);
+    }
+
     fn poll(&mut self) -> GameInput {
         let input = Input::singleton();
         let mut out = GameInput::default();
