@@ -81,16 +81,21 @@ jobs:
           toolchain: ${{ env.RUST_NIGHTLY }}
           targets: wasm32-unknown-emscripten
           components: rust-src
+      # A tag build publishes (release, itch draft), so it restores no cache
+      # a branch build could have written: `lookup-only` on tags, as in ci.yml
+      # (zizmor cache-poisoning). emsdk is then installed fresh.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: gameoff-web-${{ env.RUST_NIGHTLY }}
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: emsdk-cache
         with:
           path: ~/emsdk
           key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
+          lookup-only: ${{ startsWith(github.ref, 'refs/tags/') }}
       - name: install emsdk
-        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        if: steps.emsdk-cache.outputs.cache-hit != 'true' || startsWith(github.ref, 'refs/tags/')
         run: |
           set -eu
           mkdir -p ~/emsdk
