@@ -17,7 +17,7 @@ use godot::classes::audio_stream_wav::{Format as WavFormat, LoopMode};
 use godot::classes::image::Format;
 use godot::classes::{
     AudioStreamPlayer, AudioStreamWav, ClassDb, DisplayServer, Engine, FileAccess, INode2D, Image,
-    ImageTexture, Input, Node2D, Os, Time,
+    ImageTexture, Input, InputEvent, InputEventMouseButton, Node2D, Os, Time,
 };
 use godot::global::{JoyButton, Key, MouseButton};
 use godot::prelude::*;
@@ -102,6 +102,11 @@ struct Counterweight {
     was_busy: bool,
     drawn_once: bool,
     fullscreen_key: bool,
+    /// Left-button presses and releases seen as events since the last
+    /// frame. A click can go down and up between two frames; polling alone
+    /// would never see it, so the frame after reports it down, the next up.
+    click_pressed: bool,
+    click_released: bool,
 }
 
 #[godot_api]
@@ -124,6 +129,8 @@ impl INode2D for Counterweight {
             was_busy: false,
             drawn_once: false,
             fullscreen_key: false,
+            click_pressed: false,
+            click_released: false,
         }
     }
 
@@ -244,6 +251,18 @@ impl INode2D for Counterweight {
         self.was_busy = busy;
     }
 
+    fn input(&mut self, event: Gd<InputEvent>) {
+        if let Ok(b) = event.try_cast::<InputEventMouseButton>() {
+            if b.get_button_index() == MouseButton::LEFT {
+                if b.is_pressed() {
+                    self.click_pressed = true;
+                } else {
+                    self.click_released = true;
+                }
+            }
+        }
+    }
+
     fn draw(&mut self) {
         if let Some(t) = self.texture.clone() {
             self.base_mut().draw_texture_rect(
@@ -304,10 +323,20 @@ impl Counterweight {
         // its local mouse position is already in frame pixels. Touches arrive
         // as the mouse (emulate_mouse_from_touch, on by default).
         let m = self.base().get_local_mouse_position();
+        let down = if self.click_pressed {
+            // Down this frame; a release that came with it waits a frame.
+            self.click_pressed = false;
+            true
+        } else if self.click_released {
+            self.click_released = false;
+            false
+        } else {
+            input.is_mouse_button_pressed(MouseButton::LEFT)
+        };
         out.pointer = Some(Pointer {
             x: m.x,
             y: m.y,
-            down: input.is_mouse_button_pressed(MouseButton::LEFT),
+            down,
         });
         out
     }
