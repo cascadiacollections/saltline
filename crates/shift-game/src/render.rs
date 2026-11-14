@@ -7,7 +7,9 @@ use shift_sim::expedition::{Pick, State};
 use shift_sim::stage::{Role, BASTION_INTEGRITY};
 use shift_sim::{PhaseMod, Plane, Stage};
 
-use crate::app::{hit, stage_label, Game, Mode, Play, AIM_NEAR, AIM_SPAN, PAUSE_ITEMS};
+use crate::app::{
+    hit, shift_label, stage_label, Game, Mode, Play, AIM_NEAR, AIM_SPAN, PAUSE_ITEMS,
+};
 use crate::canvas::{dither, Canvas, Rgba, H, W};
 use crate::font::{self, centred, text, text_outlined};
 use crate::sprites::{Atlas, Ink};
@@ -98,7 +100,7 @@ impl Renderer {
         match &g.mode {
             Mode::Title { t } => self.title(g, *t, out),
             Mode::Play(p) => self.play(p, out),
-            Mode::Draft { play, sel } => {
+            Mode::Draft { play, sel, .. } => {
                 self.play(play, out);
                 self.draft(play, *sel, out);
             }
@@ -335,7 +337,7 @@ impl Renderer {
         // Aim guide: a dotted ray from the muzzle, longer with power. While
         // a pointer drags, it reaches the point the drag aims at.
         if p.flight.is_none() && p.view.is_none() {
-            let len = if p.drag.is_some() {
+            let len = if p.dragging() {
                 AIM_NEAR + AIM_SPAN * p.power_ticks as f64 / 1000.0
             } else {
                 10.0 + 34.0 * p.power_ticks as f64 / 1000.0
@@ -462,28 +464,21 @@ impl Renderer {
             format!("WIND {} {:.0}", "<".repeat(arrows), w.abs())
         };
         centred(c, &wind, 160, y, 1, INK);
-        let to = if era == Plane::Present {
-            "1347"
-        } else {
-            "PRESENT"
-        };
-        let (shift, col) = if p.flight.is_some() || p.view.is_some() {
-            ("SHIFT ...".to_string(), Rgba::rgb(120, 116, 112))
-        } else if *run.state() != State::Firing {
-            (String::new(), INK)
+        let shift = shift_label(p);
+        let col = if p.flight.is_some() || p.view.is_some() {
+            Rgba::rgb(120, 116, 112)
         } else if !run.can_shift() {
-            ("SHIFT - NO SHELLS".to_string(), RED)
+            RED
         } else if run.shift_cost() > 0 {
-            (format!("[SHIFT] {to} -1"), ALERT)
+            ALERT
         } else {
-            (format!("[SHIFT] {to}"), ECHO)
+            ECHO
         };
-        if !shift.is_empty() {
-            // A button: set off by a divider, so it reads as tappable.
-            let w = font::width(&shift, 1) + 6;
-            let x = W as i32 - 1 - w;
-            c.rect(x - 1, y - 2, 1, 10, Rgba::rgb(90, 86, 96));
-            text(c, &shift, x + 3, y, 1, col);
+        if let Some(r) = hit::shift(&shift) {
+            // A button: set off by a divider, so it reads as tappable. The
+            // tap target is the same rectangle.
+            c.rect(r.x, y - 2, 1, 10, Rgba::rgb(90, 86, 96));
+            text(c, &shift, r.x + 4, y, 1, col);
         }
 
         // Era modifiers held, under the top band.
@@ -512,7 +507,7 @@ impl Renderer {
                 }
             }
         }
-        let banner = if p.drag.is_some() {
+        let banner = if p.dragging() {
             Some(("RELEASE TO FIRE - DRAG TO A BAR TO CANCEL", INK))
         } else {
             first_screen_hint(p)

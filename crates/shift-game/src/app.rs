@@ -64,13 +64,19 @@ pub mod hit {
         }
     }
 
-    /// The SHIFT label in the bottom band.
-    pub const SHIFT: Rect = Rect {
-        x: W as i32 - 92,
-        y: H as i32 - 11,
-        w: 92,
-        h: 11,
-    };
+    /// The SHIFT button in the bottom band, sized to its label (as drawn).
+    pub fn shift(label: &str) -> Option<Rect> {
+        if label.is_empty() {
+            return None;
+        }
+        let w = crate::font::width(label, 1) + 6;
+        Some(Rect {
+            x: W as i32 - 2 - w,
+            y: H as i32 - 11,
+            w: w + 2,
+            h: 11,
+        })
+    }
     /// The pause button at the right end of the top band.
     pub const PAUSE: Rect = Rect {
         x: W as i32 - 13,
@@ -119,6 +125,21 @@ pub mod hit {
     }
 }
 
+/// A pointer drag in progress.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drag {
+    /// The aim before the drag, restored if it is cancelled.
+    pub aim: (i32, i32),
+    /// Where the pointer went down.
+    pub from: (f32, f32),
+    /// Left the dead zone: the drag is aiming.
+    pub moved: bool,
+}
+
+/// Frame pixels a press must travel before it aims (and can fire): a tap
+/// on the field does nothing.
+pub const DRAG_DEAD_ZONE: f32 = 4.0;
+
 /// Pause menu entries, top to bottom.
 pub const PAUSE_ITEMS: [&str; 2] = ["RESUME", "ABANDON RUN"];
 
@@ -160,8 +181,9 @@ pub enum Effect {
     Play(Cue),
     /// Title music on or off. On also stops any ambience.
     Music(bool),
-    /// Play this era's ambient loop (and stop the other's).
-    Ambience(Plane),
+    /// Play this era's ambient loop (and stop the other's); `None` stops
+    /// both (run over, paused).
+    Ambience(Option<Plane>),
     /// Quit the application (title screen, Esc).
     Quit,
     /// A new best score: the engine keeps it for next time.
@@ -239,19 +261,30 @@ pub struct Play {
     pub shake: (f32, f32),
     /// Paused, with this menu item selected.
     pub paused: Option<usize>,
-    /// A pointer drag is aiming; releasing over the field fires. Holds the
-    /// aim from before the drag, restored if it is cancelled.
-    pub drag: Option<(i32, i32)>,
+    /// A pointer is down on the field: a drag aims, and releasing over the
+    /// field fires. A press that never leaves [`DRAG_DEAD_ZONE`] is a tap,
+    /// which fires nothing.
+    pub drag: Option<Drag>,
     /// After the run ends, seconds until the end screen.
     pub ending: Option<f32>,
 }
 
 #[derive(Clone)]
 pub enum Mode {
-    Title { t: f32 },
+    Title {
+        t: f32,
+    },
     Play(Box<Play>),
-    Draft { play: Box<Play>, sel: usize },
-    Over { play: Box<Play>, victory: bool },
+    /// `armed`: `sel` was chosen by a tap, so tapping it again takes it.
+    Draft {
+        play: Box<Play>,
+        sel: usize,
+        armed: bool,
+    },
+    Over {
+        play: Box<Play>,
+        victory: bool,
+    },
 }
 
 pub struct Game {
@@ -353,6 +386,8 @@ impl Game {
     pub fn busy(&self) -> bool {
         match &self.mode {
             Mode::Title { .. } => true, // the era dissolve behind the title
+            // Paused: the frame is frozen; input marks it dirty.
+            Mode::Play(p) if p.paused.is_some() => false,
             Mode::Play(p) => {
                 p.flight.is_some()
                     || p.fade.is_some()
@@ -417,26 +452,32 @@ impl Game {
                 self.title(t + dt, &input, &mut fx)
             }
             Mode::Play(p) => play_update(p, dt, input, touch, &mut fx),
-            Mode::Draft { play, mut sel } => {
+            Mode::Draft {
+                play,
+                mut sel,
+                mut armed,
+            } => {
                 let n = match play.run.state() {
                     State::Drafting(o) => o.len(),
                     _ => 0,
                 };
-                // Tap a card to select it, tap it again to take it.
+                // Tap a card to select it, tap it again to take it. A card
+                // selected by default or by the keys still takes two taps.
                 let mut b = None;
                 if let Some(t) = tapped {
                     if hit::SKIP.contains(t.x, t.y) {
                         b = Some(Button::Back);
                     } else if let Some(i) = (0..n).find(|&i| hit::card(i, n).contains(t.x, t.y)) {
-                        if i == sel {
+                        if armed && i == sel {
                             b = Some(Button::Fire);
                         } else {
                             sel = i;
+                            armed = true;
                             fx.push(Effect::Play(Cue::Ui));
                         }
                     }
                 }
-                draft_update(play, sel, &with_tap(input, b), &mut fx)
+                draft_update(play, sel, armed, &with_tap(input, b), &mut fx)
             }
             Mode::Over { play, victory } => {
                 if tapped.is_some()
@@ -469,7 +510,7 @@ impl Game {
         if input.pressed.contains(&Button::Fire) {
             fx.push(Effect::Play(Cue::Ui));
             fx.push(Effect::Music(false));
-            fx.push(Effect::Ambience(Plane::Present));
+            fx.push(Effect::Ambience(Some(Plane::Present)));
             let seed = self
                 .fixed_seed
                 .unwrap_or_else(|| salt_line_sim::rng::mix64(self.entropy ^ (t.to_bits() as u64)));
@@ -597,6 +638,11 @@ impl Play {
         self.power_ticks = self.power_ticks.clamp(0, POWER_TICKS_MAX);
     }
 
+    /// A pointer drag is aiming (out of its dead zone).
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some_and(|d| d.moved)
+    }
+
     /// Aim at a point on screen: the angle from the muzzle toward it, the
     /// power from how far away it is (see [`AIM_NEAR`], [`AIM_SPAN`]).
     pub fn aim_at(&mut self, x: f32, y: f32) {
@@ -649,7 +695,7 @@ impl Play {
         let from = self.run.stage().active();
         if let Some(events) = self.run.apply(RunInput::Shift) {
             fx.push(Effect::Play(Cue::Shift));
-            fx.push(Effect::Ambience(from.other()));
+            fx.push(Effect::Ambience(Some(from.other())));
             self.fade = Some((from, 0.0));
             let cost = events.iter().find_map(|e| match e {
                 Event::Shifted { cost, .. } => Some(*cost),
@@ -737,11 +783,13 @@ impl Play {
                     self.last_path = [Vec::new(), Vec::new()];
                 }
                 Event::Victory => {
+                    fx.push(Effect::Ambience(None));
                     fx.push(Effect::Play(Cue::Victory));
                     self.note("THE BASTION FALLS");
                     self.ending = Some(2.0);
                 }
                 Event::Defeat => {
+                    fx.push(Effect::Ambience(None));
                     fx.push(Effect::Play(Cue::Defeat));
                     self.note("OUT OF SHELLS");
                     self.ending = Some(2.0);
@@ -793,6 +841,9 @@ fn pause_update(
         Some(0) => {
             fx.push(Effect::Play(Cue::Ui));
             p.paused = None;
+            if p.ending.is_none() {
+                fx.push(Effect::Ambience(Some(p.era())));
+            }
         }
         Some(_) => {
             fx.push(Effect::Play(Cue::Ui));
@@ -846,6 +897,11 @@ fn play_update(
         }
     } else if p.hold <= 0.0 && p.view.is_some() {
         p.view = None;
+        // The next stage is up, and stages open in the present: the
+        // ambience follows if the cleared one ended in 1347.
+        if p.ending.is_none() {
+            fx.push(Effect::Ambience(Some(p.era())));
+        }
     }
 
     if let Some(left) = p.ending {
@@ -860,36 +916,48 @@ fn play_update(
 
     if matches!(p.run.state(), State::Drafting(_)) && p.flight.is_none() && p.hold <= 0.0 {
         fx.push(Effect::Play(Cue::Draft));
-        return Mode::Draft { play: p, sel: 0 };
+        return Mode::Draft {
+            play: p,
+            sel: 0,
+            armed: false,
+        };
     }
 
     let idle = p.flight.is_none() && p.view.is_none();
-    if idle && p.drag.is_none() {
+    if idle && !p.dragging() {
         p.aim(dt, input.held);
     }
     let mut pressed = input.pressed.clone();
     if let Some(t) = touch {
         if t.pressed && hit::PAUSE.contains(t.x, t.y) {
             pressed.push(Button::Back);
-        } else if t.pressed && hit::SHIFT.contains(t.x, t.y) {
+        } else if t.pressed && hit::shift(&shift_label(&p)).is_some_and(|r| r.contains(t.x, t.y)) {
             pressed.push(Button::Shift);
         } else if t.pressed && idle && hit::FIELD.contains(t.x, t.y) {
-            p.drag = Some((p.angle_ticks, p.power_ticks));
+            p.drag = Some(Drag {
+                aim: (p.angle_ticks, p.power_ticks),
+                from: (t.x, t.y),
+                moved: false,
+            });
         }
-        if let Some((a, pw)) = p.drag {
+        if let Some(mut d) = p.drag {
+            let (a, pw) = d.aim;
+            d.moved |= (t.x - d.from.0).hypot(t.y - d.from.1) > DRAG_DEAD_ZONE;
+            p.drag = Some(d);
             if !idle {
                 p.drag = None;
             } else if t.down {
                 // Over the bands the drag would cancel: show the old aim.
-                if hit::FIELD.contains(t.x, t.y) {
+                if d.moved && hit::FIELD.contains(t.x, t.y) {
                     p.aim_at(t.x, t.y);
                 } else {
                     (p.angle_ticks, p.power_ticks) = (a, pw);
                 }
             } else if t.released {
                 p.drag = None;
-                // Let go over the bands (or off the frame) to cancel.
-                if hit::FIELD.contains(t.x, t.y) {
+                // A tap, or a release over the bands (or off the frame),
+                // cancels.
+                if d.moved && hit::FIELD.contains(t.x, t.y) {
                     p.aim_at(t.x, t.y);
                     pressed.push(Button::Fire);
                 } else {
@@ -897,8 +965,8 @@ fn play_update(
                 }
             }
         }
-    } else if let Some((a, pw)) = p.drag.take() {
-        (p.angle_ticks, p.power_ticks) = (a, pw);
+    } else if let Some(d) = p.drag.take() {
+        (p.angle_ticks, p.power_ticks) = d.aim;
     }
     for b in &pressed {
         match b {
@@ -906,10 +974,11 @@ fn play_update(
             Button::Shift => p.shift(fx),
             Button::Back => {
                 fx.push(Effect::Play(Cue::Ui));
-                if let Some((a, pw)) = p.drag.take() {
-                    (p.angle_ticks, p.power_ticks) = (a, pw);
+                if let Some(d) = p.drag.take() {
+                    (p.angle_ticks, p.power_ticks) = d.aim;
                 }
                 p.paused = Some(0);
+                fx.push(Effect::Ambience(None));
                 return Mode::Play(p);
             }
             _ => {}
@@ -947,7 +1016,13 @@ fn ended_view(p: &Play, before: Option<Stage>) -> Stage {
     s
 }
 
-fn draft_update(mut p: Box<Play>, mut sel: usize, input: &Input, fx: &mut Vec<Effect>) -> Mode {
+fn draft_update(
+    mut p: Box<Play>,
+    mut sel: usize,
+    mut armed: bool,
+    input: &Input,
+    fx: &mut Vec<Effect>,
+) -> Mode {
     let n = match p.run.state() {
         State::Drafting(o) => o.len(),
         _ => return Mode::Play(p),
@@ -956,11 +1031,13 @@ fn draft_update(mut p: Box<Play>, mut sel: usize, input: &Input, fx: &mut Vec<Ef
         let pick = match b {
             Button::Left | Button::Up => {
                 sel = (sel + n - 1) % n;
+                armed = false;
                 fx.push(Effect::Play(Cue::Ui));
                 None
             }
             Button::Right | Button::Down => {
                 sel = (sel + 1) % n;
+                armed = false;
                 fx.push(Effect::Play(Cue::Ui));
                 None
             }
@@ -983,11 +1060,38 @@ fn draft_update(mut p: Box<Play>, mut sel: usize, input: &Input, fx: &mut Vec<Ef
                     p.note(format!("{} TAKEN", pick.name()));
                 }
                 p.last_path = [Vec::new(), Vec::new()];
+                // The next stage begins after a draft, in the present.
+                fx.push(Effect::Ambience(Some(p.era())));
                 return Mode::Play(p);
             }
         }
     }
-    Mode::Draft { play: p, sel }
+    Mode::Draft {
+        play: p,
+        sel,
+        armed,
+    }
+}
+
+/// The SHIFT button's label for the bottom band; empty when there is none.
+pub fn shift_label(p: &Play) -> String {
+    let run = &p.run;
+    let to = if p.era() == Plane::Present {
+        "1347"
+    } else {
+        "PRESENT"
+    };
+    if p.flight.is_some() || p.view.is_some() {
+        "SHIFT ...".to_string()
+    } else if *run.state() != State::Firing {
+        String::new()
+    } else if !run.can_shift() {
+        "SHIFT - NO SHELLS".to_string()
+    } else if run.shift_cost() > 0 {
+        format!("[SHIFT] {to} -1")
+    } else {
+        format!("[SHIFT] {to}")
+    }
 }
 
 /// Stage number shown in the HUD, 1-based.
@@ -1021,7 +1125,7 @@ mod tests {
         g.fixed_seed = Some(7);
         let fx = g.update(0.016, &press(Button::Fire));
         assert!(fx.contains(&Effect::Music(false)));
-        assert!(fx.contains(&Effect::Ambience(Plane::Present)));
+        assert!(fx.contains(&Effect::Ambience(Some(Plane::Present))));
         assert!(matches!(g.mode, Mode::Play(_)));
         g.update(0.016, &press(Button::Fire));
         assert!(g.play().unwrap().flight.is_some());
@@ -1089,9 +1193,10 @@ mod tests {
     fn drag_aims_and_release_fires() {
         let mut g = Game::new();
         g.start(5);
+        g.update(0.016, &ptr(205.0, 62.0, true));
         g.update(0.016, &ptr(200.0, 60.0, true));
         let p = g.play().unwrap();
-        assert!(p.drag.is_some());
+        assert!(p.dragging(), "out of the dead zone, aiming");
         let (a0, p0) = (p.angle_ticks, p.power_ticks);
         g.update(0.016, &ptr(120.0, 40.0, true));
         let p = g.play().unwrap();
@@ -1124,7 +1229,8 @@ mod tests {
     fn tapping_shift_and_pause() {
         let mut g = Game::new();
         g.start(5);
-        let (sx, sy) = (hit::SHIFT.x as f32 + 50.0, hit::SHIFT.y as f32 + 5.0);
+        let r = hit::shift(&shift_label(g.play().unwrap())).unwrap();
+        let (sx, sy) = (r.x as f32 + r.w as f32 / 2.0, r.y as f32 + 5.0);
         g.update(0.016, &ptr(sx, sy, true));
         g.update(0.016, &ptr(sx, sy, false));
         assert_eq!(g.play().unwrap().era(), Plane::Siege);
@@ -1193,6 +1299,15 @@ mod tests {
             State::Drafting(o) => o.len(),
             _ => 0,
         };
+        // Card 0 is selected by default, but a first tap still only selects.
+        let r0 = hit::card(0, n);
+        let (x0, y0) = (r0.x as f32 + 10.0, r0.y as f32 + 10.0);
+        g.update(0.016, &ptr(x0, y0, true));
+        g.update(0.016, &ptr(x0, y0, false));
+        assert!(
+            matches!(g.mode, Mode::Draft { sel: 0, .. }),
+            "first tap on the default card only selects it"
+        );
         let r = hit::card(n - 1, n);
         let (x, y) = (r.x as f32 + 10.0, r.y as f32 + 10.0);
         g.update(0.016, &ptr(x, y, true));
@@ -1231,5 +1346,77 @@ mod tests {
         // Lingering on the end screen saves nothing more.
         g.autoplay = false;
         assert!(g.update(0.1, &Input::default()).is_empty());
+    }
+
+    #[test]
+    fn a_tap_on_the_field_fires_nothing() {
+        let mut g = Game::new();
+        g.start(5);
+        let before = {
+            let p = g.play().unwrap();
+            (p.angle_ticks, p.power_ticks)
+        };
+        g.update(0.016, &ptr(200.0, 60.0, true));
+        g.update(0.016, &ptr(202.0, 61.0, true));
+        g.update(0.016, &ptr(202.0, 61.0, false));
+        let p = g.play().unwrap();
+        assert!(p.flight.is_none(), "a tap is not a shot");
+        assert_eq!((p.angle_ticks, p.power_ticks), before);
+    }
+
+    #[test]
+    fn blank_band_left_of_the_shift_button_is_not_shift() {
+        let mut g = Game::new();
+        g.start(5);
+        let r = hit::shift(&shift_label(g.play().unwrap())).unwrap();
+        let (x, y) = (r.x as f32 - 4.0, r.y as f32 + 5.0);
+        g.update(0.016, &ptr(x, y, true));
+        g.update(0.016, &ptr(x, y, false));
+        assert_eq!(g.play().unwrap().era(), Plane::Present);
+    }
+
+    #[test]
+    fn pausing_stops_the_ambience_and_resuming_restarts_it() {
+        let mut g = Game::new();
+        g.start(5);
+        let fx = g.update(0.016, &press(Button::Back));
+        assert!(fx.contains(&Effect::Ambience(None)));
+        assert!(!g.busy(), "a paused frame does not redraw itself");
+        let fx = g.update(0.016, &press(Button::Back));
+        assert!(fx.contains(&Effect::Ambience(Some(Plane::Present))));
+    }
+
+    #[test]
+    fn a_new_stage_brings_back_the_present_ambience() {
+        let mut g = Game::new();
+        g.autoplay = true;
+        g.fixed_seed = Some(0x5A17_11E5);
+        let mut in_siege = false;
+        let mut back_to_present_on_new_stage = false;
+        let mut stage = 0;
+        for _ in 0..60 * 60 * 10 {
+            let fx = g.update(1.0 / 30.0, &Input::default());
+            for e in &fx {
+                match e {
+                    Effect::Ambience(Some(Plane::Siege)) => in_siege = true,
+                    Effect::Ambience(Some(Plane::Present)) => in_siege = false,
+                    _ => {}
+                }
+            }
+            if let Some(p) = g.play() {
+                if p.run.stage_index() != stage
+                    && p.view.is_none()
+                    && matches!(g.mode, Mode::Play(_))
+                {
+                    stage = p.run.stage_index();
+                    assert!(!in_siege, "stage {stage} opened with 1347's ambience");
+                    back_to_present_on_new_stage = true;
+                }
+            }
+            if matches!(g.mode, Mode::Over { .. }) {
+                break;
+            }
+        }
+        assert!(back_to_present_on_new_stage);
     }
 }

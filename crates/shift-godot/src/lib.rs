@@ -158,11 +158,15 @@ impl INode2D for Counterweight {
                 missing.join(", ")
             );
         }
-        self.game.best = FileAccess::get_file_as_string(BEST_PATH)
-            .to_string()
-            .trim()
-            .parse()
-            .unwrap_or(0);
+        // No file yet on a first launch: checked first so Godot logs no
+        // open error.
+        if FileAccess::file_exists(BEST_PATH) {
+            self.game.best = FileAccess::get_file_as_string(BEST_PATH)
+                .to_string()
+                .trim()
+                .parse()
+                .unwrap_or(0);
+        }
         self.project_fps = Engine::singleton().get_max_fps();
         self.bytes.resize(W * H * 4);
         let image = Image::create_empty(W as i32, H as i32, false, Format::RGBA8);
@@ -211,7 +215,11 @@ impl INode2D for Counterweight {
                         self.stop(Cue::Title);
                     }
                 }
-                Effect::Ambience(era) => {
+                Effect::Ambience(None) => {
+                    self.stop(Cue::AmbPresent);
+                    self.stop(Cue::AmbSiege);
+                }
+                Effect::Ambience(Some(era)) => {
                     let (on, off) = (Cue::ambience(era), Cue::ambience(era.other()));
                     self.stop(off);
                     if !self.players.get(on.index()).is_some_and(|p| p.is_playing()) {
