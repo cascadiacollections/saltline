@@ -61,6 +61,10 @@ pub const ALERT: Rgba = Rgba::rgb(232, 163, 61);
 pub const ECHO: Rgba = Rgba::rgb(150, 210, 240);
 pub const RED: Rgba = Rgba::rgb(214, 84, 72);
 
+/// Flight samples over which a stone's drawn path eases from the
+/// trebuchet's pivot onto the sim's path.
+const LAUNCH_BLEND: f32 = 40.0;
+
 /// World y (up) to screen row.
 #[inline]
 pub fn sy(y: f64) -> i32 {
@@ -172,7 +176,8 @@ impl Renderer {
         // Chalk line of the last shot in this era.
         for (k, v) in p.last_path[era.index()].iter().enumerate() {
             if k % 5 == 0 {
-                c.blend(v.x.round() as i32, sy(v.y), INK, 0.35);
+                let (ox, oy) = self.launch_offset(screen, era, k);
+                c.blend(v.x.round() as i32 + ox, sy(v.y) + oy, INK, 0.35);
             }
         }
         self.gun(c, screen, era, p);
@@ -225,6 +230,34 @@ impl Renderer {
         }
     }
 
+    /// Where the trebuchet's arm pivots, in screen pixels: the frame stands
+    /// on the ground under the muzzle, so this is above the sim's launch
+    /// point. Stones are drawn leaving from here.
+    fn trebuchet_pivot(&self, screen: &Screen) -> (i32, i32) {
+        let m = screen.muzzle();
+        let (mx, my) = (m.x.round() as i32, sy(m.y));
+        let fr = self.atlas.get("trebuchet");
+        (mx, my + 6 + 1 - fr.h + 3)
+    }
+
+    /// Screen offset to add to a point `step` samples into a flight so the
+    /// drawn path leaves from the gun art: the full pivot offset at release,
+    /// eased to none by [`LAUNCH_BLEND`] samples.
+    fn launch_offset(&self, screen: &Screen, era: Plane, step: usize) -> (i32, i32) {
+        if era != Plane::Siege {
+            return (0, 0);
+        }
+        let m = screen.muzzle();
+        let (px, py) = self.trebuchet_pivot(screen);
+        let (dx, dy) = (px - m.x.round() as i32, py - sy(m.y));
+        let k = 1.0 - (step as f32 / LAUNCH_BLEND).min(1.0);
+        let k = k * k;
+        (
+            (dx as f32 * k).round() as i32,
+            (dy as f32 * k).round() as i32,
+        )
+    }
+
     fn gun(&self, c: &mut Canvas, screen: &Screen, era: Plane, p: &Play) {
         let m = screen.muzzle();
         let (mx, my) = (m.x.round() as i32, sy(m.y));
@@ -252,9 +285,9 @@ impl Renderer {
                 strip.draw_region(c, frame * 28, 28, mx - 3, my - 24, false, Ink::Solid);
             }
             Plane::Siege => {
-                let ground = my + 6;
                 let fr = self.atlas.get("trebuchet");
-                let (fx, fy) = (mx - 15, ground + 1 - fr.h);
+                let (_, pivot_y) = self.trebuchet_pivot(screen);
+                let (fx, fy) = (mx - 15, pivot_y - 3);
                 c.draw_spr(fr, fx, fy, false, Ink::Solid);
                 let strip = self.atlas.get("trebuchet_arm_strip_5deg");
                 // Mid-throw the arm has swung through; at rest it is cocked.
@@ -283,8 +316,21 @@ impl Renderer {
                 10.0 + 34.0 * p.power_ticks as f64 / 1000.0
             };
             let r = deg.to_radians();
-            let (ex, ey) = (m.x + r.cos() * len, m.y + r.sin() * len);
-            c.line(mx, my, ex.round() as i32, sy(ey), INK, 3);
+            // From the gun art: the trebuchet's pivot, the howitzer's muzzle.
+            let (ox, oy) = if era == Plane::Siege {
+                self.trebuchet_pivot(screen)
+            } else {
+                (mx, my)
+            };
+            let (ex, ey) = (r.cos() * len, -r.sin() * len);
+            c.line(
+                ox,
+                oy,
+                ox + ex.round() as i32,
+                oy + ey.round() as i32,
+                INK,
+                3,
+            );
         }
     }
 
@@ -294,6 +340,7 @@ impl Renderer {
             return;
         }
         let k = f.step();
+        let screen = p.shown().screen(f.era);
         for tr in &f.traces {
             if tr.path.is_empty() {
                 continue;
@@ -301,10 +348,12 @@ impl Renderer {
             let i = k.min(tr.path.len() - 1);
             for j in (i.saturating_sub(24)..i).step_by(4) {
                 let v = tr.path[j];
-                c.blend(v.x.round() as i32, sy(v.y), INK, 0.6);
+                let (ox, oy) = self.launch_offset(screen, f.era, j);
+                c.blend(v.x.round() as i32 + ox, sy(v.y) + oy, INK, 0.6);
             }
             let v = tr.path[i];
-            let (x, y) = (v.x.round() as i32, sy(v.y));
+            let (ox, oy) = self.launch_offset(screen, f.era, i);
+            let (x, y) = (v.x.round() as i32 + ox, sy(v.y) + oy);
             if f.era == Plane::Siege {
                 c.draw_spr(self.atlas.get("stone"), x - 1, y - 1, false, Ink::Solid);
             } else {
