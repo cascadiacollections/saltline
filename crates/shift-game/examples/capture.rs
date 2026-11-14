@@ -77,12 +77,29 @@ fn main() {
             snap(&g, "over", &mut r, &mut c);
             break;
         }
-        if let Mode::Draft { .. } = g.mode {
+        if let Mode::Draft { play, .. } = &g.mode {
             if !saw[0] {
                 snap(&g, "draft", &mut r, &mut c);
                 saw[0] = true;
             }
-            step(&mut g, 0.3, vec![Button::One]);
+            // Prefer the drafts whose gun marks the review should show.
+            let want = match play.run.state() {
+                shift_sim::State::Drafting(o) => o
+                    .iter()
+                    .position(|x| {
+                        x.name().eq_ignore_ascii_case("airburst")
+                            || x.name().eq_ignore_ascii_case("vernier")
+                    })
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            let key = [Button::One, Button::Two, Button::Three][want.min(2)];
+            step(&mut g, 0.3, vec![key]);
+            if g.play()
+                .is_some_and(|p| p.era() == shift_sim::Plane::Present)
+            {
+                snap(&g, "after-draft", &mut r, &mut c);
+            }
             continue;
         }
         let Some(next) = bot::next_input(&p.run) else {

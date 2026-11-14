@@ -181,7 +181,7 @@ impl Renderer {
             }
         }
         self.gun(c, screen, era, p);
-        let _ = base; // the gun's drafted variants are not drawn yet
+        let _ = base;
     }
 
     fn structure(
@@ -283,6 +283,31 @@ impl Renderer {
                     "barrel_strip_5deg"
                 });
                 strip.draw_region(c, frame * 28, 28, mx - 3, my - 24, false, Ink::Solid);
+                // Drafts with no engine art get small marks on the barrel,
+                // drawn along the aim: a fuse band at the tip (Airburst), a
+                // sight riding above the barrel (Vernier).
+                let (dx, dy) = (deg.to_radians().cos(), -deg.to_radians().sin());
+                let at = |k: f64, up: f64| {
+                    // `k` pixels back from the muzzle, `up` above the barrel.
+                    (
+                        (m.x - dx * k + dy * up).round() as i32,
+                        (sy(m.y) as f64 - dy * k - dx * up).round() as i32,
+                    )
+                };
+                if lo.stacks(Modifier::Airburst) > 0 {
+                    for k in [1.0, 2.0] {
+                        let (x, y) = at(k, 0.0);
+                        c.set(x, y, ALERT);
+                    }
+                }
+                if lo.stacks(Modifier::Vernier) > 0 {
+                    for k in 6..=10 {
+                        let (x, y) = at(k as f64, 2.0);
+                        c.set(x, y, DARK);
+                    }
+                    let (x, y) = at(6.0, 2.0);
+                    c.set(x, y, ECHO);
+                }
             }
             Plane::Siege => {
                 let fr = self.atlas.get("trebuchet");
@@ -863,5 +888,59 @@ mod tests {
         ] {
             atlas.get(n);
         }
+    }
+
+    /// Plays seeds with the bot, taking Airburst and Vernier whenever a
+    /// draft offers them, until a run holds both.
+    fn run_with_marks() -> Option<Play> {
+        use shift_sim::Input as RunInput;
+        for seed in 0..200u64 {
+            let mut p = Play::new(seed);
+            for _ in 0..400 {
+                let Some(next) = shift_sim::bot::next_input(&p.run) else {
+                    break;
+                };
+                let input = match (p.run.state(), next) {
+                    (State::Drafting(o), _) => o
+                        .iter()
+                        .position(|x| {
+                            matches!(x, Pick::Gun(Modifier::Airburst | Modifier::Vernier))
+                        })
+                        .map_or(RunInput::Skip, |i| RunInput::Pick(i as u8)),
+                    (_, n) => n,
+                };
+                p.run.apply(input);
+                let lo = p.run.base_loadout();
+                if lo.stacks(Modifier::Airburst) > 0 && lo.stacks(Modifier::Vernier) > 0 {
+                    if p.run.stage().active() == Plane::Siege {
+                        p.run.apply(RunInput::Shift);
+                    }
+                    if p.run.stage().active() == Plane::Present {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn airburst_and_vernier_mark_the_barrel() {
+        let marked = run_with_marks().expect("some seed drafts both");
+        let mut plain = marked.clone();
+        plain.run = Play::new(0).run;
+        let mut r = Renderer::new();
+        let mut found = |p: &Play| {
+            let mut c = Canvas::new();
+            r.play(p, &mut c);
+            let m = p.shown().screen(Plane::Present).muzzle();
+            let (mx, my) = (m.x.round() as i32, sy(m.y));
+            let near = |col: Rgba| {
+                (-12..=12).any(|dy| (-12..=12).any(|dx| c.get(mx + dx, my + dy) == col))
+            };
+            (near(ALERT), near(ECHO))
+        };
+        assert_eq!(found(&marked), (true, true), "fuse band and sight lens");
+        assert_eq!(found(&plain), (false, false), "a plain gun has neither");
     }
 }
