@@ -1,0 +1,14 @@
+[package]
+publish = false
+name = "shift-game"
+description = "Counterweight (Game Off 2026): the game, engine-free: states, input, drawing, sound cues"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Engine-free, like the sim: builds and tests headless, renders review frames
+# without Godot. No dependencies beyond the rules.
+[dependencies]
+salt-line-sim = { path = "../salt-line-sim" }
+shift-sim = { path = "../shift-sim" }

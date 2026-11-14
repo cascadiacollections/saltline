@@ -10,7 +10,10 @@ use crate::stage::{Plane, Stage, StageShot};
 /// Stages in an Expedition. The last is the bastion.
 pub const STAGES: u32 = 12;
 /// Shells at the start of a run.
-pub const START_SHELLS: i32 = 30;
+pub const START_SHELLS: i32 = 40;
+/// Flat shells for every stage cleared, on top of the clean-clear refund:
+/// two eras and their echoes cost far more shots than one sim screen.
+pub const STAGE_RESUPPLY: i32 = 3;
 /// A draft follows clearing these stages (1-based screen numbers 4 and 8).
 pub const DRAFT_AFTER: [u32; 2] = [4, 8];
 /// Offers per draft.
@@ -280,7 +283,7 @@ impl Expedition {
                 return;
             }
             // Two eras: a stage fired cleanly takes about twice a screen's shots.
-            let r = refund(self.shots_on_stage.div_ceil(2), &self.base).max(0);
+            let r = refund(self.shots_on_stage.div_ceil(2), &self.base).max(0) + STAGE_RESUPPLY;
             self.shells += r;
             ev.push(Event::StageCleared { refund: r });
             if DRAFT_AFTER.contains(&(self.stage_index + 1)) {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/salt-line-sim", "crates/salt-line-godot", "crates/shift-sim"]
+members = ["crates/salt-line-sim", "crates/salt-line-godot", "crates/shift-sim", "crates/shift-game", "crates/shift-godot"]
 # Fuzzing lives in its own workspace (fuzz/Cargo.toml) and needs nightly.
 exclude = ["fuzz"]
 
@@ -18,6 +18,16 @@ codegen-units = 1
 # (salt-line-godot `crash`) depend on the game surviving to show them. With
 # `abort` a panic would take the whole process down, report unwritten.
 panic = "unwind"
+
+# Web (HTML5) builds of the Game Off entry only (shift-godot, feature `web`);
+# desktop and mobile keep `release` above. On wasm32-unknown-emscripten gdext
+# cannot catch a panic anyway (it aborts the page), and current rustc (since
+# rust-lang/rust#156928, June 2026) always unwinds with Wasm exception
+# handling, which imports an `env.__cpp_exception` tag that Godot's web
+# template does not export. `abort` emits no unwinding code, so no import.
+[profile.web]
+inherits = "release"
+panic = "abort"
 
 # cargo-mutants builds and tests with this (.cargo/mutants.toml). The test
 # suite dominates each mutant's time and runs about four times faster at
