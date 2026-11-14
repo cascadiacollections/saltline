@@ -7,7 +7,9 @@ use shift_sim::expedition::{Pick, State};
 use shift_sim::stage::{Role, BASTION_INTEGRITY};
 use shift_sim::{PhaseMod, Plane, Stage};
 
-use crate::app::{stage_label, Game, Mode, Play};
+use crate::app::{
+    hit, shift_label, stage_label, Game, Mode, Play, AIM_NEAR, AIM_SPAN, PAUSE_ITEMS,
+};
 use crate::canvas::{dither, Canvas, Rgba, H, W};
 use crate::font::{self, centred, text, text_outlined};
 use crate::sprites::{Atlas, Ink};
@@ -61,6 +63,10 @@ pub const ALERT: Rgba = Rgba::rgb(232, 163, 61);
 pub const ECHO: Rgba = Rgba::rgb(150, 210, 240);
 pub const RED: Rgba = Rgba::rgb(214, 84, 72);
 
+/// Flight samples over which a stone's drawn path eases from the
+/// trebuchet's pivot onto the sim's path.
+const LAUNCH_BLEND: f32 = 40.0;
+
 /// World y (up) to screen row.
 #[inline]
 pub fn sy(y: f64) -> i32 {
@@ -94,13 +100,13 @@ impl Renderer {
         match &g.mode {
             Mode::Title { t } => self.title(g, *t, out),
             Mode::Play(p) => self.play(p, out),
-            Mode::Draft { play, sel } => {
+            Mode::Draft { play, sel, .. } => {
                 self.play(play, out);
                 self.draft(play, *sel, out);
             }
             Mode::Over { play, victory } => {
                 self.play(play, out);
-                self.over(play, *victory, out);
+                self.over(play, *victory, g, out);
             }
         }
     }
@@ -126,6 +132,20 @@ impl Renderer {
         self.a = a;
         self.flight(p, out);
         self.blasts(p, out);
+        let (left, amp) = p.shake;
+        if left > 0.0 && p.paused.is_none() {
+            // A few pixels, decaying, stepping every 1/30 s; the HUD holds still.
+            let k = (left / 0.35).min(1.0) * amp;
+            let n = (left * 30.0) as i32;
+            let (dx, dy) = (
+                [1, -1, 0, 1, -1][n as usize % 5],
+                [-1, 1, 1, 0, -1][n as usize % 5],
+            );
+            out.nudge(
+                (dx as f32 * k).round() as i32,
+                (dy as f32 * k).round() as i32,
+            );
+        }
         self.hud(p, out);
     }
 
@@ -158,11 +178,12 @@ impl Renderer {
         // Chalk line of the last shot in this era.
         for (k, v) in p.last_path[era.index()].iter().enumerate() {
             if k % 5 == 0 {
-                c.blend(v.x.round() as i32, sy(v.y), INK, 0.35);
+                let (ox, oy) = self.launch_offset(screen, era, k);
+                c.blend(v.x.round() as i32 + ox, sy(v.y) + oy, INK, 0.35);
             }
         }
         self.gun(c, screen, era, p);
-        let _ = base; // the gun's drafted variants are not drawn yet
+        let _ = base;
     }
 
     fn structure(
@@ -211,6 +232,34 @@ impl Renderer {
         }
     }
 
+    /// Where the trebuchet's arm pivots, in screen pixels: the frame stands
+    /// on the ground under the muzzle, so this is above the sim's launch
+    /// point. Stones are drawn leaving from here.
+    fn trebuchet_pivot(&self, screen: &Screen) -> (i32, i32) {
+        let m = screen.muzzle();
+        let (mx, my) = (m.x.round() as i32, sy(m.y));
+        let fr = self.atlas.get("trebuchet");
+        (mx, my + 6 + 1 - fr.h + 3)
+    }
+
+    /// Screen offset to add to a point `step` samples into a flight so the
+    /// drawn path leaves from the gun art: the full pivot offset at release,
+    /// eased to none by [`LAUNCH_BLEND`] samples.
+    fn launch_offset(&self, screen: &Screen, era: Plane, step: usize) -> (i32, i32) {
+        if era != Plane::Siege {
+            return (0, 0);
+        }
+        let m = screen.muzzle();
+        let (px, py) = self.trebuchet_pivot(screen);
+        let (dx, dy) = (px - m.x.round() as i32, py - sy(m.y));
+        let k = 1.0 - (step as f32 / LAUNCH_BLEND).min(1.0);
+        let k = k * k;
+        (
+            (dx as f32 * k).round() as i32,
+            (dy as f32 * k).round() as i32,
+        )
+    }
+
     fn gun(&self, c: &mut Canvas, screen: &Screen, era: Plane, p: &Play) {
         let m = screen.muzzle();
         let (mx, my) = (m.x.round() as i32, sy(m.y));
@@ -236,11 +285,36 @@ impl Renderer {
                     "barrel_strip_5deg"
                 });
                 strip.draw_region(c, frame * 28, 28, mx - 3, my - 24, false, Ink::Solid);
+                // Drafts with no engine art get small marks on the barrel,
+                // drawn along the aim: a fuse band at the tip (Airburst), a
+                // sight riding above the barrel (Vernier).
+                let (dx, dy) = (deg.to_radians().cos(), -deg.to_radians().sin());
+                let at = |k: f64, up: f64| {
+                    // `k` pixels back from the muzzle, `up` above the barrel.
+                    (
+                        (m.x - dx * k + dy * up).round() as i32,
+                        (sy(m.y) as f64 - dy * k - dx * up).round() as i32,
+                    )
+                };
+                if lo.stacks(Modifier::Airburst) > 0 {
+                    for k in [1.0, 2.0] {
+                        let (x, y) = at(k, 0.0);
+                        c.set(x, y, ALERT);
+                    }
+                }
+                if lo.stacks(Modifier::Vernier) > 0 {
+                    for k in 6..=10 {
+                        let (x, y) = at(k as f64, 2.0);
+                        c.set(x, y, DARK);
+                    }
+                    let (x, y) = at(6.0, 2.0);
+                    c.set(x, y, ECHO);
+                }
             }
             Plane::Siege => {
-                let ground = my + 6;
                 let fr = self.atlas.get("trebuchet");
-                let (fx, fy) = (mx - 15, ground + 1 - fr.h);
+                let (_, pivot_y) = self.trebuchet_pivot(screen);
+                let (fx, fy) = (mx - 15, pivot_y - 3);
                 c.draw_spr(fr, fx, fy, false, Ink::Solid);
                 let strip = self.atlas.get("trebuchet_arm_strip_5deg");
                 // Mid-throw the arm has swung through; at rest it is cocked.
@@ -260,12 +334,30 @@ impl Renderer {
                 );
             }
         }
-        // Aim guide: a dotted ray from the muzzle, longer with power.
+        // Aim guide: a dotted ray from the muzzle, longer with power. While
+        // a pointer drags, it reaches the point the drag aims at.
         if p.flight.is_none() && p.view.is_none() {
-            let len = 10.0 + 34.0 * p.power_ticks as f64 / 1000.0;
+            let len = if p.dragging() {
+                AIM_NEAR + AIM_SPAN * p.power_ticks as f64 / 1000.0
+            } else {
+                10.0 + 34.0 * p.power_ticks as f64 / 1000.0
+            };
             let r = deg.to_radians();
-            let (ex, ey) = (m.x + r.cos() * len, m.y + r.sin() * len);
-            c.line(mx, my, ex.round() as i32, sy(ey), INK, 3);
+            // From the gun art: the trebuchet's pivot, the howitzer's muzzle.
+            let (ox, oy) = if era == Plane::Siege {
+                self.trebuchet_pivot(screen)
+            } else {
+                (mx, my)
+            };
+            let (ex, ey) = (r.cos() * len, -r.sin() * len);
+            c.line(
+                ox,
+                oy,
+                ox + ex.round() as i32,
+                oy + ey.round() as i32,
+                INK,
+                3,
+            );
         }
     }
 
@@ -275,6 +367,7 @@ impl Renderer {
             return;
         }
         let k = f.step();
+        let screen = p.shown().screen(f.era);
         for tr in &f.traces {
             if tr.path.is_empty() {
                 continue;
@@ -282,10 +375,12 @@ impl Renderer {
             let i = k.min(tr.path.len() - 1);
             for j in (i.saturating_sub(24)..i).step_by(4) {
                 let v = tr.path[j];
-                c.blend(v.x.round() as i32, sy(v.y), INK, 0.6);
+                let (ox, oy) = self.launch_offset(screen, f.era, j);
+                c.blend(v.x.round() as i32 + ox, sy(v.y) + oy, INK, 0.6);
             }
             let v = tr.path[i];
-            let (x, y) = (v.x.round() as i32, sy(v.y));
+            let (ox, oy) = self.launch_offset(screen, f.era, i);
+            let (x, y) = (v.x.round() as i32 + ox, sy(v.y) + oy);
             if f.era == Plane::Siege {
                 c.draw_spr(self.atlas.get("stone"), x - 1, y - 1, false, Ink::Solid);
             } else {
@@ -334,7 +429,19 @@ impl Renderer {
             run.shells(),
             p.shown().echoes_left()
         );
-        text(c, &right, W as i32 - 3 - font::width(&right, 1), 2, 1, INK);
+        text(
+            c,
+            &right,
+            hit::PAUSE.x - 3 - font::width(&right, 1),
+            2,
+            1,
+            INK,
+        );
+        // Pause button: two bars.
+        let pb = hit::PAUSE;
+        c.rect(pb.x, 0, 1, 9, Rgba::rgb(90, 86, 96));
+        c.rect(pb.x + 4, 2, 2, 5, INK);
+        c.rect(pb.x + 8, 2, 2, 5, INK);
 
         // Bottom band: aim, wind, SHIFT.
         let y = H as i32 - 8;
@@ -357,23 +464,22 @@ impl Renderer {
             format!("WIND {} {:.0}", "<".repeat(arrows), w.abs())
         };
         centred(c, &wind, 160, y, 1, INK);
-        let to = if era == Plane::Present {
-            "1347"
-        } else {
-            "PRESENT"
-        };
-        let (shift, col) = if p.flight.is_some() || p.view.is_some() {
-            ("SHIFT ...".to_string(), Rgba::rgb(120, 116, 112))
-        } else if *run.state() != State::Firing {
-            (String::new(), INK)
+        let shift = shift_label(p);
+        let col = if p.flight.is_some() || p.view.is_some() {
+            Rgba::rgb(120, 116, 112)
         } else if !run.can_shift() {
-            ("SHIFT - NO SHELLS".to_string(), RED)
+            RED
         } else if run.shift_cost() > 0 {
-            (format!("[SHIFT] {to} -1"), ALERT)
+            ALERT
         } else {
-            (format!("[SHIFT] {to}"), ECHO)
+            ECHO
         };
-        text(c, &shift, W as i32 - 3 - font::width(&shift, 1), y, 1, col);
+        if let Some(r) = hit::shift(&shift) {
+            // A button: set off by a divider, so it reads as tappable. The
+            // tap target is the same rectangle.
+            c.rect(r.x, y - 2, 1, 10, Rgba::rgb(90, 86, 96));
+            text(c, &shift, r.x + 4, y, 1, col);
+        }
 
         // Era modifiers held, under the top band.
         let mut mods = Vec::new();
@@ -401,16 +507,46 @@ impl Renderer {
                 }
             }
         }
-        if p.quit_armed > 0.0 {
-            let s = "ESC AGAIN TO ABANDON THE RUN";
-            c.rect_blend(160 - 62, 56, 124, 11, DARK, 0.8);
-            centred(c, s, 160, 59, 1, INK);
+        let banner = if p.dragging() {
+            Some(("RELEASE TO FIRE - DRAG TO A BAR TO CANCEL", INK))
+        } else {
+            first_screen_hint(p)
+        };
+        if let Some((s, col)) = banner {
+            let w = font::width(s, 1) + 8;
+            c.rect_blend(160 - w / 2, 12, w, 9, DARK, 0.7);
+            centred(c, s, 160, 14, 1, col);
+        }
+        if let Some(sel) = p.paused {
+            c.rect_blend(0, 0, W as i32, H as i32, DARK, 0.6);
+            let x = 160 - font::width("PAUSED", 2) / 2;
+            text(c, "PAUSED", x, 54, 2, ALERT);
+            for (i, item) in PAUSE_ITEMS.iter().enumerate() {
+                let r = hit::pause_item(i);
+                let on = i == sel;
+                c.rect(
+                    r.x,
+                    r.y,
+                    r.w,
+                    r.h,
+                    if on {
+                        Rgba::rgb(60, 56, 70)
+                    } else {
+                        Rgba::rgb(40, 38, 46)
+                    },
+                );
+                frame(c, r, if on { ALERT } else { Rgba::rgb(90, 86, 96) });
+                centred(c, item, 160, r.y + 4, 1, if on { ALERT } else { INK });
+            }
+            centred(c, "ESC RESUMES", 160, 116, 1, Rgba::rgb(180, 176, 170));
         }
     }
 
     // ------------------------------------------------------------ menus
 
-    fn title(&mut self, g: &Game, t: f32, out: &mut Canvas) {
+    /// The title's backdrop: one stage, the two eras dissolving into each
+    /// other on a slow tide (`t` seconds in). Also used for the itch cover.
+    pub fn draw_title_scene(&mut self, t: f32, out: &mut Canvas) {
         if self.title_stage.is_none() {
             self.title_stage = Some(Stage::generate(0x1347, 3, W, &Loadout::new()));
         }
@@ -432,6 +568,10 @@ impl Renderer {
         self.a = a;
         self.b = b;
         self.title_stage = Some(stage);
+    }
+
+    fn title(&mut self, g: &Game, t: f32, out: &mut Canvas) {
+        self.draw_title_scene(t, out);
 
         out.rect_blend(0, 22, W as i32, 50, DARK, 0.72);
         let title = "COUNTERWEIGHT";
@@ -456,15 +596,20 @@ impl Renderer {
         );
 
         let blink = (t * 2.0) as i32 % 2 == 0;
-        out.rect_blend(62, 92, 196, 61, DARK, 0.75);
+        out.rect_blend(58, 92, 204, 70, DARK, 0.75);
         if blink {
-            centred(out, "PRESS ENTER - EXPEDITION", 160, 96, 1, INK);
+            centred(out, "PRESS ENTER OR TAP - EXPEDITION", 160, 96, 1, INK);
         }
         let lines = [
             "UP/DOWN  ANGLE     LEFT/RIGHT  POWER",
             "SPACE  FIRE      SHIFT  CHANGE ERA",
-            "Z  FINE AIM      ESC  BACK",
+            if g.web {
+                "Z  FINE AIM      ESC  PAUSE"
+            } else {
+                "Z  FINE AIM   ESC  PAUSE   F11  FULLSCREEN"
+            },
             "PAD: D-PAD AIM  A FIRE  LB/RB SHIFT  X FINE",
+            "MOUSE/TOUCH: DRAG TO AIM, RELEASE TO FIRE",
             "12 SCREENS. THE BASTION WAITS AT THE END.",
         ];
         for (i, l) in lines.iter().enumerate() {
@@ -474,7 +619,19 @@ impl Renderer {
                 160,
                 106 + i as i32 * 9,
                 1,
-                if i == 4 { ALERT } else { INK },
+                if i == 5 { ALERT } else { INK },
+            );
+        }
+        if g.best > 0 {
+            let b = format!("BEST {}", g.best);
+            text_outlined(
+                out,
+                &b,
+                W as i32 - 3 - font::width(&b, 1),
+                H as i32 - 8,
+                1,
+                ALERT,
+                DARK,
             );
         }
         let stamp = format!("COUNTERWEIGHT  {}  GAME OFF 2026", g.stamp);
@@ -495,12 +652,9 @@ impl Renderer {
         };
         c.rect_blend(0, 0, W as i32, H as i32, DARK, 0.55);
         centred(c, "THE LINE HOLDS. CHOOSE AN ADVANTAGE.", 160, 24, 1, ALERT);
-        let cw = 96;
-        let gap = 6;
-        let total = offers.len() as i32 * cw + (offers.len() as i32 - 1) * gap;
-        let x0 = 160 - total / 2;
+        let cw = hit::CARD_W;
         for (i, o) in offers.iter().enumerate() {
-            let x = x0 + i as i32 * (cw + gap);
+            let x = hit::card(i, offers.len()).x;
             let on = i == sel;
             c.rect(
                 x,
@@ -531,10 +685,14 @@ impl Renderer {
                 y += 7;
             }
         }
-        centred(c, "1-3 OR ARROWS + ENTER    ESC SKIP", 160, 142, 1, INK);
+        centred(c, "1-3, ARROWS + ENTER, OR TAP TWICE", 160, 138, 1, INK);
+        let r = hit::SKIP;
+        c.rect(r.x, r.y, r.w, r.h, Rgba::rgb(40, 38, 46));
+        frame(c, r, Rgba::rgb(90, 86, 96));
+        centred(c, "SKIP (ESC)", 160, r.y + 4, 1, INK);
     }
 
-    fn over(&self, p: &Play, victory: bool, c: &mut Canvas) {
+    fn over(&self, p: &Play, victory: bool, g: &Game, c: &mut Canvas) {
         c.rect_blend(0, 0, W as i32, H as i32, DARK, 0.6);
         c.rect(60, 36, 200, 104, Rgba::rgb(40, 38, 46));
         let (head, col) = if victory {
@@ -562,7 +720,19 @@ impl Renderer {
                 if i == 4 { ALERT } else { INK },
             );
         }
-        centred(c, "ENTER - TITLE", 160, 128, 1, ECHO);
+        if g.new_best {
+            centred(c, "NEW BEST", 160, 116, 1, ALERT);
+        } else if g.best > 0 {
+            centred(
+                c,
+                &format!("BEST {}", g.best),
+                160,
+                116,
+                1,
+                Rgba::rgb(180, 176, 170),
+            );
+        }
+        centred(c, "ENTER OR TAP - TITLE", 160, 128, 1, ECHO);
     }
 }
 
@@ -639,6 +809,59 @@ impl Canvas {
     }
 }
 
+/// On the first screen only, one line at a time on what to do next.
+fn first_screen_hint(p: &Play) -> Option<(&'static str, Rgba)> {
+    let run = &p.run;
+    if run.stage_index() != 0
+        || p.flight.is_some()
+        || p.view.is_some()
+        || p.note.is_some()
+        || *run.state() != State::Firing
+    {
+        return None;
+    }
+    let log = run.log();
+    let first_shift = log.iter().position(|i| *i == shift_sim::Input::Shift);
+    let shifted = first_shift.is_some();
+    // Fired since the first SHIFT.
+    let fired_after = first_shift.is_some_and(|i| {
+        log[i..]
+            .iter()
+            .any(|x| matches!(x, shift_sim::Input::Fire { .. }))
+    });
+    let stage = p.shown();
+    let here = p.era();
+    let there = here.other();
+    if run.total_shots() == 0 {
+        return Some(("BREAK THE LINE: AIM, THEN FIRE", INK));
+    }
+    if !shifted && stage.era(there).echoes_left() > 0 {
+        return Some(("ITS ECHO STANDS IN THE OTHER ERA - SHIFT", ECHO));
+    }
+    if !shifted && stage.era(here).screen.cleared() && !stage.cleared() {
+        return Some(("THIS ERA IS CLEAR - SHIFT TO FINISH THE LINE", ECHO));
+    }
+    if shifted && !fired_after && stage.era(here).echoes_left() > 0 {
+        return Some((
+            if here == Plane::Siege {
+                "ECHOES ARE WEAKER. THE TREBUCHET SHRUGS OFF WIND"
+            } else {
+                "ECHOES ARE WEAKER. SHELLS RIDE THE WIND"
+            },
+            ALERT,
+        ));
+    }
+    None
+}
+
+/// A one-pixel border just inside `r`.
+fn frame(c: &mut Canvas, r: hit::Rect, col: Rgba) {
+    c.rect(r.x, r.y, r.w, 1, col);
+    c.rect(r.x, r.y + r.h - 1, r.w, 1, col);
+    c.rect(r.x, r.y, 1, r.h, col);
+    c.rect(r.x + r.w - 1, r.y, 1, r.h, col);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,5 +889,59 @@ mod tests {
         ] {
             atlas.get(n);
         }
+    }
+
+    /// Plays seeds with the bot, taking Airburst and Vernier whenever a
+    /// draft offers them, until a run holds both.
+    fn run_with_marks() -> Option<Play> {
+        use shift_sim::Input as RunInput;
+        for seed in 0..200u64 {
+            let mut p = Play::new(seed);
+            for _ in 0..400 {
+                let Some(next) = shift_sim::bot::next_input(&p.run) else {
+                    break;
+                };
+                let input = match (p.run.state(), next) {
+                    (State::Drafting(o), _) => o
+                        .iter()
+                        .position(|x| {
+                            matches!(x, Pick::Gun(Modifier::Airburst | Modifier::Vernier))
+                        })
+                        .map_or(RunInput::Skip, |i| RunInput::Pick(i as u8)),
+                    (_, n) => n,
+                };
+                p.run.apply(input);
+                let lo = p.run.base_loadout();
+                if lo.stacks(Modifier::Airburst) > 0 && lo.stacks(Modifier::Vernier) > 0 {
+                    if p.run.stage().active() == Plane::Siege {
+                        p.run.apply(RunInput::Shift);
+                    }
+                    if p.run.stage().active() == Plane::Present {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn airburst_and_vernier_mark_the_barrel() {
+        let marked = run_with_marks().expect("some seed drafts both");
+        let mut plain = marked.clone();
+        plain.run = Play::new(0).run;
+        let mut r = Renderer::new();
+        let mut found = |p: &Play| {
+            let mut c = Canvas::new();
+            r.play(p, &mut c);
+            let m = p.shown().screen(Plane::Present).muzzle();
+            let (mx, my) = (m.x.round() as i32, sy(m.y));
+            let near = |col: Rgba| {
+                (-12..=12).any(|dy| (-12..=12).any(|dx| c.get(mx + dx, my + dy) == col))
+            };
+            (near(ALERT), near(ECHO))
+        };
+        assert_eq!(found(&marked), (true, true), "fuse band and sight lens");
+        assert_eq!(found(&plain), (false, false), "a plain gun has neither");
     }
 }

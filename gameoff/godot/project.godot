@@ -5,10 +5,14 @@
 ;       nothing from Forward+; Compatibility cost ~190 MiB less on desktop
 ;       (Salt Line docs/rendering-footprint.md) and is the Web renderer anyway
 ;   default_texture_filter = 0  nearest, project-wide
-;   stretch canvas_items / keep  the 320x180 frame scales whole, letterboxed
+;   stretch canvas_items / keep / integer  the 320x180 frame scales by whole
+;       steps, letterboxed, so every game pixel is the same size (nearest
+;       filtering at 3.4x leaves uneven columns)
+;   boot splash  black, no image: the game's first frame is the title
 ;   msaa / screen-space AA off   nothing to smooth in a pixel frame
-; Everything the game shows or plays is embedded in the GDExtension, so this
-; project has no assets to import.
+; Everything the game shows or plays is embedded in the GDExtension; the one
+; imported file is icon.png (window, taskbar and web favicon), generated from
+; the game's sprites by `cargo run -p shift-game --example icon`.
 
 config_version=5
 
@@ -17,6 +21,9 @@ config_version=5
 config/name="Counterweight"
 config/description="One coast, two eras. Break the line in both. GitHub Game Off 2026."
 run/main_scene="res://main.tscn"
+config/icon="res://icon.png"
+boot_splash/bg_color=Color(0, 0, 0, 1)
+boot_splash/show_image=false
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
 [display]
@@ -27,6 +34,7 @@ window/size/window_width_override=1280
 window/size/window_height_override=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="keep"
+window/stretch/scale_mode="integer"
 window/vsync/vsync_mode=1
 
 [rendering]

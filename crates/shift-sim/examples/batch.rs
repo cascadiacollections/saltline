@@ -21,6 +21,8 @@ fn play_noisy(seed: u64, width: usize, angle: i32, power: i32) -> Expedition {
         {
             if angle > 0 {
                 *angle_ticks += rng.range_u32(0, 2 * angle as u32) as i32 - angle;
+            }
+            if power > 0 {
                 *power_ticks += rng.range_u32(0, 2 * power as u32) as i32 - power;
             }
         }

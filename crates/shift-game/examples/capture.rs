@@ -4,10 +4,8 @@
 //!
 //! `cargo run --release -p shift-game --example capture -- <out dir> [seed]`
 
-use std::io::Write;
-
 use shift_game::app::{Mode, Play};
-use shift_game::{Button, Canvas, Game, Held, Input, Renderer, H, W};
+use shift_game::{Button, Canvas, Game, Held, Input, Pointer, Renderer, H, W};
 use shift_sim::{bot, Input as RunInput};
 
 fn main() {
@@ -34,6 +32,7 @@ fn main() {
             &Input {
                 held: Held::default(),
                 pressed,
+                pointer: None,
             },
         );
         let mut t = 0.0;
@@ -49,6 +48,24 @@ fn main() {
     snap(&g, "title-siege", &mut r, &mut c);
     step(&mut g, 0.1, vec![Button::Fire]);
     snap(&g, "present-aim", &mut r, &mut c);
+    // Pointer aiming mid-drag, then a release over the bottom band cancels.
+    let at = |g: &mut Game, x: f32, y: f32, down: bool| {
+        g.update(
+            1.0 / 60.0,
+            &Input {
+                pointer: Some(Pointer { x, y, down }),
+                ..Input::default()
+            },
+        );
+    };
+    at(&mut g, 220.0, 70.0, true);
+    at(&mut g, 150.0, 60.0, true);
+    snap(&g, "drag-aim", &mut r, &mut c);
+    at(&mut g, 150.0, 176.0, true);
+    at(&mut g, 150.0, 176.0, false);
+    step(&mut g, 0.1, vec![Button::Back]);
+    snap(&g, "paused", &mut r, &mut c);
+    step(&mut g, 0.1, vec![Button::Back]);
 
     let mut shots = 0;
     let mut saw = [false; 8];
@@ -58,12 +75,29 @@ fn main() {
             snap(&g, "over", &mut r, &mut c);
             break;
         }
-        if let Mode::Draft { .. } = g.mode {
+        if let Mode::Draft { play, .. } = &g.mode {
             if !saw[0] {
                 snap(&g, "draft", &mut r, &mut c);
                 saw[0] = true;
             }
-            step(&mut g, 0.3, vec![Button::One]);
+            // Prefer the drafts whose gun marks the review should show.
+            let want = match play.run.state() {
+                shift_sim::State::Drafting(o) => o
+                    .iter()
+                    .position(|x| {
+                        x.name().eq_ignore_ascii_case("airburst")
+                            || x.name().eq_ignore_ascii_case("vernier")
+                    })
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            let key = [Button::One, Button::Two, Button::Three][want.min(2)];
+            step(&mut g, 0.3, vec![key]);
+            if g.play()
+                .is_some_and(|p| p.era() == shift_sim::Plane::Present)
+            {
+                snap(&g, "after-draft", &mut r, &mut c);
+            }
             continue;
         }
         let Some(next) = bot::next_input(&p.run) else {
@@ -162,61 +196,7 @@ fn set_aim(g: &mut Game, a: i32, pw: i32) {
     }
 }
 
-/// Minimal PNG writer: RGB, one stored (uncompressed) zlib stream.
 fn write_png(path: &str, c: &Canvas) {
-    let mut raw = Vec::with_capacity((W * 3 + 1) * H);
-    for y in 0..H {
-        raw.push(0);
-        for x in 0..W {
-            let p = c.px[y * W + x];
-            raw.extend_from_slice(&[p.0, p.1, p.2]);
-        }
-    }
-    let mut z = vec![0x78, 0x01];
-    for (i, chunk) in raw.chunks(65_535).enumerate() {
-        let last = (i + 1) * 65_535 >= raw.len();
-        z.push(last as u8);
-        let len = chunk.len() as u16;
-        z.extend_from_slice(&len.to_le_bytes());
-        z.extend_from_slice(&(!len).to_le_bytes());
-        z.extend_from_slice(chunk);
-    }
-    let (mut a, mut b) = (1u32, 0u32);
-    for &x in &raw {
-        a = (a + x as u32) % 65_521;
-        b = (b + a) % 65_521;
-    }
-    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
-    let mut f = std::fs::File::create(path).unwrap();
-    f.write_all(b"\x89PNG\r\n\x1a\n").unwrap();
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&(W as u32).to_be_bytes());
-    ihdr.extend_from_slice(&(H as u32).to_be_bytes());
-    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
-    chunk(&mut f, b"IHDR", &ihdr);
-    chunk(&mut f, b"IDAT", &z);
-    chunk(&mut f, b"IEND", &[]);
-}
-
-fn chunk(f: &mut std::fs::File, kind: &[u8; 4], data: &[u8]) {
-    f.write_all(&(data.len() as u32).to_be_bytes()).unwrap();
-    let mut crc_in = kind.to_vec();
-    crc_in.extend_from_slice(data);
-    f.write_all(&crc_in).unwrap();
-    f.write_all(&crc32(&crc_in).to_be_bytes()).unwrap();
-}
-
-fn crc32(d: &[u8]) -> u32 {
-    let mut c = 0xFFFF_FFFFu32;
-    for &b in d {
-        c ^= b as u32;
-        for _ in 0..8 {
-            c = if c & 1 != 0 {
-                0xEDB8_8320 ^ (c >> 1)
-            } else {
-                c >> 1
-            };
-        }
-    }
-    !c
+    let rgb: Vec<u8> = c.px.iter().flat_map(|p| [p.0, p.1, p.2]).collect();
+    shift_game::png::write(path, W, H, &rgb, 1).unwrap();
 }

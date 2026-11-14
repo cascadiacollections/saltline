@@ -16,14 +16,14 @@
 use godot::classes::audio_stream_wav::{Format as WavFormat, LoopMode};
 use godot::classes::image::Format;
 use godot::classes::{
-    AudioStreamPlayer, AudioStreamWav, ClassDb, Engine, INode2D, Image, ImageTexture, Input,
-    Node2D, Os, Time,
+    AudioStreamPlayer, AudioStreamWav, ClassDb, DisplayServer, Engine, FileAccess, INode2D, Image,
+    ImageTexture, Input, InputEvent, InputEventMouseButton, Node2D, Os, Time,
 };
-use godot::global::{JoyButton, Key};
+use godot::global::{JoyButton, Key, MouseButton};
 use godot::prelude::*;
 
 use shift_game::audio::{pcm, Cue, MIX_RATE};
-use shift_game::{Button, Canvas, Effect, Game, Held, Input as GameInput, Renderer, H, W};
+use shift_game::{Button, Canvas, Effect, Game, Held, Input as GameInput, Pointer, Renderer, H, W};
 
 struct CounterweightExtension;
 
@@ -42,7 +42,13 @@ const CLASSES: &[&str] = &[
     "AudioStreamPlayer",
     "Input",
     "Time",
+    "FileAccess",
+    "DisplayServer",
 ];
+
+/// The best score, as decimal text. `user://` is the app's data folder on
+/// desktop and IndexedDB on the Web.
+const BEST_PATH: &str = "user://best.txt";
 
 /// Buttons, and the keys and first-pad buttons that press them.
 type Binding = (Button, &'static [Key], &'static [JoyButton]);
@@ -77,6 +83,8 @@ const BUTTONS: &[Binding] = &[
 
 /// Sound effects sit a little under full scale so overlapping cues don't clip.
 const SFX_DB: f32 = -4.0;
+/// Ambience sits well under the effects.
+const AMB_DB: f32 = -15.0;
 
 #[derive(GodotClass)]
 #[class(base = Node2D)]
@@ -93,6 +101,12 @@ struct Counterweight {
     project_fps: i32,
     was_busy: bool,
     drawn_once: bool,
+    fullscreen_key: bool,
+    /// Left-button presses and releases seen as events since the last
+    /// frame. A click can go down and up between two frames; polling alone
+    /// would never see it, so the frame after reports it down, the next up.
+    click_pressed: bool,
+    click_released: bool,
 }
 
 #[godot_api]
@@ -114,6 +128,9 @@ impl INode2D for Counterweight {
             project_fps: 0,
             was_busy: false,
             drawn_once: false,
+            fullscreen_key: false,
+            click_pressed: false,
+            click_released: false,
         }
     }
 
@@ -125,6 +142,7 @@ impl INode2D for Counterweight {
             .map(|a| a.to_string())
             .collect();
         self.game.autoplay = args.iter().any(|a| a == "--cw-autoplay");
+        self.game.web = Os::singleton().has_feature("web");
         if let Some(i) = args.iter().position(|a| a == "--cw-seed") {
             self.game.fixed_seed = args.get(i + 1).and_then(|s| s.parse().ok());
         }
@@ -139,6 +157,15 @@ impl INode2D for Counterweight {
                 "counterweight: this engine build lacks {}",
                 missing.join(", ")
             );
+        }
+        // No file yet on a first launch: checked first so Godot logs no
+        // open error.
+        if FileAccess::file_exists(BEST_PATH) {
+            self.game.best = FileAccess::get_file_as_string(BEST_PATH)
+                .to_string()
+                .trim()
+                .parse()
+                .unwrap_or(0);
         }
         self.project_fps = Engine::singleton().get_max_fps();
         self.bytes.resize(W * H * 4);
@@ -161,7 +188,11 @@ impl INode2D for Counterweight {
             }
             let mut player = AudioStreamPlayer::new_alloc();
             player.set_stream(&wav);
-            player.set_volume_db(if cue == Cue::Title { -6.0 } else { SFX_DB });
+            player.set_volume_db(match cue {
+                Cue::Title => -6.0,
+                Cue::AmbPresent | Cue::AmbSiege => AMB_DB,
+                _ => SFX_DB,
+            });
             self.base_mut().add_child(&player);
             self.players.push(player);
         }
@@ -169,6 +200,7 @@ impl INode2D for Counterweight {
     }
 
     fn process(&mut self, delta: f64) {
+        self.fullscreen_toggle();
         let input = self.poll();
         let fx = self.game.update(delta as f32, &input);
         for e in fx {
@@ -176,9 +208,29 @@ impl INode2D for Counterweight {
                 Effect::Play(c) => self.play(c),
                 Effect::Music(on) => {
                     if on {
+                        self.stop(Cue::AmbPresent);
+                        self.stop(Cue::AmbSiege);
                         self.play(Cue::Title);
-                    } else if let Some(p) = self.players.get_mut(Cue::Title.index()) {
-                        p.stop();
+                    } else {
+                        self.stop(Cue::Title);
+                    }
+                }
+                Effect::Ambience(None) => {
+                    self.stop(Cue::AmbPresent);
+                    self.stop(Cue::AmbSiege);
+                }
+                Effect::Ambience(Some(era)) => {
+                    let (on, off) = (Cue::ambience(era), Cue::ambience(era.other()));
+                    self.stop(off);
+                    if !self.players.get(on.index()).is_some_and(|p| p.is_playing()) {
+                        self.play(on);
+                    }
+                }
+                Effect::SaveBest(score) => {
+                    if let Some(mut f) =
+                        FileAccess::open(BEST_PATH, godot::classes::file_access::ModeFlags::WRITE)
+                    {
+                        f.store_string(&score.to_string());
                     }
                 }
                 Effect::Quit => {
@@ -207,6 +259,18 @@ impl INode2D for Counterweight {
         self.was_busy = busy;
     }
 
+    fn input(&mut self, event: Gd<InputEvent>) {
+        if let Ok(b) = event.try_cast::<InputEventMouseButton>() {
+            if b.get_button_index() == MouseButton::LEFT {
+                if b.is_pressed() {
+                    self.click_pressed = true;
+                } else {
+                    self.click_released = true;
+                }
+            }
+        }
+    }
+
     fn draw(&mut self) {
         if let Some(t) = self.texture.clone() {
             self.base_mut().draw_texture_rect(
@@ -219,6 +283,26 @@ impl INode2D for Counterweight {
 }
 
 impl Counterweight {
+    /// F11 toggles fullscreen on desktop (not Alt+Enter: Enter fires). On
+    /// the Web the host page (itch.io) has its own fullscreen button.
+    fn fullscreen_toggle(&mut self) {
+        use godot::classes::display_server::WindowMode;
+        let input = Input::singleton();
+        let now = input.is_key_pressed(Key::F11);
+        let edge = now && !self.fullscreen_key;
+        self.fullscreen_key = now;
+        if !edge || Os::singleton().has_feature("web") {
+            return;
+        }
+        let mut ds = DisplayServer::singleton();
+        let next = if ds.window_get_mode() == WindowMode::FULLSCREEN {
+            WindowMode::WINDOWED
+        } else {
+            WindowMode::FULLSCREEN
+        };
+        ds.window_set_mode(next);
+    }
+
     fn poll(&mut self) -> GameInput {
         let input = Input::singleton();
         let mut out = GameInput::default();
@@ -243,7 +327,32 @@ impl Counterweight {
             right: is(Button::Right),
             fine: input.is_key_pressed(Key::Z) || input.is_joy_button_pressed(0, JoyButton::X),
         };
+        // The node sits at the origin of the 320x180 stretched viewport, so
+        // its local mouse position is already in frame pixels. Touches arrive
+        // as the mouse (emulate_mouse_from_touch, on by default).
+        let m = self.base().get_local_mouse_position();
+        let down = if self.click_pressed {
+            // Down this frame; a release that came with it waits a frame.
+            self.click_pressed = false;
+            true
+        } else if self.click_released {
+            self.click_released = false;
+            false
+        } else {
+            input.is_mouse_button_pressed(MouseButton::LEFT)
+        };
+        out.pointer = Some(Pointer {
+            x: m.x,
+            y: m.y,
+            down,
+        });
         out
+    }
+
+    fn stop(&mut self, cue: Cue) {
+        if let Some(p) = self.players.get_mut(cue.index()) {
+            p.stop();
+        }
     }
 
     fn play(&mut self, cue: Cue) {

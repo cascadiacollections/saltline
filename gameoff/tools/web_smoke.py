@@ -5,9 +5,10 @@ in a headless browser.
 
 Serves the export with a plain static server (no COOP/COEP: the no-threads
 build must not need them), loads index.html, waits for the engine to start,
-screenshots the title, presses Enter (start an Expedition), fires, then
-shifts era, screenshotting each. Writes console.log, boot.png, play.png, fired.png
-and shifted.png to out/. Adapted from the gameoff/web-spike feasibility test.
+screenshots the title, taps it (start an Expedition), fires, shifts era,
+aims and fires with a mouse drag, then pauses, screenshotting each. Writes
+console.log and boot, play, fired, shifted, dragging, drag-fired and paused
+PNGs to out/. Adapted from the gameoff/web-spike feasibility test.
 Fails on a page error, an engine abort or a GDExtension load failure.
 Needs `pip install playwright` and a browser channel (or `playwright install chromium`).
 """
@@ -90,8 +91,9 @@ def main() -> int:
             time.sleep(0.25)
         time.sleep(4)  # a few seconds of frames on the title
         page.screenshot(path=str(args.out_dir / "boot.png"))
-        page.mouse.click(640, 360)  # focus the canvas (and a user gesture, for audio)
-        page.keyboard.press("Enter")
+        # A click focuses the canvas, is the user gesture audio needs, and
+        # (a tap on the title) starts an Expedition.
+        page.mouse.click(640, 360)
         time.sleep(4)
         page.screenshot(path=str(args.out_dir / "play.png"))
         page.keyboard.press("Space")
@@ -101,6 +103,20 @@ def main() -> int:
         page.keyboard.press("Shift")
         time.sleep(1.5)
         page.screenshot(path=str(args.out_dir / "shifted.png"))
+        # Pointer aiming: drag (the frame is 320x180 drawn 4x), then release.
+        page.mouse.move(900, 300)
+        page.mouse.down()
+        page.mouse.move(760, 220, steps=8)
+        time.sleep(0.5)
+        page.screenshot(path=str(args.out_dir / "dragging.png"))
+        page.mouse.up()
+        time.sleep(1.0)
+        page.screenshot(path=str(args.out_dir / "drag-fired.png"))
+        time.sleep(4)
+        # The pause button at the right end of the top band.
+        page.mouse.click(1256, 18)
+        time.sleep(1.0)
+        page.screenshot(path=str(args.out_dir / "paused.png"))
         browser.close()
     server.shutdown()
 

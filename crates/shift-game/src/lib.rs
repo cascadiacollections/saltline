@@ -11,9 +11,10 @@ pub mod app;
 pub mod audio;
 pub mod canvas;
 pub mod font;
+pub mod png;
 pub mod render;
 pub mod sprites;
 
-pub use app::{Button, Effect, Game, Held, Input};
+pub use app::{Button, Effect, Game, Held, Input, Pointer};
 pub use canvas::{Canvas, H, W};
 pub use render::Renderer;
