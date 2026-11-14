@@ -498,7 +498,11 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Instrumented and unoptimised, backdrop::tests (whole autopiloted runs,
+    # drawn four ways) take 8+ minutes each on a busy runner, against ~45 s
+    # in the sim jobs; .config/nextest.toml allows them 10. 20 here was
+    # tripping on main with every test passing.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
