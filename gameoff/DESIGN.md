@@ -128,9 +128,15 @@ trebuchet alike) plus these two era modifiers.
 
   | Aim | Wins | Shells left on a win |
   | --- | ---: | ---: |
-  | Perfect (solver) | 98% | 32 |
-  | ±2°, ±5% power | 87% | 14 |
+  | Perfect (solver) | 99% | 32 |
+  | ±2°, ±5% power | 88% | 14 |
   | ±4°, ±8% power | 28% | 7 |
+
+  An echo that would land past its era's reach (a present-day target copied
+  into 1347 beyond the trebuchet's throw, usually into a headwind) is seated
+  nearer the gun instead. It used to leave about 1 run in 100 on a stage no
+  shot could clear. The remaining perfect-aim losses are the bot's
+  direct-hit solver missing a shot, not unclearable stages.
 
   Playtests decide the final numbers. The knobs are `START_SHELLS`,
   `STAGE_RESUPPLY` and `DIFFICULTY_STRIDE`.

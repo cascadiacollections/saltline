@@ -154,3 +154,23 @@ fn golden_seed_expedition_reaches_and_kills_the_bastion() {
 }
 
 const GOLDEN_SEED: u64 = 0x5A17_11E5;
+
+/// Seeds where an echo of a present-day target used to land past the
+/// trebuchet's reach on stage 9 (headwind, far right of the screen): no shot
+/// could touch it, so the run could only end on shells. Batch-harness seeds
+/// 43 and 68 (`seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)`, as `batch` does).
+#[test]
+fn an_echo_is_never_seated_out_of_its_era_s_reach() {
+    for index in [43u64, 68] {
+        let seed = index.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let run = bot::play(seed, W, 5_000);
+        assert_eq!(
+            *run.state(),
+            State::Victory,
+            "batch seed #{index} stopped at stage {} in {:?} with {} shells",
+            run.stage_index() + 1,
+            run.state(),
+            run.shells()
+        );
+    }
+}
