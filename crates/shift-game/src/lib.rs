@@ -15,6 +15,6 @@ pub mod png;
 pub mod render;
 pub mod sprites;
 
-pub use app::{Button, Effect, Game, Held, Input, Pointer};
+pub use app::{Button, Effect, Game, Held, Input, Pointer, PointerGate};
 pub use canvas::{Canvas, H, W};
 pub use render::Renderer;

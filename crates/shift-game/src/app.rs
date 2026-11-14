@@ -32,6 +32,42 @@ pub struct Pointer {
     pub down: bool,
 }
 
+/// Keeps a drag honest when the pointer leaves the window. Engines report no
+/// button release that happens outside the window, so a drag let go out
+/// there would otherwise fire from the last position seen inside. After
+/// [`PointerGate::lose`] the gate reports the pointer off the frame and up,
+/// which ends any drag as a cancel, and it ignores a button still held from
+/// before until the button comes up or a fresh press arrives.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct PointerGate {
+    lost: bool,
+}
+
+impl PointerGate {
+    /// The pointer left the window, or the window lost focus.
+    pub fn lose(&mut self) {
+        self.lost = true;
+    }
+
+    /// This frame's pointer from the engine's raw state. `fresh_press` is a
+    /// press event seen since the last frame, which always counts.
+    pub fn pointer(&mut self, x: f32, y: f32, down: bool, fresh_press: bool) -> Pointer {
+        if self.lost && !fresh_press {
+            // Up again: one frame off the frame (the cancel), then live.
+            if !down {
+                self.lost = false;
+            }
+            return Pointer {
+                x: -1.0,
+                y: -1.0,
+                down: false,
+            };
+        }
+        self.lost = false;
+        Pointer { x, y, down }
+    }
+}
+
 /// A pointer this frame, with its edges worked out by [`Game`].
 #[derive(Clone, Copy, Debug)]
 struct Touch {
@@ -1223,6 +1259,78 @@ mod tests {
         assert!(p.flight.is_none());
         assert_eq!((p.angle_ticks, p.power_ticks), before, "aim restored");
         assert_eq!(p.run.total_shots(), 0);
+    }
+
+    /// Drives the game through a [`PointerGate`] the way the Godot node does.
+    fn gated(g: &mut Game, gate: &mut PointerGate, x: f32, y: f32, down: bool, fresh: bool) {
+        let pointer = gate.pointer(x, y, down, fresh);
+        g.update(
+            0.016,
+            &Input {
+                pointer: Some(pointer),
+                ..Input::default()
+            },
+        );
+    }
+
+    #[test]
+    fn a_drag_that_leaves_the_window_cancels_instead_of_firing() {
+        let mut g = Game::new();
+        g.start(5);
+        let before = {
+            let p = g.play().unwrap();
+            (p.angle_ticks, p.power_ticks)
+        };
+        let mut gate = PointerGate::default();
+        gated(&mut g, &mut gate, 200.0, 60.0, true, true);
+        gated(&mut g, &mut gate, 120.0, 40.0, true, false);
+        assert!(g.play().unwrap().dragging());
+        // The pointer leaves; the engine still says the button is down at
+        // the last position inside, and never reports the release.
+        gate.lose();
+        gated(&mut g, &mut gate, 120.0, 40.0, true, false);
+        let p = g.play().unwrap();
+        assert!(
+            p.drag.is_none() && p.flight.is_none(),
+            "cancelled, not fired"
+        );
+        assert_eq!((p.angle_ticks, p.power_ticks), before, "aim restored");
+        // Still "held" on the way back in: ignored, no new drag, no shot.
+        gated(&mut g, &mut gate, 150.0, 50.0, true, false);
+        gated(&mut g, &mut gate, 150.0, 50.0, false, false);
+        let p = g.play().unwrap();
+        assert!(p.drag.is_none() && p.flight.is_none());
+        assert_eq!(p.run.total_shots(), 0);
+    }
+
+    #[test]
+    fn the_pointer_gate_comes_back_on_release_or_a_fresh_press() {
+        let mut gate = PointerGate::default();
+        let live = gate.pointer(10.0, 20.0, false, false);
+        assert_eq!(
+            live,
+            Pointer {
+                x: 10.0,
+                y: 20.0,
+                down: false
+            }
+        );
+        gate.lose();
+        // Button up: one off-frame frame, then live again (hover works).
+        assert_eq!(gate.pointer(10.0, 20.0, false, false).x, -1.0);
+        assert_eq!(gate.pointer(10.0, 20.0, false, false).x, 10.0);
+        // Stale hold: stays off the frame until a fresh press.
+        gate.lose();
+        assert!(!gate.pointer(10.0, 20.0, true, false).down);
+        assert!(!gate.pointer(10.0, 20.0, true, false).down);
+        assert_eq!(
+            gate.pointer(30.0, 40.0, true, true),
+            Pointer {
+                x: 30.0,
+                y: 40.0,
+                down: true
+            }
+        );
     }
 
     #[test]
