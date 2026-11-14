@@ -549,7 +549,9 @@ impl Renderer {
 
     // ------------------------------------------------------------ menus
 
-    fn title(&mut self, g: &Game, t: f32, out: &mut Canvas) {
+    /// The title's backdrop: one stage, the two eras dissolving into each
+    /// other on a slow tide (`t` seconds in). Also used for the itch cover.
+    pub fn draw_title_scene(&mut self, t: f32, out: &mut Canvas) {
         if self.title_stage.is_none() {
             self.title_stage = Some(Stage::generate(0x1347, 3, W, &Loadout::new()));
         }
@@ -571,6 +573,10 @@ impl Renderer {
         self.a = a;
         self.b = b;
         self.title_stage = Some(stage);
+    }
+
+    fn title(&mut self, g: &Game, t: f32, out: &mut Canvas) {
+        self.draw_title_scene(t, out);
 
         out.rect_blend(0, 22, W as i32, 50, DARK, 0.72);
         let title = "COUNTERWEIGHT";
