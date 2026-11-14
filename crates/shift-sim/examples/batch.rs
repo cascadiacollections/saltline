@@ -5,6 +5,10 @@ use salt_line_sim::rng::Pcg32;
 use salt_line_sim::SCREEN_W_REF;
 use shift_sim::{bot, Expedition, Input, State};
 
+/// Failed seeds printed in full; past this, only a count. Enough to replay
+/// a few by hand (`seed #N` is the loop index) without burying the totals.
+const FAILURES_SHOWN: u64 = 20;
+
 /// The bot with human-ish aim: each shot nudged by up to `angle` ticks and
 /// `power` ticks either way.
 fn play_noisy(seed: u64, width: usize, angle: i32, power: i32) -> Expedition {
@@ -48,6 +52,7 @@ fn main() {
     let (na, np) = (arg(2), arg(3));
     let (mut wins, mut shots, mut shells, mut shifts) = (0u64, 0u64, 0i64, 0u64);
     let mut reached = [0u32; 13];
+    let mut failures = 0u64;
     for seed in 0..n {
         let run = play_noisy(
             seed.wrapping_mul(0x9E37_79B9_7F4A_7C15),
@@ -56,7 +61,10 @@ fn main() {
             np,
         );
         reached[run.stages_cleared() as usize] += 1;
-        if *run.state() != State::Victory && n <= 20 {
+        if *run.state() != State::Victory {
+            failures += 1;
+        }
+        if *run.state() != State::Victory && failures <= FAILURES_SHOWN {
             println!(
                 "seed #{seed}: stopped at stage {} in {:?}, {} shells, bastions left {}",
                 run.stage_index() + 1,
@@ -75,6 +83,12 @@ fn main() {
             wins += 1;
             shells += i64::from(run.shells());
         }
+    }
+    if failures > FAILURES_SHOWN {
+        println!(
+            "... and {} more failed seeds (first {FAILURES_SHOWN} shown)",
+            failures - FAILURES_SHOWN
+        );
     }
     println!(
         "seeds {n}  victories {wins} ({:.0}%)",

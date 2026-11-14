@@ -15,6 +15,7 @@
 
 use godot::classes::audio_stream_wav::{Format as WavFormat, LoopMode};
 use godot::classes::image::Format;
+use godot::classes::notify::CanvasItemNotification;
 use godot::classes::{
     AudioStreamPlayer, AudioStreamWav, ClassDb, DisplayServer, Engine, FileAccess, INode2D, Image,
     ImageTexture, Input, InputEvent, InputEventMouseButton, Node2D, Os, Time,
@@ -23,7 +24,9 @@ use godot::global::{JoyButton, Key, MouseButton};
 use godot::prelude::*;
 
 use shift_game::audio::{pcm, Cue, MIX_RATE};
-use shift_game::{Button, Canvas, Effect, Game, Held, Input as GameInput, Pointer, Renderer, H, W};
+use shift_game::{
+    Button, Canvas, Effect, Game, Held, Input as GameInput, PointerGate, Renderer, H, W,
+};
 
 struct CounterweightExtension;
 
@@ -107,6 +110,10 @@ struct Counterweight {
     /// would never see it, so the frame after reports it down, the next up.
     click_pressed: bool,
     click_released: bool,
+    /// Off the frame once the pointer leaves the window, so a drag released
+    /// out there cancels instead of firing (the engine never reports that
+    /// release).
+    pointer_gate: PointerGate,
 }
 
 #[godot_api]
@@ -131,6 +138,7 @@ impl INode2D for Counterweight {
             fullscreen_key: false,
             click_pressed: false,
             click_released: false,
+            pointer_gate: PointerGate::default(),
         }
     }
 
@@ -271,6 +279,17 @@ impl INode2D for Counterweight {
         }
     }
 
+    fn on_notification(&mut self, what: CanvasItemNotification) {
+        if matches!(
+            what,
+            CanvasItemNotification::WM_MOUSE_EXIT
+                | CanvasItemNotification::WM_WINDOW_FOCUS_OUT
+                | CanvasItemNotification::APPLICATION_FOCUS_OUT
+        ) {
+            self.pointer_gate.lose();
+        }
+    }
+
     fn draw(&mut self) {
         if let Some(t) = self.texture.clone() {
             self.base_mut().draw_texture_rect(
@@ -331,6 +350,7 @@ impl Counterweight {
         // its local mouse position is already in frame pixels. Touches arrive
         // as the mouse (emulate_mouse_from_touch, on by default).
         let m = self.base().get_local_mouse_position();
+        let fresh_press = self.click_pressed;
         let down = if self.click_pressed {
             // Down this frame; a release that came with it waits a frame.
             self.click_pressed = false;
@@ -341,11 +361,7 @@ impl Counterweight {
         } else {
             input.is_mouse_button_pressed(MouseButton::LEFT)
         };
-        out.pointer = Some(Pointer {
-            x: m.x,
-            y: m.y,
-            down,
-        });
+        out.pointer = Some(self.pointer_gate.pointer(m.x, m.y, down, fresh_press));
         out
     }
 
