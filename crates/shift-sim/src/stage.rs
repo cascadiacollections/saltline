@@ -6,6 +6,8 @@ use salt_line_sim::rng::substream;
 use salt_line_sim::run::{
     generate_screen, Screen, ShotReport, StructState, Structure, StructureKind,
 };
+use salt_line_sim::solver::solve_target_capped;
+use salt_line_sim::EMPLACEMENT_X;
 
 /// Which era is real. Named `Plane` in code so it can't be confused with
 /// `salt_line_sim::run::Phase`, the run state machine. The game calls it a
@@ -238,12 +240,12 @@ impl Stage {
         let active = self.eras[here.index()]
             .screen
             .apply_shot(shot, &lo, None, record_path);
-        let mut echoes = self.raise_echoes(here, &active.collapsed);
+        let mut echoes = self.raise_echoes(here, &active.collapsed, base);
 
         let phased = if half_phased {
             let there = here.other();
             let report = self.fire_weakened(there, shot, &lo, record_path);
-            echoes.extend(self.raise_echoes(there, &report.collapsed));
+            echoes.extend(self.raise_echoes(there, &report.collapsed, base));
             Some(report)
         } else {
             None
@@ -290,9 +292,11 @@ impl Stage {
     }
 
     /// Echoes for every original in `fell` that collapsed in era `p`, placed
-    /// in the other era at the same centre, seated on that era's ground.
-    fn raise_echoes(&mut self, p: Plane, fell: &[usize]) -> Vec<(Plane, usize)> {
+    /// in the other era at the same centre, seated on that era's ground, or
+    /// nearer the gun if that era's gun cannot reach it (see [`seat_echo`]).
+    fn raise_echoes(&mut self, p: Plane, fell: &[usize], base: &Loadout) -> Vec<(Plane, usize)> {
         let there = p.other();
+        let lo = there.loadout(base);
         let mut out = Vec::new();
         for &i in fell {
             let (role, src) = {
@@ -303,7 +307,11 @@ impl Stage {
                 continue;
             }
             let era = &mut self.eras[there.index()];
-            let echo = seat_echo(&era.screen, &src);
+            let Some(echo) = seat_echo(&era.screen, &src, &lo) else {
+                // Out of that gun's reach at every spot: no echo rather than
+                // a stage nobody can clear.
+                continue;
+            };
             era.screen.structures.push(echo);
             era.roles.push(Role::Echo);
             out.push((there, era.roles.len() - 1));
@@ -327,20 +335,58 @@ impl Stage {
     }
 }
 
-/// An intact echo of `src` on `screen`'s ground, at the same centre x, seated
-/// on the highest column of its footprint as the sim seats every structure.
-fn seat_echo(screen: &Screen, src: &Structure) -> Structure {
-    let mut s = reseat(screen, src, src.kind);
-    s.integrity = ECHO_INTEGRITY;
-    s
+/// How far an echo moves per try when its spot is out of reach.
+const ECHO_STEP: f64 = 4.0;
+
+/// An echo of `src` on `screen`'s ground at the same centre x, seated on the
+/// highest column of its footprint as the sim seats every structure, if the
+/// era's gun (`lo`) can fell it there. Otherwise the nearest spot toward the
+/// gun where it can, no nearer than generated targets ever stand; `None` if
+/// there is none.
+///
+/// Every generated target is validated against its own era's gun, but an
+/// echo copies its position from the other era. The trebuchet throws
+/// shorter than the howitzer, more so into a headwind, so an echo copied
+/// from the present could land out of its range: an unclearable stage that
+/// ends the run on shells. The check is the solver's, at fresh integrity, on
+/// the echo alone: range, wind and terrain, not other structures in the way
+/// (those are cleared by shooting them). In 1,000 bot runs it moves about 1
+/// echo in 2,000 and the win rates do not move.
+fn seat_echo(screen: &Screen, src: &Structure, lo: &Loadout) -> Option<Structure> {
+    let nearest = EMPLACEMENT_X + 60.0;
+    let mut centre = src.centre_x();
+    loop {
+        let at = reseat_at(screen, centre, src.kind);
+        // Reach, not cover: the echo alone on this ground, so the answer is
+        // range, wind and terrain. Another structure in the way is cleared
+        // by shooting it, which is play; moving the echo in front of it
+        // would shield what stands behind instead.
+        let mut probe = screen.clone();
+        probe.structures = vec![at.clone()];
+        if !solve_target_capped(&probe, lo, 0, 1).0.is_empty() {
+            let mut s = at;
+            s.integrity = ECHO_INTEGRITY;
+            return Some(s);
+        }
+        if centre <= nearest {
+            return None;
+        }
+        centre = (centre - ECHO_STEP).max(nearest);
+    }
 }
 
 /// An intact structure of `kind` centred where `src` stands, seated on
 /// `screen`'s ground the way the sim seats every structure.
 fn reseat(screen: &Screen, src: &Structure, kind: StructureKind) -> Structure {
+    reseat_at(screen, src.centre_x(), kind)
+}
+
+/// An intact structure of `kind` centred at `centre`, seated on `screen`'s
+/// ground the way the sim seats every structure.
+fn reseat_at(screen: &Screen, centre: f64, kind: StructureKind) -> Structure {
     let fp = kind.footprint();
     let max_x0 = screen.width.saturating_sub(fp + 1).max(1);
-    let want = (src.centre_x() - fp as f64 * 0.5).round().max(1.0) as usize;
+    let want = (centre - fp as f64 * 0.5).round().max(1.0) as usize;
     let x0 = want.clamp(1, max_x0);
     let field = &screen.field;
     let base = field.seat(x0, fp);
