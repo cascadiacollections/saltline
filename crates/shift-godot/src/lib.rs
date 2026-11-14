@@ -83,6 +83,8 @@ const BUTTONS: &[Binding] = &[
 
 /// Sound effects sit a little under full scale so overlapping cues don't clip.
 const SFX_DB: f32 = -4.0;
+/// Ambience sits well under the effects.
+const AMB_DB: f32 = -15.0;
 
 #[derive(GodotClass)]
 #[class(base = Node2D)]
@@ -175,7 +177,11 @@ impl INode2D for Counterweight {
             }
             let mut player = AudioStreamPlayer::new_alloc();
             player.set_stream(&wav);
-            player.set_volume_db(if cue == Cue::Title { -6.0 } else { SFX_DB });
+            player.set_volume_db(match cue {
+                Cue::Title => -6.0,
+                Cue::AmbPresent | Cue::AmbSiege => AMB_DB,
+                _ => SFX_DB,
+            });
             self.base_mut().add_child(&player);
             self.players.push(player);
         }
@@ -191,9 +197,18 @@ impl INode2D for Counterweight {
                 Effect::Play(c) => self.play(c),
                 Effect::Music(on) => {
                     if on {
+                        self.stop(Cue::AmbPresent);
+                        self.stop(Cue::AmbSiege);
                         self.play(Cue::Title);
-                    } else if let Some(p) = self.players.get_mut(Cue::Title.index()) {
-                        p.stop();
+                    } else {
+                        self.stop(Cue::Title);
+                    }
+                }
+                Effect::Ambience(era) => {
+                    let (on, off) = (Cue::ambience(era), Cue::ambience(era.other()));
+                    self.stop(off);
+                    if !self.players.get(on.index()).is_some_and(|p| p.is_playing()) {
+                        self.play(on);
                     }
                 }
                 Effect::SaveBest(score) => {
@@ -295,6 +310,12 @@ impl Counterweight {
             down: input.is_mouse_button_pressed(MouseButton::LEFT),
         });
         out
+    }
+
+    fn stop(&mut self, cue: Cue) {
+        if let Some(p) = self.players.get_mut(cue.index()) {
+            p.stop();
+        }
     }
 
     fn play(&mut self, cue: Cue) {

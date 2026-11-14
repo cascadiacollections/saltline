@@ -158,8 +158,10 @@ pub enum Button {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Effect {
     Play(Cue),
-    /// Title music on or off.
+    /// Title music on or off. On also stops any ambience.
     Music(bool),
+    /// Play this era's ambient loop (and stop the other's).
+    Ambience(Plane),
     /// Quit the application (title screen, Esc).
     Quit,
     /// A new best score: the engine keeps it for next time.
@@ -467,6 +469,7 @@ impl Game {
         if input.pressed.contains(&Button::Fire) {
             fx.push(Effect::Play(Cue::Ui));
             fx.push(Effect::Music(false));
+            fx.push(Effect::Ambience(Plane::Present));
             let seed = self
                 .fixed_seed
                 .unwrap_or_else(|| salt_line_sim::rng::mix64(self.entropy ^ (t.to_bits() as u64)));
@@ -646,6 +649,7 @@ impl Play {
         let from = self.run.stage().active();
         if let Some(events) = self.run.apply(RunInput::Shift) {
             fx.push(Effect::Play(Cue::Shift));
+            fx.push(Effect::Ambience(from.other()));
             self.fade = Some((from, 0.0));
             let cost = events.iter().find_map(|e| match e {
                 Event::Shifted { cost, .. } => Some(*cost),
@@ -1017,6 +1021,7 @@ mod tests {
         g.fixed_seed = Some(7);
         let fx = g.update(0.016, &press(Button::Fire));
         assert!(fx.contains(&Effect::Music(false)));
+        assert!(fx.contains(&Effect::Ambience(Plane::Present)));
         assert!(matches!(g.mode, Mode::Play(_)));
         g.update(0.016, &press(Button::Fire));
         assert!(g.play().unwrap().flight.is_some());
