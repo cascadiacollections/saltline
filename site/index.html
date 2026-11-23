@@ -24,6 +24,19 @@
 <body>
 <a class="skip" href="#main">Skip to content</a>
 
+<!-- Seasonal notice. Stays hidden with no JavaScript and outside the window.
+     The dates live in one place: site/promo.js. Preview with ?promo=bf2026. -->
+<aside id="bf2026" class="promo" hidden role="region" aria-labelledby="bf2026-title">
+  <div class="promo-inner">
+    <div class="promo-copy">
+      <p class="promo-kicker" id="bf2026-title">Black Friday · Cyber Monday</p>
+      <p class="promo-text">Skip the checkout line through December 1. Episode one is free: no account, no ads, and no telemetry.</p>
+    </div>
+    <a class="btn primary promo-cta" href="#get">Get Salt Line</a>
+    <button type="button" class="promo-dismiss">Dismiss</button>
+  </div>
+</aside>
+
 <header class="topbar">
   <a class="brand" href="#top">
     <img src="assets/sprites/tank_base.png" alt="" width="30" height="12" class="px brand-spr">
@@ -152,6 +165,16 @@
     <p class="note">Salt Line is in <strong>alpha</strong>. It's playable end to end, balance
       still moves between builds, and some art is still placeholder.</p>
   </div>
+</section>
+
+<!-- ------------------------------------------------------- seasonal promo -->
+<section id="bf2026-note" class="promo-note" hidden aria-labelledby="bf2026-note-h">
+  <h2 id="bf2026-note-h">Skip the checkout line</h2>
+  <p>From Black Friday through December 1, Pacific time, nothing here goes on sale.
+    Episode one is already free: the first twelve screens of a run, the daily seed,
+    and local versus. No account, no ads, no telemetry, and no nag screen.
+    The shareware episode does not expire. The full game is still coming to Steam.</p>
+  <p><a class="btn promo-cta" href="#get">Get Salt Line</a></p>
 </section>
 
 <!-- ------------------------------------------------------------- get -->
@@ -376,5 +399,6 @@ godot --path .                   # play</code></pre>
 </footer>
 
 <script src="main.js" defer></script>
+<script src="promo.js" defer></script>
 </body>
 </html>

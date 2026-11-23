@@ -80,7 +80,7 @@ jobs:
       - name: assets the page needs must exist
         run: |
           set -eu
-          for f in index.html licenses.html style.css main.js assets/hero_wide.png \
+          for f in index.html licenses.html style.css main.js promo.js assets/hero_wide.png \
                    assets/shot.gif assets/shot_static.png assets/og.png assets/favicon.png \
                    assets/scene_4x.png assets/sprite_sheet_4x.png \
                    assets/palette_16.png assets/sprites/barrel_strip_5deg.png; do
