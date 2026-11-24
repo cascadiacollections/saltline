@@ -524,8 +524,10 @@ cargo run --release -p salt-line-sim --bin batch
 cargo run --release -p salt-line-sim --bin batch -- --seeds 50 --screens 100 --build demo
 
 # Determinism: 200 runs played, replayed from (seed, shot log), hashed.
-# CI compares the digest across Linux, macOS, Windows, Android and iOS;
-# `just android-digest` checks an attached Android phone against this machine.
+# CI compares that digest, and the Drone Trial's (`trial_determinism`),
+# across Linux, macOS, Windows, Android and iOS. The two digests differ;
+# each one has to agree with itself. `just android-digest` checks an
+# attached Android phone against this machine for the artillery digest.
 cargo run --release -p salt-line-sim --bin determinism
 
 # Art review: one frame per shape template plus a damaged variant of each.
@@ -752,9 +754,12 @@ platform. What that costs, concretely:
 - CI holds it to that: the sim runs on Linux and Windows (x86_64 and arm64), on
   macOS (Apple silicon), on Android (an x86_64 emulator, so bionic's libc and
   libm) and on iOS (the arm64 simulator), and the determinism job fails unless
-  all seven digests are identical. Hosted runners cannot emulate arm64 Android
-  at a usable speed, so `just android-digest` covers the arm64-v8a build on a
-  real phone. Versus play in lockstep across two phones depends on this.
+  all seven artillery digests are identical. The same job checks the Drone
+  Trial's own digest the same way: seven copies, identical to each other,
+  and not the same number as the artillery digest. Hosted runners cannot
+  emulate arm64 Android at a usable speed, so `just android-digest` covers
+  the arm64-v8a artillery build on a real phone. Versus play in lockstep
+  across two phones depends on this.
 
 ## Nothing for sale
 
