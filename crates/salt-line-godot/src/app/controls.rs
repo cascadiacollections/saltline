@@ -65,6 +65,9 @@ impl Game {
     /// True on the frame the button went down on any joypad. Taken, and
     /// marks the controller as the device in use.
     pub(super) fn pad_pressed(&mut self, button: Pad) -> bool {
+        if !self.input.pad_from_action {
+            self.note_pad_button(button);
+        }
         let down = self.input.controls.take_pad(button);
         if down {
             self.input.controller_active = true;
@@ -77,6 +80,7 @@ impl Game {
     /// button, its touch button, or for `Back` the platform's back gesture.
     /// Key and pad presses are taken, so ask in the order that should win.
     pub(super) fn action_pressed(&mut self, action: Action) -> bool {
+        self.note_pad_action(action);
         let (key, _) = self.action_binding(action);
         let key_down = Key::from_token(&key)
             .map(|k| self.pressed(k))
@@ -85,7 +89,9 @@ impl Game {
             self.input.controller_active = false;
             self.input.touch_active = false;
         }
+        self.input.pad_from_action = true;
         let pad_down = self.pad_action_pressed(action);
+        self.input.pad_from_action = false;
         let touch_down = self.input.touch.pressed(action)
             || (action == Action::Back && self.input.back_requested);
         key_down || pad_down || touch_down
@@ -93,10 +99,19 @@ impl Game {
 
     /// `action_pressed` for the controller alone.
     pub(super) fn pad_action_pressed(&mut self, action: Action) -> bool {
+        if !self.input.pad_from_action {
+            self.note_pad_action(action);
+        }
         let (_, pad) = self.action_binding(action);
-        Pad::from_token(&pad)
+        // The button belongs to this action. A direct `pad_pressed` (MAKE
+        // MAP) is the only call that records a bare button.
+        let was = self.input.pad_from_action;
+        self.input.pad_from_action = true;
+        let down = Pad::from_token(&pad)
             .map(|b| self.pad_pressed(b))
-            .unwrap_or(false)
+            .unwrap_or(false);
+        self.input.pad_from_action = was;
+        down
     }
 
     /// Activations of `action` this frame with hold-to-repeat, summed over
@@ -108,6 +123,7 @@ impl Game {
     /// each place that asks (0 to 7). Two places asking with the same slot in
     /// one frame would tick that state twice.
     pub(super) fn action_repeated(&mut self, slot: usize, action: Action, delta: f64) -> u32 {
+        self.note_pad_action(action);
         let (key, pad) = self.action_binding(action);
         let keyboard = Key::from_token(&key)
             .map(|k| {
@@ -145,6 +161,18 @@ impl Game {
             self.input.touch_active = false;
         }
         keyboard + buttons + stick + self.input.touch.repeated(action)
+    }
+
+    fn note_pad_action(&mut self, action: Action) {
+        if let Some(audit) = &mut self.input.pad_audit {
+            audit.push(PadAsk::Action(action));
+        }
+    }
+
+    fn note_pad_button(&mut self, button: Pad) {
+        if let Some(audit) = &mut self.input.pad_audit {
+            audit.push(PadAsk::Button(button));
+        }
     }
 
     /// Remember whether the controller was the device in use, so the next

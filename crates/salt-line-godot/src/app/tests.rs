@@ -33,6 +33,28 @@ fn a_running_trial_uses_the_gameplay_frame_rate_and_a_paused_trial_idles() {
     assert!(g.idle());
 }
 
+#[test]
+fn a_controller_fires_a_live_trial_and_a_resumes_it_from_pause() {
+    let mut g = game();
+    g.start_trial(1);
+    let before = g.trial.as_ref().unwrap().simulation.ammo();
+    tick(&mut g, pads(&[Pad::A]));
+    let trial = g.trial.as_ref().unwrap();
+    assert!(!trial.paused);
+    assert_eq!(
+        trial.simulation.ammo(),
+        before - 1,
+        "A is fire while the round is live"
+    );
+    tick(&mut g, pads(&[Pad::B]));
+    assert!(g.trial.as_ref().unwrap().paused);
+    let paused_ammo = g.trial.as_ref().unwrap().simulation.ammo();
+    tick(&mut g, pads(&[Pad::A]));
+    let trial = g.trial.as_ref().unwrap();
+    assert!(!trial.paused);
+    assert_eq!(trial.simulation.ammo(), paused_ammo, "A resumes from pause");
+}
+
 /// Keys that went down this frame and are still held.
 fn keys(keys: &[Key]) -> Intents {
     Intents {
@@ -1913,4 +1935,226 @@ fn shareware_leaves_challenges_and_the_editor_out() {
 fn the_shareware_flag_parses() {
     assert!(DevArgs::parse(&["--salt-shareware".into()]).shareware);
     assert!(!DevArgs::parse(&[]).shareware);
+}
+
+/// Confirm and Fire are both A, and on these screens they are one command
+/// (ready, pause, or apply) asked under both names so Enter and Space both
+/// work. Anywhere else, A belonging to two actions is a stolen press.
+const SAME_PRESS: &[&[Action]] = &[&[Action::Confirm, Action::Fire]];
+
+/// One idle frame, then the default pad buttons that frame asked for. Two
+/// actions on one button fail unless `aliases` names them as one command.
+/// A direct `pad_pressed` (MAKE MAP's X) is its own reader and aliases with
+/// nothing.
+fn audit(g: &mut Game, screen: &str, aliases: &[&[Action]]) {
+    g.input.pad_audit = Some(Vec::new());
+    g.tick(FRAME, &idle());
+    let asked = g.input.pad_audit.take().unwrap();
+    assert!(
+        !asked.is_empty(),
+        "{screen}: recorded no pad questions; the audit is not wired to this screen"
+    );
+    let clashes = pad_clashes(&asked, aliases);
+    assert!(
+        clashes.is_empty(),
+        "{screen}: a default pad button is read by more than one action:\n{}",
+        clashes.join("\n")
+    );
+}
+
+fn pad_clashes(asked: &[PadAsk], aliases: &[&[Action]]) -> Vec<String> {
+    let mut pads: Vec<(Pad, Vec<Action>, bool)> = Vec::new();
+    let slot = |pads: &mut Vec<(Pad, Vec<Action>, bool)>, pad: Pad| -> usize {
+        if let Some(i) = pads.iter().position(|(got, _, _)| *got == pad) {
+            i
+        } else {
+            pads.push((pad, Vec::new(), false));
+            pads.len() - 1
+        }
+    };
+    for ask in asked {
+        match *ask {
+            PadAsk::Action(action) => {
+                let Some(pad) = default_pad(action) else {
+                    continue;
+                };
+                let i = slot(&mut pads, pad);
+                if !pads[i].1.contains(&action) {
+                    pads[i].1.push(action);
+                }
+            }
+            PadAsk::Button(pad) => {
+                let i = slot(&mut pads, pad);
+                pads[i].2 = true;
+            }
+        }
+    }
+    let mut clashes = Vec::new();
+    for (pad, actions, direct) in pads {
+        let alias = aliases
+            .iter()
+            .any(|group| actions.iter().all(|action| group.contains(action)));
+        let shared = actions.len() > 1 && !alias;
+        if shared || (direct && !actions.is_empty()) {
+            let mut names: Vec<_> = actions.iter().map(|action| format!("{action:?}")).collect();
+            if direct {
+                names.push("a direct button".into());
+            }
+            clashes.push(format!("{pad:?}: {}", names.join(", ")));
+        }
+    }
+    clashes
+}
+
+fn default_pad(action: Action) -> Option<Pad> {
+    Pad::from_token(crate::input::default_binding(action).1)
+}
+
+#[test]
+fn each_screen_reads_distinct_default_pad_buttons() {
+    audit(&mut game(), "title", &[]);
+    let mut titled = game();
+    titled.run_file.resumable = Some(Saved::of(&salt_line_sim::run::RunState::new(1, 320), false));
+    audit(&mut titled, "title with continue", &[]);
+    let mut crashed = game();
+    crashed.crash.last_crash = Some("report".into());
+    audit(&mut crashed, "title with a crash report", &[]);
+
+    let mut controls = game();
+    controls.mode = Mode::Controls;
+    audit(&mut controls, "controls", &[]);
+    let mut credits = game();
+    credits.mode = Mode::Credits;
+    audit(&mut credits, "credits", &[]);
+    let mut seed = game();
+    seed.open_seed_entry();
+    audit(&mut seed, "seed entry", &[]);
+
+    let mut firing = playing(1);
+    audit(&mut firing, "firing", &[]);
+    let mut held = playing(2);
+    held.play.clear_hold = 1.0;
+    audit(&mut held, "screen clear", &[]);
+    let mut flying = playing(3);
+    tick(&mut flying, keys(&[Key::Space]));
+    assert!(flying.play.anim.is_some(), "a shot to audit in the air");
+    audit(&mut flying, "shot in the air", &[]);
+    audit(&mut at_draft(), "draft", &[]);
+    let mut paused = playing(4);
+    paused.mode = Mode::Paused;
+    audit(&mut paused, "paused", &[]);
+
+    let mut over = playing(5);
+    // A run the history can rebuild. Finishing the frame's fresh run does
+    // not: its unlogged aim is not in the record, and WATCH refuses it.
+    over.play.run = Some(spent_run(5));
+    over.finish_run();
+    assert_eq!(over.mode, Mode::GameOver);
+    audit(&mut over, "run over", &[]);
+    tick(&mut over, pads(&[Pad::DpadUp]));
+    assert!(over.watch.is_some(), "WATCH from the result screen");
+    audit(&mut over, "watching a run", SAME_PRESS);
+    over.watch.as_mut().unwrap().ended = true;
+    audit(&mut over, "a watch that has ended", SAME_PRESS);
+
+    let mut replays = game();
+    replays.open_replays();
+    audit(&mut replays, "replays, empty", &[]);
+    let mut listed = playing(6);
+    listed.play.run = Some(spent_run(6));
+    listed.finish_run();
+    listed.open_replays();
+    audit(&mut listed, "replays, with a run", &[]);
+
+    let mut course = game();
+    course.mode = Mode::GameOver;
+    course.play.challenge = Some(0);
+    audit(&mut course, "challenge over", &[]);
+    course.play.challenge = None;
+    course.play.custom_challenge = Some(salt_line_sim::challenge::layout(
+        salt_line_sim::challenge::get(0).unwrap(),
+    ));
+    audit(&mut course, "custom challenge over", &[]);
+
+    let mut setup = game();
+    setup.open_versus_setup();
+    audit(&mut setup, "versus setup", &[]);
+    let mut duel = game();
+    duel.start_versus();
+    duel.take_effects();
+    assert!(duel.versus.live.is_some());
+    audit(&mut duel, "versus handoff", SAME_PRESS);
+    duel.versus.live.as_mut().unwrap().stage = VersusStage::Aiming;
+    audit(&mut duel, "versus aiming", &[]);
+    duel.versus.live.as_mut().unwrap().stage = VersusStage::Flight;
+    audit(&mut duel, "versus flight", &[]);
+    {
+        let vs = duel.versus.live.as_mut().unwrap();
+        vs.stage = VersusStage::Result;
+        vs.paused = false;
+        vs.ai = None;
+        vs.kept = true;
+        vs.duel.phase = crate::versus::Phase::RoundOver(crate::versus::Side::Left);
+    }
+    audit(&mut duel, "versus round over, human", &[]);
+    {
+        let vs = duel.versus.live.as_mut().unwrap();
+        vs.ai = Some(crate::opponent::Level::Easy);
+        vs.duel.phase = crate::versus::Phase::RoundOver(crate::versus::Side::Right);
+    }
+    audit(&mut duel, "versus round over, against the ai", &[]);
+    {
+        let vs = duel.versus.live.as_mut().unwrap();
+        vs.ai = None;
+        vs.duel.phase = crate::versus::Phase::MatchOver(crate::versus::Side::Left);
+    }
+    audit(&mut duel, "versus match over", &[]);
+    duel.versus.live.as_mut().unwrap().paused = true;
+    audit(&mut duel, "versus paused", &[]);
+
+    let mut editor = game();
+    editor.open_editor();
+    audit(&mut editor, "editor start", &[]);
+    editor.editor.page = EditorPage::Menu;
+    audit(&mut editor, "editor menu", &[]);
+    editor.start_draft(crate::editor::Draft::blank());
+    audit(&mut editor, "editor", SAME_PRESS);
+    editor.editor.page = EditorPage::Slots(EditorPurpose::Open);
+    audit(&mut editor, "editor open slot", &[]);
+    editor.editor.page = EditorPage::Slots(EditorPurpose::Save);
+    audit(&mut editor, "editor save slot", &[]);
+    editor.editor.page = EditorPage::Seed;
+    audit(&mut editor, "editor seed keypad", &[]);
+    editor.editor.page = EditorPage::Name;
+    audit(&mut editor, "editor name keypad", &[]);
+    let layout = editor.editor.ed.as_ref().unwrap().layout().clone();
+    editor.editor.test = Some(TestFire::new(&layout));
+    editor.editor.page = EditorPage::Test;
+    audit(&mut editor, "editor test fire", &[]);
+
+    let mut trial = game();
+    trial.start_trial(1);
+    audit(&mut trial, "drone trial", &[]);
+    trial.trial.as_mut().unwrap().paused = true;
+    audit(&mut trial, "drone trial paused", &[]);
+
+    let mut demo = game();
+    demo.start_demo(demo::Started::Menu);
+    demo.input.pad_audit = Some(Vec::new());
+    demo.tick(FRAME, &idle());
+    let asked = demo.input.pad_audit.take().unwrap();
+    assert!(
+        asked.is_empty(),
+        "the demo reads no actions; any pad press ends it, got {asked:?}"
+    );
+
+    let mut broken = game();
+    broken.input.pad_audit = Some(Vec::new());
+    broken.broken_tick(FRAME, &idle(), || None);
+    let clashes = pad_clashes(broken.input.pad_audit.as_deref().unwrap(), &[]);
+    assert!(
+        clashes.is_empty(),
+        "error screen: a default pad button is read by more than one action:\n{}",
+        clashes.join("\n")
+    );
 }

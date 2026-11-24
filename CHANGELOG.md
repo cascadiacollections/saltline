@@ -17,6 +17,10 @@ second. See RELEASING.md for the release steps.
   now d-pad left.
 - On a controller, the third draft card could not be taken. It was bound to
   B, which pauses, and pause is read first. The third card is now Y.
+- On a controller, A during a Drone Trial did not fire. Confirm is also A,
+  and it was read first, so the press was spent resuming a round that was
+  already going. A fires while the round is live, and resumes or restarts
+  only from pause or the result.
 - A very long one-shot streak could end the run, or crash a debug build,
   once the shell reserve passed the top of a 32-bit count. The reserve now
   stops at that top instead of wrapping.
