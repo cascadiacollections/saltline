@@ -34,9 +34,10 @@ impl Game {
     }
 
     pub(super) fn handle_trial_input(&mut self, delta: f64) {
+        let finished = self.trial.as_ref().is_some_and(|t| t.simulation.finished());
+        let paused = self.trial.as_ref().is_some_and(|t| t.paused);
         if self.action_pressed(Action::Back) {
-            let finished = self.trial.as_ref().is_some_and(|t| t.simulation.finished());
-            if self.trial.as_ref().is_some_and(|t| t.paused) || finished {
+            if paused || finished {
                 self.trial = None;
                 self.mode = Mode::Title;
                 self.apply_buffer_size();
@@ -45,22 +46,19 @@ impl Game {
             }
             return;
         }
-        if self.action_pressed(Action::Confirm) {
-            let finished = self.trial.as_ref().is_some_and(|t| t.simulation.finished());
-            if finished {
-                let seed = self.trial.as_ref().unwrap().seed;
-                self.start_trial(seed);
-                return;
+        // Confirm is A, and so is Fire. Asking Confirm during a live round
+        // swallowed the shot: the press resumed a round that was not paused
+        // and never reached Fire. Confirm is only the resume / restart key
+        // while the round is not being played.
+        if paused || finished {
+            if self.action_pressed(Action::Confirm) {
+                if finished {
+                    let seed = self.trial.as_ref().unwrap().seed;
+                    self.start_trial(seed);
+                } else if let Some(trial) = self.trial.as_mut() {
+                    trial.paused = false;
+                }
             }
-            if let Some(trial) = self.trial.as_mut() {
-                trial.paused = false;
-            }
-        }
-        let paused = self
-            .trial
-            .as_ref()
-            .is_none_or(|t| t.paused || t.simulation.finished());
-        if paused {
             return;
         }
         let left = self.action_repeated(0, Action::Left, delta) as i32;

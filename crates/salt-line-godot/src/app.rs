@@ -950,6 +950,23 @@ pub(crate) struct InputState {
     /// `app/versus.rs`, "One touch, one screen"). Fingers that go down
     /// meanwhile are spent.
     pub(crate) touch_settle: f64,
+    /// While `Some`, every action and direct pad button a frame asks for is
+    /// appended here, in ask order. The pad-button audit turns it on for one
+    /// idle frame per screen. `None` in play, so asking stays what it was.
+    pub(crate) pad_audit: Option<Vec<PadAsk>>,
+    /// Set while `action_pressed` is the caller of `pad_action_pressed` or
+    /// `pad_pressed`, so that path is recorded once as an action and a direct
+    /// `pad_pressed` (MAKE MAP's X) is recorded on its own.
+    pub(crate) pad_from_action: bool,
+}
+
+/// One question a screen asked of the controller this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PadAsk {
+    /// `action_pressed`, `action_repeated`, or `pad_action_pressed`.
+    Action(Action),
+    /// `pad_pressed` from outside an action, which is how MAKE MAP reads X.
+    Button(Pad),
 }
 
 /// The saved run (DESIGN §9.6): what is on disk and what CONTINUE offers.
@@ -1056,6 +1073,8 @@ impl Default for Game {
                 buttons: Vec::new(),
                 drag_from: None,
                 touch_settle: 0.0,
+                pad_audit: None,
+                pad_from_action: false,
             },
             run_file: RunFileState {
                 resumable: None,
