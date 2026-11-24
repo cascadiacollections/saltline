@@ -175,9 +175,22 @@ change to the toolchain or to the sim's arithmetic.
 On a Mac, `just ios` builds the extension for arm64, exports an Xcode project
 to `build/ios`, signs it, then installs and launches it on the attached iPhone
 (set `IOS_DEVICE` to a name or UDID if there is more than one physical iPhone).
-The default is a debug build (Rust at opt-level 1); `just ios release` builds the
-optimised one (LTO, Godot's release template, Xcode's Release configuration),
-which is what to use for performance checks. It is untested on a device so far.
+The default is a debug build (Rust at opt-level 1). `just ios release` builds the
+optimised one (LTO, Godot's release template, Xcode's Release configuration)
+and is the build to time on a phone plugged into the Mac. That local install
+is not what TestFlight ships.
+
+`just testflight` writes a signed archive and `just testflight --upload` sends
+it to App Store Connect for internal testing. `just testflight --upload
+--external` is the public beta. See [docs/testflight.md](docs/testflight.md).
+Apple accepted build `2489.23.7` for internal processing on 25 October 2026.
+The public invite is <https://testflight.apple.com/join/PgjfndD9>. Installing
+one of those builds on a phone has not been confirmed from this repository.
+
+An iPhone SE (2nd generation) frame-time pass, the low-end floor in
+[docs/profiling-ios.md](docs/profiling-ios.md), has not been recorded. The
+procedure is there; the measurement is not.
+
 Signing uses
 Xcode's automatic provisioning, which also registers the phone with your
 account. It needs a paid Apple developer account for installs that last a year.
