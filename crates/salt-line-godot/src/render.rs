@@ -739,23 +739,24 @@ impl Painter<'_> {
                     alert,
                 );
                 y += 10;
-                let rows = [
-                    ("AIM / POWER", Action::Left, Some(Action::Up)),
-                    ("FIRE", Action::Fire, None),
-                    ("FUSE", Action::FuseDown, Some(Action::FuseUp)),
+                let rows: [(&str, &[Action]); 6] = [
+                    ("AIM / POWER", &[Action::Left, Action::Up]),
+                    ("FIRE", &[Action::Fire]),
+                    ("FUSE", &[Action::FuseDown, Action::FuseUp]),
                     (
                         "REPOSITION",
-                        Action::RepositionLeft,
-                        Some(Action::RepositionRight),
+                        &[Action::RepositionLeft, Action::RepositionRight],
                     ),
-                    ("DRAFT", Action::Draft1, Some(Action::Draft2)),
-                    ("BACK", Action::Back, None),
+                    ("DRAFT", &[Action::Draft1, Action::Draft2, Action::Draft3]),
+                    ("BACK", &[Action::Back]),
                 ];
-                for (name, a, b) in rows {
-                    let mut labels = self.g.input_label(a);
-                    if let Some(b) = b {
-                        labels.push('/');
-                        labels.push_str(&self.g.input_label(b));
+                for (name, actions) in rows {
+                    let mut labels = String::new();
+                    for (i, action) in actions.iter().enumerate() {
+                        if i > 0 {
+                            labels.push('/');
+                        }
+                        labels.push_str(&self.g.input_label(*action));
                     }
                     self.centred(y, &format!("{name}: {labels}"), fg);
                     y += 7;

@@ -1387,7 +1387,8 @@ impl RunState {
         self.screen.muzzle_x = EMPLACEMENT_X;
         self.set_fuse(self.screen.default_fuse(0).unwrap_or(0.0));
         if self.screen.supply {
-            self.shells = (self.shells + 6).min(self.loadout.cap());
+            // Same path as every other grant: saturating, then the cap.
+            self.grant(6);
         }
     }
 
@@ -1506,7 +1507,11 @@ impl RunState {
     }
 
     fn grant(&mut self, n: i32) {
-        self.shells = (self.shells + n).min(self.loadout.cap());
+        // An uncapped reserve plus Standing Orders grows without a ceiling.
+        // A wrapping add would panic in debug and, in release, turn a huge
+        // reserve negative and end the run. Stop at `i32::MAX`, then apply
+        // the cap (`i32::MAX` when nothing has imposed one).
+        self.shells = self.shells.saturating_add(n).min(self.loadout.cap());
     }
 
     /// Pay for the cleared screen and move on. Idempotent: returns false if
@@ -1530,9 +1535,13 @@ impl RunState {
 
         let mut gain = refund(shots, &self.loadout) + self.loadout.shells_per_clear;
         if shots <= 1 {
-            self.one_shot_streak += 1;
+            // Saturating: a streak that has already reached `u32::MAX` must
+            // not wrap, and the bonus paid below must not wrap to a negative
+            // shell count.
+            self.one_shot_streak = self.one_shot_streak.saturating_add(1);
             if self.loadout.standing_orders() {
-                gain += self.one_shot_streak as i32;
+                let bonus = i32::try_from(self.one_shot_streak).unwrap_or(i32::MAX);
+                gain = gain.saturating_add(bonus);
             }
         } else {
             self.one_shot_streak = 0;
@@ -2454,6 +2463,34 @@ mod tests {
         state.offers = vec![Modifier::Depot];
         state.take_offer(0);
         assert_eq!(state.shells, 18);
+    }
+
+    #[test]
+    fn the_reserve_stops_at_i32_max_instead_of_wrapping() {
+        let mut state = RunState::new(12, 320);
+        state.shells = i32::MAX - 1;
+        state.phase = Phase::Drafting;
+        state.offers = vec![Modifier::Depot];
+        state.take_offer(0);
+        assert_eq!(state.shells, i32::MAX);
+    }
+
+    #[test]
+    fn a_huge_one_shot_streak_does_not_wrap_the_reserve() {
+        let mut state = RunState::new(0xC0FFEE, 320);
+        state.loadout.take(Modifier::StandingOrders);
+        state.one_shot_streak = u32::MAX;
+        state.shells = 20;
+        let lo = state.loadout.clone();
+        let cands = solver::solve_target(&state.screen, &lo, 0);
+        state.fire(cands[0].shot, false);
+        assert_eq!(state.phase, Phase::Cleared);
+        assert!(state.resolve_clear());
+        // Uncapped, so the saturated bonus fills the reserve to the top
+        // rather than wrapping it negative and ending the run.
+        assert_eq!(state.shells, i32::MAX);
+        assert_eq!(state.one_shot_streak, u32::MAX);
+        assert!(!state.is_over());
     }
 
     #[test]
