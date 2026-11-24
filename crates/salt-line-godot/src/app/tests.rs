@@ -897,11 +897,41 @@ fn in_a_draft_pad_a_picks_the_second_card_and_does_not_fire() {
 }
 
 #[test]
+fn in_a_draft_pad_b_pauses_and_y_takes_the_third_card() {
+    let mut g = at_draft();
+    let offers = g.play.run.as_ref().unwrap().offers.clone();
+    assert!(
+        offers.len() >= 3,
+        "the third card is the one B used to steal"
+    );
+    tick(&mut g, pads(&[Pad::B]));
+    assert_eq!(g.mode, Mode::Paused);
+    assert_eq!(g.play.run.as_ref().unwrap().phase, Phase::Drafting);
+    assert_eq!(g.play.run.as_ref().unwrap().loadout.stacks(offers[2]), 0);
+    // B on the pause screen resumes; the draft is still open.
+    tick(&mut g, pads(&[Pad::B]));
+    assert_eq!(g.mode, Mode::Playing);
+    tick(&mut g, pads(&[Pad::Y]));
+    assert!(g.play.run.as_ref().unwrap().loadout.has(offers[2]));
+    assert_ne!(g.play.run.as_ref().unwrap().phase, Phase::Drafting);
+}
+
+#[test]
 fn the_draft_prompt_names_the_keys_until_a_card_is_taken() {
     let g = at_draft();
     assert_eq!(
         g.onboarding_prompt(Phase::Drafting, None).as_deref(),
         Some("1 2 3  PICK A MODIFIER")
+    );
+}
+
+#[test]
+fn the_draft_prompt_names_the_controller_buttons() {
+    let mut g = at_draft();
+    g.input.controller_active = true;
+    assert_eq!(
+        g.onboarding_prompt(Phase::Drafting, None).as_deref(),
+        Some("X A Y  PICK A MODIFIER")
     );
 }
 

@@ -468,7 +468,11 @@ pub fn default_binding(action: Action) -> (&'static str, &'static str) {
         Action::RepositionRight => ("PERIOD", "Y"),
         Action::Draft1 => ("1", "X"),
         Action::Draft2 => ("2", "A"),
-        Action::Draft3 => ("3", "B"),
+        // Y, not B. Pause is B and is read before a draft pick, so a third
+        // offer bound to B never took: the press opened the pause screen.
+        // Y is free on the draft (reposition, replay and star read it on
+        // other screens).
+        Action::Draft3 => ("3", "Y"),
         Action::Confirm => ("ENTER", "A"),
         Action::Back => ("ESCAPE", "B"),
         Action::Copy => ("C", "X"),

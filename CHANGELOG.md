@@ -15,6 +15,11 @@ second. See RELEASING.md for the release steps.
 - On a controller, d-pad up on the title started the challenge course and
   REPLAYS could not be reached, because both were bound to it. CHALLENGES is
   now d-pad left.
+- On a controller, the third draft card could not be taken. It was bound to
+  B, which pauses, and pause is read first. The third card is now Y.
+- A very long one-shot streak could end the run, or crash a debug build,
+  once the shell reserve passed the top of a 32-bit count. The reserve now
+  stops at that top instead of wrapping.
 - Play took about twice the CPU it needed on every frame, because the sky
   picture was painted again from scratch each time. It is now painted once
   per screen; on a Lenovo Tab (MediaTek MT8755) frame time halves and play

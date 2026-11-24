@@ -239,7 +239,7 @@ persisted replays and produce a cross-platform digest.
 | Space | A | FIRE, or let go of a drag | Fire |
 | `[` `]` | LB / RB | `F-` `F+` | Airburst fuse distance (with Airburst) |
 | `,` `.` | X / Y | `E<` `E>` | Reposition the emplacement (needs Enfilade) |
-| 1 / 2 / 3 | X / A / B | Tap a card | Take a draft offer |
+| 1 / 2 / 3 | X / A / Y | Tap a card | Take a draft offer (B still pauses) |
 | Enter | A | Tap the row | Daily run, confirm, continue |
 | S | — | SEED ENTRY | Seed entry (touch has an on-screen keypad) |
 | 2 | LB (on the title) | LOCAL VERSUS | Local versus, two players on one device (see below) |
