@@ -122,10 +122,17 @@ jobs:
           cargo run --release -q -p salt-line-sim --bin determinism | tee digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > "digest-$PLATFORM.txt"
           cat "digest-$PLATFORM.txt"
+          # Drone Trial is on the title. Its 200-seed replay digest is a
+          # different number from the artillery one, compared on its own.
+          cargo run --release -q -p salt-line-sim --bin trial_determinism | tee trial-digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' trial-digest.txt | cut -d' ' -f2 > "trial-digest-$PLATFORM.txt"
+          cat "trial-digest-$PLATFORM.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.os }}
-          path: digest-${{ matrix.os }}.txt
+          path: |
+            digest-${{ matrix.os }}.txt
+            trial-digest-${{ matrix.os }}.txt
 
   # The phones join the determinism comparison: versus play in lockstep needs
   # two phones to agree bit for bit, and Android brings its own libc and libm
@@ -152,7 +159,8 @@ jobs:
           set -eu
           rustup target add x86_64-linux-android
           bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          cargo build --release -q -p salt-line-sim --bin determinism --target x86_64-linux-android \
+          cargo build --release -q -p salt-line-sim --bin determinism --bin trial_determinism \
+            --target x86_64-linux-android \
             --config "target.x86_64-linux-android.linker=\"$bin/x86_64-linux-android24-clang\""
       - name: enable KVM
         run: |
@@ -169,12 +177,15 @@ jobs:
           target: aosp_atd
           arch: x86_64
           disable-animations: false
-          script: bash tools/android_digest.sh target/x86_64-linux-android/release/determinism > digest.txt
+          script: bash tools/android_digest.sh target/x86_64-linux-android/release/determinism > digest.txt && bash tools/android_digest.sh target/x86_64-linux-android/release/trial_determinism > trial-digest.txt
       # Shown even when the run failed: its summary, digest included, went to
       # the file rather than the log.
       - name: show the emulator's output
         if: always()
-        run: cat digest.txt || true
+        run: |
+          cat digest.txt || true
+          echo "---- trial ----"
+          cat trial-digest.txt || true
       - name: extract the digest
         shell: bash
         run: |
@@ -182,10 +193,16 @@ jobs:
           grep -q '^os: *android$' digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-android-x86_64.txt
           cat digest-android-x86_64.txt
+          # The trial bin does not print an os line; the digest line is the check.
+          grep -q 'zero divergences' trial-digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' trial-digest.txt | cut -d' ' -f2 > trial-digest-android-x86_64.txt
+          cat trial-digest-android-x86_64.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-android-x86_64
-          path: digest-android-x86_64.txt
+          path: |
+            digest-android-x86_64.txt
+            trial-digest-android-x86_64.txt
 
   # iOS on the simulator: an aarch64-apple-ios-sim binary run inside a booted
   # iPhone simulator with `simctl spawn`, so it loads the iOS runtime's own
@@ -209,7 +226,8 @@ jobs:
         run: |
           set -eu
           rustup target add aarch64-apple-ios-sim
-          cargo build --release -q -p salt-line-sim --bin determinism --target aarch64-apple-ios-sim
+          cargo build --release -q -p salt-line-sim --bin determinism --bin trial_determinism \
+            --target aarch64-apple-ios-sim
       # The first available iPhone on the newest iOS runtime the image has.
       # Booting it is most of this job's time.
       - name: boot a simulator
@@ -241,10 +259,16 @@ jobs:
           grep -q '^os: *ios$' digest.txt
           grep -oE 'digest: 0x[0-9a-f]+' digest.txt | cut -d' ' -f2 > digest-ios-arm64.txt
           cat digest-ios-arm64.txt
+          xcrun simctl spawn "$UDID" "$PWD/target/aarch64-apple-ios-sim/release/trial_determinism" | tee trial-digest.txt
+          grep -q 'zero divergences' trial-digest.txt
+          grep -oE 'digest: 0x[0-9a-f]+' trial-digest.txt | cut -d' ' -f2 > trial-digest-ios-arm64.txt
+          cat trial-digest-ios-arm64.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-ios-arm64
-          path: digest-ios-arm64.txt
+          path: |
+            digest-ios-arm64.txt
+            trial-digest-ios-arm64.txt
 
   # DESIGN §3: same seed plus same input sequence produces a byte-identical
   # final state on every platform. If these digests diverge, stop and fix the
@@ -266,29 +290,42 @@ jobs:
         run: |
           set -eu
           ls -l
-          found=0
-          for f in digest-*.txt; do
-            printf '%-28s %s\n' "$f" "$(cat "$f")"
-            # Count only a well-formed digest, so an empty or garbled file
-            # can't pass as a platform that agrees.
-            if grep -qxE '0x[0-9a-f]{16}' "$f"; then
-              found=$((found + 1))
-            else
-              echo "malformed digest in $f" >&2
+          # `digest-*.txt` is the artillery sim. `trial-digest-*.txt` is the
+          # Drone Trial. They are different numbers; each set must agree
+          # with itself across platforms. One file per `sim` matrix entry
+          # plus Android and iOS, for each set.
+          compare() {
+            local pattern=$1
+            local label=$2
+            local found=0
+            local f
+            for f in $pattern; do
+              if [ ! -f "$f" ]; then
+                echo "no $label digests ($pattern)" >&2
+                exit 1
+              fi
+              printf '%-36s %s\n' "$f" "$(cat "$f")"
+              # Count only a well-formed digest, so an empty or garbled file
+              # can't pass as a platform that agrees.
+              if grep -qxE '0x[0-9a-f]{16}' "$f"; then
+                found=$((found + 1))
+              else
+                echo "malformed digest in $f" >&2
+              fi
+            done
+            local expected=$EXPECTED_DIGESTS
+            if [ "$found" -ne "$expected" ]; then
+              echo "$label: expected $expected platform digests, got $found" >&2
+              exit 1
             fi
-          done
-          # One per `sim` matrix entry plus Android and iOS; keep in step
-          # with those jobs.
-          expected=$EXPECTED_DIGESTS
-          if [ "$found" -ne "$expected" ]; then
-            echo "expected $expected platform digests, got $found" >&2
-            exit 1
-          fi
-          if [ "$(cat digest-*.txt | sort -u | wc -l)" -ne 1 ]; then
-            echo "DETERMINISM LEAK: platform digests differ" >&2
-            exit 1
-          fi
-          echo "all platforms agree: $(cat digest-ubuntu-latest.txt)"
+            if [ "$(cat $pattern | sort -u | wc -l)" -ne 1 ]; then
+              echo "DETERMINISM LEAK: $label platform digests differ" >&2
+              exit 1
+            fi
+            echo "$label agrees: $(cat "$f")"
+          }
+          compare 'digest-*.txt' artillery
+          compare 'trial-digest-*.txt' 'drone trial'
 
   # Every place the version is written down agrees (RELEASING.md, "Version
   # rule"), on every run so drift is caught in review. On a `v*` tag the tag
