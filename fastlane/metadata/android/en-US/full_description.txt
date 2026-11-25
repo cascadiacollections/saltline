@@ -11,4 +11,4 @@ Features:
 • Local plain-text saves and replayable runs
 • No ads, in-app purchases, network connection, or telemetry
 
-Salt Line is free and open-source software, released under the MIT License. It is an early development preview; gameplay and balance may change.
+Salt Line's code is free and open-source software, released under the MIT License. The one-shot sound effects are original procedural audio. The bitmap font, HUD icons, and seasonal tower costumes are original project artwork. Concept-board sprites, the title scene, the application icon, the title music, and the Drone Trial coast have no recorded copyright license in this repository; see the README section "Art and asset licenses". It is an early development preview; gameplay and balance may change.

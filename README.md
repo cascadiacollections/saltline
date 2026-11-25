@@ -597,17 +597,54 @@ chassis, structure damage states, and precomputed barrel angles. The
 [source notes](art/source/salt-and-iron/README.md) record provenance and cleanup
 steps; the [design specification](design/DESIGN.md) describes the game's rules.
 
-### TODO(owner): art license
+### Art and asset licenses
 
-The F-Droid metadata request should not be opened until this is filled in.
-The pull request can merge without the final sentence.
+The game code is MIT. See [LICENSE](LICENSE). [TRADEMARK.md](TRADEMARK.md)
+reserves the name "Salt Line", the application icon, and the title artwork,
+and it allows F-Droid to distribute the official build under that name, that
+icon, and `com.cascadiacollections.saltline.foss`. It does not name a copyright
+license for the picture files. This repository does not record MIT, CC BY 4.0,
+or any other copyright license for the pictures in the unrecorded list below.
+Leave the F-Droid metadata request closed until those are confirmed.
 
-- Who supplied the concept boards and the application icons.
-- The harbour plate, the barrel, and the title art involved an image model.
-  That is already written down in
-  [`art/source/salt-and-iron/README.md`](art/source/salt-and-iron/README.md).
-- Which license covers all of the art. MIT is the simplest. CC BY 4.0 is the
-  alternative. Do not add a license until the rights are confirmed.
+Original project work. No third-party file is recorded for these:
+
+- The bitmap font in `crates/salt-line-godot/src/font.rs` and the HUD icons in
+  `crates/salt-line-godot/src/icons.rs` are source code in this repository, so
+  the MIT license covers them. No font file is shipped.
+- The one-shot effects in `art/audio/`, other than `title_loop.wav`, are written
+  by `tools/gen_audio.py`. That script calls them original procedural audio and
+  says they use no samples, downloads, or third-party recordings. It does not
+  give the WAV files a separate license name.
+- The seasonal water-tower costumes are drawn by `seasonal_tower()` in
+  `tools/gen_sprites.py` and kept as Aseprite sources under `art/aseprite/`.
+
+No copyright license, and no copyright holder, is recorded for:
+
+- The concept boards. `art/source/salt-and-iron/01-salt-and-iron.png` is the
+  source of the shipping chassis, structures, soil, and harbour scene. The
+  other five boards are on the marketing page, in `site/assets/concept-boards/`.
+- The harbour plate and the barrel. `art/source/salt-and-iron/README.md` says
+  both were produced with the built-in ImageGen tool on 2026-10-10
+  (`clean-background.png`, `extracted-barrel.png`). The tool is not named.
+- The title scene. `title_scene()` in `tools/import_concept_art.py` covers the
+  Salt & Iron board's baked-in lettering with that board's own sky pixels.
+  `art/source/title_prompt.txt` is a separate ImageGen prompt from 2026-10-09
+  that used the Iron & Chalk board as a reference. `art/source/title_salt_flat.png`
+  sits beside that prompt and is not referenced by the build scripts.
+  `TRADEMARK.md` reserves the title artwork.
+- The application icons in `art/app-icons/`. `art/app-icons/README.txt` calls
+  them supplied artwork and does not name who supplied them.
+  `tools/build_app_icons.py` resizes one of them to `art/icon_1024.png`.
+- `art/audio/title_loop.wav`, the looping title track. `tools/gen_audio.py`
+  does not write it, and no other generator in the tree does.
+- `art/trial_coast.png`, the Drone Trial backdrop. The commit that added it
+  calls it generated coastal art. No generator for it remains in the tree.
+  `design/DRONE_TRIAL_PLAN.md` says to keep large source images out of runtime
+  assets until they are licensed.
+- The parallax PNGs in `art/backgrounds/` (`parallax_sky_512x180.png`,
+  `parallax_dunes_512x180.png`, `parallax_mesas_512x180.png`). Export presets
+  exclude `art/backgrounds/*`. Nothing in the tree says who drew them.
 
 The game uses chassis and structure cutouts from the
 [Salt & Iron concept board](https://cascadiacollections.github.io/saltline/assets/concept-boards/01-salt-and-iron.png).
@@ -938,8 +975,10 @@ pushes to main don't build them.
 
 ## License
 
-MIT. See `LICENSE`. The Salt Line name, icon and title artwork are covered by
-[TRADEMARK.md](TRADEMARK.md), not the code license.
+The game code is MIT. See `LICENSE`. Asset licenses are in
+[Art and asset licenses](#art-and-asset-licenses). The Salt Line name, the
+application icon, and the title artwork are reserved in
+[TRADEMARK.md](TRADEMARK.md).
 
 ### Concept boards and application icons
 
