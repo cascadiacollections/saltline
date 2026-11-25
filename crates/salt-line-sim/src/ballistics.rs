@@ -272,6 +272,93 @@ pub fn segment_hits_aabb(a: Vec2, b: Vec2, box_: Aabb) -> bool {
         && clip(dy, box_.y1 - a.y, &mut t0, &mut t1)
 }
 
+/// Largest magnitude, for a step's ends and a box's edges, at which
+/// [`Clearance`] will vouch for a step: 2^40 world units. Every screen the
+/// game builds is far inside it; the limit exists so the proof on
+/// [`Clearance`] holds for any input at all.
+const CLEARANCE_LIMIT: f64 = 1_099_511_627_776.0;
+/// How far beyond a box's edge both ends of a step must be before
+/// [`Clearance`] vouches for it.
+const CLEARANCE_MARGIN: f64 = 1.0;
+
+/// The region in which a step cannot touch any target box: left of them all,
+/// right of them all, or above them all, by more than [`CLEARANCE_MARGIN`].
+///
+/// [`simulate_shell`] asks this before sweeping a step against the boxes.
+/// It is an early out and nothing else: [`Clearance::clears`] is true only
+/// when [`segment_hits_aabb`] is false for every box grown by the shell
+/// radius, so skipping the sweep cannot change where a shell ends.
+///
+/// "Outside the bounding box" alone would not be enough to promise that.
+/// [`segment_hits_aabb`] works in rounded arithmetic, and for a step that
+/// ends within a rounding error of an edge it can report a hit that exact
+/// arithmetic would not. The margin and the magnitude limit put every step
+/// passed here well clear of that. Take a step left of a box edge `e`, both
+/// ends below `e - 1` and every magnitude under 2^40. The first clip has
+/// `q = a.x - e` and `p = -(b.x - a.x)`, each rounded by at most 2^-12.
+/// Moving toward the box, `|q|` exceeds `|p|` by more than 0.99, so
+/// `q / p` rounds above 1 and the clip rejects the step. Moving away, `q / p`
+/// is negative and no smaller than 0.99 / 2^41 in size, so it cannot
+/// underflow to zero and the clip rejects it again. Standing still in x
+/// (`p == 0`) is rejected because `q < 0`. The right and upper sides are the
+/// mirror image through the second and fourth clips; by then the earlier
+/// clips can only have narrowed `t0..t1` inside `0..1`, which is all the
+/// argument needs. A NaN coordinate fails every comparison in `clears`, and
+/// a box with an edge that is NaN or beyond the limit turns the early out
+/// off altogether.
+#[derive(Clone, Copy, Debug)]
+struct Clearance {
+    /// Both ends of a step below this x: clear on the left.
+    left: f64,
+    /// Both ends above this x: clear on the right.
+    right: f64,
+    /// Both ends above this y: clear overhead.
+    above: f64,
+}
+
+impl Clearance {
+    /// Never vouches for anything.
+    const NEVER: Clearance = Clearance {
+        left: f64::NEG_INFINITY,
+        right: f64::INFINITY,
+        above: f64::INFINITY,
+    };
+
+    /// The clear region around `targets`, each grown by [`SHELL_RADIUS`]
+    /// exactly as [`simulate_shell`] grows it.
+    fn of(targets: &[Aabb]) -> Clearance {
+        let mut c = Clearance {
+            left: f64::INFINITY,
+            right: f64::NEG_INFINITY,
+            above: f64::NEG_INFINITY,
+        };
+        for b in targets {
+            let b = b.expand(SHELL_RADIUS);
+            // Written so that a NaN edge fails it.
+            let in_range = abs(b.x0) <= CLEARANCE_LIMIT
+                && abs(b.x1) <= CLEARANCE_LIMIT
+                && abs(b.y1) <= CLEARANCE_LIMIT;
+            if !in_range {
+                return Clearance::NEVER;
+            }
+            c.left = c.left.min(b.x0 - CLEARANCE_MARGIN);
+            c.right = c.right.max(b.x1 + CLEARANCE_MARGIN);
+            c.above = c.above.max(b.y1 + CLEARANCE_MARGIN);
+        }
+        c
+    }
+
+    /// True only if the step `a`→`b` touches no target box. False says
+    /// nothing: the caller then tests each box.
+    #[inline]
+    fn clears(&self, a: Vec2, b: Vec2) -> bool {
+        const L: f64 = CLEARANCE_LIMIT;
+        (a.x > -L && b.x > -L && a.x < self.left && b.x < self.left)
+            || (a.x < L && b.x < L && a.x > self.right && b.x > self.right)
+            || (a.y < L && b.y < L && a.y > self.above && b.y > self.above)
+    }
+}
+
 /// Everything a shell can interact with. Ballistics knows nothing about
 /// structures, the economy, or drafting — only boxes and a heightfield.
 pub struct World<'a> {
@@ -484,6 +571,7 @@ pub fn simulate_shell(
 
     let miss_x = world.width as f64 * MISS_WIDTH_FACTOR;
     let mut steps = 0u32;
+    let clearance = Clearance::of(world.targets);
 
     let end = loop {
         if steps >= MAX_SHELL_STEPS {
@@ -530,7 +618,11 @@ pub fn simulate_shell(
         // sweeps the whole step against each box grown by the shell radius,
         // so a fast shell cannot step clean over a thin mast. A tunnelling
         // shell is underground and skips it.
-        if !tunneling {
+        //
+        // Most steps are nowhere near a structure, and `clearance` lets them
+        // skip the boxes: it passes only steps that every box test below
+        // would reject (see [`Clearance`]), so `hit` is `None` either way.
+        if !tunneling && !clearance.clears(prev, p) {
             let mut hit = None;
             for (i, b) in world.targets.iter().enumerate() {
                 if segment_hits_aabb(prev, p, b.expand(SHELL_RADIUS)) {
@@ -1247,5 +1339,172 @@ mod tests {
             Vec2::new(11.0, 21.0),
             b
         ));
+    }
+
+    /// Coordinates chosen to sit on, beside and far beyond everything
+    /// [`Clearance`] compares against.
+    fn awkward(around: &[f64]) -> Vec<f64> {
+        let mut out = vec![
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            5e-324,
+            -5e-324,
+            1e-300,
+            CLEARANCE_LIMIT,
+            -CLEARANCE_LIMIT,
+            CLEARANCE_LIMIT.next_down(),
+            (-CLEARANCE_LIMIT).next_up(),
+            CLEARANCE_LIMIT * 4.0,
+            -CLEARANCE_LIMIT * 4.0,
+            1e300,
+            -1e300,
+            f64::MAX,
+            f64::MIN,
+        ];
+        for &v in around {
+            for d in [
+                0.0,
+                CLEARANCE_MARGIN,
+                -CLEARANCE_MARGIN,
+                SHELL_RADIUS,
+                -SHELL_RADIUS,
+            ] {
+                let e = v + d;
+                out.extend([
+                    e,
+                    e.next_up(),
+                    e.next_down(),
+                    e + 1e-9,
+                    e - 1e-9,
+                    e + 3.0,
+                    e - 3.0,
+                ]);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn clearance_only_vouches_for_steps_that_miss_every_box() {
+        // The wreck box is the one `Screen::target_boxes` gives a cleared
+        // structure; the last three sets are boxes no screen would hold.
+        let wreck = Aabb::new(-1.0e9, -1.0e9, -1.0e9 + 1.0, -1.0e9 + 1.0);
+        let sets: Vec<Vec<Aabb>> = vec![
+            vec![],
+            vec![Aabb::new(200.0, 50.0, 205.0, 98.0)],
+            vec![
+                Aabb::new(170.0, 40.0, 190.0, 60.0),
+                Aabb::new(260.0, 70.0, 266.0, 110.0),
+            ],
+            vec![wreck, Aabb::new(240.0, 52.0, 252.0, 76.0)],
+            vec![Aabb::new(240.0, 52.0, 252.0, 76.0), wreck, wreck],
+            vec![Aabb::new(1e-9, 0.0, 2e-9, 1e-9)],
+            vec![Aabb::new(205.0, 98.0, 200.0, 50.0)],
+            vec![Aabb::new(200.0, 50.0, f64::NAN, 98.0)],
+            vec![Aabb::new(-1e300, 50.0, 205.0, 1e300)],
+        ];
+        let mut r = crate::rng::Pcg32::new(0xC1EA);
+        let (mut vouched, mut asked) = (0u32, 0u32);
+        for boxes in &sets {
+            let clearance = Clearance::of(boxes);
+            let mut check = |a: Vec2, b: Vec2| {
+                asked += 1;
+                if clearance.clears(a, b) {
+                    vouched += 1;
+                    for bx in boxes {
+                        assert!(
+                            !segment_hits_aabb(a, b, bx.expand(SHELL_RADIUS)),
+                            "vouched for {a:?} -> {b:?}, which hits {bx:?}"
+                        );
+                    }
+                }
+            };
+
+            let edges: Vec<f64> = boxes
+                .iter()
+                .flat_map(|b| [b.x0, b.x1, b.y0, b.y1])
+                .collect();
+            let coords = awkward(&edges);
+            // Every pairing of awkward coordinates along one axis, with the
+            // other axis cycling through a few values, both ways round.
+            let other = [
+                f64::NAN,
+                -1e300,
+                -5.0,
+                30.0,
+                77.0,
+                111.5,
+                113.0,
+                400.0,
+                1e300,
+            ];
+            let mut pick = 0usize;
+            for &a1 in &coords {
+                for &b1 in &coords {
+                    let (a2, b2) = (other[pick % 9], other[(pick / 9) % 9]);
+                    pick += 1;
+                    check(Vec2::new(a1, a2), Vec2::new(b1, b2));
+                    check(Vec2::new(a2, a1), Vec2::new(b2, b1));
+                }
+            }
+            // Ordinary steps: a point anywhere near the play area and a
+            // step of a few units from it, as the integrator takes them.
+            for _ in 0..40_000 {
+                let a = Vec2::new(r.range_f64(-200.0, 700.0), r.range_f64(-50.0, 500.0));
+                let b = Vec2::new(a.x + r.signed(7.0), a.y + r.signed(7.0));
+                check(a, b);
+            }
+        }
+        // The early out has to fire to be worth having, and must not always.
+        assert!(vouched > 50_000, "vouched for only {vouched} of {asked}");
+        assert!(vouched < asked);
+
+        // A NaN edge or one past the limit turns it off entirely.
+        let off = Clearance::of(&[Aabb::new(200.0, 50.0, f64::NAN, 98.0)]);
+        assert!(!off.clears(Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)));
+        let off = Clearance::of(&[Aabb::new(200.0, 50.0, 205.0, CLEARANCE_LIMIT * 2.0)]);
+        assert!(!off.clears(Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)));
+        // A NaN end is never vouched for.
+        let on = Clearance::of(&[Aabb::new(200.0, 50.0, 205.0, 98.0)]);
+        assert!(on.clears(Vec2::new(10.0, 60.0), Vec2::new(12.0, 61.0)));
+        assert!(!on.clears(Vec2::new(f64::NAN, 60.0), Vec2::new(12.0, 61.0)));
+        assert!(!on.clears(Vec2::new(10.0, 60.0), Vec2::new(f64::NAN, 61.0)));
+        // Inside the margin it declines, even though the step misses.
+        let near = 200.0 - SHELL_RADIUS - CLEARANCE_MARGIN * 0.5;
+        assert!(!on.clears(Vec2::new(near, 60.0), Vec2::new(near + 0.1, 60.0)));
+        assert!(!segment_hits_aabb(
+            Vec2::new(near, 60.0),
+            Vec2::new(near + 0.1, 60.0),
+            Aabb::new(200.0, 50.0, 205.0, 98.0).expand(SHELL_RADIUS)
+        ));
+    }
+
+    #[test]
+    fn a_shell_ends_the_same_way_with_far_boxes_or_none() {
+        // The early out skips the box sweep on most steps. A flight that
+        // never comes near a box must therefore match the same flight with
+        // no boxes at all, and one aimed at a box must still strike it.
+        let f = flat(400, 40.0);
+        let lo = Loadout::new();
+        let opts = FireOptions::default();
+        let boxes = [Aabb::new(300.0, 40.0, 306.0, 88.0)];
+        let origin = Vec2::new(30.0, 46.0);
+        let mut struck = 0;
+        for angle in (100..=1700).step_by(50) {
+            for power in (100..=1000).step_by(100) {
+                let shot = Shot::new(angle, power);
+                let with = fire(&world(&f, &boxes, 2.0), origin, shot, &lo, &opts);
+                let without = fire(&world(&f, &[], 2.0), origin, shot, &lo, &opts);
+                if with[0].struck().is_some() {
+                    struck += 1;
+                } else {
+                    assert_eq!(format!("{with:?}"), format!("{without:?}"));
+                }
+            }
+        }
+        assert!(struck > 5, "only {struck} shots struck the box");
     }
 }

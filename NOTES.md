@@ -1129,3 +1129,127 @@ choice:
   owner's `user://` files backed up (sha256 unchanged after), but the phone
   sat on its secure lock screen, where Godot does not render, so the
   COPY, PASTE, watch clipboard round trip on the device is still to do.
+
+## 16. Cheaper proofs (November 2026)
+
+The solvability proof (DESIGN §2.4) and the integrator under it were
+profiled and made cheaper with every result unchanged: same screens, rungs,
+candidate lists, flight times and digests. Only wall time moved. `SIM_EPOCH`
+is not bumped because nothing it versions changed, and the golden runs pass
+untouched.
+
+- **Where the time went** (callgrind, the documented balance run cut to 20
+  seeds, base build, gate cap): 89% in the solver, 11% generating terrain.
+  Inside the solver, 77% was flights, and 36% of the whole run was
+  `apply_shot` flying a shot the solver had flown a moment earlier. The
+  terrain lookup under the shell was 24%, of which a software `floor` was
+  10%. Instruction counts picked the candidates; each one below was kept
+  or dropped on wall time.
+- **Fly each candidate once.** `fells_target` flew a candidate for its
+  proximity filter, then called `apply_shot` on a scratch copy, which flew
+  the same shot again. `apply_shot` is now `fire_traces` followed by
+  `apply_traces`, and the solver hands the first flight to the copy. The
+  copy is identical to the screen until the traces are applied, and a
+  flight is a pure function of screen, shot, loadout and fuse, so the
+  second flight could only repeat the first.
+- **Truncate in the terrain lookup.** `surface_at` has already returned for
+  `x <= 0` and `x >= last`, so `0 < x < last`, where truncating is the
+  floor. The cast replaces a `floor` call (compiler-builtins on x86-64
+  without SSE4.1). A NaN still reads NaN.
+- **Skip the box sweep away from the boxes.** A step whose ends are both
+  more than a unit left of, right of or above every target box (grown by
+  the shell radius) is not swept against them. Plain "outside the bounding
+  box" is not provably the same: the Liang–Barsky test works in rounded
+  arithmetic and can report a hit within a rounding error of an edge. The
+  unit of margin and a 2^40 magnitude limit put every skipped step where
+  the test's own first failing clip must reject it; the argument is on
+  `Clearance` in `ballistics.rs`.
+- **A table for tick directions.** `dir_from_ticks` reads the 1801 ticks of
+  the quarter turn from a table filled on first use by the same
+  computation. The closed form's angle search asks for thirteen directions
+  per flight time, several thousand per screen.
+- **Remember noise lattice values.** `base_ridge` samples each noise layer
+  once per column and a lattice cell is tens to hundreds of columns wide,
+  so the two hashes per sample (each ending in a division) were nearly
+  always the two just computed. Each octave keeps its last cell.
+- **One solution when one is wanted.** The attract demo, the autopilot and
+  both challenge hint arcs ran the uncapped search and kept its first
+  candidate. `solver::first_solution` stops at the first; the search order
+  does not depend on the cap, so it is the same shot. The hint arcs also
+  fly the hint with `fire_traces` instead of applying it to a screen they
+  then discard.
+
+**Measured** on one pinned core of a shared x86-64 Linux VM (4 vCPU, Rust
+1.99, release). Batch times are the minimum of 25 interleaved runs; the VM
+is noisy (the median sits 10–30% above the minimum for every build), so
+read ratios, not the third digit.
+
+| | Before | After | |
+|---|---|---|---|
+| `batch --seeds 6 --screens 100` (full count) | 1.112 s | 0.384 s | −65% |
+| `batch --seeds 100 --screens 40 --fast --build base` | 0.800 s | 0.316 s | −60% |
+| `batch` as CI runs it, 5,000 screens (3 runs each) | 10.4–11.2 s | 4.1–4.2 s | −61% |
+| bench `prove_a_screen_solvable` (screens 0, 12, 40, 120) | 28, 96, 30, 109 µs | 11, 43, 12, 48 µs | −55 to −62% |
+| bench `generate_a_screen` (same screens) | 59, 148, 65, 163 µs | 31, 65, 34, 69 µs | −47 to −58% |
+| bench `find_every_solution` (same screens) | 559, 578, 622, 627 µs | 255, 249, 229, 220 µs | −54 to −65% |
+| bench `resolve_a_shot` (no path, path) | 925, 1050 ns | 566, 706 ns | −39%, −33% |
+| bench `replay_a_run` | 320 µs | 224 µs | −30% |
+| the demo's aim: every solution, then one | 559–627 µs | 2.3–13.4 µs | |
+
+By step, minimum seconds for the full count and the gate: 1.112 / 0.800
+before; fly once 0.604 / 0.504; truncate 0.528 / 0.470; skip the sweep
+0.426 / 0.413; tick table 0.398 / 0.344; lattice values 0.378 / 0.315.
+
+**Identical before and after**, compared as text with only batch's
+`validated in N s (N/s)` removed: the default batch report; the five
+build-shape reports CI prints; the two balance reports (`--fast`, base
+perfect and evolving steady scaled); `--salvage-probe`; `determinism -v`
+(all 200 run hashes, digest `0x1b3cfe1e37a5c99b`); `trial_determinism`
+(digest `0xff8e006571cf0da1`); and a scratch dump of 57,675 lines: for 75
+loadouts (base, every modifier alone and doubled, 40 seeded mixes) over
+twelve screen indices, two widths and each forced fallback rung, the
+screen hash, rung, attempts and the full gate and uncapped reports with
+every candidate's shot and the bits of both its flight times, on fresh
+screens and again after three shots of damage. The dump was a throwaway
+example and is not in the tree.
+
+**Tests added**, old form against new: `apply_shot` against `fire_traces`
+then `apply_traces` over the solver's own candidates for six loadouts;
+`first_solution` against the head of `solve_target`; `surface_at` against
+its flooring form (every column edge and its neighbours, NaN, infinities,
+20,000 random points, fields of 0 to 2 columns); remembered against freshly
+hashed noise, and `base_ridge` against the definition; the tick table
+against the computation; `Clearance` against `segment_hits_aabb` over
+adversarial coordinates (the edges, margins and limit and their
+neighbouring floats, NaN, infinities, the cleared-wreck box, an inverted
+box, a NaN edge) and 360,000 ordinary steps; both hint arcs against the
+old way of drawing them. The `surface_at` test caught a slip in the first
+draft: on a one-column field a NaN `x` panicked instead of reading NaN.
+
+**Considered and left out:**
+
+- *A call-free `dmath::floor`* (truncate and correct). 6.5% of
+  instructions after the first two changes, no measurable time over 40
+  runs. `floor` stays `f64::floor`.
+- *Inlining `surface_at`.* Within noise.
+- *Skipping the ground test above the highest ground.* Needs that height
+  per shell; scanning the field for it cost more than it saved (the full
+  count ran about 50% slower). Keeping it on the screen would work but
+  adds a field to `World`, which the versus code builds by hand.
+- *Hoisting `muzzle()` and `target_boxes()` out of the candidate loop.*
+  Under 2% of instructions together.
+- *Rejecting on the bounding box without a margin,* and *replacing the
+  clip's division with a comparison:* the first is not provably identical
+  (above); the second is, but the sweep it would speed up is now mostly
+  skipped.
+- Nothing was reordered, no trial count or cap changed, and the solver is
+  still single-threaded.
+
+**Not measured:** phones, and arm64 at all. On arm64 `floor` is one
+instruction, so the truncation should gain less there; the other changes
+do not depend on the instruction set. The digests above were compared on
+this x86-64 machine; CI compares them on the other platforms.
+
+**Public signatures.** Added: `Screen::fire_traces`, `Screen::apply_traces`,
+`solver::first_solution`, `dmath::dir_from_ticks_computed`. None changed or
+removed; `Screen::apply_shot` keeps its signature and behaviour.

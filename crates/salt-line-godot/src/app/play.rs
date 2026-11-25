@@ -552,8 +552,8 @@ impl Game {
     pub(super) fn solver_shot(&self) -> Option<(Shot, usize)> {
         let run = self.play.run.as_ref()?;
         let target = run.screen.structures.iter().position(|s| !s.is_down())?;
-        salt_line_sim::solver::solve_target(&run.screen, &run.loadout, target)
-            .first()
+        // Only the first solution is used, so only the first is looked for.
+        salt_line_sim::solver::first_solution(&run.screen, &run.loadout, target)
             .map(|c| (c.shot, target))
     }
 
