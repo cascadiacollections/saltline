@@ -1,7 +1,8 @@
 # Draft metadata for a future F-Droid listing. Not submitted.
 # Replace COMMIT_PLACEHOLDER with the v0.2.0 tag commit before opening the
-# fdroiddata merge request. Do not open that request until the art license
-# sentence in the README exists.
+# fdroiddata merge request. README section "Art and asset licenses" names the
+# pictures that still have no recorded copyright license. Do not open that
+# request until those are confirmed. License below is the game code only.
 #
 # F-Droid signs the APK. There is no reproducible build and no developer
 # signature. The Rust pin matches rust-toolchain.toml (1.99.0).
@@ -121,8 +122,10 @@ MaintainerNotes: |-
   com.cascadiacollections.saltline.shareware. Full edition (no "shareware"
   custom feature); the edition difference lives only in
   crates/salt-line-godot/src/tier.rs. Name, icon and title art are covered
-  by TRADEMARK.md. The art license is still an owner TODO. Do not submit
-  until that sentence exists.
+  by TRADEMARK.md. README section "Art and asset licenses" separates original
+  project work from pictures with no recorded copyright license. Do not submit
+  until those pictures are confirmed. Leave License as MIT for the game code.
+  No copyright license is recorded that could be added for the pictures.
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags

@@ -1,16 +1,15 @@
 # Salt & Iron game assets
 
-## TODO(owner): art license
+## License
 
-The F-Droid metadata request should not be opened until this is filled in.
-The pull request can merge without the final sentence.
-
-- Who supplied the concept boards and the application icons.
-- The harbour plate, the barrel, and the title art involved an image model.
-  The ImageGen cleanup images and the title lettering removal below are the
-  record of that.
-- Which license covers all of the art. MIT is the simplest. CC BY 4.0 is the
-  alternative. This file does not add that license.
+No copyright license is recorded for the board or the pictures derived from it.
+The chassis and structures are cut from the concept board in this directory.
+The harbour plate and the barrel were produced with the built-in ImageGen tool;
+the prompts and the cleanup images below are the record of that. The title lettering removal below interpolates the board's own sky pixels
+over the baked-in lettering. Who supplied the board, which product ImageGen was, and which
+copyright license covers the results are not stated here. The project-wide
+account is [Art and asset licenses](../../../README.md#art-and-asset-licenses)
+in the README. This file does not add MIT, CC BY 4.0, or any other license.
 
 Original source: [01-salt-and-iron.png](https://cascadiacollections.github.io/saltline/assets/concept-boards/01-salt-and-iron.png).
 The unchanged board is kept here so the conversion never needs a network request.

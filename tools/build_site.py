@@ -415,7 +415,13 @@ def license_page():
 <nav aria-label="Project links"><a href="index.html#get">Get Salt Line</a></nav></header>
 <main id="main"><section aria-labelledby="licenses-h">
 <h1 id="licenses-h">Credits &amp; licenses</h1>
-<p>Salt Line is by Cascadia Collections and is licensed under MIT.
+<p>Salt Line's code is by Cascadia Collections and is licensed under MIT.
+The bitmap font and HUD icons are part of that code. The one-shot sound
+effects are original procedural audio from the project's generator, and the
+seasonal tower costumes are drawn by the project's sprite tool. Concept-board
+sprites, the title scene, the application icon, the title music, and the
+Drone Trial coast have no recorded copyright license. The name, the application
+icon, and the title artwork are reserved in the trademark policy.
 Thank you to the free and open-source communities behind Godot Engine,
 the gdext Rust bindings, glam, libc, and Linux desktop integration.</p>
 <p>The complete bundled notices below are also available offline in the game's
