@@ -7,8 +7,9 @@ what the code license does **not** grant: the game's identity.
 
 - The name **"Salt Line"** as the name of a game or distributed product
 - The Salt Line application icon, title artwork, and logo
-- The application IDs `com.cascadiacollections.saltline` and
-  `com.cascadiacollections.saltline.shareware` on any store
+- The application IDs `com.cascadiacollections.saltline`,
+  `com.cascadiacollections.saltline.shareware`, and
+  `com.cascadiacollections.saltline.foss` on any store
 
 These remain the property of Kevin T. Coughlin and may not be used to name, brand, or market a
 fork or derived product without written permission.
@@ -20,6 +21,8 @@ fork or derived product without written permission.
 - Build the game from source for yourself, unchanged, including its name and icon, in either
   edition
 - Share the official free shareware build as it is
+- F-Droid may build the game from this source and distribute it under the name, the icon, and
+  the `com.cascadiacollections.saltline.foss` application ID
 - Use the name "Salt Line" nominatively: in reviews, videos, articles, and compatibility notes
 
 ## Why

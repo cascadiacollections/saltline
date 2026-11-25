@@ -22,3 +22,6 @@ mutants.out.old/
 
 # Blender autosave backups
 *.blend1
+
+# F-Droid drops the Godot Android release template here during its build.
+/android_release.apk
