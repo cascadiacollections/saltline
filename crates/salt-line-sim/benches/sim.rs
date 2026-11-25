@@ -40,6 +40,24 @@ fn prove_a_screen_solvable(bencher: Bencher, index: u32) {
     bencher.bench(|| solver::validate(black_box(&screen), &lo));
 }
 
+/// One shot that fells the first target, which is all the attract demo and
+/// the autopilot ask for, against listing every such shot.
+#[divan::bench(args = [0, 12, 40, 120])]
+fn find_one_solution(bencher: Bencher, index: u32) {
+    let lo = Loadout::default();
+    let screen = generate_screen(SEED, index, 320, &lo);
+    bencher.bench(|| solver::first_solution(black_box(&screen), &lo, 0));
+}
+
+/// Every shot that fells the first target: the uncapped search behind the
+/// batch harness's histogram.
+#[divan::bench(args = [0, 12, 40, 120])]
+fn find_every_solution(bencher: Bencher, index: u32) {
+    let lo = Loadout::default();
+    let screen = generate_screen(SEED, index, 320, &lo);
+    bencher.bench(|| solver::solve_target(black_box(&screen), &lo, 0));
+}
+
 /// One shot, with and without the recorded path the renderer draws.
 #[divan::bench(args = [false, true])]
 fn resolve_a_shot(bencher: Bencher, record_path: bool) {

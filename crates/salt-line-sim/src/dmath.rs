@@ -22,6 +22,8 @@
 //! before any trig happens, and the authority on whether a shot connects is
 //! always the fixed-step integration, never the closed-form solve.
 
+use std::sync::OnceLock;
+
 /// π, rounded to the nearest `f64`. Constants are literals, so they are the
 /// same bits everywhere.
 pub const PI: f64 = core::f64::consts::PI;
@@ -102,8 +104,27 @@ pub fn cos(x: f64) -> f64 {
 ///
 /// `ticks` is in 0.05° steps ([`TICK_DEG`]); any `i32` works, though the sim
 /// only passes `0..=`[`MAX_ANGLE_TICKS`].
+///
+/// Ticks on the barrel's quarter turn are read from a table filled on first
+/// use by [`dir_from_ticks_computed`], so a lookup returns the very bits the
+/// computation would. The solver's closed form asks for thirteen directions
+/// per flight time through [`angle_ticks_from_dir`], several thousand per
+/// screen, all on those 1801 ticks.
 #[inline]
 pub fn dir_from_ticks(ticks: i32) -> (f64, f64) {
+    static QUARTER_TURN: OnceLock<Vec<(f64, f64)>> = OnceLock::new();
+    if (0..=MAX_ANGLE_TICKS).contains(&ticks) {
+        let table = QUARTER_TURN
+            .get_or_init(|| (0..=MAX_ANGLE_TICKS).map(dir_from_ticks_computed).collect());
+        table[ticks as usize]
+    } else {
+        dir_from_ticks_computed(ticks)
+    }
+}
+
+/// [`dir_from_ticks`] worked out from scratch: the definition, and what
+/// fills its table.
+pub fn dir_from_ticks_computed(ticks: i32) -> (f64, f64) {
     let a = ticks as f64 * TICK_RAD;
     (cos(a), sin(a))
 }
@@ -301,5 +322,21 @@ mod tests {
         assert_eq!(bump(4.0, 4.0), 0.0);
         assert_eq!(bump(9.0, 4.0), 0.0);
         assert!(bump(2.0, 4.0) > 0.0 && bump(2.0, 4.0) < 1.0);
+    }
+
+    #[test]
+    fn the_tick_table_holds_exactly_what_would_be_computed() {
+        // Every tick on the table, and a margin either side that is not.
+        for t in -60..=MAX_ANGLE_TICKS + 60 {
+            let (c, s) = dir_from_ticks(t);
+            let (cc, sc) = dir_from_ticks_computed(t);
+            assert_eq!(c.to_bits(), cc.to_bits(), "cos at tick {t}");
+            assert_eq!(s.to_bits(), sc.to_bits(), "sin at tick {t}");
+        }
+        for t in [i32::MIN, i32::MIN + 1, -1, MAX_ANGLE_TICKS + 1, i32::MAX] {
+            let (c, s) = dir_from_ticks(t);
+            let (cc, sc) = dir_from_ticks_computed(t);
+            assert_eq!((c.to_bits(), s.to_bits()), (cc.to_bits(), sc.to_bits()));
+        }
     }
 }

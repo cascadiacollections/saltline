@@ -112,10 +112,33 @@ fn hash32(n: i64, seed: u32) -> f64 {
 /// is smooth where the lattice cells meet. Output is in `[0, 1]`. Perlin
 /// (gradient) noise would instead place random slopes at the lattice points.
 pub fn vnoise(x: f64, seed: u32) -> f64 {
+    vnoise_in(x, seed, &mut None)
+}
+
+/// The lattice cell one noise layer last sampled: its index and the hashed
+/// values at its two ends. See [`vnoise_in`].
+type LatticeCell = Option<(i64, f64, f64)>;
+
+/// [`vnoise`], remembering in `cell` the lattice values it used.
+///
+/// [`base_ridge`] samples each noise layer once per pixel column, and a
+/// lattice cell is tens to hundreds of columns wide, so nearly every sample
+/// lands in the cell the one before it did. The two hashes for that cell are
+/// kept and reused; a sample in the next cell along reuses the shared end.
+/// `hash32` is a pure function of the index and the seed, so a remembered
+/// value is the value it would compute again, and the result is the same
+/// bits as [`vnoise`] gives. One `cell` must only ever see one seed.
+fn vnoise_in(x: f64, seed: u32, cell: &mut LatticeCell) -> f64 {
     let i = dmath::floor(x);
     let f = smoothstep(x - i);
     let i = i as i64;
-    hash32(i, seed) * (1.0 - f) + hash32(i + 1, seed) * f
+    let (h0, h1) = match *cell {
+        Some((at, h0, h1)) if at == i => (h0, h1),
+        Some((at, _, h1)) if at.checked_add(1) == Some(i) => (h1, hash32(i + 1, seed)),
+        _ => (hash32(i, seed), hash32(i + 1, seed)),
+    };
+    *cell = Some((i, h0, h1));
+    h0 * (1.0 - f) + h1 * f
 }
 
 /// Octaves of value noise. DESIGN §2.3: 4 octaves, lacunarity 2.0, gain 0.5.
@@ -133,12 +156,19 @@ const OCTAVE_STRIDE: u32 = 7919;
 /// later ones. Dividing by the summed amplitudes keeps the result in `[0, 1]`.
 /// Each octave gets its own seed so their lattices do not line up.
 pub fn fbm(x: f64, seed: u32) -> f64 {
+    fbm_in(x, seed, &mut [None; OCTAVES as usize])
+}
+
+/// [`fbm`], with one remembered lattice cell per octave ([`vnoise_in`]).
+/// Same bits as `fbm`; `cells` must only ever see one seed.
+fn fbm_in(x: f64, seed: u32, cells: &mut [LatticeCell; OCTAVES as usize]) -> f64 {
     let mut amp = 1.0;
     let mut freq = 1.0;
     let mut sum = 0.0;
     let mut norm = 0.0;
-    for o in 0..OCTAVES {
-        sum += vnoise(x * freq, seed.wrapping_add(o.wrapping_mul(OCTAVE_STRIDE))) * amp;
+    for (o, cell) in (0..OCTAVES).zip(cells.iter_mut()) {
+        let octave_seed = seed.wrapping_add(o.wrapping_mul(OCTAVE_STRIDE));
+        sum += vnoise_in(x * freq, octave_seed, cell) * amp;
         norm += amp;
         amp *= GAIN;
         freq *= LACUNARITY;
@@ -190,14 +220,19 @@ fn field_seeds(screen_seed: u64) -> (u32, u32, u32) {
 pub fn base_ridge(width: usize, screen_seed: u64, amp: f64) -> Vec<f64> {
     let (s_detail, s_warp, s_ridge) = field_seeds(screen_seed);
     let mut out = Vec::with_capacity(width);
+    // One set of remembered lattice cells per noise layer, since each layer
+    // has its own seed.
+    let mut warp_cells = [None; OCTAVES as usize];
+    let mut detail_cells = [None; OCTAVES as usize];
+    let mut ridge_cells = [None; OCTAVES as usize];
     for i in 0..width {
         let x = i as f64 * TERRAIN_STEP;
         // Domain warp: offset where the noise is sampled, not the height it
         // returns. That bends hills sideways into lopsided shapes instead of
         // just making them taller or shorter.
-        let warp = (fbm(x * WARP_FREQ, s_warp) - 0.5) * WARP_STRENGTH;
-        let n = fbm((x + warp) * DETAIL_FREQ, s_detail);
-        let ridge = fbm((x + warp) * RIDGE_FREQ, s_ridge);
+        let warp = (fbm_in(x * WARP_FREQ, s_warp, &mut warp_cells) - 0.5) * WARP_STRENGTH;
+        let n = fbm_in((x + warp) * DETAIL_FREQ, s_detail, &mut detail_cells);
+        let ridge = fbm_in((x + warp) * RIDGE_FREQ, s_ridge, &mut ridge_cells);
         out.push(BASE_ELEVATION + (n * DETAIL_AMP + ridge * RIDGE_AMP) * amp);
     }
     out
@@ -443,10 +478,20 @@ impl Heightfield {
         if x >= last as f64 {
             return self.surface(last);
         }
-        let i = dmath::floor(x);
-        let f = x - i;
-        let i = i as usize;
-        self.surface(i) * (1.0 - f) + self.surface(i + 1) * f
+        // A NaN passes both tests above. It has no column and reads NaN, as
+        // it always did.
+        if x.is_nan() {
+            return x;
+        }
+        // Here `0 < x < last`, so truncating is taking the floor, the floor
+        // converts back to `f64` exactly, and `i + 1 <= last`. This is the
+        // integrator's innermost lookup: the cast stands in for
+        // `dmath::floor`, which is a library call on x86-64, and gives the
+        // same column and the same fraction, bit for bit.
+        let i = x as i64 as usize;
+        let f = x - i as f64;
+        let (base, scar) = (&self.base[i..i + 2], &self.scar[i..i + 2]);
+        (base[0] - scar[0]) * (1.0 - f) + (base[1] - scar[1]) * f
     }
 
     /// Original (pre-damage) surface elevation, clamped at the ends like
@@ -764,5 +809,143 @@ mod tests {
         assert!(abs(f.surface_at(0.0) - 10.0) < 1e-12);
         assert!(abs(f.surface_at(-5.0) - 10.0) < 1e-12);
         assert!(abs(f.surface_at(99.0) - 20.0) < 1e-12);
+    }
+
+    /// `surface_at` as it was written before the integrator's lookup stopped
+    /// calling `floor`.
+    fn surface_at_by_floor(f: &Heightfield, x: f64) -> f64 {
+        if f.is_empty() {
+            return 0.0;
+        }
+        let last = f.len() - 1;
+        if x <= 0.0 {
+            return f.surface(0);
+        }
+        if x >= last as f64 {
+            return f.surface(last);
+        }
+        let i = dmath::floor(x);
+        let frac = x - i;
+        let i = i as usize;
+        f.surface(i) * (1.0 - frac) + f.surface(i + 1) * frac
+    }
+
+    #[test]
+    fn surface_at_truncating_matches_surface_at_flooring() {
+        let mut f = generate(77, Template::Ridge, &params(320));
+        f.crater(100.0, 14.0);
+        f.crater(203.4, 9.0);
+        f.mound(150.0, 12.0, 4.0);
+        let last = (f.len() - 1) as f64;
+
+        let mut xs = vec![
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.0,
+            0.0,
+            f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            -1.0,
+            1e300,
+            -1e300,
+            last,
+            last + 0.5,
+            last.next_down(),
+            last.next_up(),
+        ];
+        for i in 0..=f.len() {
+            let whole = i as f64;
+            xs.extend([whole, whole.next_down(), whole.next_up(), whole + 0.5]);
+        }
+        let mut r = crate::rng::Pcg32::new(0x5EA);
+        for _ in 0..20_000 {
+            xs.push(r.range_f64(-8.0, last + 8.0));
+        }
+
+        for x in xs {
+            let (new, old) = (f.surface_at(x), surface_at_by_floor(&f, x));
+            assert!(
+                new.to_bits() == old.to_bits() || (new.is_nan() && old.is_nan()),
+                "x = {x:e}: {new:e} vs {old:e}"
+            );
+        }
+
+        // Short and empty fields take the early returns.
+        for n in 0..3 {
+            let small = Heightfield::from_base(vec![40.0; n]);
+            for x in [-1.0, 0.0, 0.25, 1.0, 1.5, 2.0, f64::NAN] {
+                let (new, old) = (small.surface_at(x), surface_at_by_floor(&small, x));
+                assert!(new.to_bits() == old.to_bits() || (new.is_nan() && old.is_nan()));
+            }
+        }
+    }
+
+    /// Value noise with both lattice values hashed afresh on every call: the
+    /// definition, with nothing remembered.
+    fn vnoise_afresh(x: f64, seed: u32) -> f64 {
+        let i = dmath::floor(x);
+        let f = smoothstep(x - i);
+        let i = i as i64;
+        hash32(i, seed) * (1.0 - f) + hash32(i + 1, seed) * f
+    }
+
+    fn fbm_afresh(x: f64, seed: u32) -> f64 {
+        let mut amp = 1.0;
+        let mut freq = 1.0;
+        let mut sum = 0.0;
+        let mut norm = 0.0;
+        for o in 0..OCTAVES {
+            sum += vnoise_afresh(x * freq, seed.wrapping_add(o.wrapping_mul(OCTAVE_STRIDE))) * amp;
+            norm += amp;
+            amp *= GAIN;
+            freq *= LACUNARITY;
+        }
+        sum / norm
+    }
+
+    #[test]
+    fn remembered_lattice_values_give_the_same_noise() {
+        // One remembered cell fed a walk that stays put, steps to the next
+        // cell, steps back, and jumps: every reuse rule and every miss.
+        let seed = 0xBEEF;
+        let mut cell = None;
+        let mut r = crate::rng::Pcg32::new(0x1A77);
+        let mut x = -3.25;
+        for step in 0..5_000 {
+            x += match step % 7 {
+                0 => 1.0,
+                1 => -1.0,
+                2 => r.range_f64(-40.0, 40.0),
+                _ => r.range_f64(-0.3, 0.6),
+            };
+            let (kept, afresh) = (vnoise_in(x, seed, &mut cell), vnoise_afresh(x, seed));
+            assert_eq!(kept.to_bits(), afresh.to_bits(), "step {step}, x = {x}");
+            assert_eq!(vnoise(x, seed).to_bits(), afresh.to_bits());
+            assert_eq!(fbm(x, seed).to_bits(), fbm_afresh(x, seed).to_bits());
+        }
+        // The edges of the index range, where `i + 1` would not fit.
+        for x in [f64::NAN, -0.0, -1e-9] {
+            let (kept, afresh) = (vnoise_in(x, seed, &mut cell), vnoise_afresh(x, seed));
+            assert!(kept.to_bits() == afresh.to_bits() || (kept.is_nan() && afresh.is_nan()));
+        }
+    }
+
+    #[test]
+    fn base_ridge_matches_noise_computed_afresh() {
+        for (seed, width, amp) in [(1u64, 320usize, 1.0), (0xC0FFEE, 480, 2.2), (9, 37, 0.35)] {
+            let (s_detail, s_warp, s_ridge) = field_seeds(seed);
+            let ridge = base_ridge(width, seed, amp);
+            assert_eq!(ridge.len(), width);
+            for (i, h) in ridge.iter().enumerate() {
+                let x = i as f64 * TERRAIN_STEP;
+                let warp = (fbm_afresh(x * WARP_FREQ, s_warp) - 0.5) * WARP_STRENGTH;
+                let n = fbm_afresh((x + warp) * DETAIL_FREQ, s_detail);
+                let r = fbm_afresh((x + warp) * RIDGE_FREQ, s_ridge);
+                let want = BASE_ELEVATION + (n * DETAIL_AMP + r * RIDGE_AMP) * amp;
+                assert_eq!(h.to_bits(), want.to_bits(), "seed {seed} column {i}");
+            }
+        }
     }
 }

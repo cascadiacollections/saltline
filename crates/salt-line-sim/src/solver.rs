@@ -26,10 +26,12 @@
 //! footprint base and the upper box for the undermining and toppling kill
 //! paths. Duplicate dialable shots are simulated once.
 //!
-//! Verification is deliberately expensive: every candidate that survives a
-//! cheap proximity filter is applied to a clone of the screen with
+//! Verification is deliberately expensive: every candidate is flown with
+//! [`Screen::fire_traces`], and each one that survives a cheap proximity
+//! filter has that flight applied to a clone of the screen with
+//! [`Screen::apply_traces`]. Those are the two halves of
 //! [`Screen::apply_shot`], so the solver judges a shot by the game's own
-//! damage model rather than a copy of it. [`validate`] also stops counting at
+//! flight and damage model rather than a copy of them. [`validate`] also stops counting at
 //! [`GATE_CAP`], which is all [`crate::run::generate_screen`] needs.
 //!
 //! The closed form is exact physics; the integrator is not. After time `t`,
@@ -39,9 +41,7 @@
 //! ricochet or tunnelling; only the re-simulation sees them. Hence every
 //! candidate is re-simulated.
 
-use crate::ballistics::{
-    blast_radius, fire, power_ticks_for_speed, speed_bounds, End, FireOptions, Shot,
-};
+use crate::ballistics::{blast_radius, power_ticks_for_speed, speed_bounds, End, Shot};
 use crate::dmath;
 use crate::modifiers::Loadout;
 use crate::run::{Screen, StructState};
@@ -146,32 +146,19 @@ const UNDERMINE_MARGIN: f64 = 8.0;
 /// Would this shot fell `target`? Simulated, then confirmed against the real
 /// damage model on a scratch copy of the screen.
 ///
-/// Returns the primary shell's flight time when it does. The shot is
-/// simulated twice: once here for the cheap filter, and again inside
-/// `apply_shot`.
+/// Returns the primary shell's flight time when it does. The shot is flown
+/// once, with [`Screen::fire_traces`], and the same traces serve both the
+/// cheap filter here and [`Screen::apply_traces`] on the scratch copy. That
+/// is what [`Screen::apply_shot`] would do there: the copy is identical to
+/// `screen` until the traces are applied, and a flight is a pure function of
+/// the screen, shot, loadout and fuse, so flying it again on the copy could
+/// only reproduce these traces bit for bit.
 fn fells_target(screen: &Screen, lo: &Loadout, shot: Shot, target: usize) -> Option<f64> {
-    let boxes = screen.target_boxes();
-    let opts = FireOptions {
-        record_path: false,
-        fuse: if lo.airburst() {
-            screen.default_fuse(target)
-        } else {
-            None
-        },
-        wind_after_apex: if lo.storm_front() {
-            screen.wind_late
-        } else {
-            None
-        },
-    };
-    let traces = {
-        let world = screen.world(&boxes);
-        fire(&world, screen.muzzle(), shot, lo, &opts)
-    };
+    let traces = screen.fire_traces(shot, lo, screen.default_fuse(target), false);
 
     // Cheap rejection first: nothing that detonates far from the target box can
     // possibly fell it, and most candidates die here.
-    let target_box = boxes[target];
+    let target_box = screen.target_boxes()[target];
     let near = traces.iter().any(|t| match t.end {
         End::Structure { index, .. } => index == target,
         End::Terrain { pos, .. } | End::Fuse { pos } => {
@@ -190,10 +177,11 @@ fn fells_target(screen: &Screen, lo: &Loadout, shot: Shot, target: usize) -> Opt
 
     // Confirm against the damage model itself rather than a re-derivation of
     // it, so solvability can never drift away from what the game does.
+    let flight_time = traces[0].flight_time;
     let mut scratch = screen.clone();
-    let report = scratch.apply_shot(shot, lo, screen.default_fuse(target), false);
+    scratch.apply_traces(traces, lo);
     if scratch.structures[target].state == StructState::Collapsed {
-        Some(report.traces[0].flight_time)
+        Some(flight_time)
     } else {
         None
     }
@@ -297,6 +285,21 @@ pub fn solve_target_capped(
 /// Godot layer and `site_shot`.
 pub fn solve_target(screen: &Screen, lo: &Loadout, target: usize) -> Vec<Candidate> {
     solve_target_capped(screen, lo, target, usize::MAX).0
+}
+
+/// The first candidate [`solve_target`] would list for a target, without
+/// finding the rest.
+///
+/// For a caller that wants one shot that works (the attract demo, the
+/// autopilot, a challenge's hint arc). The search visits shots in the same
+/// order whatever the cap and stops at the first that fells the target, so
+/// this is `solve_target(..).first()` exactly; it just does not go on to fly
+/// every other candidate, of which there can be over a hundred.
+pub fn first_solution(screen: &Screen, lo: &Loadout, target: usize) -> Option<Candidate> {
+    solve_target_capped(screen, lo, target, 1)
+        .0
+        .into_iter()
+        .next()
 }
 
 /// Validate a whole screen. DESIGN §2.4: accept only if at least three
@@ -478,5 +481,75 @@ mod tests {
             }
         }
         assert!(seen, "Overhang never appeared with airburst held");
+    }
+
+    /// A base loadout and the ones whose flights differ most from it:
+    /// submunitions, a fuse, a mid-flight wind change, bounces, tunnelling.
+    fn flight_loadouts() -> Vec<Loadout> {
+        use crate::modifiers::Modifier::{Airburst, Auger, Cluster, Skipstone, StormFront};
+        let mut out = vec![Loadout::new()];
+        for m in [Cluster, Airburst, StormFront, Skipstone, Auger] {
+            let mut lo = Loadout::new();
+            lo.take(m);
+            out.push(lo);
+        }
+        out
+    }
+
+    #[test]
+    fn flying_once_and_applying_matches_apply_shot() {
+        // `fells_target` flies a candidate on the screen and applies those
+        // traces to a copy. Before, it called `apply_shot` on the copy, which
+        // flew the shot again. Both must leave the same copy and report.
+        let mut compared = 0;
+        for lo in flight_loadouts() {
+            for (seed, index) in [(3u64, 2u32), (0xABCD, 9), (41, 30), (977, 61)] {
+                let screen = generate_screen(seed, index, 320, &lo);
+                for target in 0..screen.structures.len() {
+                    let aim = aim_points(&screen, target).unwrap()[0];
+                    let wind = screen.wind * lo.wind_scale;
+                    for (shot, _) in analytic_shots(screen.muzzle(), aim, wind, &lo) {
+                        let fuse = screen.default_fuse(target);
+                        let mut by_shot = screen.clone();
+                        let old = by_shot.apply_shot(shot, &lo, fuse, false);
+                        let mut by_traces = screen.clone();
+                        let traces = screen.fire_traces(shot, &lo, fuse, false);
+                        let new = by_traces.apply_traces(traces, &lo);
+                        assert_eq!(format!("{old:?}"), format!("{new:?}"));
+                        assert_eq!(
+                            crate::replay::screen_hash(&by_shot),
+                            crate::replay::screen_hash(&by_traces)
+                        );
+                        assert_eq!(format!("{by_shot:?}"), format!("{by_traces:?}"));
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 500, "only {compared} shots compared");
+    }
+
+    #[test]
+    fn the_first_solution_is_the_head_of_the_full_list() {
+        let mut found = 0;
+        for lo in flight_loadouts() {
+            for seed in 0..6u64 {
+                for index in [0u32, 4, 13, 27, 44] {
+                    let screen = generate_screen(seed * 31 + 7, index, 320, &lo);
+                    for target in 0..screen.structures.len() + 1 {
+                        let all = solve_target(&screen, &lo, target);
+                        let first = first_solution(&screen, &lo, target);
+                        assert_eq!(first, all.first().copied());
+                        found += first.is_some() as u32;
+                    }
+                }
+            }
+        }
+        assert!(found > 100);
+        // A target that is already down has no solution either way.
+        let lo = Loadout::new();
+        let mut screen = generate_screen(0xABCD, 0, 320, &lo);
+        screen.structures[0].state = StructState::Collapsed;
+        assert_eq!(first_solution(&screen, &lo, 0), None);
     }
 }

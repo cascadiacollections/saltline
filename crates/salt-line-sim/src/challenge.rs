@@ -86,14 +86,16 @@ pub fn hints(challenge: Challenge) -> Vec<Candidate> {
 /// The first solver hint flown on the untouched layout: the path of its shell,
 /// for drawing as a ghost arc. Empty when the layout has no hint.
 pub fn hint_path(challenge: Challenge) -> Vec<Vec2> {
-    let Some(hint) = hints(challenge).into_iter().next() else {
+    let layout = layout(challenge);
+    let screen = Screen::from_layout(&layout, layout.wind.draw(challenge.seed));
+    let lo = Loadout::new();
+    // Only the first hint is drawn, so only the first is looked for, and it
+    // is flown without being applied: the arc is the flight, not its damage.
+    let Some(hint) = solver::first_solution(&screen, &lo, 0) else {
         return Vec::new();
     };
-    let layout = layout(challenge);
-    let mut screen = Screen::from_layout(&layout, layout.wind.draw(challenge.seed));
-    let report = screen.apply_shot(hint.shot, &Loadout::new(), Some(0.0), true);
-    report
-        .traces
+    screen
+        .fire_traces(hint.shot, &lo, Some(0.0), true)
         .into_iter()
         .next()
         .map(|t| t.path)
@@ -114,6 +116,23 @@ mod tests {
             assert!(validate(&layout).is_ok(), "{}", challenge.name);
             assert!(!hints(challenge).is_empty(), "{}", challenge.name);
             assert!(hint_path(challenge).len() > 10, "{}", challenge.name);
+        }
+    }
+
+    #[test]
+    fn the_hint_arc_is_the_first_hint_as_apply_shot_would_fly_it() {
+        // `hint_path` used to find every hint and apply the first to the
+        // screen; it now finds one and only flies it. Same arc.
+        for challenge in ALL {
+            let layout = layout(challenge);
+            let mut screen = Screen::from_layout(&layout, layout.wind.draw(challenge.seed));
+            let first = hints(challenge)[0];
+            let old = screen
+                .apply_shot(first.shot, &Loadout::new(), Some(0.0), true)
+                .traces
+                .remove(0)
+                .path;
+            assert_eq!(hint_path(challenge), old, "{}", challenge.name);
         }
     }
 }

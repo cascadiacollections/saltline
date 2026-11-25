@@ -185,16 +185,15 @@ pub fn challenge_shots(layout: &Layout) -> i32 {
 /// The solver's first shot as a path, for a custom challenge's hint arc.
 pub fn challenge_hint_path(layout: &Layout) -> Vec<Vec2> {
     let seed = layout.digest();
-    let mut screen = Screen::from_layout(layout, layout.wind.draw(seed));
-    let Some(hint) = solver::solve_target(&screen, &Loadout::new(), 0)
-        .into_iter()
-        .next()
-    else {
+    let screen = Screen::from_layout(layout, layout.wind.draw(seed));
+    let lo = Loadout::new();
+    // Only the first hint is drawn, so only the first is looked for, and it
+    // is flown without being applied: the arc is the flight, not its damage.
+    let Some(hint) = solver::first_solution(&screen, &lo, 0) else {
         return Vec::new();
     };
     screen
-        .apply_shot(hint.shot, &Loadout::new(), Some(0.0), true)
-        .traces
+        .fire_traces(hint.shot, &lo, Some(0.0), true)
         .into_iter()
         .next()
         .map(|trace| trace.path)

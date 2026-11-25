@@ -465,6 +465,25 @@ impl Screen {
         }
     }
 
+    /// Fly a shot from this screen without applying it: the shell fired,
+    /// then any cluster submunitions. The first half of
+    /// [`Screen::apply_shot`]; [`Screen::apply_traces`] is the second.
+    ///
+    /// Arguments are as for `apply_shot`. Pure: the screen is not changed, so
+    /// the same call on an untouched screen gives bit-identical traces.
+    pub fn fire_traces(
+        &self,
+        shot: Shot,
+        lo: &Loadout,
+        fuse: Option<f64>,
+        record_path: bool,
+    ) -> Vec<Trace> {
+        let boxes = self.target_boxes();
+        let opts = self.fire_options(lo, fuse, record_path);
+        let world = self.world(&boxes);
+        fire(&world, self.muzzle(), shot, lo, &opts)
+    }
+
     /// Fire a shot and apply everything it does: craters, structural damage,
     /// undermining, collapse and debris.
     ///
@@ -475,9 +494,7 @@ impl Screen {
     /// `record_path` keeps the sampled flight path in the traces for the
     /// renderer; headless callers pass `false` to skip the allocation.
     ///
-    /// Order matters for determinism and is fixed: every detonation is
-    /// applied (craters, then damage) before support and states are
-    /// resolved once, then debris mounds are added for what collapsed.
+    /// This is [`Screen::fire_traces`] followed by [`Screen::apply_traces`].
     pub fn apply_shot(
         &mut self,
         shot: Shot,
@@ -485,14 +502,24 @@ impl Screen {
         fuse: Option<f64>,
         record_path: bool,
     ) -> ShotReport {
-        let boxes = self.target_boxes();
-        let opts = self.fire_options(lo, fuse, record_path);
-        let muzzle = self.muzzle();
-        let traces = {
-            let world = self.world(&boxes);
-            fire(&world, muzzle, shot, lo, &opts)
-        };
+        let traces = self.fire_traces(shot, lo, fuse, record_path);
+        self.apply_traces(traces, lo)
+    }
 
+    /// Apply flights already flown: craters, structural damage, undermining,
+    /// collapse and debris. The second half of [`Screen::apply_shot`].
+    ///
+    /// `traces` must come from [`Screen::fire_traces`] on a screen in exactly
+    /// this state (this screen, or the one it was cloned from) with the same
+    /// loadout, and must not be empty. The solver relies on this split: it
+    /// flies a candidate once on the screen itself, and only if the flight
+    /// ends near the target applies those same traces to a scratch copy,
+    /// instead of flying the identical shot a second time there.
+    ///
+    /// Order matters for determinism and is fixed: every detonation is
+    /// applied (craters, then damage) before support and states are
+    /// resolved once, then debris mounds are added for what collapsed.
+    pub fn apply_traces(&mut self, traces: Vec<Trace>, lo: &Loadout) -> ShotReport {
         let mut report = ShotReport {
             collapsed: Vec::new(),
             newly_leaning: Vec::new(),

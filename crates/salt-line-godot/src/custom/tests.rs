@@ -384,3 +384,26 @@ fn reading_a_code_says_why_not() {
         .starts_with("the layout does not pass"));
     assert_eq!(read(&level().to_code().unwrap()), Ok(level()));
 }
+
+/// The hint arc used to come from finding every hint and applying the first
+/// to the screen. It now finds one and only flies it: the same arc.
+#[test]
+fn a_custom_challenges_hint_arc_is_the_first_hint_as_apply_shot_flies_it() {
+    let lo = Loadout::new();
+    for (seed, index) in [(1u64, 0u32), (7, 3), (0xC0FFEE, 12), (42, 31)] {
+        let layout = Layout::from_run_screen(seed, index);
+        let mut screen = Screen::from_layout(&layout, layout.wind.draw(layout.digest()));
+        let old = match solver::solve_target(&screen, &lo, 0).first() {
+            Some(hint) => {
+                screen
+                    .apply_shot(hint.shot, &lo, Some(0.0), true)
+                    .traces
+                    .remove(0)
+                    .path
+            }
+            None => Vec::new(),
+        };
+        assert!(!old.is_empty(), "seed {seed} screen {index} has no hint");
+        assert_eq!(challenge_hint_path(&layout), old);
+    }
+}
