@@ -5,25 +5,17 @@ on:
   # request branch runs the whole matrix twice for every commit -- once for
   # push, once for pull_request -- which is pure waste on the macOS and Windows
   # runners. A `vX.Y.Z` tag runs everything and ends in the `release` job.
+  #
+  # The trigger has no path filter. A filter that skips the whole run leaves a
+  # documentation-only pull request with no check runs, and a ruleset that
+  # requires one of those checks then waits forever. The `changes` job below
+  # classifies that diff and the heavy jobs skip; `ci-gate` still runs and is
+  # the check to require. A tag push does not consult the diff: a release runs
+  # every heavy job.
   push:
     branches: [main]
     tags: ['v*']
-    # Skip documentation-only pushes; tag releases always run (GitHub does
-    # not apply path filters to tags). Keep Markdown compiled into the game
-    # or used as a golden-test fixture covered.
-    paths:
-      - '**'
-      - '!**/*.md'
-      - '!site/assets/readme/**'
-      - 'NOTES.md'
-      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
   pull_request:
-    paths:
-      - '**'
-      - '!**/*.md'
-      - '!site/assets/readme/**'
-      - 'NOTES.md'
-      - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
 
 # Superseded runs are not worth paying for; a new push to the same ref makes
 # the one in flight irrelevant.
@@ -56,11 +48,77 @@ env:
 # worth even that. Tag builds are cold and slower, and clean.
 
 jobs:
+  # Always runs, including on a documentation-only diff. Heavy jobs below are
+  # skipped unless `relevant` is true. Tag pushes force `relevant`: GitHub
+  # never applied the old path filter to tags, and a release is not partial.
+  #
+  # `some-with-excludes` cannot put a file back once a negated pattern matched
+  # it, so NOTES.md and the portal notices (Markdown that is part of the game
+  # or a golden-test fixture) are a second filter instead of a later include.
+  changes:
+    name: detect relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # dorny/paths-filter lists pull request files
+    outputs:
+      relevant: ${{ steps.decide.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Push compares against the previous commit on this ref. Full history
+          # is local, so the filter does not fetch with a credential
+          # (persist-credentials is off). Pull requests use the API instead.
+          fetch-depth: 0
+      - name: test the gate decision
+        run: python3 -m unittest discover -s tools -p test_ci_gate.py -v
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+        with:
+          # Ignored on pull_request (the API diff is the pull request). On a
+          # push to main this is the same branch, so the comparison is the
+          # commit before the push.
+          base: ${{ github.ref }}
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!*.md'
+              - '!site/assets/readme/**'
+            kept:
+              - 'NOTES.md'
+              - 'addons/xdg_portals/THIRD_PARTY_NOTICES.md'
+      - id: decide
+        env:
+          CODE: ${{ steps.filter.outputs.code }}
+          KEPT: ${{ steps.filter.outputs.kept }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -eu
+          if [ "$IS_TAG" = "true" ]; then
+            relevant=true
+          elif [ "$CODE" = "true" ] || [ "$KEPT" = "true" ]; then
+            relevant=true
+          elif [ "$CODE" = "false" ] && [ "$KEPT" = "false" ]; then
+            relevant=false
+          else
+            echo "paths-filter returned code='$CODE' kept='$KEPT'" >&2
+            exit 1
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+          echo "relevant=$relevant"
+
   # Apple runners cost substantially more than Linux. Exercise every platform
   # on main/tags, but reserve pre-merge Apple builds for platform/build changes.
   # Gameplay-only PRs still run Linux/Windows; main catches Apple regressions.
   platforms:
     name: select platform coverage
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -83,14 +141,17 @@ jobs:
   # The sim crate must build and test with no engine present, on every
   # platform we ship to.
   sim:
-    needs: platforms
+    needs: [changes, platforms]
+    if: ${{ needs.changes.outputs.relevant == 'true' && needs.platforms.result == 'success' }}
     name: sim (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    # `|| '[]'` keeps this expression valid when `platforms` was skipped.
+    # An empty matrix skips the job instead of failing the workflow parse.
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.platforms.outputs.sim) }}
+        os: ${{ fromJSON(needs.platforms.outputs.sim || '[]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,6 +206,8 @@ jobs:
   # built, which takes seconds, so there is no rust-cache here.
   sim-android:
     name: sim (android x86_64 emulator)
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -210,8 +273,8 @@ jobs:
   # device build (aarch64-apple-ios) compiles to, against the simulator's copy
   # of the iOS libraries; a device run needs signing, which CI does not have.
   sim-ios:
-    needs: platforms
-    if: needs.platforms.outputs.apple == 'true'
+    needs: [changes, platforms]
+    if: ${{ needs.changes.outputs.relevant == 'true' && needs.platforms.result == 'success' && needs.platforms.outputs.apple == 'true' }}
     name: sim (ios arm64 simulator)
     runs-on: macos-latest
     timeout-minutes: 20
@@ -275,8 +338,8 @@ jobs:
   # determinism leak — do not paper over it with tolerances.
   determinism:
     name: determinism across platforms
-    needs: [platforms, sim, sim-android, sim-ios]
-    if: ${{ !cancelled() && needs.platforms.result == 'success' && needs.sim.result == 'success' && needs.sim-android.result == 'success' && (needs.sim-ios.result == 'success' || (needs.platforms.outputs.apple == 'false' && needs.sim-ios.result == 'skipped')) }}
+    needs: [changes, platforms, sim, sim-android, sim-ios]
+    if: ${{ needs.changes.outputs.relevant == 'true' && !cancelled() && needs.platforms.result == 'success' && needs.sim.result == 'success' && needs.sim-android.result == 'success' && (needs.sim-ios.result == 'success' || (needs.platforms.outputs.apple == 'false' && needs.sim-ios.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -333,6 +396,8 @@ jobs:
   # which becomes the release notes; a mismatched tag publishes nothing.
   version:
     name: version consistency
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -361,6 +426,8 @@ jobs:
   # Brief M2 acceptance: every screen the generator can produce is solvable.
   solvability:
     name: batch solvability
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -403,6 +470,8 @@ jobs:
 
   lint:
     name: fmt + clippy
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -438,6 +507,8 @@ jobs:
 
   art:
     name: source art contracts
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -478,6 +549,8 @@ jobs:
   # GPU, desktop radeonsi and the Android emulator.
   gpu-check:
     name: gpu check (llvmpipe)
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -513,6 +586,8 @@ jobs:
 
   hygiene:
     name: typos + zizmor + machete
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -536,6 +611,8 @@ jobs:
   # service is involved, in keeping with no telemetry.
   coverage:
     name: coverage
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     # Instrumented and unoptimised, backdrop::tests (whole autopiloted runs,
     # drawn four ways) take 8+ minutes each on a busy runner, against ~45 s
@@ -582,8 +659,8 @@ jobs:
   # holds the `code-quality: write` permission.
   upload-coverage-rust:
     name: upload coverage (rust)
-    needs: coverage
-    if: ${{ !cancelled() && needs.coverage.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [changes, coverage]
+    if: ${{ needs.changes.outputs.relevant == 'true' && !cancelled() && needs.coverage.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -611,6 +688,8 @@ jobs:
   # recent nightly Miri. The modules below do not need that entry.
   miri:
     name: miri
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -642,6 +721,8 @@ jobs:
   # as a dev build, which is all a compile check needs, and runs nothing.
   fuzz-build:
     name: fuzz targets build
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -670,6 +751,8 @@ jobs:
   # that is the point, and the fix is usually a Dependabot bump.
   deny:
     name: cargo-deny
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -682,9 +765,9 @@ jobs:
           arguments: --all-features
 
   playable:
-    needs: platforms
+    needs: [changes, platforms]
     name: playable (${{ matrix.os }})
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: ${{ needs.changes.outputs.relevant == 'true' && needs.platforms.result == 'success' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ${{ matrix.os }}
     # Tag builds are cold (no cache) and may wait on Apple's notary service.
     timeout-minutes: ${{ startsWith(github.ref, 'refs/tags/v') && 75 || 40 }}
@@ -692,10 +775,12 @@ jobs:
     # signing secrets and admits only main and v* tags (RELEASING.md, "Owner
     # action required"). An empty name means no environment at all.
     environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
+    # `|| '[]'` keeps this expression valid when `platforms` was skipped.
+    # An empty matrix skips the job instead of failing the workflow parse.
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.platforms.outputs.playable) }}
+        include: ${{ fromJSON(needs.platforms.outputs.playable || '[]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1185,7 +1270,8 @@ jobs:
   # "Android versionCode").
   android:
     name: android (arm64)
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: changes
+    if: ${{ needs.changes.outputs.relevant == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # Pushes to main and v* tags run in the `release` environment, which holds
@@ -1376,9 +1462,9 @@ jobs:
   # builds the app unsigned. That still proves the export and the link, which is
   # everything `just ios` does before signing.
   ios:
-    needs: platforms
+    needs: [changes, platforms]
     name: ios (arm64, unsigned)
-    if: needs.platforms.outputs.apple == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    if: ${{ needs.changes.outputs.relevant == 'true' && needs.platforms.result == 'success' && needs.platforms.outputs.apple == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') }}
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
@@ -1435,7 +1521,8 @@ jobs:
   # extension or an engine startup failure cannot reach a release.
   windows-arm64:
     name: windows (arm64, native smoke)
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: changes
+    if: ${{ needs.changes.outputs.relevant == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: windows-11-arm
     timeout-minutes: 40
     steps:
@@ -1570,6 +1657,8 @@ jobs:
   # pull request, not on the push to main or a tag.
   sbom:
     name: sbom
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1613,8 +1702,8 @@ jobs:
   # verified with `gh attestation verify` too.
   dev-release:
     name: dev release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, determinism, solvability, lint, art, playable, android, windows-arm64, sbom]
+    if: ${{ success() && needs.changes.outputs.relevant == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [changes, version, determinism, solvability, lint, art, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1677,8 +1766,8 @@ jobs:
   # and nothing is published (RELEASING.md, "Verifying a download").
   release:
     name: release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version, determinism, solvability, lint, art, deny, playable, android, windows-arm64, sbom]
+    if: ${{ success() && needs.changes.outputs.relevant == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [changes, version, determinism, solvability, lint, art, deny, playable, android, windows-arm64, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1736,3 +1825,55 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
             --title "Salt Line $version" \
             --notes-file "$RUNNER_TEMP/notes.md"
+
+  # The check a ruleset on main should require, by this exact name: ci-gate.
+  # Do not also require the heavy jobs. They are skipped when the diff changes
+  # nothing they cover, and a required check that was skipped never completes.
+  # This job runs on every pull request and every push to main (and on tags).
+  # It passes when every job it waits on succeeded, or was skipped because the
+  # diff was not relevant, or was skipped by a condition that job already had
+  # (no Apple runners, fork coverage, dev release off a pull request). Anything
+  # else fails it. `!cancelled()` is what lets it run after those skips; a
+  # cancelled workflow does not report success here.
+  ci-gate:
+    name: ci-gate
+    needs:
+      - changes
+      - platforms
+      - sim
+      - sim-android
+      - sim-ios
+      - determinism
+      - version
+      - solvability
+      - lint
+      - art
+      - gpu-check
+      - hygiene
+      - coverage
+      - upload-coverage-rust
+      - miri
+      - fuzz-build
+      - deny
+      - playable
+      - android
+      - ios
+      - windows-arm64
+      - sbom
+      - dev-release
+      - release
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: needed jobs succeeded or were skipped
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: python3 tools/ci_gate.py

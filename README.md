@@ -42,10 +42,13 @@ has the published version; the [development build](https://github.com/cascadiaco
 follows passing builds of `main`. [RELEASING.md](RELEASING.md) covers supported
 platforms, the release checklist, and known issues.
 
-Documentation-only changes (Markdown and README captures) skip the full build
-matrix. Markdown embedded in the game or used by golden tests still runs CI;
-release tags always run the full checks. README captures alone do not redeploy
-the website.
+Documentation-only changes (Markdown and README captures) skip the heavy CI
+jobs. Markdown embedded in the game or used by golden tests (`NOTES.md`,
+`addons/xdg_portals/THIRD_PARTY_NOTICES.md`) still runs them. The `ci-gate`
+check runs on every pull request and every push to `main`; it passes when
+those jobs passed or were skipped because nothing they cover changed. Release
+tags always run the full checks. README captures alone do not redeploy the
+website.
 
 [Build and run](#quick-start) · [Controls](#controls) · [Developer tools](#tools) ·
 [Art and assets](#art) · [Determinism](#determinism) · [Report a bug](#reporting-bugs)
