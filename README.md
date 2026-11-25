@@ -12,9 +12,9 @@
 [![Zed](https://img.shields.io/badge/Zed-ready-084CCF?logo=zedindustries)](.zed/tasks.json)
 [![Devcontainer](https://img.shields.io/badge/devcontainer-Linux-2496ED?logo=docker&logoColor=white)](docs/development-environment.md)
 
-<!-- These are navigation badges, not live status claims. Public badge services
-cannot read this internal repository. Their destinations stay current without
-pinning a release version or a CI result in the README. -->
+<!-- These are navigation badges, not live status claims. They link to this
+public repository. Their destinations stay current without pinning a release
+version or a CI result in the README. -->
 
 Single-player artillery roguelike. Endless procedural horizon, persistent
 terrain damage, shells as the run resource, modifier drafting every four screens.
@@ -169,6 +169,15 @@ unless the phone's digest matches this machine's. It pushes a plain executable
 to `/data/local/tmp` and runs it over `adb shell`; nothing is installed. CI
 can only run Android on an x86_64 emulator, so run this on a phone after any
 change to the toolchain or to the sim's arithmetic.
+
+The `F-Droid` export preset builds the full edition as its own app,
+`com.cascadiacollections.saltline.foss`, so it installs beside the store
+package and the shareware package. It is unsigned and does not use Gradle.
+F-Droid builds the Godot engine itself and signs the APK. The version it
+reads is the tag version in `fdroid/version.txt`. That build does not pick
+up the Game Mode hints in `android/AndroidManifest.xml`, because the preset
+does not use the Gradle overlay. Listing it is a later step. This
+repository does not submit the build.
 
 ### iOS
 
@@ -583,6 +592,18 @@ chassis, structure damage states, and precomputed barrel angles. The
 [source notes](art/source/salt-and-iron/README.md) record provenance and cleanup
 steps; the [design specification](design/DESIGN.md) describes the game's rules.
 
+### TODO(owner): art license
+
+The F-Droid metadata request should not be opened until this is filled in.
+The pull request can merge without the final sentence.
+
+- Who supplied the concept boards and the application icons.
+- The harbour plate, the barrel, and the title art involved an image model.
+  That is already written down in
+  [`art/source/salt-and-iron/README.md`](art/source/salt-and-iron/README.md).
+- Which license covers all of the art. MIT is the simplest. CC BY 4.0 is the
+  alternative. Do not add a license until the rights are confirmed.
+
 The game uses chassis and structure cutouts from the
 [Salt & Iron concept board](https://cascadiacollections.github.io/saltline/assets/concept-boards/01-salt-and-iron.png).
 `art/detail/` preserves their source colors at four artwork pixels per logical
@@ -718,9 +739,8 @@ offline notices use the same source. Keep the page's gameplay copy and the
 contributor prerequisites current when shipping features; the generator does
 not derive those descriptions from the game.
 
-Repository source and dev release downloads currently require repository access.
-GitHub Pages visibility is managed separately under Settings → Pages; making the
-site public does not make an internal repository's releases public.
+The repository is public. GitHub Pages visibility is managed separately under
+Settings → Pages.
 
 ```sh
 uv run python tools/build_site.py      # needs Pillow + Rust; writes into site/assets/
@@ -730,9 +750,8 @@ python3 -m http.server -d site 8000   # preview at http://localhost:8000
 `.github/workflows/pages.yml` regenerates the media on every push to `main` that
 touches `site/`, `art/`, the simulation, either generator, or bundled license
 notices, then publishes `site/` to Pages.
-The live URL is whatever Pages reports for this repository — the workflow logs
-it and stamps it into the page's canonical and Open Graph tags, so nothing has
-to be hardcoded while the repo is internal.
+The live URL is whatever Pages reports for this repository. The workflow logs
+it and stamps it into the page's canonical and Open Graph tags.
 
 ## The three things that matter
 
@@ -906,7 +925,7 @@ just run-shareware                 # play the shareware edition locally
 just export-shareware Linux        # or "Windows Desktop", macOS, Android -> build/shareware/
 ```
 
-`tools/release_version.py` checks and sets the shareware presets' versions with the full ones.
+`tools/release_version.py` checks and sets the shareware presets' versions with the full ones, and checks the F-Droid preset and `fdroid/version.txt` against the tag versionCode.
 
 Tagged releases attach the shareware builds next to the full ones: `SaltLine-shareware-linux-x86_64.zip`,
 `-windows-x86_64.zip`, `-macos.zip` (not signed or notarized) and `-android-arm64.apk`. Pull requests and

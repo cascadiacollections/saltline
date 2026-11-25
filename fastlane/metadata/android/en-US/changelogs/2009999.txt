@@ -1,0 +1,1 @@
+0.2.0 adds challenges, a map editor, custom duels, shareable replays, cosmetic biomes, and a Linux ARM build, and it remains a development preview with no monetization.

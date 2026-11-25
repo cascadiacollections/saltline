@@ -18,8 +18,11 @@ so CI and `just` can run it with any python3 and no environment.
         "Android versionCode").
 
     release_version.py set-android --code N [--name NAME]
-        Write version/code (and optionally version/name) into the Android
-        preset in export_presets.cfg. Godot's CLI cannot override them.
+        Write version/code (and optionally version/name) into the Android,
+        Android Shareware and F-Droid presets in export_presets.cfg, and
+        the same fields in fdroid/version.txt. Godot's CLI cannot override
+        the preset fields. CI calls this on a throwaway checkout and still
+        exports only Android and Android Shareware.
 """
 
 from __future__ import annotations
@@ -144,11 +147,14 @@ def check(tag: str | None) -> None:
     found['project.godot config/version (before "-")'] = gv.split("-", 1)[0]
 
     p = presets()
+    fdroid_code, fdroid_name = fdroid_version_file()
+    found[f"{FDROID_VERSION_FILE} versionName"] = fdroid_name
     try:
         # Each shareware preset is a copy of its full one (`tier.rs`) and
-        # carries the same version.
-        for name in ("Android", "Android Shareware"):
+        # carries the same version. F-Droid is the full edition too.
+        for name in ("Android", "Android Shareware", FDROID_PRESET):
             found[f"export_presets.cfg {name} version/name"] = p[name]["version/name"]
+        fdroid_preset_code = p[FDROID_PRESET]["version/code"]
         for name in ("macOS", "macOS Shareware"):
             for key in ("application/short_version", "application/version"):
                 found[f"export_presets.cfg {name} {key}"] = p[name][key]
@@ -172,26 +178,82 @@ def check(tag: str | None) -> None:
     if len(set(found.values())) != 1:
         fail("versions disagree; bump them together (RELEASING.md, 'Version rule')")
 
+    expected_code = str(release_code_for(version))
+    codes = {
+        f"export_presets.cfg {FDROID_PRESET} version/code": fdroid_preset_code,
+        f"{FDROID_VERSION_FILE} versionCode": fdroid_code,
+    }
+    for label, got in codes.items():
+        print(f"{label:<{width}}  {got}")
+        if got != expected_code:
+            fail(
+                f"{label} is {got}, expected {expected_code} for {version} "
+                "(RELEASING.md, 'Version rule')"
+            )
+
     if tag is not None:
         changelog_section(version)
     print(f"ok: {version}")
 
 
+def release_code_for(version: str) -> int:
+    """versionCode for a vX.Y.Z tag of this version (RELEASING.md)."""
+    major, minor, patch = parse_semver(version)
+    return major * 10**8 + minor * 10**6 + patch * 10**4 + RELEASE_BUILD
+
+
 def android_code(run: int, release: bool) -> int:
-    major, minor, patch = parse_semver(cargo_version())
-    build = RELEASE_BUILD if release else min(max(run, 0), MAX_DEV_BUILD)
+    version = cargo_version()
+    if release:
+        return release_code_for(version)
+    major, minor, patch = parse_semver(version)
+    build = min(max(run, 0), MAX_DEV_BUILD)
     return major * 10**8 + minor * 10**6 + patch * 10**4 + build
 
 
 # The full Android preset and its shareware copy (`tier.rs`) share a version.
+# CI exports those two. F-Droid is a third Android preset: same rewrite, so a
+# third platform preset does not change what those two exports receive.
 ANDROID_PRESETS = ("Android", "Android Shareware")
+FDROID_PRESET = "F-Droid"
+VERSIONED_ANDROID_PRESETS = ANDROID_PRESETS + (FDROID_PRESET,)
+FDROID_VERSION_FILE = "fdroid/version.txt"
+
+
+def fdroid_version_file() -> tuple[str, str]:
+    """(versionCode, versionName) from fdroid/version.txt."""
+    text = read(FDROID_VERSION_FILE)
+    code = re.search(r"^versionCode=(\d+)\s*$", text, re.M)
+    name = re.search(r"^versionName=(\S+)\s*$", text, re.M)
+    if not code or not name:
+        fail(f"{FDROID_VERSION_FILE} must contain versionCode=<int> and versionName=<version>")
+    return code.group(1), name.group(1)
+
+
+def write_fdroid_version_file(code: int, name: str | None) -> None:
+    path = ROOT / FDROID_VERSION_FILE
+    text = read(FDROID_VERSION_FILE)
+    if not re.search(r"^versionCode=\d+\s*$", text, re.M):
+        fail(f"{FDROID_VERSION_FILE} has no versionCode")
+    text = re.sub(r"^versionCode=\d+\s*$", f"versionCode={code}", text, count=1, flags=re.M)
+    if name is not None:
+        if not re.search(r"^versionName=\S+\s*$", text, re.M):
+            fail(f"{FDROID_VERSION_FILE} has no versionName")
+        text = re.sub(r"^versionName=\S+\s*$", f"versionName={name}", text, count=1, flags=re.M)
+    if not text.endswith("\n"):
+        text += "\n"
+    path.write_text(text, encoding="utf-8")
 
 
 def set_android(code: int, name: str | None) -> None:
+    # Fail before either file is written if the F-Droid bookkeeping is absent.
+    fdroid_version_file()
     path = ROOT / "export_presets.cfg"
     lines = read("export_presets.cfg").splitlines(keepends=True)
-    sections = {s: opts for s, opts in _preset_sections(lines).items() if opts in ANDROID_PRESETS}
-    missing = set(ANDROID_PRESETS) - set(sections.values())
+    sections = {
+        s: opts for s, opts in _preset_sections(lines).items() if opts in VERSIONED_ANDROID_PRESETS
+    }
+    missing = set(VERSIONED_ANDROID_PRESETS) - set(sections.values())
     if missing:
         fail(f"no {', '.join(sorted(missing))} preset in export_presets.cfg")
     want = {"code"} | ({"name"} if name is not None else set())
@@ -215,9 +277,14 @@ def set_android(code: int, name: str | None) -> None:
         if keys != want:
             fail(f"could not find {sorted(want - keys)} in the {sections[preset]} preset")
     path.write_text("".join(lines), encoding="utf-8")
+    write_fdroid_version_file(code, name)
     print(
-        f"{' and '.join(ANDROID_PRESETS)} presets: version/code={code}"
+        f"{', '.join(VERSIONED_ANDROID_PRESETS)} presets: version/code={code}"
         + (f' version/name="{name}"' if name else "")
+    )
+    print(
+        f"{FDROID_VERSION_FILE}: versionCode={code}"
+        + (f" versionName={name}" if name else "")
     )
 
 

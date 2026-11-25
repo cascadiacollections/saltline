@@ -275,9 +275,20 @@ A release version is plain `MAJOR.MINOR.PATCH`, and the tag is that with a
 - `project.godot` `config/version`, **up to its first `-`**. The part after it
   is a channel label for players (`0.1.0-preview` today) and is ignored, so the
   label can be dropped or changed without counting as a version change
-- `export_presets.cfg`: Android `version/name`; macOS `short_version` and
-  `version`; both Windows presets' `file_version` and `product_version`
-  (which carry a fourth `.0`)
+- `export_presets.cfg`: Android and Android Shareware `version/name`; the
+  F-Droid preset's `version/name`; macOS `short_version` and `version`
+  (full and shareware); the Windows presets' `file_version` and
+  `product_version` (which carry a fourth `.0`)
+- `fdroid/version.txt` `versionName`
+
+The F-Droid preset's `version/code` and `fdroid/version.txt` `versionCode`
+are not the version string. They are the tag value,
+`major × 100,000,000 + minor × 1,000,000 + patch × 10,000 + 9999`, and they
+have to agree with `Cargo.toml`. The store presets still commit
+`version/code` `1` for local builds. `set-android` rewrites the F-Droid
+preset and `fdroid/version.txt` in the Android job's throwaway checkout,
+along with the store presets. That job still exports `Android` and
+`Android Shareware` only.
 
 Pre-release tags such as `v0.2.0-rc.1` are rejected by the gate; the rolling
 `dev` prerelease already serves that purpose. The Android versionCode scheme
@@ -286,9 +297,10 @@ bounds the version: major at most 20, minor and patch at most 99.
 ### Android versionCode
 
 Android refuses to install an APK over one with a higher `versionCode`, and
-Godot's CLI cannot override it, so CI writes it into the Android preset of its
-own checkout before exporting. The `1` committed in `export_presets.cfg` is
-only used by local builds.
+Godot's CLI cannot override it, so CI writes it into the Android presets of its
+own checkout before exporting. The `1` committed on the store presets in
+`export_presets.cfg` is only used by local builds. The F-Droid preset commits
+the tag value instead, because `fdroid/version.txt` is what F-Droid reads.
 
 ```
 versionCode = major × 100,000,000 + minor × 1,000,000 + patch × 10,000 + build

@@ -1,0 +1,131 @@
+# Draft metadata for a future F-Droid listing. Not submitted.
+# Replace COMMIT_PLACEHOLDER with the v0.2.0 tag commit before opening the
+# fdroiddata merge request. Do not open that request until the art license
+# sentence in the README exists.
+#
+# F-Droid signs the APK. There is no reproducible build and no developer
+# signature. The Rust pin matches rust-toolchain.toml (1.99.0).
+
+Categories:
+  - Shooter Game
+License: MIT
+AuthorName: Cascadia Collections
+WebSite: https://cascadiacollections.github.io/saltline/
+SourceCode: https://github.com/cascadiacollections/saltline
+IssueTracker: https://github.com/cascadiacollections/saltline/issues
+Changelog: https://github.com/cascadiacollections/saltline/blob/HEAD/CHANGELOG.md
+
+AutoName: Salt Line
+
+RepoType: git
+Repo: https://github.com/cascadiacollections/saltline.git
+
+Builds:
+  - versionName: 0.2.0
+    versionCode: 2009999
+    commit: COMMIT_PLACEHOLDER
+    timeout: 14400
+    sudo:
+      - apt-get update
+      - apt-get install -y pkgconf scons g++ rustup libx11-dev libxcursor-dev libxinerama-dev
+        libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libxi-dev
+        libxrandr-dev
+    output: output.apk
+    srclibs:
+      - Godot@4.7.2-stable
+    scandelete:
+      - addons/device_power/bin
+    prebuild: sed -i -e 's|^package/signed=.*|package/signed=false|' -e 's|^package/unique_name=.*|package/unique_name="com.cascadiacollections.saltline.foss"|'
+      -e 's|^version/code=.*|version/code=$$VERCODE$$|' -e 's|^gradle_build/use_gradle_build=.*|gradle_build/use_gradle_build=false\ncustom_template/release="./android_release.apk"\ncustom_template/debug="./android_release.apk"|'
+      export_presets.cfg
+    build:
+      - export ANDROID_NDK_ROOT=$$NDK$$
+      - export ANDROID_NDK_HOME=$$NDK$$
+      - export ANDROID_HOME=$$SDK$$
+      - export ANDROID_SDK_ROOT=$$SDK$$
+      - export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+      - export PATH="$HOME/.cargo/bin:$PATH"
+      - export RUSTUP_TOOLCHAIN=1.99.0
+      - rustup toolchain install 1.99.0 --profile minimal --target aarch64-linux-android
+      - cargo install cargo-ndk --version 4.1.2 --locked
+      - cargo build -p salt-line-godot --locked
+      - cargo ndk --platform 24 -t arm64-v8a build --release --locked -p salt-line-godot
+      - $$NDK$$/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-debug
+        target/aarch64-linux-android/release/libsalt_line_godot.so
+      - pushd $$Godot$$
+      - export SCONS="scons -j `nproc` verbose=no warnings=no progress=no"
+      - export COMMON_OFF="module_webrtc_enabled=no module_webxr_enabled=no module_websocket_enabled=no
+        module_jsonrpc_enabled=no module_enet_enabled=no module_upnp_enabled=no module_theora_enabled=no
+        module_mp3_enabled=no module_tinyexr_enabled=no module_noise_enabled=no module_interactive_music_enabled=no
+        module_camera_enabled=no module_visual_shader_enabled=no"
+      - export EDITOR_OFF="disable_xr=yes module_jolt_physics_enabled=no module_godot_physics_3d_enabled=no
+        module_navigation_3d_enabled=no module_raycast_enabled=no module_lightmapper_rd_enabled=no
+        module_csg_enabled=no module_gridmap_enabled=no module_vhacd_enabled=no module_xatlas_unwrap_enabled=no
+        module_gltf_enabled=no module_fbx_enabled=no module_objectdb_profiler_enabled=no"
+      - $SCONS target=editor platform=linuxbsd $COMMON_OFF $EDITOR_OFF
+      - $SCONS target=template_release platform=android arch=arm64 production=yes
+        swappy=no generate_android_binaries=yes generate_apk=yes
+      - popd
+      - mv $$Godot$$/bin/android_release.apk ./android_release.apk
+      - mkdir -p .godot
+      - echo res://salt_line.gdextension > .godot/extension_list.cfg
+      - $$Godot$$/bin/godot.linuxbsd.editor.x86_64 --headless --path . --import ||
+        [ $? -eq 139 ]
+      - export GODOT_CFG=$(ls ~/.config/godot/editor_settings-*.tres)
+      - sed -i -e "s|^export/android/java_sdk_path.*|export/android/java_sdk_path
+        = \"$JAVA_HOME\"|" $GODOT_CFG
+      - sed -i -e 's|^export/android/android_sdk_path.*|export/android/android_sdk_path
+        = "$$SDK$$"|' $GODOT_CFG
+      - grep -q '^export/android/java_sdk_path' $GODOT_CFG || echo "export/android/java_sdk_path
+        = \"$JAVA_HOME\"" >> $GODOT_CFG
+      - grep -q '^export/android/android_sdk_path' $GODOT_CFG || echo 'export/android/android_sdk_path
+        = "$$SDK$$"' >> $GODOT_CFG
+      - $$Godot$$/bin/godot.linuxbsd.editor.x86_64 --headless --path . --export-release
+        "F-Droid" output.apk
+    ndk: 29.0.14206865
+
+MaintainerNotes: |-
+  Godot 4.7.2 project with a Rust GDExtension (crates/salt-line-godot, gdext
+  0.5, api-4-7). The Linux editor and the arm64 Android release template are
+  built from source, and so is the extension. The export uses the scons-built
+  android_release.apk as the custom template and package/signed=false, so
+  F-Droid signs the result. Reproducible builds are not used (owner
+  decision). Recipe follows org.seishingakuen.shougibu (same Godot version,
+  Rust GDExtension, cargo-ndk).
+
+  Export the "F-Droid" preset. It is the full edition, Gradle off, arm64
+  only, application id com.cascadiacollections.saltline.foss. It does not use
+  the android/ Gradle overlay, so the Game Mode hints in
+  android/AndroidManifest.xml are not in this APK. The store presets stay on
+  Gradle and are not what this recipe exports. scandelete removes
+  addons/device_power/bin: those vendored AARs stay in git for the Gradle
+  store builds, and this non-Gradle build must not ship them.
+
+  The prebuild step rewrites preset lines: unsigned, the .foss application
+  id, versionCode, Gradle off, custom template path. The committed F-Droid
+  preset already has those values. Upstream versionCode for a vX.Y.Z tag is
+  major*100000000 + minor*1000000 + patch*10000 + 9999 (RELEASING.md), so
+  0.2.0 is 2009999. fdroid/version.txt and fastlane changelog 2009999.txt
+  match. Rust is 1.99.0, from rust-toolchain.toml.
+
+  The editor needs the host-built GDExtension (cargo build -p
+  salt-line-godot, debug) to import the project. The extension is listed in
+  .godot/extension_list.cfg first and exit code 139 is tolerated, as
+  upstream's tools/godot_headless.sh does for godotengine/godot#111048.
+
+  Upstream's own Android builds use a stripped engine
+  (tools/godot_build_profile.json). This recipe builds the full engine.
+
+  com.cascadiacollections.saltline.foss installs next to
+  com.cascadiacollections.saltline and
+  com.cascadiacollections.saltline.shareware. Full edition (no "shareware"
+  custom feature); the edition difference lives only in
+  crates/salt-line-godot/src/tier.rs. Name, icon and title art are covered
+  by TRADEMARK.md. The art license is still an owner TODO. Do not submit
+  until that sentence exists.
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+UpdateCheckData: fdroid/version.txt|versionCode=(\d+)|.|versionName=([\d.]+)
+CurrentVersion: 0.2.0
+CurrentVersionCode: 2009999
