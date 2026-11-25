@@ -4,6 +4,7 @@
 [![Release: latest](https://img.shields.io/badge/release-latest-3878AB)](https://github.com/cascadiacollections/saltline/releases/latest)
 [![Development build: main](https://img.shields.io/badge/development_build-main-D99A34)](https://github.com/cascadiacollections/saltline/releases/tag/dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cascadiacollections/saltline/badge)](https://scorecard.dev/viewer/?uri=github.com/cascadiacollections/saltline)
 
 [![Rust 1.99.0](https://img.shields.io/badge/Rust-1.99.0-CE422B?logo=rust)](rust-toolchain.toml)
 [![uv 0.13.5](https://img.shields.io/badge/uv-0.13.5-DE5FE9?logo=uv)](pyproject.toml)
@@ -12,9 +13,10 @@
 [![Zed](https://img.shields.io/badge/Zed-ready-084CCF?logo=zedindustries)](.zed/tasks.json)
 [![Devcontainer](https://img.shields.io/badge/devcontainer-Linux-2496ED?logo=docker&logoColor=white)](docs/development-environment.md)
 
-<!-- These are navigation badges, not live status claims. They link to this
-public repository. Their destinations stay current without pinning a release
-version or a CI result in the README. -->
+<!-- The shields in this block are navigation badges, not live status claims.
+They link to this public repository. Their destinations stay current without
+pinning a release version or a CI result in the README. The OpenSSF Scorecard
+badge is the live published score. -->
 
 Single-player artillery roguelike. Endless procedural horizon, persistent
 terrain damage, shells as the run resource, modifier drafting every four screens.
