@@ -1,4 +1,4 @@
-"""The 4.8-beta3 trial stays off the 4.7.2 pin."""
+"""The 4.8-beta5 trial stays off the 4.7.2 pin."""
 
 import hashlib
 import io
@@ -25,9 +25,9 @@ class Godot48Trial(unittest.TestCase):
     def test_template_directory_defaults_to_the_stable_pin(self):
         with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": ""}):
             self.assertEqual(godot_template.template_release_dir(), "4.7.2.stable")
-        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8.beta3"}):
-            self.assertEqual(godot_template.template_release_dir(), "4.8.beta3")
-        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8-beta3"}), \
+        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8.beta5"}):
+            self.assertEqual(godot_template.template_release_dir(), "4.8.beta5")
+        with patch.dict(os.environ, {"GODOT_TEMPLATE_VERSION": "4.8-beta5"}), \
              patch("sys.stderr", io.StringIO()):
             with self.assertRaises(SystemExit):
                 godot_template.template_release_dir()
@@ -42,10 +42,10 @@ class Godot48Trial(unittest.TestCase):
 
     def test_editor_version_must_match_the_lock_commit(self):
         spec = trial.trial()
-        self.assertIsNone(trial.editor_version_error("4.8.beta3.official.c51ff06e8\n", spec))
+        self.assertIsNone(trial.editor_version_error("4.8.beta5.official.a661dfdbc\n", spec))
         self.assertIsNone(trial.editor_version_error("4.7.2.stable.official.ed1daf0bf", trial.compare()))
-        self.assertIn("commit", trial.editor_version_error("4.8.beta3.official.aaaaaaaaa", spec) or "")
-        self.assertIn("4.8.beta3", trial.editor_version_error("4.8.beta1.official.c51ff06e8", spec) or "")
+        self.assertIn("commit", trial.editor_version_error("4.8.beta5.official.aaaaaaaaa", spec) or "")
+        self.assertIn("4.8.beta5", trial.editor_version_error("4.8.beta1.official.a661dfdbc", spec) or "")
         self.assertIn("unrecognized", trial.editor_version_error("Godot Engine", spec) or "")
 
     def test_published_sums_must_match_the_lock(self):
@@ -134,7 +134,7 @@ class Godot48Trial(unittest.TestCase):
         self.assertEqual(rows["Salt Line APK"][1], "—")
         trial.check_packaged_engines(stable, preview)
         preview["apk"] = packed("lib/arm64-v8a/libgodot_android.so", "stable-engine", 30)
-        with self.assertRaisesRegex(trial.TrialError, "4.8-beta3 APK"):
+        with self.assertRaisesRegex(trial.TrialError, "4.8-beta5 APK"):
             trial.check_packaged_engines(stable, preview)
 
     def test_build_report_must_match_commit_key_and_bytes(self):
@@ -146,7 +146,7 @@ class Godot48Trial(unittest.TestCase):
                 "tag": trial.trial()["godot"],
                 "editor_version": trial.trial()["editor_version"],
                 "commit": trial.trial()["commit"],
-                "version_status": "beta3",
+                "version_status": "beta5",
                 "key": trial.custom_build_key(),
                 "python": "3.12.3",
                 "file": binary.name,

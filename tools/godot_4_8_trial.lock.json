@@ -1,21 +1,21 @@
 {
   "trial": {
-    "id": "4.8-beta3",
-    "godot": "4.8-beta3",
-    "editor_version": "4.8.beta3",
-    "commit": "c51ff06e8836a70ea905701c081bf94124dcd6ce",
-    "commit_prefix": "c51ff06e8",
-    "version_status": "beta3",
+    "id": "4.8-beta5",
+    "godot": "4.8-beta5",
+    "editor_version": "4.8.beta5",
+    "commit": "a661dfdbccc664ccca57ad76c2bb5dcd8f3fc768",
+    "commit_prefix": "a661dfdbc",
+    "version_status": "beta5",
     "source_tag_on_godotengine_godot": false,
-    "builds_release": "https://github.com/godotengine/godot-builds/releases/download/4.8-beta3",
+    "builds_release": "https://github.com/godotengine/godot-builds/releases/download/4.8-beta5",
     "artifacts": {
       "editor_linux_x86_64": {
-        "name": "Godot_v4.8-beta3_linux.x86_64.zip",
-        "sha512": "c6dfb51e2d305934345042bedcf19ea8f421b774e601cd11b92cd39112d3f8855ab600a4602d458a5509076b647db1171d23440c365ee3d4fc78111958a77a28"
+        "name": "Godot_v4.8-beta5_linux.x86_64.zip",
+        "sha512": "37f81c4e3d6c0a9d8ab5304dfe24d32cbd31590cb847b10530466276eb1dac338cd653f8fe6005e1610906cd887ea804d875b85a63da10b3220085fad9ceab18"
       },
       "export_templates": {
-        "name": "Godot_v4.8-beta3_export_templates.tpz",
-        "sha512": "541950a4a79a68c41109ebfc0278ee6d52396da340dd4702f113d528bd0038df3f8b339f04bf4af8072e837fbfe599556d67181ede1867de058ccd2272734505"
+        "name": "Godot_v4.8-beta5_export_templates.tpz",
+        "sha512": "aecd46cee205a929fb5997f7d7b273b010edb4a09f66abde2f7072b24275683a57b235d6cf03bd050fb2db4063556433a4dd65658efa9f59d4a328d789fbbb25"
       }
     }
   },
@@ -43,6 +43,6 @@
     "profile_drops": ["module_regex_enabled"],
     "profile_sets": {"rendering_device": false},
     "modules_added_since_4_7_2": ["texture_streaming", "tilemap", "visionos_xr"],
-    "key": "2b5a398250e6cad7"
+    "key": "78eda9df925aef79"
   }
 }

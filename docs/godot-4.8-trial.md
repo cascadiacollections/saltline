@@ -1,15 +1,15 @@
-# Godot 4.8-beta3 trial
+# Godot 4.8-beta5 trial
 
 Salt Line's editor, CI and release exports stay on Godot **4.7.2**. This
-trial builds and exports the same project against the official 4.8-beta3
+trial builds and exports the same project against the official 4.8-beta5
 editor and export templates, then stops. It does not change
 `tools/godot_templates.lock.json`, `GODOT_VERSION`, or the `api-4-7` feature.
 
-4.8-beta3 is a preview. Older notes that cite a 71 MB native library or an
+4.8-beta5 is a preview. Older notes that cite a 71 MB native library or an
 87 MB APK are not a current Salt Line package measurement. The numbers
 below were taken on 2 Nov 2026 from this trial.
 
-## Measured on 2 Nov 2026 (4.8-beta2; beta3 numbers pending a re-run)
+## Measured on 2 Nov 2026 (4.8-beta2; beta5 numbers are on #127)
 
 Cloud VM, official editor and export templates, same Salt Line commit, headless.
 No Android SDK was installed, so there is no Salt Line APK or IPA from this
@@ -63,7 +63,7 @@ just godot-48-trial
 ```
 
 That downloads the pinned editor and export templates, checks their
-provenance, imports and exports Linux on 4.7.2 and 4.8-beta3, and writes
+provenance, imports and exports Linux on 4.7.2 and 4.8-beta5, and writes
 `build/godot-4.8-trial/report.md`. When `ANDROID_HOME` and `JAVA_HOME` are
 set and `target/aarch64-linux-android/release/libsalt_line_godot.so` exists,
 it also exports a debug-signed APK for each version.
@@ -84,7 +84,7 @@ python3 tools/godot_4_8_trial.py check-python
 
 `tools/godot_4_8_trial.lock.json` records the editor version, the engine
 commit, the SHA-512 of the official Linux editor and export templates for
-both 4.8-beta3 and the 4.7.2 comparison, and the custom-build key.
+both 4.8-beta5 and the 4.7.2 comparison, and the custom-build key.
 
 `run` downloads `SHA512-SUMS.txt` from the matching `godotengine/godot-builds`
 release and refuses the files unless the lock, the published sums, and the
@@ -93,27 +93,27 @@ downloaded bytes all agree. It then checks that `godot --version`,
 version and the commit's 9-character prefix.
 
 A stripped trial build writes `build-report.json`. `validate-build` requires
-its tag, commit, `GODOT_VERSION_STATUS=beta3`, custom-build key, and
-SHA-256 to match the binary. The key hashes the 4.8-beta3 commit, the pinned
+its tag, commit, `GODOT_VERSION_STATUS=beta5`, custom-build key, and
+SHA-256 to match the binary. The key hashes the 4.8-beta5 commit, the pinned
 SCons version, the shared build profile minus the trial-only drops, and the
 same release flags as 4.7.2. It is not the shipping lock key.
 
-The `4.8-beta3` tag is not on `godotengine/godot` (the snapshot is published
+The `4.8-beta5` tag is not on `godotengine/godot` (the snapshot is published
 from godot-builds). The trial build fetches commit
-`c51ff06e8836a70ea905701c081bf94124dcd6ce` and sets
-`GODOT_VERSION_STATUS=beta3`, which is what the official editor reports
-(`4.8.beta3.official.c51ff06e8`).
+`a661dfdbccc664ccca57ad76c2bb5dcd8f3fc768` and sets
+`GODOT_VERSION_STATUS=beta5`, which is what the official editor reports
+(`4.8.beta5.official.a661dfdbc`).
 
 ## Python, for the stripped build only
 
-Godot 4.7.2's `SConstruct` calls `EnsurePythonVersion(3, 9)`. 4.8-beta3
+Godot 4.7.2's `SConstruct` calls `EnsurePythonVersion(3, 9)`. 4.8-beta5
 calls `EnsurePythonVersion(3, 10)`. `check-python`, and `build`, refuse an
 older interpreter. Salt Line's 4.7.2 scripts are unchanged and still run on
 Python 3.9+.
 
 ## Profile notes for a custom build
 
-`module_regex_enabled` is dropped for the trial build only. 4.8-beta3 has no
+`module_regex_enabled` is dropped for the trial build only. 4.8-beta5 has no
 `modules/regex`, and the shared profile check would refuse the option.
 `tools/godot_build_profile.json` is not edited, so the 4.7.2 lock key stays
 put.
@@ -123,11 +123,11 @@ the trial lock). 4.8 adds a `rendering_device` SCons option, on by default,
 and defines `RD_ENABLED` from it rather than from `vulkan`. With only
 `vulkan=false`, as the 4.7.2 profile has it, the stripped Android build fails:
 `display_server_android.cpp` calls `free_vulkan_global_context()` under
-`RD_ENABLED`, but declares it only under `VULKAN_ENABLED` (seen on beta3,
+`RD_ENABLED`, but declares it only under `VULKAN_ENABLED` (seen on beta3, beta4 and beta5,
 same code on beta2 and `master`). The option does not exist in 4.7.2, so it
 cannot go in the shared profile until the pin moves.
 
-These modules are in the 4.8-beta3 tree and not in the 4.7.2 tree, and the
+These modules are in the 4.8-beta5 tree and not in the 4.7.2 tree, and the
 trial leaves them at Godot's default (enabled): `texture_streaming`,
 `tilemap`, `visionos_xr`. Worth a look before any real pin. Their presence
 is not, by itself, a measured package-size regression.
@@ -141,7 +141,7 @@ produce an IPA.
 ### ARM64 launch
 
 Install an arm64 Android build (the trial APK from the workflow, or a local
-`just android` pointed at 4.8-beta3) and launch it. iOS needs a Mac, a
+`just android` pointed at 4.8-beta5) and launch it. iOS needs a Mac, a
 signing team, and the existing TestFlight flow (`docs/testflight.md`).
 
 ### Touch, including clipped and off-screen buttons
@@ -153,7 +153,7 @@ buffer pixels with `make_input_local` (Godot's coordinates are already past
 stretch and letterboxing), and `touch.rs` hit-tests the rectangles the
 renderer laid out.
 
-On a phone, compare 4.7.2 and 4.8-beta3: controls against the letterbox or a
+On a phone, compare 4.7.2 and 4.8-beta5: controls against the letterbox or a
 cut-out, a press that starts off a button, and a press on a control that
 sits partly outside the visible area. A miss here would be the upstream
 viewport fix not reaching that mapping, which this trial has not confirmed.
@@ -166,7 +166,7 @@ software before handing Godot a texture, so the fix may not move the
 picture.
 
 On Android and on iOS, compare night, embers, and any darkened sprites or
-effects between a 4.7.2 build and a 4.8-beta3 build of the same game
+effects between a 4.7.2 build and a 4.8-beta5 build of the same game
 commit. Look for a change in darkness. This is the upstream fix to verify,
 not a known Salt Line bug.
 
@@ -184,7 +184,7 @@ from the app switcher. The trial does not change the save format.
 - Android release signing, if the trial APK should install over a
   release-signed build. The workflow signs with a debug key.
 - An iOS export. There is no Mac runner in this trial. Use
-  `docs/testflight.md` on 4.8-beta3 when you want an IPA, and do not point
+  `docs/testflight.md` on 4.8-beta5 when you want an IPA, and do not point
   the 4.7.2 TestFlight steps at the beta by accident.
 - A decision, later, about the new default-on modules and the removed regex
   module before anyone bumps the shipping pin. Follow "Bumping Godot" in

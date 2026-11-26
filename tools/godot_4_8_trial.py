@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Opt-in Godot 4.8-beta3 trial. The 4.7.2 pin is unchanged.
+"""Opt-in Godot 4.8-beta5 trial. The 4.7.2 pin is unchanged.
 
     godot_4_8_trial.py guard-stable
         Fail if this checkout no longer ships 4.7.2, or if the trial's
         custom-build key does not match tools/godot_4_8_trial.lock.json.
 
     godot_4_8_trial.py check-python
-        Fail if this interpreter is older than 3.10. Godot 4.8-beta3's
+        Fail if this interpreter is older than 3.10. Godot 4.8-beta5's
         SConstruct calls EnsurePythonVersion(3, 10). The 4.7.2 scripts do
         not: they still run on Python 3.9+.
 
@@ -27,8 +27,8 @@
         is built; otherwise the report measures the official template APKs.
 
     godot_4_8_trial.py build {android,linux}
-        Build one stripped 4.8-beta3 release template. Refuses Python < 3.10.
-        Fetches the pinned commit (the 4.8-beta3 tag is not on
+        Build one stripped 4.8-beta5 release template. Refuses Python < 3.10.
+        Fetches the pinned commit (the 4.8-beta5 tag is not on
         godotengine/godot). Does not publish and does not edit
         tools/godot_templates.lock.json.
 
@@ -122,13 +122,13 @@ def cache_dir() -> Path:
 
 
 def python_requirement_error(version: tuple[int, ...] | None = None) -> str | None:
-    """None when this interpreter can build Godot 4.8-beta3."""
+    """None when this interpreter can build Godot 4.8-beta5."""
     if version is None:
         version = (sys.version_info[0], sys.version_info[1])
     if version >= (3, 10):
         return None
     return (
-        f"Python {version[0]}.{version[1]} is below 3.10. Godot 4.8-beta3's SConstruct "
+        f"Python {version[0]}.{version[1]} is below 3.10. Godot 4.8-beta5's SConstruct "
         "calls EnsurePythonVersion(3, 10); 4.7.2 still calls EnsurePythonVersion(3, 9). "
         "This check is only for the stripped 4.8 trial build. Salt Line's 4.7.2 scripts "
         "stay on Python 3.9+."
@@ -164,7 +164,7 @@ def adjusted_profile(lock: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def custom_build_key(lock: dict[str, Any] | None = None) -> str:
-    """Key of a stripped 4.8-beta3 template. Not the 4.7.2 lock key."""
+    """Key of a stripped 4.8-beta5 template. Not the 4.7.2 lock key."""
     data = lock if lock is not None else LOCK
     custom = data["custom_build"]
     if custom["scons"] != godot_template.SCONS_VERSION:
@@ -689,14 +689,14 @@ def check_packaged_engines(stable: dict[str, Any], preview: dict[str, Any]) -> l
     notes = []
     identities = {
         "4.7.2 template": engine_identity(stable.get("template_android")),
-        "4.8-beta3 template": engine_identity(preview.get("template_android")),
+        "4.8-beta5 template": engine_identity(preview.get("template_android")),
         "4.7.2 apk": engine_identity(stable.get("apk")),
-        "4.8-beta3 apk": engine_identity(preview.get("apk")),
+        "4.8-beta5 apk": engine_identity(preview.get("apk")),
     }
-    if identities["4.7.2 apk"] and identities["4.7.2 apk"] == identities["4.8-beta3 template"]:
-        raise TrialError("the 4.7.2 APK contains the 4.8-beta3 template engine")
-    if identities["4.8-beta3 apk"] and identities["4.8-beta3 apk"] == identities["4.7.2 template"]:
-        raise TrialError("the 4.8-beta3 APK contains the 4.7.2 template engine")
+    if identities["4.7.2 apk"] and identities["4.7.2 apk"] == identities["4.8-beta5 template"]:
+        raise TrialError("the 4.7.2 APK contains the 4.8-beta5 template engine")
+    if identities["4.8-beta5 apk"] and identities["4.8-beta5 apk"] == identities["4.7.2 template"]:
+        raise TrialError("the 4.8-beta5 APK contains the 4.7.2 template engine")
     for label, digest in identities.items():
         if digest:
             notes.append(f"{label} libgodot_android.so sha256 {digest}")
@@ -707,16 +707,16 @@ def render_markdown(report: dict[str, Any]) -> str:
     stable = report["exports"].get(compare()["id"], {})
     preview = report["exports"].get(trial()["id"], {})
     lines = [
-        "# Godot 4.8-beta3 trial",
+        "# Godot 4.8-beta5 trial",
         "",
         "Official editor and export templates. 4.7.2 stays the shipping pin. Not a release build.",
         "",
         f"- 4.7.2 editor: `{stable.get('editor_version', 'not run')}`",
-        f"- 4.8-beta3 editor: `{preview.get('editor_version', 'not run')}`",
+        f"- 4.8-beta5 editor: `{preview.get('editor_version', 'not run')}`",
         f"- Trial custom-build key (not built by `run`): `{report.get('custom_build_key', '')}`",
         f"- Shipping 4.7.2 template lock key: `{report.get('stable_lock_key', '')}`",
         "",
-        "| | 4.7.2 official | 4.8-beta3 official | delta |",
+        "| | 4.7.2 official | 4.8-beta5 official | delta |",
         "| --- | ---: | ---: | ---: |",
     ]
     if stable and preview and "linux" in stable and "linux" in preview:
@@ -731,13 +731,13 @@ def render_markdown(report: dict[str, Any]) -> str:
                  "APK library digest can differ from the template library digest.")
     lines.append("")
     introduced = report.get("warnings_only_on_4_8") or []
-    lines.append("## Lines only in the 4.8-beta3 import log")
+    lines.append("## Lines only in the 4.8-beta5 import log")
     lines.append("")
     if introduced:
         lines.extend(f"- `{line}`" for line in introduced)
     else:
         lines.append("None of the filtered import lines (script errors, GDExtension failures, "
-                     "deprecations) were unique to 4.8-beta3.")
+                     "deprecations) were unique to 4.8-beta5.")
     lines.append("")
     for note in report.get("notes") or []:
         lines.append(f"- {note}")
@@ -845,7 +845,7 @@ def cmd_run() -> None:
         "notes": [
             "Compared official templates with each other. The stripped 4.7.2 engine "
             "pinned in tools/godot_templates.lock.json was not rebuilt or substituted.",
-            "4.8-beta3 source tag is not published on godotengine/godot; official builds "
+            "4.8-beta5 source tag is not published on godotengine/godot; official builds "
             f"are commit {trial()['commit']}.",
         ],
     }
@@ -917,7 +917,7 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = No
 
 
 def fetch_trial_source(src: Path) -> None:
-    """Clone the pinned commit. `4.8-beta3` is not a tag on godotengine/godot."""
+    """Clone the pinned commit. `4.8-beta5` is not a tag on godotengine/godot."""
     commit = trial()["commit"]
     if (src / ".git").is_dir():
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=src, text=True).strip()
@@ -1016,7 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("platform", choices=sorted(godot_template.PLATFORM_FLAGS))
     build_parser.add_argument("--arch")
     build_parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
-    build_parser.add_argument("--src", type=Path, default=Path.home() / ".cache" / "salt-line" / "godot-4.8-beta3")
+    build_parser.add_argument("--src", type=Path, default=Path.home() / ".cache" / "salt-line" / "godot-4.8-beta5")
     build_parser.add_argument("--out", type=Path, default=ENGINE_OUT)
     validate_parser = sub.add_parser("validate-build")
     validate_parser.add_argument("directory", type=Path)
@@ -1029,7 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
             print("stable pin is 4.7.2; trial key matches the lock")
         elif args.cmd == "check-python":
             check_python()
-            print(f"Python {sys.version_info[0]}.{sys.version_info[1]} can build the 4.8-beta3 trial")
+            print(f"Python {sys.version_info[0]}.{sys.version_info[1]} can build the 4.8-beta5 trial")
         elif args.cmd == "build-key":
             got = custom_build_key()
             print(got)
