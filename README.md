@@ -197,9 +197,9 @@ is not what TestFlight ships.
 `just testflight` writes a signed archive and `just testflight --upload` sends
 it to App Store Connect for internal testing. `just testflight --upload
 --external` is the public beta. See [docs/testflight.md](docs/testflight.md).
-Apple accepted build `2489.23.7` for internal processing on 25 October 2026.
-The public invite is <https://testflight.apple.com/join/PgjfndD9>. Installing
-one of those builds on a phone has not been confirmed from this repository.
+TestFlight builds exist. Apple accepted build `2489.23.7` for internal
+processing on 25 October 2026, and the public invite is
+<https://testflight.apple.com/join/PgjfndD9>.
 
 An iPhone SE (2nd generation) frame-time pass, the low-end floor in
 [docs/profiling-ios.md](docs/profiling-ios.md), has not been recorded. The
