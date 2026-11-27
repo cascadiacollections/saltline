@@ -173,6 +173,52 @@ impl Canvas {
         self.px[i..i + 4].copy_from_slice(&c);
     }
 
+    /// Paint a display-pixel rectangle from tightly packed RGBA8.
+    ///
+    /// `rgba` is `w` by `h`, row by row. A source pixel with alpha 0 is left
+    /// alone, so a scaled plate can skip the samples its sprite skips. The
+    /// rectangle is clipped to the buffer. One dirty mark covers whatever of
+    /// it landed inside, which is what a later strip upload consults.
+    pub fn blit_rgba(&mut self, x: i32, y: i32, w: i32, h: i32, rgba: &[u8]) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let expect = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|n| n.checked_mul(4));
+        assert_eq!(Some(rgba.len()), expect, "blit_rgba byte count");
+        let (pw, ph) = (self.pixel_w(), self.pixel_h());
+        let x0 = x.max(0);
+        let y0 = y.max(0);
+        let x1 = (x + w).min(pw);
+        let y1 = (y + h).min(ph);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        self.mark(x0, x1, y0, y1);
+        let dst_stride = pw as usize * 4;
+        let src_stride = w as usize * 4;
+        let src_x = (x0 - x) as usize;
+        let count = (x1 - x0) as usize;
+        for row in y0..y1 {
+            let src_off = (row - y) as usize * src_stride + src_x * 4;
+            let src = &rgba[src_off..src_off + count * 4];
+            let dst_off = row as usize * dst_stride + x0 as usize * 4;
+            if src.iter().skip(3).step_by(4).all(|&a| a != 0) {
+                self.px[dst_off..dst_off + count * 4].copy_from_slice(src);
+            } else {
+                for col in 0..count {
+                    let s = col * 4;
+                    if src[s + 3] == 0 {
+                        continue;
+                    }
+                    let d = dst_off + s;
+                    self.px[d..d + 4].copy_from_slice(&src[s..s + 4]);
+                }
+            }
+        }
+    }
+
     /// Copy display columns `src_x..src_x + w` of every row of `src` over
     /// display columns `dst_x..` of this canvas. Both must be the same
     /// height in display pixels, and the columns within both.

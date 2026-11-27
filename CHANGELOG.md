@@ -12,6 +12,8 @@ second. See RELEASING.md for the release steps.
 
 ### Fixed
 
+- Drone Trial spent most of each frame resampling its still coastline. The
+  picture is scaled once per buffer size and copied after that.
 - On a controller, d-pad up on the title started the challenge course and
   REPLAYS could not be reached, because both were bound to it. CHALLENGES is
   now d-pad left.
