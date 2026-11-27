@@ -14,6 +14,10 @@ import android_profile
 import engine_validation
 
 
+def _package_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.startswith("package/")]
+
+
 def report():
     return {"format": 1, "audio_count": 13, "audio_hash": "1" * 16,
             "fixtures": [{"name": name, "frames": 120, "samples": 3,
@@ -155,11 +159,51 @@ class EngineTools(unittest.TestCase):
                 fetch.assert_called_once_with(directory, require=True)
 
     def test_profile_has_its_own_app_id(self):
-        text = 'package/unique_name="com.cascadiacollections.saltline"\npackage/name="Salt Line"\n'
+        text = (
+            '[preset.3]\nname="Android"\n[preset.3.options]\n'
+            'package/unique_name="com.cascadiacollections.saltline"\n'
+            'package/name="Salt Line"\n'
+            '[preset.11]\nname="F-Droid"\n[preset.11.options]\n'
+            'package/unique_name="com.cascadiacollections.saltline.foss"\n'
+            'package/name="Salt Line"\n'
+        )
         changed = android_profile.configure_profile(text)
-        self.assertIn(f'package/unique_name="{android_profile.PACKAGE}"', changed)
+        self.assertEqual(
+            _package_lines(changed),
+            [
+                f'package/unique_name="{android_profile.PACKAGE}"',
+                'package/name="Salt Line Profiler"',
+                'package/unique_name="com.cascadiacollections.saltline.foss"',
+                'package/name="Salt Line"',
+            ],
+        )
         with self.assertRaises(ValueError):
             android_profile.configure_profile(text + text)
+
+    def test_profile_rewrites_the_shipping_android_preset_only(self):
+        original = (android_profile.ROOT / "export_presets.cfg").read_text(encoding="utf-8")
+        changed = android_profile.configure_profile(original)
+        before = _package_lines(original)
+        after = _package_lines(changed)
+        # The store preset is the first of each. F-Droid repeats the display
+        # name later; shareware has its own id and name. Only the store lines move.
+        store_id = 'package/unique_name="com.cascadiacollections.saltline"'
+        store_name = 'package/name="Salt Line"'
+        self.assertEqual(before.count(store_id), 1)
+        self.assertGreater(before.count(store_name), 1)
+        expected = []
+        renamed_name = False
+        for line in before:
+            if line == store_id:
+                expected.append(f'package/unique_name="{android_profile.PACKAGE}"')
+            elif line == store_name and not renamed_name:
+                expected.append('package/name="Salt Line Profiler"')
+                renamed_name = True
+            else:
+                expected.append(line)
+        self.assertEqual(after, expected)
+        self.assertIn('package/unique_name="com.cascadiacollections.saltline.foss"', after)
+        self.assertIn('package/unique_name="com.cascadiacollections.saltline.shareware"', after)
 
     def test_failed_export_restores_the_original_preset_bytes(self):
         original = (b'[preset.3]\r\nname="Android"\r\n[preset.3.options]\r\n'
