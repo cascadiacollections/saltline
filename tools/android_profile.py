@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,12 +43,65 @@ def pinned_engine(directory: Path) -> Path:
 
 
 def configure_profile(text: str) -> str:
+    """Point the store Android preset at the profiling package.
+
+    The F-Droid preset reuses the display name "Salt Line", so a whole-file
+    count of that name is not one, and replacing every copy would rename the
+    F-Droid build too. Only the preset named Android is rewritten.
+    """
+    lines = text.splitlines(keepends=True)
+    section = _only_preset(lines, "Android")
+    want = f"[{section}.options]"
     app_id = 'package/unique_name="com.cascadiacollections.saltline"'
     app_name = 'package/name="Salt Line"'
-    if text.count(app_id) != 1 or text.count(app_name) != 1:
-        raise ValueError("expected exactly one Android package and name")
-    return text.replace(app_id, f'package/unique_name="{PACKAGE}"').replace(
-        app_name, 'package/name="Salt Line Profiler"')
+    out: list[str] = []
+    in_options = False
+    saw_id = False
+    saw_name = False
+    for line in lines:
+        header = line.strip()
+        if header.startswith("[") and header.endswith("]"):
+            in_options = header == want
+        if in_options and line.startswith("package/unique_name="):
+            if line.strip() != app_id:
+                raise ValueError(f"Android preset package id is {line.strip()!r}, not the store id")
+            saw_id = True
+            line = f'package/unique_name="{PACKAGE}"{_endl(line)}'
+        elif in_options and line.startswith("package/name="):
+            if line.strip() != app_name:
+                raise ValueError(f"Android preset name is {line.strip()!r}")
+            saw_name = True
+            line = f'package/name="Salt Line Profiler"{_endl(line)}'
+        out.append(line)
+    if not saw_id or not saw_name:
+        raise ValueError("Android preset is missing its package id or name")
+    return "".join(out)
+
+
+def _only_preset(lines: list[str], name: str) -> str:
+    """The `[preset.N]` whose `name` is `name`. Two of them is a mistake."""
+    found: list[str] = []
+    current: str | None = None
+    for line in lines:
+        header = re.match(r"^\[(preset\.\d+)\]\s*$", line)
+        if header:
+            current = header.group(1)
+            continue
+        if current and line.startswith("name="):
+            if line.split("=", 1)[1].strip().strip('"') == name:
+                found.append(current)
+            current = None
+    if len(found) != 1:
+        raise ValueError(f"expected exactly one {name} preset, found {len(found)}")
+    return found[0]
+
+
+def _endl(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return ""
 
 
 @contextmanager
