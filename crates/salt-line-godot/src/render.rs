@@ -37,7 +37,8 @@
 //!   drawing.
 //! * **Memoisation.** The drag preview flies a whole ballistic path; it is
 //!   kept in [`Cache`] keyed on everything it depends on (`PreviewKey`) and
-//!   recomputed only when one of them changes.
+//!   recomputed only when one of them changes. Drone Trial's coastline is
+//!   scaled once per buffer there too: the plate does not move.
 //! * **Snapshot tests.** Frames are rendered to palette-index text
 //!   (`Canvas::palette_text`) and pinned with `insta`, so a pixel that moves
 //!   shows in review as a text diff.
@@ -83,6 +84,38 @@ pub struct Cache {
     /// The sky and ground layers, when frames are drawn in layers; see
     /// `backdrop`. Flat unless the node turns `layered` on.
     pub backdrop: Backdrop,
+    /// Drone Trial's coastline, scaled to the current buffer. Still, so a
+    /// frame copies it instead of resampling the source plate.
+    trial_plate: Option<TrialPlate>,
+}
+
+/// One scaled trial coastline, and the buffer it was scaled for.
+struct TrialPlate {
+    key: TrialPlateKey,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    pixels: Vec<u8>,
+}
+
+/// What a scaled coastline depends on. `pixels` is the address of the
+/// sprite's bytes; it is compared and never dereferenced, so replacing the
+/// image (a new allocation) rebuilds the plate and editing those bytes in
+/// place does not.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TrialPlateKey {
+    pixels: usize,
+    len: usize,
+    src_w: i32,
+    src_h: i32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    scale: i32,
+    canvas_w: i32,
+    canvas_h: i32,
 }
 
 /// Everything the drag preview's trajectory depends on. The terrain and the
@@ -212,8 +245,8 @@ impl Painter<'_> {
         let width = self.canvas.w;
         let height = self.canvas.h;
         let viewport = crate::scene::WorldViewport::fit(width, height, 320.0, 180.0);
-        if let Some(background) = self.trial_background {
-            Self::draw_scaled_background(self.canvas, background, viewport);
+        if self.trial_background.is_some() {
+            self.draw_scaled_background(viewport);
         } else {
             raster::draw_sky(self.canvas, &self.g.view(), pal);
             crate::scene::draw_coast(self.canvas, pal);
@@ -327,41 +360,57 @@ impl Painter<'_> {
         }
     }
 
-    fn draw_scaled_background(
-        canvas: &mut Canvas,
-        background: &Sprite,
-        viewport: crate::scene::WorldViewport,
-    ) {
+    /// The trial coastline, scaled into the arena. The source plate does not
+    /// move, so the scaled pixels are kept on [`Cache`] and copied. A buffer
+    /// resize or a different image builds them again.
+    fn draw_scaled_background(&mut self, viewport: crate::scene::WorldViewport) {
         let (x, y, width, height) = viewport.bounds(320.0);
-        let scale = canvas.scale() as f64;
-        let x0 = (x * scale).round() as i32;
-        let y0 = (y * scale).round() as i32;
-        let x1 = ((x + width) * scale).round() as i32;
-        let y1 = ((y + height) * scale).round() as i32;
-        let target_width = x1 - x0;
-        let target_height = y1 - y0;
-        if target_width <= 0 || target_height <= 0 {
+        let scale = self.canvas.scale();
+        let x0 = (x * scale as f64).round() as i32;
+        let y0 = (y * scale as f64).round() as i32;
+        let x1 = ((x + width) * scale as f64).round() as i32;
+        let y1 = ((y + height) * scale as f64).round() as i32;
+        let Some(key) = self.trial_background.map(|background| TrialPlateKey {
+            pixels: background.px.as_ptr().addr(),
+            len: background.px.len(),
+            src_w: background.w,
+            src_h: background.h,
+            x0,
+            y0,
+            x1,
+            y1,
+            scale,
+            canvas_w: self.canvas.w,
+            canvas_h: self.canvas.h,
+        }) else {
+            return;
+        };
+        if let Some(plate) = self
+            .cache
+            .trial_plate
+            .as_ref()
+            .filter(|plate| plate.key == key)
+        {
+            self.canvas
+                .blit_rgba(plate.x, plate.y, plate.w, plate.h, &plate.pixels);
             return;
         }
-        let source_x_max = background.w.saturating_sub(1);
-        let source_y_max = background.h.saturating_sub(1);
-        for dy in y0..y1 {
-            let sy = if target_height == 1 {
-                0
-            } else {
-                ((dy - y0) * source_y_max / (target_height - 1)).min(source_y_max)
-            };
-            for dx in x0..x1 {
-                let sx = if target_width == 1 {
-                    0
-                } else {
-                    ((dx - x0) * source_x_max / (target_width - 1)).min(source_x_max)
-                };
-                if let Some(colour) = background.pixel(sx, sy) {
-                    canvas.put_detail(dx, dy, colour);
-                }
-            }
-        }
+        let Some(background) = self.trial_background else {
+            return;
+        };
+        let Some(pixels) = scale_plate(background, x0, y0, x1, y1) else {
+            paint_plate(self.canvas, background, x0, y0, x1, y1);
+            return;
+        };
+        self.canvas.blit_rgba(x0, y0, x1 - x0, y1 - y0, &pixels);
+        self.cache.trial_plate = Some(TrialPlate {
+            key,
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+            pixels,
+        });
     }
 
     /// The error screen. See `Game::broken_tick`.
@@ -1977,6 +2026,75 @@ fn preview_path(
     (path, upto)
 }
 
+/// Scale `sprite` into display rectangle `x0..x1`, `y0..y1`.
+///
+/// The source column (and row) for a destination pixel is the same integer
+/// map the trial used before this plate was cached: `i * (src - 1) / (dst - 1)`,
+/// done in `i64` so a wide plate cannot wrap the multiply. A transparent
+/// sample is left as zero alpha, which [`Canvas::blit_rgba`] then skips.
+fn scale_plate(sprite: &Sprite, x0: i32, y0: i32, x1: i32, y1: i32) -> Option<Vec<u8>> {
+    let w = x1.saturating_sub(x0);
+    let h = y1.saturating_sub(y0);
+    if w <= 0 || h <= 0 {
+        return Some(Vec::new());
+    }
+    let n = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    let mut pixels = vec![0u8; n];
+    sample_plate(sprite, x0, y0, x1, y1, |x, y, colour| {
+        let i = ((y - y0) as usize * w as usize + (x - x0) as usize) * 4;
+        pixels[i..i + 4].copy_from_slice(&colour);
+    });
+    Some(pixels)
+}
+
+/// The uncached path, for a plate that does not fit in memory as one buffer.
+fn paint_plate(canvas: &mut Canvas, sprite: &Sprite, x0: i32, y0: i32, x1: i32, y1: i32) {
+    sample_plate(sprite, x0, y0, x1, y1, |x, y, colour| {
+        canvas.put_detail(x, y, colour);
+    });
+}
+
+fn sample_plate(
+    sprite: &Sprite,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    mut put: impl FnMut(i32, i32, crate::palette::Rgba),
+) {
+    let target_width = x1 - x0;
+    let target_height = y1 - y0;
+    if target_width <= 0 || target_height <= 0 {
+        return;
+    }
+    let source_x_max = sprite.w.saturating_sub(1);
+    let source_y_max = sprite.h.saturating_sub(1);
+    let src_x: Vec<i32> = (0..target_width)
+        .map(|i| {
+            if target_width == 1 {
+                0
+            } else {
+                let sx = (i as i64 * i64::from(source_x_max)) / (i64::from(target_width) - 1);
+                i32::try_from(sx).unwrap_or(source_x_max).min(source_x_max)
+            }
+        })
+        .collect();
+    for row in 0..target_height {
+        let sy = if target_height == 1 {
+            0
+        } else {
+            let sy = (i64::from(row) * i64::from(source_y_max)) / (i64::from(target_height) - 1);
+            i32::try_from(sy).unwrap_or(source_y_max).min(source_y_max)
+        };
+        let y = y0 + row;
+        for (col, &sx) in src_x.iter().enumerate() {
+            if let Some(colour) = sprite.pixel(sx, sy) {
+                put(x0 + col as i32, y, colour);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2078,6 +2196,40 @@ mod tests {
             assert_eq!(&canvas.bytes()[..4], &first);
             assert_eq!(&canvas.bytes()[canvas.bytes().len() - 4..], &last);
         }
+    }
+
+    /// The coastline does not move, so a second frame must copy the scaled
+    /// plate rather than read the sprite again. A transparent sample stays
+    /// whatever was already in the buffer.
+    #[test]
+    fn a_trial_backdrop_is_kept_and_transparent_samples_are_not_painted() {
+        let mut g = game();
+        g.start_trial(1);
+        let mut art = Art {
+            trial_background: Some(Sprite {
+                w: 2,
+                h: 1,
+                px: vec![10, 20, 30, 255, 1, 2, 3, 0],
+                detail: None,
+            }),
+            ..Art::default()
+        };
+        let mut cache = Cache::default();
+        let draw = |art: &Art, cache: &mut Cache| {
+            let mut canvas = Canvas::new(320, 180);
+            canvas.fill([7, 7, 7, 255]);
+            frame(&g, art, &mut canvas, &mut Vec::new(), cache);
+            canvas.bytes().to_vec()
+        };
+        let first = draw(&art, &mut cache);
+        assert_eq!(&first[..4], &[10, 20, 30, 255]);
+        assert_eq!(&first[first.len() - 4..], &[7, 7, 7, 255]);
+        art.trial_background.as_mut().unwrap().px[0] = 200;
+        let second = draw(&art, &mut cache);
+        assert_eq!(second, first, "the still plate was sampled again");
+        let fresh = draw(&art, &mut Cache::default());
+        assert_eq!(&fresh[..4], &[200, 20, 30, 255]);
+        assert_eq!(&fresh[fresh.len() - 4..], &[7, 7, 7, 255]);
     }
 
     fn actions(buttons: &[Button]) -> Vec<Action> {
